@@ -1,0 +1,176 @@
+/**
+ * TorrentHunt Design System
+ * 
+ * CSS Variables for consistent theming and styling.
+ * Supports dark and light themes with black/white primary colors.
+ */
+
+:root {
+  /* === Dark Theme (Default) === */
+  /* Soft Black & Grayscale - optimized for night viewing */
+  --color-bg-primary: #0a0a0a;
+  --color-bg-secondary: #121212;
+  --color-bg-tertiary: #1a1a1a;
+  --color-bg-elevated: #242424;
+  --color-bg-hover: #2d2d2d;
+  --color-bg-active: #363636;
+  
+  /* Borders - White with transparency for dark theme */
+  --color-border-default: rgba(255, 255, 255, 0.15);
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.25);
+  
+  /* Text */
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #b0b0b0;
+  --color-text-tertiary: #888888;
+  --color-text-disabled: #686868;
+  
+  /* Accent Colors - Minimal, mostly grayscale with subtle accents */
+  --color-accent-primary: #e8e8e8;
+  --color-accent-primary-hover: #f5f5f5;
+  --color-accent-bg: rgba(232, 232, 232, 0.1);
+  --color-accent-secondary: #c8c8c8;
+  --color-accent-secondary-hover: #e8e8e8;
+  
+  /* Gradient Accents - Subtle grayscale */
+  --gradient-primary: linear-gradient(135deg, #d0d0d0 0%, #b0b0b0 100%);
+  --gradient-success: linear-gradient(135deg, #909090 0%, #707070 100%);
+  --gradient-elevated: linear-gradient(180deg, #1f1f1f 0%, #141414 100%);
+  
+  /* Status Colors - Soft grayscale approach */
+  --color-status-queued: #808080;
+  --color-status-downloading: #909090;
+  --color-status-paused: #a0a0a0;
+  --color-status-completed: #b0b0b0;
+  --color-status-seeding: #c0c0c0;
+  --color-status-error: #d0d0d0;
+  --color-status-removed: #707070;
+  
+  /* Semantic Colors */
+  --color-success: #909090;
+  --color-success-bg: rgba(144, 144, 144, 0.15);
+  --color-warning: #a0a0a0;
+  --color-warning-bg: rgba(160, 160, 160, 0.15);
+  --color-error: #b0b0b0;
+  --color-error-bg: rgba(176, 176, 176, 0.15);
+  --color-info: #989898;
+  --color-info-bg: rgba(152, 152, 152, 0.15);
+  
+  /* Status indicator colors - bright for visibility */
+  --color-status-connected: #4ade80;
+  --color-status-download: #4ade80;
+  --color-status-upload: #fbbf24;
+  
+  /* File Type Colors - Soft grayscale */
+  --color-video: #989898;
+  --color-audio: #a0a0a0;
+  --color-image: #a8a8a8;
+  --color-archive: #b0b0b0;
+  --color-document: #b8b8b8;
+  
+  /* === Spacing Scale === */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  
+  /* === Typography === */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  --font-family-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 32px;
+  
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  
+  /* === Border Radius === */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+  
+  /* === Shadows === */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.6), 0 4px 8px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.7), 0 8px 16px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 20px rgba(79, 140, 255, 0.4), 0 0 40px rgba(79, 140, 255, 0.2);
+  
+  /* === Transitions === */
+  --transition-fast: 100ms ease;
+  --transition-normal: 200ms ease;
+  --transition-slow: 300ms ease;
+  
+  /* === Layout === */
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+  --header-height: 52px;
+  --footer-height: 32px;
+  
+  /* === Z-Index Scale === */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal-backdrop: 300;
+  --z-modal: 400;
+  --z-popover: 500;
+  --z-tooltip: 600;
+}
+
+/* Light Theme */
+[data-theme="light"] {
+  /* Inverted: Light theme becomes primary soft white */
+  --color-bg-primary: #f9f9f9;
+  --color-bg-secondary: #f3f3f3;
+  --color-bg-tertiary: #ececec;
+  --color-bg-elevated: #fafafa;
+  --color-bg-hover: #f0f0f0;
+  --color-bg-active: #e8e8e8;
+  
+  /* Borders - Black with transparency for light theme */
+  --color-border-default: rgba(0, 0, 0, 0.15);
+  --color-border-subtle: rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.25);
+  
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #656565;
+  --color-text-tertiary: #878787;
+  --color-text-disabled: #a5a5a5;
+  
+  --color-accent-primary: #333333;
+  --color-accent-primary-hover: #1a1a1a;
+  --color-accent-bg: rgba(51, 51, 51, 0.1);
+  --color-accent-secondary: #555555;
+  --color-accent-secondary-hover: #333333;
+  
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 12px 20px rgba(0, 0, 0, 0.15);
+  --shadow-xl: 0 20px 30px rgba(0, 0, 0, 0.18);
+  
+  /* Status indicator colors - bright for visibility */
+  --color-status-connected: #4ade80;
+  --color-status-download: #4ade80;
+  --color-status-upload: #fbbf24;
+}

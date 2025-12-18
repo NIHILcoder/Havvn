@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist/electron",
+    "rootDir": ".",
+    "module": "CommonJS"
+  },
+  "include": ["electron/**/*.ts", "shared/**/*.ts"],
+  "exclude": ["node_modules", "dist", "renderer"]
+}

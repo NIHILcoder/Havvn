@@ -1,0 +1,66 @@
+[
+  {
+    "id": "libreoffice",
+    "name": "LibreOffice",
+    "description": "Free and powerful office suite",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_LIBREOFFICE_HASH&dn=LibreOffice",
+    "size": "300 MB",
+    "category": "Office"
+  },
+  {
+    "id": "ubuntu-desktop",
+    "name": "Ubuntu 24.04 LTS Desktop",
+    "description": "Popular Linux distribution desktop ISO",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_UBUNTU_HASH&dn=ubuntu-24.04-desktop-amd64.iso",
+    "size": "5.8 GB",
+    "category": "Operating System"
+  },
+  {
+    "id": "linux-mint",
+    "name": "Linux Mint 21.3 Cinnamon",
+    "description": "User-friendly Linux distribution",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_MINT_HASH&dn=linuxmint-21.3-cinnamon-64bit.iso",
+    "size": "2.8 GB",
+    "category": "Operating System"
+  },
+  {
+    "id": "blender",
+    "name": "Blender 4.0",
+    "description": "Free and open-source 3D creation suite",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_BLENDER_HASH&dn=blender-4.0-windows-x64.zip",
+    "size": "350 MB",
+    "category": "Graphics"
+  },
+  {
+    "id": "gimp",
+    "name": "GIMP 2.10",
+    "description": "GNU Image Manipulation Program",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_GIMP_HASH&dn=gimp-2.10-setup.exe",
+    "size": "250 MB",
+    "category": "Graphics"
+  },
+  {
+    "id": "vlc",
+    "name": "VLC Media Player",
+    "description": "Free and open-source multimedia player",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_VLC_HASH&dn=vlc-3.0.20-win64.exe",
+    "size": "45 MB",
+    "category": "Multimedia"
+  },
+  {
+    "id": "fedora-workstation",
+    "name": "Fedora Workstation 40",
+    "description": "Cutting-edge Linux workstation",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_FEDORA_HASH&dn=Fedora-Workstation-40-x86_64.iso",
+    "size": "2.1 GB",
+    "category": "Operating System"
+  },
+  {
+    "id": "debian",
+    "name": "Debian 12 Bookworm",
+    "description": "The universal operating system",
+    "magnetUri": "magnet:?xt=urn:btih:EXAMPLE_DEBIAN_HASH&dn=debian-12.0.0-amd64-DVD-1.iso",
+    "size": "4.0 GB",
+    "category": "Operating System"
+  }
+]
