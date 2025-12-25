@@ -504,7 +504,15 @@ const DownloadItem: React.FC<DownloadItemProps> = ({
   );
 };
 
-const DownloadsPage: React.FC = () => {
+interface DownloadsPageProps {
+  filterMode?: FilterMode;
+  onFilterChange?: (filter: FilterMode) => void;
+}
+
+const DownloadsPage: React.FC<DownloadsPageProps> = ({
+  filterMode: externalFilterMode = 'all',
+  onFilterChange
+}) => {
   const [downloads, setDownloads] = useState<Download[]>([]);
   const [stats, setStats] = useState<Map<string, DownloadStats>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -519,7 +527,8 @@ const DownloadsPage: React.FC = () => {
 
   // UI State
   const [viewMode, setViewMode] = useState<ViewMode>('detailed');
-  const [filterMode, setFilterMode] = useState<FilterMode>('all');
+  // Use external filter mode from props
+  const filterMode = externalFilterMode;
   const [sortMode, setSortMode] = useState<SortMode>('added');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -552,6 +561,7 @@ const DownloadsPage: React.FC = () => {
     path?: string;
     magnetUri?: string;
   } | null>(null);
+  const [isAddingTorrent, setIsAddingTorrent] = useState(false);
 
   // Toast helper
   const addToast = useCallback((message: string, variant: 'success' | 'error' | 'warning' | 'info' = 'info', duration = 5000) => {
@@ -802,9 +812,16 @@ const DownloadsPage: React.FC = () => {
 
 
   const handleAddTorrentFile = async () => {
+    // Prevent duplicate calls while file dialog is open
+    if (isAddingTorrent || showFileSelector) return;
+
     try {
+      setIsAddingTorrent(true);
       const result = await window.api.selectTorrentFile();
-      if (!result) return;
+      if (!result) {
+        setIsAddingTorrent(false);
+        return;
+      }
 
       // Show file selector to choose which files to download
       setPendingTorrent({ path: result.path });
@@ -814,6 +831,8 @@ const DownloadsPage: React.FC = () => {
         `Failed to add: ${error instanceof Error ? error.message : 'Unknown error'}`,
         'error'
       );
+    } finally {
+      setIsAddingTorrent(false);
     }
   };
 
@@ -1189,56 +1208,6 @@ const DownloadsPage: React.FC = () => {
               )}
             </div>
 
-            {/* Filter Chips */}
-            <div className="filter-chips-section">
-              <span className="section-label">
-                <Icon name="filter" size={14} />
-                Filters:
-              </span>
-              <div className="filter-chips">
-                <button
-                  className={`filter-chip ${filterMode === 'all' ? 'active' : ''}`}
-                  onClick={() => setFilterMode('all')}
-                >
-                  <Icon name="list" size={14} />
-                  <span>All</span>
-                  <span className="chip-badge">{downloads.length}</span>
-                </button>
-                <button
-                  className={`filter-chip ${filterMode === 'downloading' ? 'active downloading' : ''}`}
-                  onClick={() => setFilterMode('downloading')}
-                >
-                  <Icon name="download" size={14} />
-                  <span>Downloading</span>
-                  <span className="chip-badge">{downloads.filter(d => ['downloading', 'queued'].includes(d.status)).length}</span>
-                </button>
-                <button
-                  className={`filter-chip ${filterMode === 'completed' ? 'active completed' : ''}`}
-                  onClick={() => setFilterMode('completed')}
-                >
-                  <Icon name="check-circle" size={14} />
-                  <span>Completed</span>
-                  <span className="chip-badge">{downloads.filter(d => ['completed', 'seeding'].includes(d.status)).length}</span>
-                </button>
-                <button
-                  className={`filter-chip ${filterMode === 'paused' ? 'active paused' : ''}`}
-                  onClick={() => setFilterMode('paused')}
-                >
-                  <Icon name="pause" size={14} />
-                  <span>Paused</span>
-                  <span className="chip-badge">{downloads.filter(d => d.status === 'paused').length}</span>
-                </button>
-                <button
-                  className={`filter-chip ${filterMode === 'error' ? 'active error' : ''}`}
-                  onClick={() => setFilterMode('error')}
-                >
-                  <Icon name="alert-triangle" size={14} />
-                  <span>Error</span>
-                  <span className="chip-badge">{downloads.filter(d => d.status === 'error').length}</span>
-                </button>
-              </div>
-            </div>
-
             {/* Sort Options */}
             <div className="sort-options-section">
               <span className="section-label">
@@ -1289,7 +1258,7 @@ const DownloadsPage: React.FC = () => {
                 <button
                   className="clear-filters-btn"
                   onClick={() => {
-                    setFilterMode('all');
+                    onFilterChange?.('all');
                     setSearchQuery('');
                     setSortMode('added');
                     setSortDirection('desc');

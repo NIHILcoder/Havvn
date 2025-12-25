@@ -2,9 +2,9 @@
  * TorrentHunt Main App Component
  */
 
-import React, { useState, useEffect } from 'react';
-import { Sidebar, StatusBar, PageId } from './layout';
-import { DownloadStats } from '../shared/types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Sidebar, StatusBar, PageId, FilterMode } from './layout';
+import { DownloadStats, Download } from '../shared/types';
 import CatalogPage from './pages/CatalogPage';
 import DownloadsPage from './pages/DownloadsPage';
 import SettingsPage from './pages/SettingsPage';
@@ -12,6 +12,8 @@ import SettingsPage from './pages/SettingsPage';
 const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageId>('downloads');
   const [stats, setStats] = useState<DownloadStats[]>([]);
+  const [downloads, setDownloads] = useState<Download[]>([]);
+  const [filterMode, setFilterMode] = useState<FilterMode>('all');
 
   // Apply theme on mount
   useEffect(() => {
@@ -37,13 +39,48 @@ const App: React.FC = () => {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, []);
 
+  // Load downloads for counts
+  useEffect(() => {
+    const loadDownloads = async () => {
+      try {
+        const list = await window.api.getDownloads();
+        setDownloads(list.filter(d => d.status !== 'removed'));
+      } catch (error) {
+        console.error('Failed to load downloads:', error);
+      }
+    };
+    loadDownloads();
+
+    // Refresh periodically
+    const interval = setInterval(loadDownloads, 5000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Subscribe to stats for status bar
   useEffect(() => {
     const unsubscribe = window.api.onDownloadStats((newStats) => {
       setStats(newStats);
+
+      // Update download statuses from stats
+      setDownloads(prev => prev.map(d => {
+        const stat = newStats.find(s => s.id === d.id);
+        if (stat) {
+          return { ...d, status: stat.status };
+        }
+        return d;
+      }));
     });
     return () => unsubscribe();
   }, []);
+
+  // Calculate download counts for sidebar
+  const downloadCounts = useMemo(() => ({
+    all: downloads.length,
+    downloading: downloads.filter(d => ['downloading', 'queued'].includes(d.status)).length,
+    completed: downloads.filter(d => ['completed', 'seeding'].includes(d.status)).length,
+    paused: downloads.filter(d => d.status === 'paused').length,
+    error: downloads.filter(d => d.status === 'error').length,
+  }), [downloads]);
 
   // Calculate aggregate stats
   const activeDownloads = stats.filter(s => s.status === 'downloading').length;
@@ -56,11 +93,11 @@ const App: React.FC = () => {
       case 'catalog':
         return <CatalogPage />;
       case 'downloads':
-        return <DownloadsPage />;
+        return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} />;
       case 'settings':
         return <SettingsPage />;
       default:
-        return <DownloadsPage />;
+        return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} />;
     }
   };
 
@@ -69,12 +106,15 @@ const App: React.FC = () => {
       <Sidebar
         currentPage={currentPage}
         onNavigate={setCurrentPage}
+        filterMode={filterMode}
+        onFilterChange={setFilterMode}
+        downloadCounts={downloadCounts}
         activeDownloads={activeDownloads}
       />
-      
+
       <main className="main-content">
         {renderPage()}
-        
+
         <StatusBar
           activeDownloads={activeDownloads}
           totalDownSpeed={totalDownSpeed}
