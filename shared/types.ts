@@ -1,6 +1,6 @@
 // Shared types for TorrentHunt application
 
-export type DownloadStatus = 
+export type DownloadStatus =
   | 'queued'
   | 'downloading'
   | 'paused'
@@ -103,25 +103,25 @@ export interface IpcApi {
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getTorrentInfo: (params: { torrentPath?: string; magnetUri?: string }) => Promise<TorrentInfo>;
-  
+
   // Settings
   getSettings: () => Promise<AppSettings>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
-  
+
   // Catalog
   getCatalog: () => Promise<CatalogEntry[]>;
-  
+
   // File dialogs
   selectDirectory: () => Promise<string | null>;
   selectTorrentFile: () => Promise<{ path: string; content: string } | null>;
-  
+
   // Shell operations
   openPath: (path: string) => Promise<void>;
   showItemInFolder: (path: string) => Promise<void>;
-  
+
   // Cache management
   clearCache: () => Promise<{ success: boolean }>;
-  
+
   // Stats subscription
   onDownloadStats: (callback: (stats: DownloadStats[]) => void) => () => void;
 }
