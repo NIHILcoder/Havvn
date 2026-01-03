@@ -323,7 +323,7 @@
 
 .file-item.selected .file-icon {
   background: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
 }
 
 .file-info {

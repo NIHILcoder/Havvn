@@ -5,9 +5,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { AppSettings } from '../../shared/types';
+import { AppSettings, SchedulerConfig, ScheduleEntry } from '../../shared/types';
 import { Button, Icon, Alert } from '../components';
 import './SettingsPage.css';
+import { v4 as uuidv4 } from 'uuid';
 
 type Theme = 'light' | 'dark' | 'system';
 
@@ -25,6 +26,11 @@ const SettingsPage: React.FC = () => {
   const [maxUpKbps, setMaxUpKbps] = useState(0);
   const [maxActiveDownloads, setMaxActiveDownloads] = useState(3);
   const [theme, setTheme] = useState<Theme>('system');
+
+  // Scheduler state
+  const [schedulerConfig, setSchedulerConfig] = useState<SchedulerConfig | null>(null);
+  const [schedulerEnabled, setSchedulerEnabled] = useState(false);
+  const [schedules, setSchedules] = useState<ScheduleEntry[]>([]);
 
   useEffect(() => {
     loadSettings();
@@ -45,7 +51,7 @@ const SettingsPage: React.FC = () => {
   // Track changes
   useEffect(() => {
     if (settings) {
-      const changed = 
+      const changed =
         defaultDownloadDir !== settings.defaultDownloadDir ||
         maxDownKbps !== settings.maxDownKbps ||
         maxUpKbps !== settings.maxUpKbps ||
@@ -77,6 +83,12 @@ const SettingsPage: React.FC = () => {
       setMaxDownKbps(s.maxDownKbps);
       setMaxUpKbps(s.maxUpKbps);
       setMaxActiveDownloads(s.maxActiveDownloads);
+
+      // Load scheduler config
+      const scheduler = await window.api.getScheduler();
+      setSchedulerConfig(scheduler);
+      setSchedulerEnabled(scheduler.enabled);
+      setSchedules(scheduler.schedules);
     } catch (error) {
       console.error('Failed to load settings:', error);
       setMessage({ type: 'error', text: 'Failed to load settings' });
@@ -84,6 +96,58 @@ const SettingsPage: React.FC = () => {
       setLoading(false);
     }
   };
+
+  const handleSchedulerToggle = async () => {
+    const newEnabled = !schedulerEnabled;
+    setSchedulerEnabled(newEnabled);
+    try {
+      await window.api.updateScheduler({ enabled: newEnabled });
+      setMessage({ type: 'success', text: newEnabled ? 'Планировщик включен' : 'Планировщик выключен' });
+    } catch (error) {
+      setSchedulerEnabled(!newEnabled); // Revert
+      setMessage({ type: 'error', text: 'Не удалось обновить планировщик' });
+    }
+  };
+
+  const handleAddSchedule = async () => {
+    const newSchedule: ScheduleEntry = {
+      id: uuidv4(),
+      days: [1, 2, 3, 4, 5], // Mon-Fri
+      startTime: '00:00',
+      endTime: '08:00',
+    };
+    const updated = [...schedules, newSchedule];
+    setSchedules(updated);
+    try {
+      await window.api.updateScheduler({ schedules: updated });
+    } catch (error) {
+      setSchedules(schedules); // Revert
+      setMessage({ type: 'error', text: 'Не удалось добавить расписание' });
+    }
+  };
+
+  const handleRemoveSchedule = async (id: string) => {
+    const updated = schedules.filter(s => s.id !== id);
+    setSchedules(updated);
+    try {
+      await window.api.updateScheduler({ schedules: updated });
+    } catch (error) {
+      setSchedules(schedules); // Revert
+      setMessage({ type: 'error', text: 'Не удалось удалить расписание' });
+    }
+  };
+
+  const handleUpdateSchedule = async (id: string, updates: Partial<ScheduleEntry>) => {
+    const updated = schedules.map(s => s.id === id ? { ...s, ...updates } : s);
+    setSchedules(updated);
+    try {
+      await window.api.updateScheduler({ schedules: updated });
+    } catch (error) {
+      setSchedules(schedules); // Revert
+    }
+  };
+
+  const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
 
   const handleBrowseDirectory = async () => {
     try {
@@ -135,17 +199,17 @@ const SettingsPage: React.FC = () => {
       'Это удалит временные файлы и может помочь решить проблемы с производительностью или ошибками кеширования.\n\n' +
       'Приложение продолжит работу, но может потребоваться повторная загрузка некоторых данных.'
     );
-    
+
     if (!confirmed) return;
-    
+
     setClearingCache(true);
     setMessage(null);
-    
+
     try {
       await window.api.clearCache();
-      setMessage({ 
-        type: 'success', 
-        text: 'Кеш успешно очищен. Рекомендуется перезапустить приложение для полного применения изменений.' 
+      setMessage({
+        type: 'success',
+        text: 'Кеш успешно очищен. Рекомендуется перезапустить приложение для полного применения изменений.'
       });
     } catch (error) {
       setMessage({
@@ -176,7 +240,7 @@ const SettingsPage: React.FC = () => {
               Reset
             </Button>
           )}
-          <Button 
+          <Button
             variant="primary"
             icon={<Icon name="check" size={16} />}
             onClick={handleSave}
@@ -191,8 +255,8 @@ const SettingsPage: React.FC = () => {
       <div className="page-content">
         {/* Messages */}
         {message && (
-          <Alert 
-            variant={message.type} 
+          <Alert
+            variant={message.type}
             onClose={() => setMessage(null)}
             className="message-alert"
           >
@@ -265,7 +329,7 @@ const SettingsPage: React.FC = () => {
                     value={defaultDownloadDir}
                     onChange={(e) => setDefaultDownloadDir(e.target.value)}
                   />
-                  <Button 
+                  <Button
                     icon={<Icon name="folder" size={16} />}
                     onClick={handleBrowseDirectory}
                   >
@@ -347,10 +411,110 @@ const SettingsPage: React.FC = () => {
               <div className="settings-notice">
                 <Icon name="info" size={16} />
                 <span>
-                  Speed limiting is best-effort due to WebTorrent limitations. 
+                  Speed limiting is best-effort due to WebTorrent limitations.
                   Actual speeds may vary.
                 </span>
               </div>
+            </div>
+          </section>
+
+          {/* Scheduler Section */}
+          <section className="settings-section">
+            <h2 className="settings-section-title">
+              <Icon name="calendar" size={20} />
+              Планировщик загрузок
+            </h2>
+            <div className="settings-card">
+              <div className="setting-item">
+                <div className="setting-info">
+                  <label className="setting-label">Включить планировщик</label>
+                  <p className="setting-description">
+                    Загрузки будут активны только в указанное время.
+                  </p>
+                </div>
+                <div className="setting-control">
+                  <button
+                    className={`toggle-switch ${schedulerEnabled ? 'active' : ''}`}
+                    onClick={handleSchedulerToggle}
+                  >
+                    <span className="toggle-slider" />
+                  </button>
+                </div>
+              </div>
+
+              {schedulerEnabled && (
+                <>
+                  <div className="setting-divider" />
+                  <div className="scheduler-entries">
+                    <div className="scheduler-header">
+                      <span className="setting-label">Расписание</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Icon name="plus" size={14} />}
+                        onClick={handleAddSchedule}
+                      >
+                        Добавить
+                      </Button>
+                    </div>
+
+                    {schedules.length === 0 ? (
+                      <div className="scheduler-empty">
+                        <Icon name="calendar" size={32} />
+                        <p>Нет расписаний. Добавьте первое!</p>
+                      </div>
+                    ) : (
+                      schedules.map((schedule) => (
+                        <div key={schedule.id} className="schedule-entry">
+                          <div className="schedule-days">
+                            {dayNames.map((day, idx) => (
+                              <button
+                                key={idx}
+                                className={`day-btn ${schedule.days.includes(idx) ? 'active' : ''}`}
+                                onClick={() => {
+                                  const newDays = schedule.days.includes(idx)
+                                    ? schedule.days.filter(d => d !== idx)
+                                    : [...schedule.days, idx].sort();
+                                  handleUpdateSchedule(schedule.id, { days: newDays });
+                                }}
+                              >
+                                {day}
+                              </button>
+                            ))}
+                          </div>
+                          <div className="schedule-time">
+                            <input
+                              type="time"
+                              value={schedule.startTime}
+                              onChange={(e) => handleUpdateSchedule(schedule.id, { startTime: e.target.value })}
+                            />
+                            <span>—</span>
+                            <input
+                              type="time"
+                              value={schedule.endTime}
+                              onChange={(e) => handleUpdateSchedule(schedule.id, { endTime: e.target.value })}
+                            />
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            iconOnly
+                            icon={<Icon name="trash" size={14} />}
+                            onClick={() => handleRemoveSchedule(schedule.id)}
+                          />
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="settings-notice">
+                    <Icon name="info" size={16} />
+                    <span>
+                      Загрузки будут приостановлены вне указанного времени и автоматически возобновлены.
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           </section>
 
@@ -375,7 +539,7 @@ const SettingsPage: React.FC = () => {
           </section>
 
           {/* Maintenance Section */}
-            <section className="settings-section">
+          <section className="settings-section">
             <h2 className="settings-section-title">
               <Icon name="settings" size={20} />
               Обслуживание

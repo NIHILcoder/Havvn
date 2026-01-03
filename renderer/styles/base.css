@@ -78,7 +78,7 @@ code, pre {
 /* === Selection === */
 ::selection {
   background-color: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
 }
 
 /* === Scrollbar (WebKit) === */

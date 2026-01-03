@@ -17,3 +17,4 @@ export type { ToastProps } from './Toast';
 export { ContextMenu } from './ContextMenu';
 export type { ContextMenuItem } from './ContextMenu';
 export { TorrentFileSelector } from './TorrentFileSelector';
+export { SpeedGraph } from './SpeedGraph';

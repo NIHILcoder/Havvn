@@ -29,9 +29,17 @@ export interface Download {
   seeds: number;
   totalSize: number; // Total size in bytes
   priority: number; // 0 = low, 1 = normal, 2 = high
+  category: string | null; // Category ID
   createdAt: Date;
   updatedAt: Date;
   lastError: string | null;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
 }
 
 export interface TorrentFile {
@@ -62,6 +70,20 @@ export interface AppSettings {
   maxUpKbps: number;
   maxActiveDownloads: number;
   updatedAt: Date;
+}
+
+// Scheduler types
+export interface ScheduleEntry {
+  id: string;
+  days: number[];      // 0-6 (Sun-Sat)
+  startTime: string;   // "HH:MM"
+  endTime: string;     // "HH:MM"
+  speedLimit?: number; // Optional speed limit in KB/s
+}
+
+export interface SchedulerConfig {
+  enabled: boolean;
+  schedules: ScheduleEntry[];
 }
 
 export interface CatalogEntry {
@@ -103,10 +125,21 @@ export interface IpcApi {
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getTorrentInfo: (params: { torrentPath?: string; magnetUri?: string }) => Promise<TorrentInfo>;
+  setDownloadCategory: (id: string, category: string | null) => Promise<void>;
 
   // Settings
   getSettings: () => Promise<AppSettings>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
+
+  // Categories
+  getCategories: () => Promise<Category[]>;
+  addCategory: (category: Omit<Category, 'id'>) => Promise<Category>;
+  updateCategory: (id: string, category: Partial<Category>) => Promise<Category>;
+  deleteCategory: (id: string) => Promise<void>;
+
+  // Scheduler
+  getScheduler: () => Promise<SchedulerConfig>;
+  updateScheduler: (config: Partial<SchedulerConfig>) => Promise<SchedulerConfig>;
 
   // Catalog
   getCatalog: () => Promise<CatalogEntry[]>;

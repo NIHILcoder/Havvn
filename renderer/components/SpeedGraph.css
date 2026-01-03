@@ -1,0 +1,110 @@
+/**
+ * Speed Graph Styles
+ */
+
+.speed-graph {
+    background: var(--color-bg-secondary);
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--color-border-subtle);
+    overflow: hidden;
+}
+
+.speed-graph.expanded {
+    border-color: var(--color-border-default);
+}
+
+.speed-graph-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-2) var(--space-3);
+}
+
+.speed-graph-stats {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+}
+
+.speed-stat {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--font-size-sm);
+}
+
+.speed-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.speed-dot.download {
+    background: #4ade80;
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+}
+
+.speed-dot.upload {
+    background: #fbbf24;
+    box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
+}
+
+.speed-label {
+    color: var(--color-text-tertiary);
+    font-weight: var(--font-weight-medium);
+}
+
+.speed-value {
+    color: var(--color-text-primary);
+    font-weight: var(--font-weight-semibold);
+    font-family: var(--font-family-mono);
+    min-width: 80px;
+}
+
+.speed-stat.download .speed-value {
+    color: #4ade80;
+}
+
+.speed-stat.upload .speed-value {
+    color: #fbbf24;
+}
+
+.speed-graph-legend-inline {
+    display: flex;
+    gap: var(--space-3);
+    font-size: var(--font-size-xs);
+    color: var(--color-text-tertiary);
+}
+
+.speed-graph-canvas-container {
+    position: relative;
+    padding: var(--space-2);
+    border-top: 1px solid var(--color-border-subtle);
+    background: var(--color-bg-primary);
+}
+
+.speed-graph-canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+.legend-item .legend-dot {
+    width: 10px;
+    height: 3px;
+    border-radius: 2px;
+}
+
+.legend-item.download .legend-dot {
+    background: #4ade80;
+}
+
+.legend-item.upload .legend-dot {
+    background: #fbbf24;
+}

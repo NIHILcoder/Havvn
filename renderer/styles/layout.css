@@ -272,7 +272,7 @@
 
 .nav-subitem.active .nav-subitem-badge {
   background: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
 }
 
 /* Color-coded badges */
@@ -427,4 +427,49 @@
 
 .status-item-upload {
   color: var(--color-status-upload);
+}
+
+/* Status Bar Container with Graph */
+.status-bar-container {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.status-bar-graph {
+  padding: var(--space-3);
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border-subtle);
+  animation: graphExpand 0.3s ease;
+}
+
+@keyframes graphExpand {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+
+  to {
+    opacity: 1;
+    max-height: 200px;
+  }
+}
+
+.status-graph-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.status-graph-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-accent-primary);
+  border-color: var(--color-border-subtle);
 }

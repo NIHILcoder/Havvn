@@ -361,7 +361,7 @@
   transform: translateX(-50%);
   padding: var(--space-1) var(--space-2);
   font-size: var(--font-size-xs);
-  color: white;
+  color: var(--color-text-primary);
   background-color: var(--color-bg-elevated);
   border-radius: var(--radius-sm);
   white-space: nowrap;

@@ -5,6 +5,8 @@ import {
   DownloadStats,
   AppSettings,
   CatalogEntry,
+  Category,
+  SchedulerConfig,
   IpcApi,
 } from '../shared/types';
 
@@ -13,27 +15,27 @@ const api: IpcApi = {
   addDownload: (request: AddDownloadRequest): Promise<Download> => {
     return ipcRenderer.invoke('downloads:add', request);
   },
-  
+
   pauseDownload: (id: string): Promise<void> => {
     return ipcRenderer.invoke('downloads:pause', id);
   },
-  
+
   resumeDownload: (id: string): Promise<void> => {
     return ipcRenderer.invoke('downloads:resume', id);
   },
-  
+
   removeDownload: (id: string, deleteFiles: boolean): Promise<void> => {
     return ipcRenderer.invoke('downloads:remove', id, deleteFiles);
   },
-  
+
   stopSeeding: (id: string): Promise<void> => {
     return ipcRenderer.invoke('downloads:stopSeeding', id);
   },
-  
+
   retryDownload: (id: string): Promise<void> => {
     return ipcRenderer.invoke('downloads:retry', id);
   },
-  
+
   getDownloads: (): Promise<Download[]> => {
     return ipcRenderer.invoke('downloads:getAll');
   },
@@ -41,56 +43,86 @@ const api: IpcApi = {
   getTorrentFiles: (id: string): Promise<any[]> => {
     return ipcRenderer.invoke('downloads:getFiles', id);
   },
-  
+
   getTorrentInfo: (params: { torrentPath?: string; magnetUri?: string }): Promise<any> => {
     return ipcRenderer.invoke('downloads:getTorrentInfo', params);
   },
-  
+
+  setDownloadCategory: (id: string, category: string | null): Promise<void> => {
+    return ipcRenderer.invoke('downloads:setCategory', id, category);
+  },
+
   // Settings
   getSettings: (): Promise<AppSettings> => {
     return ipcRenderer.invoke('settings:get');
   },
-  
+
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> => {
     return ipcRenderer.invoke('settings:update', settings);
   },
-  
+
+  // Categories
+  getCategories: (): Promise<Category[]> => {
+    return ipcRenderer.invoke('categories:get');
+  },
+
+  addCategory: (category: Omit<Category, 'id'>): Promise<Category> => {
+    return ipcRenderer.invoke('categories:add', category);
+  },
+
+  updateCategory: (id: string, updates: Partial<Category>): Promise<Category> => {
+    return ipcRenderer.invoke('categories:update', id, updates);
+  },
+
+  deleteCategory: (id: string): Promise<void> => {
+    return ipcRenderer.invoke('categories:delete', id);
+  },
+
+  // Scheduler
+  getScheduler: (): Promise<SchedulerConfig> => {
+    return ipcRenderer.invoke('scheduler:get');
+  },
+
+  updateScheduler: (config: Partial<SchedulerConfig>): Promise<SchedulerConfig> => {
+    return ipcRenderer.invoke('scheduler:update', config);
+  },
+
   // Catalog
   getCatalog: (): Promise<CatalogEntry[]> => {
     return ipcRenderer.invoke('catalog:get');
   },
-  
+
   // File dialogs
   selectDirectory: (): Promise<string | null> => {
     return ipcRenderer.invoke('dialog:selectDirectory');
   },
-  
+
   selectTorrentFile: (): Promise<{ path: string; content: string } | null> => {
     return ipcRenderer.invoke('dialog:selectTorrentFile');
   },
-  
+
   // Shell operations
   openPath: (path: string): Promise<void> => {
     return ipcRenderer.invoke('shell:openPath', path);
   },
-  
+
   showItemInFolder: (path: string): Promise<void> => {
     return ipcRenderer.invoke('shell:showItemInFolder', path);
   },
-  
+
   // Cache management
   clearCache: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('cache:clear');
   },
-  
+
   // Stats subscription
   onDownloadStats: (callback: (stats: DownloadStats[]) => void): (() => void) => {
     const handler = (_event: IpcRendererEvent, stats: DownloadStats[]) => {
       callback(stats);
     };
-    
+
     ipcRenderer.on('downloads:stats', handler);
-    
+
     return () => {
       ipcRenderer.removeListener('downloads:stats', handler);
     };
@@ -99,3 +131,4 @@ const api: IpcApi = {
 
 // Expose the API to the renderer process
 contextBridge.exposeInMainWorld('api', api);
+

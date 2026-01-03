@@ -7,7 +7,7 @@
 
 import React from 'react';
 
-export type IconName = 
+export type IconName =
   | 'download'
   | 'upload'
   | 'folder'
@@ -57,7 +57,8 @@ export type IconName =
   | 'arrow-down'
   | 'arrow-up'
   | 'type'
-  | 'zap';
+  | 'zap'
+  | 'gamepad-2';
 
 interface IconProps {
   name: IconName;
@@ -117,16 +118,17 @@ const paths: Record<IconName, string> = {
   'type': 'M4 7V4h16v3 M9 20h6 M12 4v16',
   'zap': 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
   'alert-triangle': 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
+  'gamepad-2': 'M6 12h4 M8 10v4 M15 13h.01 M18 11h.01 M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z',
 };
 
-export const Icon: React.FC<IconProps> = ({ 
-  name, 
-  size = 20, 
+export const Icon: React.FC<IconProps> = ({
+  name,
+  size = 20,
   className = '',
-  color = 'currentColor' 
+  color = 'currentColor'
 }) => {
   const pathData = paths[name];
-  
+
   return (
     <svg
       width={size}

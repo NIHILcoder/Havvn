@@ -432,7 +432,7 @@
 .filter-chip.active .chip-badge,
 .sort-chip.active .chip-badge {
   background: currentColor;
-  color: white;
+  color: var(--color-bg-primary);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   transform: scale(1.05);
 }
@@ -630,7 +630,7 @@
 
 .dropdown-item.active .badge {
   background: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
   box-shadow: 0 2px 8px rgba(88, 166, 255, 0.3);
 }
 
@@ -714,7 +714,7 @@
 
 .drop-zone-text {
   text-align: center;
-  color: white;
+  color: var(--color-text-primary);
 }
 
 .drop-zone-title {
@@ -1483,7 +1483,7 @@
 
 .filter-tab.active {
   background: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
 }
 
 .tab-badge {
@@ -1564,7 +1564,7 @@
 .bulk-actions-count {
   padding: var(--space-2) var(--space-3);
   background: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
   border-radius: var(--radius-full);
   font-weight: var(--font-weight-bold);
   box-shadow: 0 2px 8px rgba(88, 166, 255, 0.4);
@@ -1782,7 +1782,7 @@
 .filter-tab.active {
   background: var(--color-accent-primary);
   border-color: var(--color-accent-primary);
-  color: white;
+  color: var(--color-bg-primary);
 }
 
 .tab-badge {

@@ -195,3 +195,34 @@
   --color-status-download: #16a34a;
   --color-status-upload: #d97706;
 }
+
+/* Light Theme Component Overrides */
+[data-theme="light"] .bulk-actions-count {
+  background: #1a1a1a;
+  color: #ffffff;
+}
+
+[data-theme="light"] .filter-tab.active {
+  background: #1a1a1a;
+  color: #ffffff;
+}
+
+[data-theme="light"] .btn-primary {
+  color: #ffffff;
+  background: #1a1a1a;
+}
+
+[data-theme="light"] .nav-subitem.active {
+  background: rgba(0, 0, 0, 0.08);
+  color: #1a1a1a;
+}
+
+[data-theme="light"] .nav-subitem-badge {
+  background: rgba(0, 0, 0, 0.1);
+  color: #3d3d3d;
+}
+
+[data-theme="light"] .nav-subitem.active .nav-subitem-badge {
+  background: #1a1a1a;
+  color: #ffffff;
+}

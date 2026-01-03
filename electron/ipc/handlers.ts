@@ -131,6 +131,50 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   ));
 
+  // Categories
+  ipcMain.handle('categories:get', wrapHandler('categories:get',
+    async () => {
+      return db.getCategories();
+    }
+  ));
+
+  ipcMain.handle('categories:add', wrapHandler('categories:add',
+    async (_event, category: Omit<import('../../shared/types').Category, 'id'>) => {
+      return db.addCategory(category);
+    }
+  ));
+
+  ipcMain.handle('categories:update', wrapHandler('categories:update',
+    async (_event, id: string, updates: Partial<import('../../shared/types').Category>) => {
+      return db.updateCategory(id, updates);
+    }
+  ));
+
+  ipcMain.handle('categories:delete', wrapHandler('categories:delete',
+    async (_event, id: string) => {
+      return db.deleteCategory(id);
+    }
+  ));
+
+  ipcMain.handle('downloads:setCategory', wrapHandler('downloads:setCategory',
+    async (_event, id: string, category: string | null) => {
+      return db.setDownloadCategory(id, category);
+    }
+  ));
+
+  // Scheduler
+  ipcMain.handle('scheduler:get', wrapHandler('scheduler:get',
+    async () => {
+      return db.getScheduler();
+    }
+  ));
+
+  ipcMain.handle('scheduler:update', wrapHandler('scheduler:update',
+    async (_event, config: Partial<import('../../shared/types').SchedulerConfig>) => {
+      return db.updateScheduler(config);
+    }
+  ));
+
   // Catalog
   ipcMain.handle('catalog:get', wrapHandler('catalog:get',
     async () => {
