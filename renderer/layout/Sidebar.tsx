@@ -39,6 +39,7 @@ interface SidebarProps {
   onFilterChange: (filter: FilterMode) => void;
   downloadCounts: DownloadCounts;
   activeDownloads?: number;
+  onCreateTorrent?: () => void;
 }
 
 const navItems: NavItem[] = [
@@ -62,6 +63,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onFilterChange,
   downloadCounts,
   activeDownloads = 0,
+  onCreateTorrent,
 }) => {
   const [isDownloadsExpanded, setIsDownloadsExpanded] = useState(currentPage === 'downloads');
 
@@ -137,13 +139,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </nav>
 
-      {/* Footer */}
+      {/* Footer with Create Torrent */}
       <div className="sidebar-footer">
-        <div style={{
-          fontSize: 'var(--font-size-xs)',
-          color: 'var(--color-text-tertiary)',
-          textAlign: 'center'
-        }}>
+        {/* Create Torrent Action */}
+        <div className="sidebar-actions">
+          <button 
+            className="sidebar-action-btn create-torrent-btn"
+            onClick={onCreateTorrent}
+            title="Create new torrent file"
+          >
+            <span className="sidebar-action-icon">
+              <Icon name="file-plus" size={20} />
+            </span>
+            <span className="sidebar-action-text">Create Torrent</span>
+            <span className="sidebar-action-arrow">
+              <Icon name="arrow-right" size={14} />
+            </span>
+          </button>
+        </div>
+        
+        {/* Version */}
+        <div className="sidebar-version">
           TorrentHunt v1.0.0
         </div>
       </div>

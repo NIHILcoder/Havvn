@@ -8,6 +8,9 @@ import {
   Category,
   SchedulerConfig,
   IpcApi,
+  CreateTorrentRequest,
+  CreateTorrentResult,
+  CreateTorrentProgress,
 } from '../shared/types';
 
 const api: IpcApi = {
@@ -101,6 +104,28 @@ const api: IpcApi = {
     return ipcRenderer.invoke('dialog:selectTorrentFile');
   },
 
+  selectFilesForTorrent: (): Promise<string[] | null> => {
+    return ipcRenderer.invoke('dialog:selectFilesForTorrent');
+  },
+
+  selectFolderForTorrent: (): Promise<string | null> => {
+    return ipcRenderer.invoke('dialog:selectFolderForTorrent');
+  },
+
+  selectSaveTorrentPath: (defaultName: string): Promise<string | null> => {
+    return ipcRenderer.invoke('dialog:selectSaveTorrentPath', defaultName);
+  },
+
+  // File system operations
+  getPathInfo: (path: string): Promise<{
+    isDirectory: boolean;
+    size: number;
+    fileCount: number;
+    name: string;
+  }> => {
+    return ipcRenderer.invoke('fs:getPathInfo', path);
+  },
+
   // Shell operations
   openPath: (path: string): Promise<void> => {
     return ipcRenderer.invoke('shell:openPath', path);
@@ -115,6 +140,15 @@ const api: IpcApi = {
     return ipcRenderer.invoke('cache:clear');
   },
 
+  // Create torrent
+  createTorrent: (request: CreateTorrentRequest): Promise<CreateTorrentResult> => {
+    return ipcRenderer.invoke('torrent:create', request);
+  },
+
+  getDefaultTrackers: (): Promise<string[][]> => {
+    return ipcRenderer.invoke('torrent:getDefaultTrackers');
+  },
+
   // Stats subscription
   onDownloadStats: (callback: (stats: DownloadStats[]) => void): (() => void) => {
     const handler = (_event: IpcRendererEvent, stats: DownloadStats[]) => {
@@ -125,6 +159,18 @@ const api: IpcApi = {
 
     return () => {
       ipcRenderer.removeListener('downloads:stats', handler);
+    };
+  },
+
+  onCreateTorrentProgress: (callback: (progress: CreateTorrentProgress) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, progress: CreateTorrentProgress) => {
+      callback(progress);
+    };
+
+    ipcRenderer.on('torrent:createProgress', handler);
+
+    return () => {
+      ipcRenderer.removeListener('torrent:createProgress', handler);
     };
   },
 };

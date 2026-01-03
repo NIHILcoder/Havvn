@@ -1,10 +1,11 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron';
-import { getTorrentManager, TorrentError } from '../torrent';
+import { getTorrentManager, TorrentError, createTorrentFile, getDefaultTrackers } from '../torrent';
 import * as db from '../db/store';
-import { AddDownloadRequest, DownloadStats } from '../../shared/types';
+import { AddDownloadRequest, DownloadStats, CreateTorrentRequest } from '../../shared/types';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
 import catalog from '../data/catalog.json';
 import fs from 'fs';
+import path from 'path';
 import { logger } from '../utils';
 
 const log = logger.child('IPC');
@@ -252,6 +253,133 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       mainWindow.webContents.send('downloads:stats', stats);
     }
   });
+
+  // ===== Create Torrent =====
+  
+  // Get file/folder info (size, file count)
+  ipcMain.handle('fs:getPathInfo', wrapHandler('fs:getPathInfo',
+    async (_event, filePath: string) => {
+      const stats = await fs.promises.stat(filePath);
+      
+      if (stats.isDirectory()) {
+        // Recursively get folder size and file count
+        let totalSize = 0;
+        let fileCount = 0;
+        
+        const walkDir = async (dir: string) => {
+          const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              await walkDir(fullPath);
+            } else if (entry.isFile()) {
+              const fileStats = await fs.promises.stat(fullPath);
+              totalSize += fileStats.size;
+              fileCount++;
+            }
+          }
+        };
+        
+        await walkDir(filePath);
+        
+        return {
+          isDirectory: true,
+          size: totalSize,
+          fileCount,
+          name: path.basename(filePath)
+        };
+      } else {
+        return {
+          isDirectory: false,
+          size: stats.size,
+          fileCount: 1,
+          name: path.basename(filePath)
+        };
+      }
+    }
+  ));
+  
+  // Select files for torrent creation
+  ipcMain.handle('dialog:selectFilesForTorrent', wrapHandler('dialog:selectFilesForTorrent',
+    async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openFile', 'multiSelections'],
+        title: 'Select Files for Torrent',
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+
+      return result.filePaths;
+    }
+  ));
+
+  // Select folder for torrent creation
+  ipcMain.handle('dialog:selectFolderForTorrent', wrapHandler('dialog:selectFolderForTorrent',
+    async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        properties: ['openDirectory'],
+        title: 'Select Folder for Torrent',
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return null;
+      }
+
+      return result.filePaths[0];
+    }
+  ));
+
+  // Select save path for torrent file
+  ipcMain.handle('dialog:selectSaveTorrentPath', wrapHandler('dialog:selectSaveTorrentPath',
+    async (_event, defaultName: string) => {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: 'Save Torrent File',
+        defaultPath: defaultName.endsWith('.torrent') ? defaultName : `${defaultName}.torrent`,
+        filters: [{ name: 'Torrent Files', extensions: ['torrent'] }],
+      });
+
+      if (result.canceled || !result.filePath) {
+        return null;
+      }
+
+      return result.filePath;
+    }
+  ));
+
+  // Create torrent file
+  ipcMain.handle('torrent:create', wrapHandler('torrent:create',
+    async (_event, request: CreateTorrentRequest) => {
+      log.info('Creating torrent', { sourcePaths: request.sourcePaths });
+      
+      const result = await createTorrentFile(request, mainWindow);
+      
+      // If startSeeding is true, add the created torrent for seeding
+      if (request.startSeeding && result.torrentFilePath) {
+        log.info('Auto-starting seeding for created torrent', { infoHash: result.infoHash });
+        
+        // Determine source folder (parent of the first source path)
+        const sourceFolder = path.dirname(request.sourcePaths[0]);
+        
+        await torrentManager.addDownload({
+          sourceType: 'torrent_file',
+          sourceUri: result.torrentFilePath,
+          savePath: sourceFolder,
+          name: request.options.name,
+        });
+      }
+      
+      return result;
+    }
+  ));
+
+  // Get default trackers
+  ipcMain.handle('torrent:getDefaultTrackers', wrapHandler('torrent:getDefaultTrackers',
+    async () => {
+      return getDefaultTrackers();
+    }
+  ));
 
   log.info('IPC handlers setup complete');
 }

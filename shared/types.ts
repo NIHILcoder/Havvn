@@ -95,6 +95,40 @@ export interface CatalogEntry {
   category: string;
 }
 
+// Create Torrent types
+export interface CreateTorrentOptions {
+  name?: string;
+  comment?: string;
+  createdBy?: string;
+  announceList: string[][];
+  urlList?: string[];
+  private?: boolean;
+  pieceLength?: number; // in bytes, must be power of 2
+  source?: string;
+}
+
+export interface CreateTorrentRequest {
+  sourcePaths: string[]; // Files or folders to include
+  outputPath: string; // Where to save .torrent file
+  options: CreateTorrentOptions;
+  startSeeding?: boolean; // Auto-start seeding after creation
+}
+
+export interface CreateTorrentResult {
+  torrentFilePath: string;
+  infoHash: string;
+  magnetUri: string;
+  totalSize: number;
+  pieceCount: number;
+  pieceLength: number;
+}
+
+export interface CreateTorrentProgress {
+  stage: 'hashing' | 'writing' | 'complete';
+  progress: number; // 0-1
+  message: string;
+}
+
 // IPC API types
 export interface AddDownloadRequest {
   sourceType: SourceType;
@@ -147,6 +181,17 @@ export interface IpcApi {
   // File dialogs
   selectDirectory: () => Promise<string | null>;
   selectTorrentFile: () => Promise<{ path: string; content: string } | null>;
+  selectFilesForTorrent: () => Promise<string[] | null>;
+  selectFolderForTorrent: () => Promise<string | null>;
+  selectSaveTorrentPath: (defaultName: string) => Promise<string | null>;
+  
+  // File system operations
+  getPathInfo: (path: string) => Promise<{
+    isDirectory: boolean;
+    size: number;
+    fileCount: number;
+    name: string;
+  }>;
 
   // Shell operations
   openPath: (path: string) => Promise<void>;
@@ -155,8 +200,13 @@ export interface IpcApi {
   // Cache management
   clearCache: () => Promise<{ success: boolean }>;
 
+  // Create torrent
+  createTorrent: (request: CreateTorrentRequest) => Promise<CreateTorrentResult>;
+  getDefaultTrackers: () => Promise<string[][]>;
+
   // Stats subscription
   onDownloadStats: (callback: (stats: DownloadStats[]) => void) => () => void;
+  onCreateTorrentProgress: (callback: (progress: CreateTorrentProgress) => void) => () => void;
 }
 
 declare global {

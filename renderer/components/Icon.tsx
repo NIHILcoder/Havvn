@@ -56,9 +56,16 @@ export type IconName =
   | 'filter'
   | 'arrow-down'
   | 'arrow-up'
+  | 'arrow-right'
+  | 'chevron-left'
   | 'type'
   | 'zap'
-  | 'gamepad-2';
+  | 'gamepad-2'
+  | 'file-plus'
+  | 'folder-plus'
+  | 'loader'
+  | 'copy'
+  | 'user';
 
 interface IconProps {
   name: IconName;
@@ -114,11 +121,18 @@ const paths: Record<IconName, string> = {
   'filter': 'M22 3H2l8 9.46V19l4 2v-8.54L22 3z',
   'arrow-down': 'M12 5v14 M19 12l-7 7-7-7',
   'arrow-up': 'M12 19V5 M5 12l7-7 7 7',
+  'arrow-right': 'M5 12h14 M12 5l7 7-7 7',
+  'chevron-left': 'M15 18l-6-6 6-6',
   'chevron-up': 'M18 15l-6-6-6 6',
   'type': 'M4 7V4h16v3 M9 20h6 M12 4v16',
   'zap': 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
   'alert-triangle': 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z M12 9v4 M12 17h.01',
   'gamepad-2': 'M6 12h4 M8 10v4 M15 13h.01 M18 11h.01 M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z',
+  'file-plus': 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M12 18v-6 M9 15h6',
+  'user': 'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2 M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  'folder-plus': 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z M12 11v6 M9 14h6',
+  'loader': 'M12 2v4 M12 18v4 M4.93 4.93l2.83 2.83 M16.24 16.24l2.83 2.83 M2 12h4 M18 12h4 M4.93 19.07l2.83-2.83 M16.24 7.76l2.83-2.83',
+  'copy': 'M20 9h-9a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2z M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1',
 };
 
 export const Icon: React.FC<IconProps> = ({

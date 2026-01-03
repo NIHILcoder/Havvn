@@ -24,9 +24,12 @@
     "crypto-browserify": "^3.12.1",
     "dotenv": "^16.3.1",
     "electron-store": "^8.1.0",
-    "parse-torrent": "^11.0.19",
     "uuid": "^9.0.1",
     "webtorrent": "^1.9.7"
+  },
+  "overrides": {
+    "create-torrent": "4.4.2",
+    "parse-torrent": "9.1.5"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
