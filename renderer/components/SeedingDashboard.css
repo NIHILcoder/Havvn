@@ -1,0 +1,458 @@
+/**
+ * Seeding Dashboard Styles
+ */
+
+.seeding-dashboard {
+  padding: 32px;
+  max-width: 1400px;
+  margin: 0 auto;
+  animation: fadeIn 0.3s ease;
+}
+
+.seeding-dashboard.loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 16px;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Header */
+.dashboard-header {
+  margin-bottom: 32px;
+}
+
+.dashboard-header h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+}
+
+.dashboard-subtitle {
+  font-size: 16px;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+
+.enable-toggle {
+  margin-top: 16px;
+}
+
+.enable-toggle label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.enable-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+}
+
+/* Reputation Card */
+.reputation-card {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 16px;
+  padding: 32px;
+  margin-bottom: 32px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.reputation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.reputation-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.level-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  padding: 16px 24px;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.level-number {
+  font-size: 48px;
+  font-weight: 800;
+  color: white;
+  line-height: 1;
+}
+
+.level-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Reputation Stats */
+.reputation-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 24px;
+  margin-bottom: 32px;
+}
+
+.stat-item {
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Level Progress */
+.level-progress {
+  margin-bottom: 32px;
+}
+
+.progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* Badges Section */
+.badges-section h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 16px;
+}
+
+.badges-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 16px;
+}
+
+.badge-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  background: var(--color-bg-elevated);
+  border: 2px solid var(--color-border-default);
+  border-radius: 12px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.badge-item:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.badge-item.earned {
+  border-color: #22c55e;
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.1), rgba(74, 222, 128, 0.1));
+}
+
+.badge-item.locked {
+  opacity: 0.5;
+  filter: grayscale(100%);
+}
+
+.badge-icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+.badge-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-align: center;
+}
+
+/* Recommendations Section */
+.recommendations-section {
+  margin-bottom: 32px;
+}
+
+.recommendations-section h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+}
+
+.section-subtitle {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-bottom: 24px;
+}
+
+.recommendations-list {
+  display: grid;
+  gap: 16px;
+}
+
+.recommendation-card {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  padding: 20px;
+  transition: all 0.2s ease;
+}
+
+.recommendation-card:hover {
+  border-color: var(--color-accent-primary);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
+}
+
+.rec-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  gap: 16px;
+}
+
+.rec-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  flex: 1;
+}
+
+.rec-bounty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(245, 158, 11, 0.2));
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #f59e0b;
+  white-space: nowrap;
+}
+
+.rec-reason {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+
+.rec-stats {
+  display: flex;
+  gap: 24px;
+}
+
+.rec-stat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.rec-stat .stat-label {
+  color: var(--color-text-tertiary);
+}
+
+.rec-stat .stat-value {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.empty-recommendations,
+.empty-transactions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 32px;
+  background: var(--color-bg-elevated);
+  border: 2px dashed var(--color-border-default);
+  border-radius: 12px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+
+.empty-recommendations p,
+.empty-transactions p {
+  margin-top: 16px;
+  font-size: 14px;
+}
+
+/* Transactions Section */
+.transactions-section {
+  margin-bottom: 32px;
+}
+
+.transactions-section h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 24px;
+}
+
+.transactions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.transaction-item {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.transaction-item:hover {
+  background: var(--color-bg-tertiary);
+}
+
+.tx-amount {
+  font-size: 18px;
+  font-weight: 700;
+  min-width: 80px;
+  text-align: right;
+}
+
+.tx-amount.positive {
+  color: #22c55e;
+}
+
+.tx-amount.negative {
+  color: #ef4444;
+}
+
+.tx-details {
+  flex: 1;
+}
+
+.tx-reason {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  margin-bottom: 4px;
+}
+
+.tx-time {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.tx-type {
+  min-width: 100px;
+  text-align: right;
+}
+
+.tx-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tx-badge-earn {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.tx-badge-bonus {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.tx-badge-spend {
+  background: rgba(251, 191, 36, 0.1);
+  color: #f59e0b;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .seeding-dashboard {
+    padding: 16px;
+  }
+
+  .reputation-card {
+    padding: 20px;
+  }
+
+  .reputation-stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+
+  .badges-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  }
+
+  .rec-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .transaction-item {
+    flex-wrap: wrap;
+  }
+
+  .tx-type {
+    width: 100%;
+    text-align: left;
+    margin-top: 8px;
+  }
+}

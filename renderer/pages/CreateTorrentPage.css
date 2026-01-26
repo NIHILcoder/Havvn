@@ -729,36 +729,7 @@
   height: 0;
 }
 
-.toggle-slider {
-  position: absolute;
-  inset: 0;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
-  transition: all 0.3s ease;
-}
-
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  left: 2px;
-  top: 2px;
-  background: white;
-  border-radius: 50%;
-  transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
-.toggle-switch input:checked + .toggle-slider {
-  background: linear-gradient(135deg, var(--color-accent-primary) 0%, var(--color-accent-secondary) 100%);
-  border-color: var(--color-accent-primary);
-}
-
-.toggle-switch input:checked + .toggle-slider::before {
-  transform: translateX(20px);
-}
+/* Toggle slider styles are defined in Toggle.css component */
 
 .toggle-content {
   display: flex;
@@ -1449,6 +1420,7 @@
   position: absolute;
 }
 
+/* Toggle Track - единственный кружок без дублирования */
 .toggle-track {
   position: absolute;
   inset: 0;
@@ -1456,9 +1428,10 @@
   border: 1px solid var(--color-border-default);
   border-radius: 12px;
   transition: all 0.25s ease;
+  cursor: pointer;
 }
 
-.toggle-track::before {
+.toggle-track::after {
   content: '';
   position: absolute;
   top: 2px;
@@ -1475,7 +1448,7 @@
   border-color: var(--color-accent-primary);
 }
 
-.toggle-control input:checked + .toggle-track::before {
+.toggle-control input:checked + .toggle-track::after {
   transform: translateX(20px);
   background: white;
 }

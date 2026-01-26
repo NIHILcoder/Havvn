@@ -89,7 +89,10 @@ export type IconName =
   | 'refresh-cw'
   | 'rotate-ccw'
   | 'trending-up'
-  | 'edit-2';
+  | 'edit-2'
+  | 'share-2'
+  | 'star'
+  | 'eye-off';
 
 interface IconProps {
   name: IconName;
@@ -181,6 +184,9 @@ const paths: Record<IconName, string> = {
   'rotate-ccw': 'M1 4v6h6 M3.51 15a9 9 0 1 0 2.13-9.36L1 10',
   'trending-up': 'M23 6l-9.5 9.5-5-5L1 18 M16 6h7v7',
   'edit-2': 'M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z',
+  'share-2': 'M18 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M18 20a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M8.59 13.51l6.83 3.98 M15.41 6.51l-6.82 3.98',
+  'star': 'M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z',
+  'eye-off': 'M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94 M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19 M14.12 14.12a3 3 0 1 1-4.24-4.24 M1 1l22 22',
 };
 
 export const Icon: React.FC<IconProps> = ({

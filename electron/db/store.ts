@@ -4,7 +4,7 @@
  */
 
 import Store from 'electron-store';
-import { Download, AppSettings, SourceType, Category, SchedulerConfig } from '../../shared/types';
+import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction } from '../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
@@ -14,6 +14,8 @@ interface StoreSchema {
   settings: AppSettings;
   categories: Category[];
   scheduler: SchedulerConfig;
+  reputation: Record<string, UserReputation>;
+  transactions: Record<string, ReputationTransaction[]>;
 }
 
 const defaultCategories: Category[] = [
@@ -40,6 +42,8 @@ const store = new Store<StoreSchema>({
       enabled: false,
       schedules: [],
     },
+    reputation: {},
+    transactions: {},
   },
 });
 
@@ -285,6 +289,42 @@ export async function updateScheduler(config: Partial<SchedulerConfig>): Promise
   const updated = { ...current, ...config };
   store.set('scheduler', updated);
   return updated;
+}
+
+// === Collaborative Seeding - Reputation ===
+
+export async function getReputation(userId: string): Promise<UserReputation | null> {
+  const reputations = store.get('reputation');
+  return reputations[userId] || null;
+}
+
+export async function saveReputation(reputation: UserReputation): Promise<void> {
+  const reputations = store.get('reputation');
+  reputations[reputation.userId] = reputation;
+  store.set('reputation', reputations);
+}
+
+export async function saveReputationTransaction(userId: string, transaction: ReputationTransaction): Promise<void> {
+  const transactions = store.get('transactions');
+  if (!transactions[userId]) {
+    transactions[userId] = [];
+  }
+  transactions[userId].push(transaction);
+
+  // Keep only last 1000 transactions per user
+  if (transactions[userId].length > 1000) {
+    transactions[userId] = transactions[userId].slice(-1000);
+  }
+
+  store.set('transactions', transactions);
+}
+
+export async function getReputationTransactions(userId: string, limit: number = 20): Promise<ReputationTransaction[]> {
+  const transactions = store.get('transactions');
+  const userTransactions = transactions[userId] || [];
+
+  // Return last N transactions (most recent first)
+  return userTransactions.slice(-limit).reverse();
 }
 
 // Export store for testing/debugging

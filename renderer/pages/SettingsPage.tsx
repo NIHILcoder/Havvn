@@ -22,7 +22,9 @@ import {
   AppStatistics,
   SettingsSidebar,
   SettingsCategory,
+  SeedingDashboard,
 } from '../components';
+import { PrivacySettings } from '../components/PrivacySettings';
 import './SettingsPage.css';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -106,7 +108,8 @@ const SettingsPage: React.FC = () => {
     { id: 'advanced', label: 'Advanced', icon: 'layers', group: 'advanced' },
     { id: 'privacy', label: 'Privacy', icon: 'shield', group: 'advanced' },
     { id: 'scheduler', label: 'Scheduler', icon: 'calendar', group: 'advanced' },
-    
+    { id: 'seeding', label: 'Collaborative Seeding', icon: 'share-2', group: 'advanced' },
+
     // Appearance
     { id: 'interface', label: 'Interface', icon: 'sun', group: 'appearance' },
     { id: 'notifications', label: 'Notifications', icon: 'bell', group: 'appearance' },
@@ -497,6 +500,8 @@ const SettingsPage: React.FC = () => {
         return renderPrivacySettings();
       case 'scheduler':
         return renderSchedulerSettings();
+      case 'seeding':
+        return renderSeedingSettings();
       case 'interface':
         return renderInterfaceSettings();
       case 'notifications':
@@ -724,75 +729,7 @@ const SettingsPage: React.FC = () => {
   }
 
   function renderPrivacySettings() {
-    return (
-      <>
-        <div className="settings-category-header">
-          <h1 className="settings-category-title">Privacy & Security</h1>
-          <p className="settings-category-subtitle">Proxy and anonymity settings</p>
-        </div>
-
-        <div className="settings-group">
-          <h3 className="settings-group-title">PROXY</h3>
-          {renderSettingItem(
-            'Enable Proxy',
-            'Route traffic through proxy server',
-            renderToggle(proxyEnabled, () => setProxyEnabled(!proxyEnabled))
-          )}
-          {proxyEnabled && (
-            <>
-              <div className="setting-item">
-                <div className="setting-info">
-                  <div className="setting-label">Proxy Type</div>
-                  <p className="setting-description">Protocol to use</p>
-                </div>
-                <div className="setting-control">
-                  <select
-                    className="select-compact"
-                    value={proxyType}
-                    onChange={(e) => setProxyType(e.target.value as 'http' | 'https' | 'socks5')}
-                  >
-                    <option value="http">HTTP</option>
-                    <option value="https">HTTPS</option>
-                    <option value="socks5">SOCKS5</option>
-                  </select>
-                </div>
-              </div>
-              <div className="setting-item">
-                <div className="setting-info">
-                  <div className="setting-label">Host</div>
-                  <p className="setting-description">Proxy server address</p>
-                </div>
-                <div className="setting-control">
-                  <input
-                    type="text"
-                    className="input-compact"
-                    placeholder="127.0.0.1"
-                    value={proxyHost}
-                    onChange={(e) => setProxyHost(e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="setting-item">
-                <div className="setting-info">
-                  <div className="setting-label">Port</div>
-                  <p className="setting-description">Proxy server port</p>
-                </div>
-                <div className="setting-control">
-                  <input
-                    type="number"
-                    className="input-compact input-mono"
-                    min="1"
-                    max="65535"
-                    value={proxyPort}
-                    onChange={(e) => setProxyPort(parseInt(e.target.value) || 8080)}
-                  />
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </>
-    );
+    return <PrivacySettings />;
   }
 
   function renderSchedulerSettings() {
@@ -887,6 +824,10 @@ const SettingsPage: React.FC = () => {
         )}
       </>
     );
+  }
+
+  function renderSeedingSettings() {
+    return <SeedingDashboard />;
   }
 
   function renderInterfaceSettings() {

@@ -173,6 +173,31 @@ const api: IpcApi = {
       ipcRenderer.removeListener('torrent:createProgress', handler);
     };
   },
+
+  // Collaborative Seeding Network
+  getReputation: () => {
+    return ipcRenderer.invoke('seeding:getReputation');
+  },
+
+  getSeedingPriorities: () => {
+    return ipcRenderer.invoke('seeding:getSeedingPriorities');
+  },
+
+  getSeedingRecommendations: (maxSlots: number) => {
+    return ipcRenderer.invoke('seeding:getSeedingRecommendations', maxSlots);
+  },
+
+  getRecentTransactions: (limit?: number) => {
+    return ipcRenderer.invoke('seeding:getRecentTransactions', limit);
+  },
+
+  getBadges: () => {
+    return ipcRenderer.invoke('seeding:getBadges');
+  },
+
+  enableCollaborativeSeeding: (enabled: boolean) => {
+    return ipcRenderer.invoke('seeding:enable', enabled);
+  },
 };
 
 // Expose the API to the renderer process

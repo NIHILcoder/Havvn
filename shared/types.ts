@@ -129,6 +129,71 @@ export interface CreateTorrentProgress {
   message: string;
 }
 
+// Collaborative Seeding Network types
+export interface SeederInfo {
+  peerId: string;          // Anonymous peer ID (hash)
+  lastSeen: number;        // Timestamp
+  uploadSpeed: number;     // Current upload speed in bytes/s
+  reputation: number;      // Reputation score (0-100)
+  seedingTime: number;     // How long seeding this torrent (seconds)
+}
+
+export interface SeedingPriority {
+  infoHash: string;
+  rarity: number;          // 0-100 (100 = very rare, few seeders)
+  demand: number;          // 0-100 (how many people want to download)
+  importance: number;      // 0-100 (importance for ecosystem)
+  bounty: number;          // Points reward for seeding this torrent
+}
+
+export interface UserReputation {
+  userId: string;          // Anonymous user ID
+  points: number;          // Accumulated points
+  uploadedTotal: number;   // Total uploaded bytes
+  downloadedTotal: number; // Total downloaded bytes
+  ratio: number;           // Upload/Download ratio
+  rareTorrentsSeeded: number; // How many rare torrents seeded
+  level: number;           // Level (1-10)
+  badges: string[];        // ["FirstSeeder", "RareCollector", "SpeedDemon"]
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface SeedingRecommendation {
+  downloadId: string;
+  torrentName: string;
+  allocatedBandwidth: number; // KB/s
+  expectedBounty: number;
+  reason: string;
+  priority: SeedingPriority;
+}
+
+export interface SeedingPlan {
+  torrents: SeedingRecommendation[];
+  totalExpectedBounty: number;
+}
+
+export interface ReputationTransaction {
+  id: string;
+  type: 'earn' | 'spend' | 'bonus';
+  amount: number;
+  reason: string;
+  timestamp: number;
+  metadata?: {
+    infoHash?: string;
+    downloadId?: string;
+    badge?: string;
+  };
+}
+
+export interface Badge {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  earnedAt: Date | null;
+}
+
 // IPC API types
 export interface AddDownloadRequest {
   sourceType: SourceType;
@@ -207,6 +272,14 @@ export interface IpcApi {
   // Stats subscription
   onDownloadStats: (callback: (stats: DownloadStats[]) => void) => () => void;
   onCreateTorrentProgress: (callback: (progress: CreateTorrentProgress) => void) => () => void;
+
+  // Collaborative Seeding Network
+  getReputation: () => Promise<UserReputation>;
+  getSeedingPriorities: () => Promise<Map<string, SeedingPriority>>;
+  getSeedingRecommendations: (maxSlots: number) => Promise<SeedingPlan>;
+  getRecentTransactions: (limit?: number) => Promise<ReputationTransaction[]>;
+  getBadges: () => Promise<Badge[]>;
+  enableCollaborativeSeeding: (enabled: boolean) => Promise<void>;
 }
 
 declare global {

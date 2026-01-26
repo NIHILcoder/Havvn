@@ -2,6 +2,7 @@ import { app, BrowserWindow } from 'electron';
 import path from 'path';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
+import { getCollaborativeSeedingManager } from './seeding';
 import { setupIpcHandlers } from './ipc';
 import { logger } from './utils';
 
@@ -64,6 +65,11 @@ async function initializeApp(): Promise<void> {
   await torrentManager.initialize();
   logger.info('App', 'Torrent manager initialized with electron-store.');
 
+  // Initialize collaborative seeding manager
+  const seedingManager = getCollaborativeSeedingManager();
+  await seedingManager.initialize();
+  logger.info('App', 'Collaborative Seeding Manager initialized.');
+
   // Create main window
   await createWindow();
   logger.info('App', 'Main window created.');
@@ -101,6 +107,14 @@ async function cleanup(): Promise<void> {
     logger.info('App', 'Torrent manager destroyed.');
   } catch (e) {
     logger.error('App', 'Error destroying torrent manager', { error: e });
+  }
+
+  try {
+    const seedingManager = getCollaborativeSeedingManager();
+    seedingManager.destroy();
+    logger.info('App', 'Collaborative Seeding Manager destroyed.');
+  } catch (e) {
+    logger.error('App', 'Error destroying seeding manager', { error: e });
   }
 
   // electron-store doesn't need cleanup like database pool
