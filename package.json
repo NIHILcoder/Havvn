@@ -20,12 +20,26 @@
     "start": "npm run build && electron ."
   },
   "dependencies": {
+    "@headlessui/react": "^1.7.18",
+    "@hookform/resolvers": "^3.3.4",
+    "@tanstack/react-virtual": "^3.0.4",
     "@types/webtorrent": "^0.109.7",
     "crypto-browserify": "^3.12.1",
     "dotenv": "^16.3.1",
     "electron-store": "^8.1.0",
+    "framer-motion": "^11.0.3",
+    "puppeteer": "^21.6.0",
+    "rc-slider": "^10.5.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hook-form": "^7.49.3",
+    "react-hot-toast": "^2.4.1",
+    "react-icons": "^5.0.1",
+    "recharts": "^2.10.3",
     "uuid": "^9.0.1",
-    "webtorrent": "^1.9.7"
+    "webtorrent": "^1.9.7",
+    "zod": "^3.22.4",
+    "zustand": "^4.5.0"
   },
   "overrides": {
     "create-torrent": "4.4.2",
