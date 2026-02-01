@@ -6,8 +6,9 @@
 
 import React, { useState } from 'react';
 import { Icon, IconName } from '../components';
+import { useVirusHunt } from '../contexts/VirusHuntContext';
 
-export type PageId = 'downloads' | 'catalog' | 'settings' | 'create-torrent';
+export type PageId = 'downloads' | 'catalog' | 'settings' | 'create-torrent' | 'virus-hunt';
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
 interface NavItem {
@@ -50,10 +51,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeDownloads = 0,
 }) => {
   const [isDownloadsExpanded, setIsDownloadsExpanded] = useState(currentPage === 'downloads');
+  const { unscannedCount, hasActiveThreats } = useVirusHunt();
 
   const navItems: NavItem[] = [
     { id: 'downloads', label: 'Downloads', icon: 'download', hasSubmenu: true },
     { id: 'catalog', label: 'Catalog', icon: 'book-open' },
+    { id: 'virus-hunt', label: 'VirusHunt', icon: 'shield' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
@@ -94,7 +97,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {navItems.map((item) => (
             <React.Fragment key={item.id}>
               <button
-                className={`nav-item ${currentPage === item.id ? 'active' : ''} ${item.hasSubmenu ? 'has-submenu' : ''}`}
+                className={`nav-item ${currentPage === item.id ? 'active' : ''} ${item.hasSubmenu ? 'has-submenu' : ''} ${item.id === 'virus-hunt' && hasActiveThreats ? 'pulse-threat' : ''}`}
                 onClick={() => handleNavClick(item)}
               >
                 <span className="nav-item-icon">
@@ -103,6 +106,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span>{item.label}</span>
                 {item.id === 'downloads' && activeDownloads > 0 && (
                   <span className="nav-item-badge">{activeDownloads}</span>
+                )}
+                {item.id === 'virus-hunt' && unscannedCount > 0 && (
+                  <span className="nav-item-badge badge-warning">{unscannedCount}</span>
                 )}
                 {item.hasSubmenu && (
                   <span className={`nav-item-chevron ${isDownloadsExpanded ? 'expanded' : ''}`}>

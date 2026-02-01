@@ -23,6 +23,7 @@ import {
   SettingsSidebar,
   SettingsCategory,
   SeedingDashboard,
+  SecuritySettings,
 } from '../components';
 import { PrivacySettings } from '../components/PrivacySettings';
 import './SettingsPage.css';
@@ -107,6 +108,7 @@ const SettingsPage: React.FC = () => {
     // Advanced
     { id: 'advanced', label: 'Advanced', icon: 'layers', group: 'advanced' },
     { id: 'privacy', label: 'Privacy', icon: 'shield', group: 'advanced' },
+    { id: 'security', label: 'Security', icon: 'lock', group: 'advanced' },
     { id: 'scheduler', label: 'Scheduler', icon: 'calendar', group: 'advanced' },
     { id: 'seeding', label: 'Collaborative Seeding', icon: 'share-2', group: 'advanced' },
 
@@ -498,6 +500,8 @@ const SettingsPage: React.FC = () => {
         return renderAdvancedSettings();
       case 'privacy':
         return renderPrivacySettings();
+      case 'security':
+        return renderSecuritySettings();
       case 'scheduler':
         return renderSchedulerSettings();
       case 'seeding':
@@ -730,6 +734,18 @@ const SettingsPage: React.FC = () => {
 
   function renderPrivacySettings() {
     return <PrivacySettings />;
+  }
+
+  function renderSecuritySettings() {
+    return (
+      <>
+        <div className="settings-category-header">
+          <h1 className="settings-category-title">Security</h1>
+          <p className="settings-category-subtitle">VirusHunt security scanner and threat protection</p>
+        </div>
+        <SecuritySettings />
+      </>
+    );
   }
 
   function renderSchedulerSettings() {
