@@ -468,8 +468,18 @@
 }
 
 .about-icon {
-  font-size: 48px;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-xl);
+  color: #fff;
+  box-shadow: var(--shadow-glow-sm);
+  font-size: 28px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .about-info-text {
@@ -504,8 +514,9 @@
   justify-content: flex-end;
   gap: 12px;
   padding: 16px 32px;
-  background: var(--color-bg-elevated);
-  border-top: 1px solid var(--color-border-default);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 /* === Scrollbar === */

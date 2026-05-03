@@ -118,17 +118,7 @@ const DownloadItem: React.FC<DownloadItemProps> = ({
   const status = currentStats.status;
   const progress = currentStats.progress;
 
-  // DEBUG: Log button visibility logic
-  if (download.id && (download.name.length < 50)) { // Limit logging
-    console.log(`[DownloadItem] ${download.name}:`, {
-      status,
-      downloadStatus: download.status,
-      hasStats: !!stats,
-      statsStatus: stats?.status,
-      canPause: canPause(status),
-      canResume: canResume(status),
-    });
-  }
+
 
   const getProgressVariant = (): 'default' | 'success' | 'warning' | 'error' => {
     if (status === 'completed' || status === 'seeding') return 'success';
@@ -635,7 +625,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // Subscribe to stats updates
   useEffect(() => {
     const unsubscribe = window.api.onDownloadStats((newStats) => {
-      console.log('[onDownloadStats] Received stats:', newStats.map(s => ({ id: s.id.substring(0, 8), status: s.status })));
 
       const statsMap = new Map<string, DownloadStats>();
       for (const stat of newStats) {
@@ -648,9 +637,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         prev.map((d) => {
           const stat = statsMap.get(d.id);
           if (stat) {
-            if (d.status !== stat.status) {
-              console.log(`[onDownloadStats] Status changed for ${d.name}: ${d.status} -> ${stat.status}`);
-            }
             return { ...d, status: stat.status };
           }
           return d;
@@ -696,23 +682,24 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       if (e.key === 'Delete' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
         if (confirm(`Remove ${selectedIds.size} download(s)?`)) {
-          selectedIds.forEach(async (id) => {
-            try {
-              await window.api.removeDownload(id, false);
-              setDownloads((prev) => prev.filter((d) => d.id !== id));
-            } catch (error) {
-              console.error('Failed to remove:', error);
-            }
-          });
-          setSelectedIds(new Set());
-          addToast(`Removed ${selectedIds.size} download(s)`, 'success');
+          const idsToRemove = Array.from(selectedIds);
+          Promise.all(idsToRemove.map(id => window.api.removeDownload(id, false)))
+            .then(() => {
+              setDownloads((prev) => prev.filter((d) => !selectedIds.has(d.id)));
+              setSelectedIds(new Set());
+              addToast(`Removed ${selectedIds.size} download(s)`, 'success');
+            })
+            .catch((error) => {
+              console.error('Failed to remove some downloads:', error);
+              loadDownloads();
+            });
         }
       }
 
       // Space - Toggle pause/resume for selected
       if (e.key === ' ' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
-        selectedIds.forEach(async (id) => {
+        const promises = Array.from(selectedIds).map(async (id) => {
           const download = downloads.find(d => d.id === id);
           if (download) {
             try {
@@ -726,8 +713,11 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             }
           }
         });
-        loadDownloads();
+        Promise.all(promises).then(() => {
+          loadDownloads();
+        });
       }
+
 
       // Ctrl+F - Focus search box
       if (e.ctrlKey && e.key === 'f') {
@@ -814,7 +804,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const loadDownloads = async () => {
     try {
       const list = await window.api.getDownloads();
-      console.log('[loadDownloads] Loaded downloads:', list.map(d => ({ name: d.name, status: d.status })));
       setDownloads(list.filter(d => d.status !== 'removed'));
     } catch (error) {
       console.error('Failed to load downloads:', error);
@@ -835,14 +824,22 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
     try {
       setIsAddingTorrent(true);
-      const result = await window.api.selectTorrentFile();
-      if (!result) {
-        setIsAddingTorrent(false);
-        return;
+      let torrentPath: string | undefined;
+
+      // Use dropped/selected file path without opening file dialog again if it exists
+      if (selectedFile && (selectedFile as any).path) {
+        torrentPath = (selectedFile as any).path;
+      } else {
+        const result = await window.api.selectTorrentFile();
+        if (!result) {
+          setIsAddingTorrent(false);
+          return;
+        }
+        torrentPath = result.path;
       }
 
       // Show file selector to choose which files to download
-      setPendingTorrent({ path: result.path });
+      setPendingTorrent({ path: torrentPath });
       setShowFileSelector(true);
     } catch (error) {
       addToast(
@@ -853,6 +850,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       setIsAddingTorrent(false);
     }
   };
+
 
   // Handle file selection from file input
   const handleFileSelect = async (file: File) => {
@@ -1317,9 +1315,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 size="sm"
                 icon={<Icon name="pause" size={14} />}
                 onClick={async () => {
-                  for (const id of selectedIds) {
-                    await handlePause(id);
-                  }
+                  const promises = Array.from(selectedIds).map(id => window.api.pauseDownload(id).catch(err => console.error(err)));
+                  await Promise.all(promises);
+                  await loadDownloads();
                   setSelectedIds(new Set());
                 }}
               >
@@ -1330,9 +1328,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 size="sm"
                 icon={<Icon name="play" size={14} />}
                 onClick={async () => {
-                  for (const id of selectedIds) {
-                    await handleResume(id);
-                  }
+                  const promises = Array.from(selectedIds).map(id => window.api.resumeDownload(id).catch(err => console.error(err)));
+                  await Promise.all(promises);
+                  await loadDownloads();
                   setSelectedIds(new Set());
                 }}
               >
@@ -1344,9 +1342,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 icon={<Icon name="trash" size={14} />}
                 onClick={async () => {
                   if (confirm(`Remove ${selectedIds.size} download(s)?`)) {
-                    for (const id of selectedIds) {
-                      await handleRemove(id, false);
-                    }
+                    const promises = Array.from(selectedIds).map(id => window.api.removeDownload(id, false).catch(err => console.error(err)));
+                    await Promise.all(promises);
+                    await loadDownloads();
                     setSelectedIds(new Set());
                   }
                 }}

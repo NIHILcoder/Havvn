@@ -17,7 +17,8 @@
     "migrate": "node-pg-migrate -m migrations",
     "migrate:up": "npm run migrate up",
     "migrate:down": "npm run migrate down",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@headlessui/react": "^1.7.18",
@@ -67,7 +68,36 @@
     "typescript": "^5.3.2",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4",
-    "webpack-dev-server": "^4.15.1"
+    "webpack-dev-server": "^4.15.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.torrenthunt.app",
+    "productName": "TorrentHunt",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TorrentHunt"
+    }
   },
   "author": "",
   "license": "MIT"

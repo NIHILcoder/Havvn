@@ -6,9 +6,8 @@
 
 import React, { useState } from 'react';
 import { Icon, IconName } from '../components';
-import { useVirusHunt } from '../contexts/VirusHuntContext';
 
-export type PageId = 'downloads' | 'catalog' | 'settings' | 'create-torrent' | 'virus-hunt';
+export type PageId = 'downloads' | 'catalog' | 'settings' | 'create-torrent';
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
 interface NavItem {
@@ -51,12 +50,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeDownloads = 0,
 }) => {
   const [isDownloadsExpanded, setIsDownloadsExpanded] = useState(currentPage === 'downloads');
-  const { unscannedCount, hasActiveThreats } = useVirusHunt();
 
   const navItems: NavItem[] = [
     { id: 'downloads', label: 'Downloads', icon: 'download', hasSubmenu: true },
     { id: 'catalog', label: 'Catalog', icon: 'book-open' },
-    { id: 'virus-hunt', label: 'VirusHunt', icon: 'shield' },
     { id: 'settings', label: 'Settings', icon: 'settings' },
   ];
 
@@ -86,7 +83,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside className="sidebar">
       {/* Header */}
       <div className="sidebar-header">
-        <div className="sidebar-logo">🔍</div>
+        <div className="sidebar-logo">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </div>
         <span className="sidebar-title">TorrentHunt</span>
       </div>
 
@@ -97,7 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {navItems.map((item) => (
             <React.Fragment key={item.id}>
               <button
-                className={`nav-item ${currentPage === item.id ? 'active' : ''} ${item.hasSubmenu ? 'has-submenu' : ''} ${item.id === 'virus-hunt' && hasActiveThreats ? 'pulse-threat' : ''}`}
+                className={`nav-item ${currentPage === item.id ? 'active' : ''} ${item.hasSubmenu ? 'has-submenu' : ''}`}
                 onClick={() => handleNavClick(item)}
               >
                 <span className="nav-item-icon">
@@ -106,9 +109,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span>{item.label}</span>
                 {item.id === 'downloads' && activeDownloads > 0 && (
                   <span className="nav-item-badge">{activeDownloads}</span>
-                )}
-                {item.id === 'virus-hunt' && unscannedCount > 0 && (
-                  <span className="nav-item-badge badge-warning">{unscannedCount}</span>
                 )}
                 {item.hasSubmenu && (
                   <span className={`nav-item-chevron ${isDownloadsExpanded ? 'expanded' : ''}`}>
@@ -154,7 +154,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span className="sidebar-action-icon">
               <Icon name="file-plus" size={20} />
             </span>
-            <span className="sidebar-action-text">Create</span>
+            <span className="sidebar-action-text">Create Torrent</span>
             <span className="sidebar-action-arrow">
               <Icon name="arrow-right" size={14} />
             </span>

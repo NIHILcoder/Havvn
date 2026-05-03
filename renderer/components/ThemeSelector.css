@@ -54,13 +54,13 @@
 
 /* Dark Theme Preview */
 .theme-preview-window.dark {
-  background: #0a0a0a;
-  color: #ffffff;
+  background: #000000;
+  color: #FFFFFF;
 }
 
 .theme-preview-window.dark .theme-preview-header {
-  background: #121212;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0B0B0C;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .theme-preview-window.dark .theme-preview-dots span {
@@ -68,20 +68,20 @@
 }
 
 .theme-preview-window.dark .theme-preview-sidebar {
-  background: #1a1a1a;
-  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0B0B0C;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .theme-preview-window.dark .theme-preview-nav {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .theme-preview-window.dark .theme-preview-nav.active {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.14);
 }
 
 .theme-preview-window.dark .theme-preview-content {
-  background: #0a0a0a;
+  background: #000000;
 }
 
 .theme-preview-window.dark .theme-preview-bar {
@@ -89,8 +89,8 @@
 }
 
 .theme-preview-window.dark .theme-preview-card {
-  background: #121212;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #141416;
+  border: 1px solid rgba(255, 255, 255, 0.10);
 }
 
 .theme-preview-window.dark .theme-preview-line {
@@ -99,13 +99,13 @@
 
 /* Light Theme Preview */
 .theme-preview-window.light {
-  background: #f9f9f9;
-  color: #0a0a0a;
+  background: #FBFBFC;
+  color: #000000;
 }
 
 .theme-preview-window.light .theme-preview-header {
-  background: #ffffff;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+  background: #FFFFFF;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .theme-preview-window.light .theme-preview-dots span {
@@ -113,8 +113,8 @@
 }
 
 .theme-preview-window.light .theme-preview-sidebar {
-  background: #f3f3f3;
-  border-right: 1px solid rgba(0, 0, 0, 0.1);
+  background: #F1F1F3;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .theme-preview-window.light .theme-preview-nav {
@@ -122,20 +122,20 @@
 }
 
 .theme-preview-window.light .theme-preview-nav.active {
-  background: rgba(0, 0, 0, 0.1);
+  background: rgba(0, 0, 0, 0.12);
 }
 
 .theme-preview-window.light .theme-preview-content {
-  background: #f9f9f9;
+  background: #FBFBFC;
 }
 
 .theme-preview-window.light .theme-preview-bar {
-  background: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .theme-preview-window.light .theme-preview-card {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  background: #FFFFFF;
+  border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .theme-preview-window.light .theme-preview-line {

@@ -2,18 +2,14 @@
  * TorrentHunt Main App Component
  */
 
-import React, { useState, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Sidebar, StatusBar, PageId, FilterMode } from './layout';
 import { DownloadStats, Download } from '../shared/types';
-import { VirusHuntProvider } from './contexts/VirusHuntContext';
 import CatalogPage from './pages/CatalogPage';
 import CreateTorrentPage from './pages/CreateTorrentPage';
 import DownloadsPage from './pages/DownloadsPage';
 import SettingsPage from './pages/SettingsPage';
-
-// Lazy load VirusHunt pages
-const VirusHuntPage = lazy(() => import('./pages/VirusHuntPage'));
 
 const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageId>('downloads');
@@ -146,12 +142,9 @@ const App: React.FC = () => {
             case 'create-torrent':
               setCurrentPage('create-torrent');
               break;
-            case 'open-virus-hunt':
-              setCurrentPage('virus-hunt');
-              break;
             case 'add-torrent':
-              // TODO: Open add torrent dialog
-              console.log('Add torrent hotkey pressed');
+              // Navigate to downloads page where add torrent button is
+              setCurrentPage('downloads');
               break;
           }
           break;
@@ -186,12 +179,6 @@ const App: React.FC = () => {
         return <CreateTorrentPage onNavigateBack={() => setCurrentPage('downloads')} />;
       case 'downloads':
         return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} />;
-      case 'virus-hunt':
-        return (
-          <Suspense fallback={<div className="page-loading">Loading VirusHunt...</div>}>
-            <VirusHuntPage />
-          </Suspense>
-        );
       case 'settings':
         return <SettingsPage />;
       default:
@@ -200,7 +187,7 @@ const App: React.FC = () => {
   };
 
   return (
-    <VirusHuntProvider>
+    <>
       <Toaster
         position="top-right"
         toastOptions={{
@@ -233,7 +220,7 @@ const App: React.FC = () => {
           />
         </main>
       </div>
-    </VirusHuntProvider>
+    </>
   );
 };
 

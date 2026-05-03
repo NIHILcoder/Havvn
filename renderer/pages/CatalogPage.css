@@ -14,10 +14,11 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  background-color: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
-  transition: border-color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
 
 .catalog-search:focus-within {
@@ -66,9 +67,10 @@
 }
 
 .category-chip.active {
-  color: var(--color-bg-primary);
-  background-color: var(--color-accent-primary);
-  border-color: var(--color-accent-primary);
+  color: #fff;
+  background: var(--gradient-primary);
+  border-color: transparent;
+  box-shadow: var(--shadow-glow-sm);
 }
 
 /* Catalog Sections */
@@ -96,16 +98,18 @@
 .catalog-card {
   display: flex;
   flex-direction: column;
-  background-color: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  transition: border-color var(--transition-fast), transform var(--transition-fast);
+  transition: all var(--transition-normal);
 }
 
 .catalog-card:hover {
-  border-color: var(--color-border-strong);
-  transform: translateY(-2px);
+  border-color: rgba(59, 130, 246, 0.2);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-lg), var(--shadow-glow-sm);
 }
 
 .catalog-card-body {
@@ -155,7 +159,8 @@
   padding: var(--space-4);
   font-size: var(--font-size-sm);
   color: var(--color-text-tertiary);
-  background-color: var(--color-bg-tertiary);
+  background: var(--color-info-bg);
+  border: 1px solid rgba(59, 130, 246, 0.1);
   border-radius: var(--radius-lg);
 }
 

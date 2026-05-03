@@ -30,8 +30,9 @@
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-6);
-  border-bottom: 2px solid var(--color-border-default);
-  background: linear-gradient(135deg, var(--color-bg-primary) 0%, var(--color-bg-secondary) 100%);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--gradient-elevated);
+  backdrop-filter: var(--glass-blur);
 }
 
 .page-title-section {
@@ -126,20 +127,21 @@
 
 /* === Panels === */
 .create-panel {
-  background: var(--color-bg-secondary);
-  border: 2px solid var(--color-border-default);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  transition: all 0.3s ease;
+  transition: all var(--transition-normal);
   min-height: 0;
   height: 100%;
 }
 
 .create-panel:hover {
-  border-color: var(--color-border-strong);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  border-color: rgba(59, 130, 246, 0.15);
+  box-shadow: var(--shadow-lg), var(--shadow-glow-sm);
 }
 
 .panel-header {

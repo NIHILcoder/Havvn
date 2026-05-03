@@ -1,78 +1,89 @@
 /**
- * TorrentHunt Design System
+ * TorrentHunt Design System 2.0
  * 
- * CSS Variables for consistent theming and styling.
- * Supports dark and light themes with black/white primary colors.
+ * Premium Pure Black & White (Monochrome) theme for dark and light modes.
+ * Pure dark contrasts, pure black backgrounds, and sleek B&W micro-animations.
  */
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
 :root {
-  /* === Dark Theme (Default) === */
-  /* Soft Black & Grayscale - optimized for night viewing */
-  --color-bg-primary: #0a0a0a;
-  --color-bg-secondary: #121212;
-  --color-bg-tertiary: #1a1a1a;
-  --color-bg-elevated: #242424;
-  --color-bg-hover: #2d2d2d;
-  --color-bg-active: #363636;
+  /* === Dark Theme (Default) - Monochrome Pitch Black === */
+  /* Pure Black Backgrounds */
+  --color-bg-primary: #000000;
+  --color-bg-secondary: #0B0B0C;
+  --color-bg-tertiary: #141416;
+  --color-bg-elevated: #1C1C1F;
+  --color-bg-hover: rgba(255, 255, 255, 0.08);
+  --color-bg-active: rgba(255, 255, 255, 0.14);
 
   /* Legacy aliases for Settings */
-  --color-bg-base: #0a0a0a;
-  --color-bg-subtle: #1a1a1a;
+  --color-bg-base: #000000;
+  --color-bg-subtle: #141416;
 
-  /* Borders - White with transparency for dark theme */
-  --color-border-default: rgba(255, 255, 255, 0.15);
-  --color-border-subtle: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.25);
-  --color-border-focus: rgba(96, 165, 250, 0.60);
+  /* Glass effect */
+  --glass-bg: rgba(11, 11, 12, 0.85);
+  --glass-border: rgba(255, 255, 255, 0.06);
+  --glass-blur: blur(20px);
+
+  /* Borders */
+  --color-border-default: rgba(255, 255, 255, 0.08);
+  --color-border-subtle: rgba(255, 255, 255, 0.04);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-border-focus: rgba(255, 255, 255, 0.50);
 
   /* Text */
-  --color-text-primary: #ffffff;
-  --color-text-secondary: #d0d0d0;
-  --color-text-tertiary: #a0a0a0;
-  --color-text-disabled: #707070;
+  --color-text-primary: #FFFFFF;
+  --color-text-secondary: #C4C4C6;
+  --color-text-tertiary: #8C8C8F;
+  --color-text-disabled: #555558;
 
-  /* Accent Colors - Minimal, mostly grayscale with subtle accents */
-  --color-accent-primary: #e8e8e8;
-  --color-accent-primary-hover: #f5f5f5;
-  --color-accent-bg: rgba(232, 232, 232, 0.1);
-  --color-accent-secondary: #c8c8c8;
-  --color-accent-secondary-hover: #e8e8e8;
+  /* Accent Colors — White/Grey Monochrome */
+  --color-accent-primary: #FFFFFF;
+  --color-accent-primary-hover: #E2E2E2;
+  --color-accent-bg: rgba(255, 255, 255, 0.10);
+  --color-accent-secondary: #8C8C8F;
+  --color-accent-secondary-hover: #ACACAF;
 
-  /* Gradient Accents - Subtle grayscale */
-  --gradient-primary: linear-gradient(135deg, #d0d0d0 0%, #b0b0b0 100%);
-  --gradient-success: linear-gradient(135deg, #909090 0%, #707070 100%);
-  --gradient-elevated: linear-gradient(180deg, #1f1f1f 0%, #141414 100%);
+  /* Gradients */
+  --gradient-primary: linear-gradient(135deg, #FFFFFF 0%, #8C8C8F 100%);
+  --gradient-success: linear-gradient(135deg, #E2E2E2 0%, #8C8C8F 100%);
+  --gradient-warning: linear-gradient(135deg, #ACACAF 0%, #5D5D62 100%);
+  --gradient-danger: linear-gradient(135deg, #F56565 0%, #C53030 100%);
+  --gradient-elevated: linear-gradient(180deg, rgba(28, 28, 31, 0.9) 0%, rgba(0, 0, 0, 0.9) 100%);
+  --gradient-sidebar: linear-gradient(180deg, #0B0B0C 0%, #000000 100%);
+  --gradient-card: linear-gradient(135deg, rgba(28, 28, 31, 0.6) 0%, rgba(0, 0, 0, 0.6) 100%);
 
-  /* Status Colors - Soft grayscale approach */
-  --color-status-queued: #808080;
-  --color-status-downloading: #909090;
-  --color-status-paused: #a0a0a0;
-  --color-status-completed: #b0b0b0;
-  --color-status-seeding: #c0c0c0;
-  --color-status-error: #d0d0d0;
-  --color-status-removed: #707070;
+  /* Status Colors — B&W and distinguishable */
+  --color-status-queued: #555558;
+  --color-status-downloading: #FFFFFF;
+  --color-status-paused: #8C8C8F;
+  --color-status-completed: #F4F4F6;
+  --color-status-seeding: #C4C4C6;
+  --color-status-error: #FF4D4D;
+  --color-status-removed: #555558;
 
   /* Semantic Colors */
-  --color-success: #909090;
-  --color-success-bg: rgba(144, 144, 144, 0.15);
-  --color-warning: #a0a0a0;
-  --color-warning-bg: rgba(160, 160, 160, 0.15);
-  --color-error: #b0b0b0;
-  --color-error-bg: rgba(176, 176, 176, 0.15);
-  --color-info: #989898;
-  --color-info-bg: rgba(152, 152, 152, 0.15);
+  --color-success: #E2E2E2;
+  --color-success-bg: rgba(255, 255, 255, 0.10);
+  --color-warning: #C4C4C6;
+  --color-warning-bg: rgba(255, 255, 255, 0.06);
+  --color-error: #F56565;
+  --color-error-bg: rgba(245, 101, 101, 0.15);
+  --color-info: #FFFFFF;
+  --color-info-bg: rgba(255, 255, 255, 0.10);
 
-  /* Status indicator colors - bright for visibility */
-  --color-status-connected: #4ade80;
-  --color-status-download: #4ade80;
-  --color-status-upload: #fbbf24;
+  /* Status indicator colors */
+  --color-status-connected: #E2E2E2;
+  --color-status-download: #FFFFFF;
+  --color-status-upload: #C4C4C6;
 
-  /* File Type Colors - Soft grayscale */
-  --color-video: #989898;
-  --color-audio: #a0a0a0;
-  --color-image: #a8a8a8;
-  --color-archive: #b0b0b0;
-  --color-document: #b8b8b8;
+  /* File Type Colors */
+  --color-video: #C4C4C6;
+  --color-audio: #929296;
+  --color-image: #8C8C8F;
+  --color-archive: #5D5D62;
+  --color-document: #FFFFFF;
 
   /* === Spacing Scale === */
   --space-1: 4px;
@@ -87,12 +98,12 @@
   --space-16: 64px;
 
   /* === Typography === */
-  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
   --font-family-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
 
-  --font-size-xs: 12px;
+  --font-size-xs: 11px;
   --font-size-sm: 13px;
-  --font-size-base: 15px;
+  --font-size-base: 14px;
   --font-size-md: 15px;
   --font-size-lg: 17px;
   --font-size-xl: 20px;
@@ -109,31 +120,33 @@
   --line-height-relaxed: 1.75;
 
   /* === Border Radius === */
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 6px;
-  --radius-xl: 8px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
   --radius-full: 9999px;
 
   /* === Shadows === */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.6), 0 4px 8px rgba(0, 0, 0, 0.5);
-  --shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.7), 0 8px 16px rgba(0, 0, 0, 0.6);
-  --shadow-glow: 0 0 20px rgba(79, 140, 255, 0.4), 0 0 40px rgba(79, 140, 255, 0.2);
-  --shadow-focus: 0 0 0 3px var(--color-border-focus);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.6), 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 20px rgba(255, 255, 255, 0.10);
+  --shadow-glow-sm: 0 0 10px rgba(255, 255, 255, 0.08);
+  --shadow-focus: 0 0 0 3px rgba(255, 255, 255, 0.35);
 
   /* === Transitions === */
-  --transition-fast: 100ms ease;
-  --transition-normal: 200ms ease;
-  --transition-slow: 300ms ease;
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-spring: 500ms cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* === Layout === */
-  --sidebar-width: 280px;
+  --sidebar-width: 260px;
   --sidebar-collapsed-width: 64px;
-  --header-height: 52px;
-  --footer-height: 32px;
+  --header-height: 56px;
+  --footer-height: 36px;
   --settings-content-max-width: 840px;
 
   /* === Z-Index Scale === */
@@ -145,97 +158,81 @@
   --z-tooltip: 600;
 }
 
-/* Light Theme */
+/* ================================================
+   Light Theme - Clean Pitch Black & White
+   ================================================ */
 [data-theme="light"] {
-  /* Inverted: Light theme becomes primary soft white */
-  --color-bg-primary: #f9f9f9;
-  --color-bg-secondary: #f3f3f3;
-  --color-bg-tertiary: #ececec;
-  --color-bg-elevated: #fafafa;
-  --color-bg-hover: #f0f0f0;
-  --color-bg-active: #e8e8e8;
+  --color-bg-primary: #FBFBFC;
+  --color-bg-secondary: #F1F1F3;
+  --color-bg-tertiary: #E2E2E5;
+  --color-bg-elevated: #FFFFFF;
+  --color-bg-hover: rgba(0, 0, 0, 0.05);
+  --color-bg-active: rgba(0, 0, 0, 0.10);
 
-  /* Legacy aliases for Settings */
-  --color-bg-base: #f9f9f9;
-  --color-bg-subtle: #fafafa;
+  --color-bg-base: #FBFBFC;
+  --color-bg-subtle: #F1F1F3;
 
-  /* Borders - Black with transparency for light theme */
-  --color-border-default: rgba(0, 0, 0, 0.15);
-  --color-border-subtle: rgba(0, 0, 0, 0.08);
-  --color-border-strong: rgba(0, 0, 0, 0.25);
-  --color-border-focus: rgba(37, 99, 235, 0.50);
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.08);
 
-  /* Text - Darker colors for better contrast */
-  --color-text-primary: #0a0a0a;
-  --color-text-secondary: #2a2a2a;
-  --color-text-tertiary: #4a4a4a;
-  --color-text-disabled: #7a7a7a;
+  --color-border-default: rgba(0, 0, 0, 0.10);
+  --color-border-subtle: rgba(0, 0, 0, 0.04);
+  --color-border-strong: rgba(0, 0, 0, 0.18);
+  --color-border-focus: rgba(0, 0, 0, 0.45);
 
-  /* Accent Colors - Darker for visibility */
-  --color-accent-primary: #1a1a1a;
-  --color-accent-primary-hover: #000000;
-  --color-accent-bg: rgba(0, 0, 0, 0.08);
-  --color-accent-secondary: #3d3d3d;
-  --color-accent-secondary-hover: #1a1a1a;
+  --color-text-primary: #000000;
+  --color-text-secondary: #2B2B2F;
+  --color-text-tertiary: #5D5D62;
+  --color-text-disabled: #8C8C8F;
 
-  /* Status Colors - Saturated for visibility on white */
-  --color-status-queued: #6b7280;
-  --color-status-downloading: #2563eb;
-  --color-status-paused: #d97706;
-  --color-status-completed: #16a34a;
-  --color-status-seeding: #0891b2;
-  --color-status-error: #dc2626;
-  --color-status-removed: #6b7280;
+  --color-accent-primary: #000000;
+  --color-accent-primary-hover: #262629;
+  --color-accent-bg: rgba(0, 0, 0, 0.06);
 
-  /* Semantic Colors - Vivid for light theme */
-  --color-success: #16a34a;
-  --color-success-bg: rgba(22, 163, 74, 0.12);
-  --color-warning: #d97706;
-  --color-warning-bg: rgba(217, 119, 6, 0.12);
-  --color-error: #dc2626;
-  --color-error-bg: rgba(220, 38, 38, 0.12);
-  --color-info: #2563eb;
-  --color-info-bg: rgba(37, 99, 235, 0.12);
+  --gradient-sidebar: linear-gradient(180deg, #F1F1F3 0%, #FBFBFC 100%);
+  --gradient-card: linear-gradient(135deg, rgba(255,255,255,0.85) 0%, rgba(241,241,243,0.85) 100%);
+  --gradient-primary: linear-gradient(135deg, #000000 0%, #5D5D62 100%);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
-  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.12);
-  --shadow-lg: 0 12px 20px rgba(0, 0, 0, 0.15);
-  --shadow-xl: 0 20px 30px rgba(0, 0, 0, 0.18);
-  --shadow-focus: 0 0 0 3px var(--color-border-focus);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.10);
+  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 40px rgba(0, 0, 0, 0.15);
+  --shadow-focus: 0 0 0 3px rgba(0, 0, 0, 0.3);
+  --shadow-glow: 0 0 20px rgba(0, 0, 0, 0.15);
+  --shadow-glow-sm: 0 0 10px rgba(0, 0, 0, 0.1);
 
-  /* Status indicator colors - bright for visibility */
-  --color-status-connected: #16a34a;
-  --color-status-download: #16a34a;
-  --color-status-upload: #d97706;
+  --color-status-connected: #E2E2E2;
+  --color-status-download: #000000;
+  --color-status-upload: #5D5D62;
+  --color-status-downloading: #000000;
 }
 
 /* Light Theme Component Overrides */
 [data-theme="light"] .bulk-actions-count {
-  background: #1a1a1a;
+  background: var(--gradient-primary);
   color: #ffffff;
 }
 
 [data-theme="light"] .filter-tab.active {
-  background: #1a1a1a;
+  background: var(--gradient-primary);
   color: #ffffff;
 }
 
 [data-theme="light"] .btn-primary {
   color: #ffffff;
-  background: #1a1a1a;
 }
 
 [data-theme="light"] .nav-subitem.active {
-  background: rgba(0, 0, 0, 0.08);
-  color: #1a1a1a;
+  background: var(--color-accent-bg);
+  color: var(--color-accent-primary);
 }
 
 [data-theme="light"] .nav-subitem-badge {
-  background: rgba(0, 0, 0, 0.1);
-  color: #3d3d3d;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--color-text-tertiary);
 }
 
 [data-theme="light"] .nav-subitem.active .nav-subitem-badge {
-  background: #1a1a1a;
+  background: var(--color-accent-primary);
   color: #ffffff;
 }

@@ -68,7 +68,7 @@ export const PrivacySettings: React.FC = () => {
   const checkVPNStatus = async () => {
     setIsCheckingVPN(true);
     try {
-      const result = await window.api.invoke('privacy:checkVPN') as VPNDetectionResult;
+      const result = await window.api.getPrivacyConfig() as unknown as VPNDetectionResult;
       setVpnDetails(result);
       setVpnStatus(result.isVPNActive ? 'connected' : 'disconnected');
     } catch (error) {

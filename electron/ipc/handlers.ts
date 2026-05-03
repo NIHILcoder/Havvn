@@ -1,15 +1,9 @@
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron';
 import { getTorrentManager, TorrentError, createTorrentFile, getDefaultTrackers } from '../torrent';
 import { getCollaborativeSeedingManager } from '../seeding';
-import { getVirusHunt } from '../virusHunt';
-import { getReportGenerator } from '../reports/generator';
-import { getHistoryManager } from '../reports/history';
-import { registerVirusHuntHandlers } from './virushunt-handlers';
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest } from '../../shared/types';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
-import { DEFAULT_VIRUSHUNT_SETTINGS, VirusHuntSettings } from '../../shared/virushunt-settings-types';
-import { validateVirusHuntSettings, validateVirusHuntSettingsUpdate } from '../../shared/virushunt-settings-schema';
 import catalog from '../data/catalog.json';
 import fs from 'fs/promises';
 import fsSync from 'fs';
@@ -55,9 +49,6 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const torrentManager = getTorrentManager();
 
   log.info('Setting up IPC handlers');
-
-  // Register VirusHunt handlers
-  registerVirusHuntHandlers();
 
   // Downloads
   ipcMain.handle('downloads:add', wrapHandler('downloads:add',
@@ -245,8 +236,20 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   // Shell operations
   ipcMain.handle('shell:openPath', wrapHandler('shell:openPath',
-    async (_event, path: string) => {
-      return await shell.openPath(path);
+    async (_event, targetPath: string) => {
+      // Security: validate path to prevent arbitrary file/program execution
+      if (!targetPath || typeof targetPath !== 'string') {
+        throw new Error('Invalid path');
+      }
+      // Only allow opening paths within the user's download/save directories
+      const settings = await db.getSettings();
+      const normalizedPath = path.normalize(targetPath);
+      const defaultDir = path.normalize(settings.defaultDownloadDir);
+      if (!normalizedPath.startsWith(defaultDir)) {
+        log.warn('Blocked attempt to open path outside download directory', { targetPath, defaultDir });
+        throw new Error('Cannot open paths outside download directory');
+      }
+      return await shell.openPath(targetPath);
     }
   ));
 
@@ -482,368 +485,6 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     async () => {
       await db.clearAllData();
       return { success: true };
-    }
-  ));
-
-  // === Report Generation & Export ===
-  const reportGenerator = getReportGenerator();
-  const historyManager = getHistoryManager();
-
-  // Initialize history manager
-  ipcMain.handle('reports:initialize', wrapHandler('reports:initialize',
-    async () => {
-      await historyManager.initialize();
-    }
-  ));
-
-  // Export report
-  ipcMain.handle('reports:export', wrapHandler('reports:export',
-    async (_event, results: any[], summary: any, options: any) => {
-      return reportGenerator.generateReport(results, summary, options);
-    }
-  ));
-
-  // Get scan history
-  ipcMain.handle('reports:get-history', wrapHandler('reports:get-history',
-    async (_event, filter?: any) => {
-      return historyManager.getHistory(filter);
-    }
-  ));
-
-  // Get single scan
-  ipcMain.handle('reports:get-scan', wrapHandler('reports:get-scan',
-    async (_event, id: string) => {
-      return historyManager.getScan(id);
-    }
-  ));
-
-  // Get full scan report
-  ipcMain.handle('reports:get-scan-report', wrapHandler('reports:get-scan-report',
-    async (_event, id: string) => {
-      return historyManager.getScanReport(id);
-    }
-  ));
-
-  // Add scan to history
-  ipcMain.handle('reports:add-scan', wrapHandler('reports:add-scan',
-    async (_event, report: any) => {
-      return historyManager.addScan(report);
-    }
-  ));
-
-  // Delete scan
-  ipcMain.handle('reports:delete-scan', wrapHandler('reports:delete-scan',
-    async (_event, id: string) => {
-      return historyManager.deleteScan(id);
-    }
-  ));
-
-  // Delete multiple scans
-  ipcMain.handle('reports:delete-scans', wrapHandler('reports:delete-scans',
-    async (_event, ids: string[]) => {
-      return historyManager.deleteScans(ids);
-    }
-  ));
-
-  // Clear all history
-  ipcMain.handle('reports:clear-history', wrapHandler('reports:clear-history',
-    async () => {
-      return historyManager.clearHistory();
-    }
-  ));
-
-  // Update scan
-  ipcMain.handle('reports:update-scan', wrapHandler('reports:update-scan',
-    async (_event, id: string, updates: any) => {
-      return historyManager.updateScan(id, updates);
-    }
-  ));
-
-  // Compare scans
-  ipcMain.handle('reports:compare-scans', wrapHandler('reports:compare-scans',
-    async (_event, id1: string, id2: string) => {
-      return historyManager.compareScans(id1, id2);
-    }
-  ));
-
-  // Get history statistics
-  ipcMain.handle('reports:get-statistics', wrapHandler('reports:get-statistics',
-    async () => {
-      return historyManager.getStatistics();
-    }
-  ));
-
-  // Show save dialog for export
-  ipcMain.handle('reports:show-save-dialog', wrapHandler('reports:show-save-dialog',
-    async (_event, options: { defaultPath?: string; filters?: any[] }) => {
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: 'Export Scan Report',
-        defaultPath: options.defaultPath,
-        filters: options.filters || [
-          { name: 'HTML Files', extensions: ['html'] },
-          { name: 'PDF Files', extensions: ['pdf'] },
-          { name: 'JSON Files', extensions: ['json'] },
-          { name: 'Text Files', extensions: ['txt'] },
-        ],
-      });
-      return result.filePath;
-    }
-  ));
-
-  // Open report file
-  ipcMain.handle('reports:open-file', wrapHandler('reports:open-file',
-    async (_event, filePath: string) => {
-      await shell.openPath(filePath);
-    }
-  ));
-
-  // ====================================================================
-  // VirusHunt Settings Handlers
-  // ====================================================================
-
-  // Get settings file path
-  const getSettingsPath = () => {
-    const userDataPath = app.getPath('userData');
-    return path.join(userDataPath, 'virusHunt', 'settings.json');
-  };
-
-  // Initialize settings directory
-  const initializeSettingsDir = async () => {
-    const settingsPath = getSettingsPath();
-    const dir = path.dirname(settingsPath);
-    
-    try {
-      await fs.mkdir(dir, { recursive: true });
-    } catch (error) {
-      log.error('Failed to create settings directory', { error });
-      throw error;
-    }
-  };
-
-  // Load settings from file
-  const loadSettings = async (): Promise<VirusHuntSettings> => {
-    await initializeSettingsDir();
-    const settingsPath = getSettingsPath();
-
-    try {
-      if (fsSync.existsSync(settingsPath)) {
-        const data = await fs.readFile(settingsPath, 'utf-8');
-        const settings = JSON.parse(data);
-        
-        // Validate loaded settings
-        const validation = validateVirusHuntSettings(settings);
-        if (validation.success) {
-          return validation.data;
-        } else {
-          log.warn('Invalid settings file, using defaults', { errors: validation.error.errors });
-          return { ...DEFAULT_VIRUSHUNT_SETTINGS };
-        }
-      }
-    } catch (error) {
-      log.error('Failed to load settings', { error });
-    }
-
-    return { ...DEFAULT_VIRUSHUNT_SETTINGS };
-  };
-
-  // Save settings to file
-  const saveSettings = async (settings: VirusHuntSettings): Promise<void> => {
-    await initializeSettingsDir();
-    const settingsPath = getSettingsPath();
-
-    try {
-      await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
-      log.info('Settings saved successfully');
-    } catch (error) {
-      log.error('Failed to save settings', { error });
-      throw new Error('Failed to save settings');
-    }
-  };
-
-  // Get VirusHunt settings
-  ipcMain.handle('virushunt:get-settings', wrapHandler('virushunt:get-settings',
-    async () => {
-      return await loadSettings();
-    }
-  ));
-
-  // Update VirusHunt settings (partial update)
-  ipcMain.handle('virushunt:update-settings', wrapHandler('virushunt:update-settings',
-    async (_event, updates: Partial<VirusHuntSettings>) => {
-      // Validate updates
-      const validation = validateVirusHuntSettingsUpdate(updates);
-      if (!validation.success) {
-        const errors = validation.error.errors.map((err) => ({
-          field: err.path.join('.'),
-          message: err.message,
-        }));
-        
-        return {
-          success: false,
-          message: 'Validation failed',
-          errors,
-        };
-      }
-
-      // Load current settings
-      const currentSettings = await loadSettings();
-
-      // Deep merge updates with current settings
-      const updatedSettings: VirusHuntSettings = {
-        ...currentSettings,
-        ...updates,
-        fileTypes: { ...currentSettings.fileTypes, ...updates.fileTypes },
-        heuristics: { ...currentSettings.heuristics, ...updates.heuristics },
-        databases: { 
-          ...currentSettings.databases, 
-          ...updates.databases,
-          statistics: { ...currentSettings.databases.statistics, ...updates.databases?.statistics },
-        },
-        crowdsourcing: { 
-          ...currentSettings.crowdsourcing, 
-          ...updates.crowdsourcing,
-          contributionStats: { ...currentSettings.crowdsourcing.contributionStats, ...updates.crowdsourcing?.contributionStats },
-        },
-        notifications: { ...currentSettings.notifications, ...updates.notifications },
-        performance: { ...currentSettings.performance, ...updates.performance },
-        exclusions: { ...currentSettings.exclusions, ...updates.exclusions },
-        advanced: { ...currentSettings.advanced, ...updates.advanced },
-      };
-
-      // Validate complete settings
-      const finalValidation = validateVirusHuntSettings(updatedSettings);
-      if (!finalValidation.success) {
-        const errors = finalValidation.error.errors.map((err) => ({
-          field: err.path.join('.'),
-          message: err.message,
-        }));
-        
-        return {
-          success: false,
-          message: 'Final validation failed',
-          errors,
-        };
-      }
-
-      // Save settings
-      await saveSettings(finalValidation.data);
-
-      return {
-        success: true,
-        message: 'Settings updated successfully',
-        updatedSettings: finalValidation.data,
-      };
-    }
-  ));
-
-  // Reset VirusHunt settings to defaults
-  ipcMain.handle('virushunt:reset-settings', wrapHandler('virushunt:reset-settings',
-    async () => {
-      const defaultSettings = { ...DEFAULT_VIRUSHUNT_SETTINGS };
-      await saveSettings(defaultSettings);
-      
-      return {
-        success: true,
-        message: 'Settings reset to defaults',
-        updatedSettings: defaultSettings,
-      };
-    }
-  ));
-
-  // Validate settings without saving
-  ipcMain.handle('virushunt:validate-settings', wrapHandler('virushunt:validate-settings',
-    async (_event, settings: unknown) => {
-      const validation = validateVirusHuntSettings(settings);
-      
-      if (validation.success) {
-        return {
-          valid: true,
-          errors: [],
-        };
-      }
-
-      const errors = validation.error.errors.map((err) => ({
-        field: err.path.join('.'),
-        message: err.message,
-      }));
-
-      return {
-        valid: false,
-        errors,
-      };
-    }
-  ));
-
-  // Export settings to file
-  ipcMain.handle('virushunt:export-settings', wrapHandler('virushunt:export-settings',
-    async () => {
-      const settings = await loadSettings();
-      
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: 'Export VirusHunt Settings',
-        defaultPath: 'virushunt-settings.json',
-        filters: [
-          { name: 'JSON Files', extensions: ['json'] },
-          { name: 'All Files', extensions: ['*'] },
-        ],
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { success: false, message: 'Export canceled' };
-      }
-
-      try {
-        await fs.writeFile(result.filePath, JSON.stringify(settings, null, 2), 'utf-8');
-        return { success: true, message: 'Settings exported successfully', path: result.filePath };
-      } catch (error) {
-        log.error('Failed to export settings', { error });
-        return { success: false, message: 'Failed to export settings' };
-      }
-    }
-  ));
-
-  // Import settings from file
-  ipcMain.handle('virushunt:import-settings', wrapHandler('virushunt:import-settings',
-    async () => {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: 'Import VirusHunt Settings',
-        filters: [
-          { name: 'JSON Files', extensions: ['json'] },
-          { name: 'All Files', extensions: ['*'] },
-        ],
-        properties: ['openFile'],
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false, message: 'Import canceled' };
-      }
-
-      try {
-        const data = await fs.readFile(result.filePaths[0], 'utf-8');
-        const settings = JSON.parse(data);
-        
-        // Validate imported settings
-        const validation = validateVirusHuntSettings(settings);
-        if (!validation.success) {
-          const errors = validation.error.errors.map((err) => ({
-            field: err.path.join('.'),
-            message: err.message,
-          }));
-          return { success: false, message: 'Invalid settings file', errors };
-        }
-
-        // Save validated settings
-        await saveSettings(validation.data);
-        
-        return { 
-          success: true, 
-          message: 'Settings imported successfully', 
-          updatedSettings: validation.data,
-        };
-      } catch (error) {
-        log.error('Failed to import settings', { error });
-        return { success: false, message: 'Failed to import settings' };
-      }
     }
   ));
 

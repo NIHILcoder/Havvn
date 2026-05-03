@@ -297,67 +297,6 @@ export interface IpcApi {
   updatePrivacyConfig: (updates: Partial<PrivacyConfig>) => Promise<PrivacyConfig>;
   clearAllData: () => Promise<{ success: boolean }>;
 
-  // VirusHunt Security (see shared/virushunt-types.ts for type definitions)
-  virusHunt: {
-    initialize: () => Promise<void>;
-    startScan: (options: any) => Promise<{ scanId: string }>;
-    cancelScan: (scanId: string) => Promise<boolean>;
-    getFileReputation: (hash: string) => Promise<any>;
-    addToWhitelist: (hash: string, fileName?: string, size?: number) => Promise<void>;
-    addToBlacklist: (hash: string, threatType: string, fileName?: string, description?: string) => Promise<void>;
-    removeHash: (hash: string) => Promise<void>;
-    getTorrentReputation: (infoHash: string) => Promise<any>;
-    updateTorrentReputation: (infoHash: string, reputation: any) => Promise<void>;
-    getReleaseGroup: (groupName: string) => Promise<any>;
-    updateReleaseGroup: (groupName: string, groupData: any) => Promise<void>;
-    getDatabaseVersions: () => Promise<any>;
-    exportDatabase: (type: 'hashes' | 'torrents' | 'releaseGroups', outputPath: string) => Promise<void>;
-    importDatabase: (type: 'hashes' | 'torrents' | 'releaseGroups', inputPath: string) => Promise<void>;
-    getConfig: () => Promise<any>;
-    updateConfig: (updates: any) => Promise<void>;
-    resetConfig: () => Promise<void>;
-    setEnabled: (enabled: boolean) => Promise<void>;
-    isEnabled: () => Promise<boolean>;
-    getActiveScans: () => Promise<string[]>;
-    isScanActive: (scanId: string) => Promise<boolean>;
-    exportConfig: (outputPath: string) => Promise<void>;
-    importConfig: (inputPath: string) => Promise<void>;
-    getQuarantinePath: () => Promise<string>;
-    setQuarantinePath: (path: string) => Promise<void>;
-    deepScanFile: (filePath: string) => Promise<{ success: boolean; result?: any; error?: string }>;
-    onScanProgress: (callback: (progress: any) => void) => () => void;
-    onScanComplete: (callback: (data: { scanId: string; result: any }) => void) => () => void;
-    onScanError: (callback: (data: { scanId: string; error: string }) => void) => () => void;
-  };
-
-  // Reports API (scan history and export)
-  reports: {
-    initialize: () => Promise<void>;
-    exportReport: (results: any[], summary: any, options: any) => Promise<any>;
-    getHistory: (filter?: any) => Promise<any>;
-    getScan: (id: string) => Promise<any>;
-    getScanReport: (id: string) => Promise<any>;
-    addScan: (report: any) => Promise<any>;
-    deleteScan: (id: string) => Promise<boolean>;
-    deleteScans: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
-    clearHistory: () => Promise<void>;
-    updateScan: (id: string, updates: any) => Promise<boolean>;
-    compareScans: (id1: string, id2: string) => Promise<any>;
-    getStatistics: () => Promise<any>;
-    showSaveDialog: (options: { defaultPath?: string; filters?: any[] }) => Promise<string | undefined>;
-    openFile: (filePath: string) => Promise<void>;
-  };
-
-  // VirusHunt Settings API
-  virusHuntSettings: {
-    getSettings: () => Promise<any>;
-    updateSettings: (updates: any) => Promise<any>;
-    resetSettings: () => Promise<any>;
-    validateSettings: (settings: unknown) => Promise<any>;
-    exportSettings: () => Promise<{ success: boolean; message: string; path?: string }>;
-    importSettings: () => Promise<{ success: boolean; message: string; updatedSettings?: any }>;
-  };
-
   // Dialog API
   dialog: {
     showOpenDialog: (options: {
@@ -372,13 +311,6 @@ export interface IpcApi {
       filters?: Array<{ name: string; extensions: string[] }>;
     }) => Promise<{ canceled: boolean; filePath?: string }>;
   };
-
-  // Event system
-  on: (channel: string, callback: (...args: any[]) => void) => void;
-  off: (channel: string, callback: (...args: any[]) => void) => void;
-
-  // Generic IPC invoke for custom handlers
-  invoke: <T = any>(channel: string, ...args: any[]) => Promise<T>;
 }
 
 declare global {

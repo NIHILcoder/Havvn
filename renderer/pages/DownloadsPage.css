@@ -74,11 +74,12 @@
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
   margin-bottom: var(--space-3);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
   animation: slideDown 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  transition: border-color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
 
 .global-stats:hover {
@@ -170,11 +171,12 @@
   gap: var(--space-3);
   padding: var(--space-4);
   margin-bottom: var(--space-3);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
   animation: slideDown 0.4s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
-  transition: border-color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
 
 .modern-controls:hover {
@@ -330,10 +332,11 @@
 
 .filter-chip.active,
 .sort-chip.active {
-  background: var(--color-bg-tertiary);
+  background: var(--color-accent-bg);
   border-color: var(--color-accent-primary);
   color: var(--color-accent-primary);
   font-weight: var(--font-weight-semibold);
+  box-shadow: var(--shadow-glow-sm);
 }
 
 /* Color-coded filter states */
@@ -744,10 +747,11 @@
 
 /* === Download Item - Shared === */
 .download-item {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  transition: all var(--transition-fast);
+  background: var(--gradient-card);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  transition: all var(--transition-normal);
   overflow: hidden;
   position: relative;
   animation: itemFadeIn 0.4s ease both;
@@ -766,8 +770,10 @@
 }
 
 .download-item:hover {
-  border-color: var(--color-border-strong);
+  border-color: rgba(59, 130, 246, 0.2);
   background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-md), var(--shadow-glow-sm);
+  transform: translateY(-1px);
 }
 
 .download-item-name {

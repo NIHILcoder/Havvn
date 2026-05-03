@@ -42,13 +42,3 @@ export { SettingsSidebar } from './SettingsSidebar';
 export type { SettingsCategory } from './SettingsSidebar';
 export { SeedingDashboard } from './SeedingDashboard';
 export { PrivacySettings } from './PrivacySettings';
-export { SecuritySettings } from './SecuritySettings';
-export { default as SecuritySettingsSimple } from './SecuritySettingsSimple';
-export { SecurityIndicator } from './SecurityIndicator';
-export { default as VirusHunt } from './VirusHunt';
-export { default as VirusHuntSimple } from './VirusHuntSimple';
-export { default as ScanResults } from './ScanResults';
-export { default as ScanResultModal } from './ScanResultModal';
-export { ExportModal, default as ExportModalDefault } from './ExportModal';
-export { StatisticsCharts, default as StatisticsChartsDefault } from './StatisticsCharts';
-
