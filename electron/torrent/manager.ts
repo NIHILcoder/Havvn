@@ -98,7 +98,7 @@ export class TorrentManager {
    * 20 bytes total, no machine-identifying data.
    */
   private generateEphemeralPeerId(): Buffer {
-    const prefix = '-TH0140-'; // TH client, v1.4.0
+    const prefix = '-TH0140-'; // TH client, v1.5.5
     const random = require('crypto').randomBytes(20 - prefix.length).toString('hex').slice(0, 20 - prefix.length);
     return Buffer.from(prefix + random);
   }
