@@ -6,14 +6,33 @@
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 
 A modern, privacy-focused desktop BitTorrent client built with Electron, React and
-WebTorrent. TorrentHunt ships ready to use — search the Internet Archive and browse a
-curated catalog out of the box — while keeping everything else opt-in and under your
-control.
+WebTorrent. TorrentHunt ships ready to use — search the Internet Archive out of the
+box — while keeping everything else opt-in and under your control.
 
 > **Legal use only.** TorrentHunt does not bundle indexers for copyrighted material.
 > Built-in sources point at public-domain / Creative Commons / open-source content
 > (Internet Archive, FOSS Torrents). Any additional search providers or RSS feeds are
 > added by you, and you are responsible for what you download and share.
+
+---
+
+## Download
+
+Grab the latest Windows installer from the
+**[Releases page](https://github.com/NIHILcoder/TorrentHunt/releases/latest)**.
+
+### Verify your download
+
+Every release is scanned with [VirusTotal](https://www.virustotal.com/) and ships with
+a SHA-256 checksum — both are listed in that release's notes. As an open-source desktop
+app, the installer may trigger a SmartScreen "unknown publisher" prompt; verifying the
+checksum confirms the file is genuine.
+
+```powershell
+Get-FileHash .\TorrentHunt-Setup-<version>.exe -Algorithm SHA256
+```
+
+Compare the output against the SHA-256 published in the matching GitHub release.
 
 ---
 
@@ -33,7 +52,6 @@ control.
   (web-seeded, so they download even with no peers)
 - **Pluggable search providers** — bring your own **Jackett**, **Prowlarr (Torznab)**, or
   a custom JSON API; test connectivity from the UI
-- **Community catalog** of verified open-source software
 - **RSS feeds** with auto-download, regex title filters and per-feed intervals; a few
   legal FOSS feeds are pre-seeded **disabled** (opt-in, no background traffic until you
   enable them) — plus one-click list cleanup
