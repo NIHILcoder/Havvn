@@ -29,6 +29,29 @@ function send(kind: UpdateStatusKind, payload: Record<string, unknown> = {}): vo
   }
 }
 
+/**
+ * Turn electron-updater's cryptic errors into something a user can act on.
+ * The most common one is a 404 on `latest.yml`: the GitHub release exists but
+ * was published without the update-metadata file that electron-builder
+ * generates (e.g. the installer was uploaded by hand). Without latest.yml the
+ * updater has no way to know the version or download URL.
+ */
+function friendlyUpdateError(err: unknown): string {
+  const raw = err == null ? 'unknown' : String((err as Error).message || err);
+  if (/latest\.yml/i.test(raw) && /404/.test(raw)) {
+    return (
+      'No update metadata (latest.yml) was found in the latest GitHub release. ' +
+      'This usually means the release was published manually without the auto-update ' +
+      'files. Releases must be built and published with electron-builder ' +
+      '(npm run dist) so that latest.yml is uploaded alongside the installer.'
+    );
+  }
+  if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network/i.test(raw)) {
+    return 'Could not reach the update server. Check your internet connection and try again.';
+  }
+  return raw;
+}
+
 export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> {
   mainWindowRef = mainWindow;
 
@@ -46,7 +69,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
         return { ok: true };
       } catch (e) {
         log.error('Manual update check failed', { error: e instanceof Error ? e.message : String(e) });
-        send('error', { message: e instanceof Error ? e.message : String(e) });
+        send('error', { message: friendlyUpdateError(e) });
         return { ok: false, reason: 'error' };
       }
     });
@@ -71,6 +94,9 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
   // Don't auto-download; we decide based on the setting.
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+  // Pick up prerelease (beta/alpha/rc) GitHub releases when the installed
+  // build is itself a prerelease. A stable build won't be offered betas.
+  autoUpdater.allowPrerelease = /-(?:alpha|beta|rc)/i.test(app.getVersion());
   autoUpdater.logger = {
     info: (m: unknown) => log.info(String(m)),
     warn: (m: unknown) => log.warn(String(m)),
@@ -101,7 +127,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
   });
   autoUpdater.on('error', (err) => {
     log.error('Updater error', { error: err == null ? 'unknown' : String(err) });
-    send('error', { message: err == null ? 'unknown' : String((err as Error).message || err) });
+    send('error', { message: friendlyUpdateError(err) });
   });
 
   // On startup: if auto-update is enabled, check (download is triggered by the

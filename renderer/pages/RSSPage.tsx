@@ -37,6 +37,7 @@ const RSSPage: React.FC = () => {
   const currentTab: string = tab; // avoids TS narrowing in nested JSX
 
   const [selectedFeed, setSelectedFeed] = useState<string | null>(null);
+  const [itemSearch, setItemSearch] = useState('');
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [downloadingGuids, setDownloadingGuids] = useState<Set<string>>(new Set());
@@ -186,9 +187,13 @@ const RSSPage: React.FC = () => {
     }
   };
 
-  const displayedItems = selectedFeed
+  const scopedItems = selectedFeed
     ? items.filter(i => i.feedId === selectedFeed)
     : items;
+  const searchQuery = itemSearch.trim().toLowerCase();
+  const displayedItems = searchQuery
+    ? scopedItems.filter(i => i.title.toLowerCase().includes(searchQuery))
+    : scopedItems;
 
   if (loading) {
     return (
@@ -232,7 +237,7 @@ const RSSPage: React.FC = () => {
             {t('rss.tab.feeds')} ({feeds.length})
           </button>
           <button className={`rss-tab ${tab === 'items' ? 'active' : ''}`} onClick={() => { setTab('items'); loadItems(selectedFeed || undefined); }}>
-            {t('rss.tab.items')} {displayedItems.length > 0 && `(${displayedItems.length})`}
+            {t('rss.tab.items')} {scopedItems.length > 0 && `(${scopedItems.length})`}
           </button>
           {editingFeed !== null && (
             <button className={`rss-tab ${tab === 'add' ? 'active' : ''}`} onClick={() => setTab('add')}>
@@ -357,9 +362,35 @@ const RSSPage: React.FC = () => {
               </div>
             )}
 
+            {scopedItems.length > 0 && (
+              <div className="items-search-row">
+                <Icon name="search" size={14} />
+                <input
+                  type="text"
+                  className="items-search-input"
+                  placeholder={t('rss.searchItems')}
+                  value={itemSearch}
+                  onChange={e => setItemSearch(e.target.value)}
+                />
+                {itemSearch && (
+                  <button
+                    className="items-search-clear"
+                    onClick={() => setItemSearch('')}
+                    title={t('rss.searchClear')}
+                  >
+                    <Icon name="x" size={14} />
+                  </button>
+                )}
+              </div>
+            )}
+
             {displayedItems.length > 0 && (
               <div className="items-toolbar">
-                <span className="items-count">{displayedItems.length}</span>
+                <span className="items-count">
+                  {searchQuery
+                    ? `${displayedItems.length} / ${scopedItems.length}`
+                    : displayedItems.length}
+                </span>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -373,7 +404,11 @@ const RSSPage: React.FC = () => {
             )}
 
             {displayedItems.length === 0 ? (
-              <EmptyState icon="inbox" title={t('rss.items.empty.title')} description={t('rss.items.empty.desc')} />
+              searchQuery && scopedItems.length > 0 ? (
+                <EmptyState icon="search" title={t('rss.searchEmpty.title')} description={t('rss.searchEmpty.desc')} />
+              ) : (
+                <EmptyState icon="inbox" title={t('rss.items.empty.title')} description={t('rss.items.empty.desc')} />
+              )
             ) : (
               <div className="items-list">
                 {displayedItems.map(item => (
