@@ -191,13 +191,6 @@ export const defaultHotkeys: Hotkey[] = [
     category: 'Navigation',
   },
   {
-    id: 'open-catalog',
-    label: 'Open Catalog',
-    description: 'Switch to the catalog page',
-    keys: ['Ctrl', 'KeyK'],
-    category: 'Navigation',
-  },
-  {
     id: 'open-settings',
     label: 'Open Settings',
     description: 'Open the settings page',

@@ -363,43 +363,44 @@ const RSSPage: React.FC = () => {
             )}
 
             {scopedItems.length > 0 && (
-              <div className="items-search-row">
-                <Icon name="search" size={14} />
-                <input
-                  type="text"
-                  className="items-search-input"
-                  placeholder={t('rss.searchItems')}
-                  value={itemSearch}
-                  onChange={e => setItemSearch(e.target.value)}
-                />
-                {itemSearch && (
-                  <button
-                    className="items-search-clear"
-                    onClick={() => setItemSearch('')}
-                    title={t('rss.searchClear')}
-                  >
-                    <Icon name="x" size={14} />
-                  </button>
-                )}
-              </div>
-            )}
-
-            {displayedItems.length > 0 && (
               <div className="items-toolbar">
-                <span className="items-count">
-                  {searchQuery
-                    ? `${displayedItems.length} / ${scopedItems.length}`
-                    : displayedItems.length}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  loading={clearing}
-                  onClick={handleClearItems}
-                  icon={<Icon name="trash" size={14} />}
-                >
-                  {selectedFeed ? t('rss.clearItems') : t('rss.clearAll')}
-                </Button>
+                <div className="items-search">
+                  <Icon name="search" size={14} />
+                  <input
+                    type="text"
+                    className="items-search-input"
+                    placeholder={t('rss.searchItems')}
+                    value={itemSearch}
+                    onChange={e => setItemSearch(e.target.value)}
+                  />
+                  {itemSearch && (
+                    <button
+                      className="items-search-clear"
+                      onClick={() => setItemSearch('')}
+                      title={t('rss.searchClear')}
+                    >
+                      <Icon name="x" size={13} />
+                    </button>
+                  )}
+                </div>
+                <div className="items-toolbar-right">
+                  <span className="items-count">
+                    {searchQuery
+                      ? `${displayedItems.length} / ${scopedItems.length}`
+                      : displayedItems.length}
+                  </span>
+                  {displayedItems.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      loading={clearing}
+                      onClick={handleClearItems}
+                      icon={<Icon name="trash" size={14} />}
+                    >
+                      {selectedFeed ? t('rss.clearItems') : t('rss.clearAll')}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
 

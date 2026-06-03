@@ -22,6 +22,9 @@ export type UpdateStatusKind =
 
 let mainWindowRef: BrowserWindow | null = null;
 let wired = false;
+// True while a user-initiated "Check for updates" is in flight. A manual check
+// is an explicit intent to update, so we download even if auto-update is off.
+let manualCheck = false;
 
 function send(kind: UpdateStatusKind, payload: Record<string, unknown> = {}): void {
   if (mainWindowRef && !mainWindowRef.isDestroyed()) {
@@ -64,10 +67,12 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
         return { ok: false, reason: 'dev' };
       }
       try {
+        manualCheck = true;
         send('checking');
         await autoUpdater.checkForUpdates();
         return { ok: true };
       } catch (e) {
+        manualCheck = false;
         log.error('Manual update check failed', { error: e instanceof Error ? e.message : String(e) });
         send('error', { message: friendlyUpdateError(e) });
         return { ok: false, reason: 'error' };
@@ -107,17 +112,20 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
   autoUpdater.on('checking-for-update', () => send('checking'));
   autoUpdater.on('update-available', (info) => {
     send('available', { version: info.version });
-    // Auto-download only when the user enabled auto-update
+    // Download when auto-update is on OR the user manually triggered the check
+    // (manual check = explicit intent to update).
     void db.getSettings().then((s) => {
-      if (s.autoUpdate) {
-        log.info('Auto-update on — downloading', { version: info.version });
+      const wasManual = manualCheck;
+      manualCheck = false;
+      if (s.autoUpdate || wasManual) {
+        log.info('Downloading update', { version: info.version, manual: wasManual, autoUpdate: s.autoUpdate });
         autoUpdater.downloadUpdate().catch((e) => {
-          send('error', { message: e instanceof Error ? e.message : String(e) });
+          send('error', { message: friendlyUpdateError(e) });
         });
       }
     });
   });
-  autoUpdater.on('update-not-available', () => send('not-available'));
+  autoUpdater.on('update-not-available', () => { manualCheck = false; send('not-available'); });
   autoUpdater.on('download-progress', (p) => {
     send('downloading', { percent: Math.round(p.percent), bytesPerSecond: p.bytesPerSecond });
   });
@@ -126,6 +134,7 @@ export async function initAutoUpdater(mainWindow: BrowserWindow): Promise<void> 
     send('downloaded', { version: info.version });
   });
   autoUpdater.on('error', (err) => {
+    manualCheck = false;
     log.error('Updater error', { error: err == null ? 'unknown' : String(err) });
     send('error', { message: friendlyUpdateError(err) });
   });

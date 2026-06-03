@@ -1483,7 +1483,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           <EmptyState
             icon="download"
             title="No downloads yet"
-            description="Add a magnet link or torrent file to start downloading. You can also browse the Catalog for legal open-source software."
+            description="Add a magnet link or torrent file to start downloading. You can also use Search to find legal open-source software."
           />
         ) : sortedDownloads.length === 0 ? (
           <EmptyState

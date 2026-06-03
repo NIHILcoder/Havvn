@@ -4,6 +4,22 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.9-beta] - 2026-06-03
+
+### Fixed
+- **Manual update check now downloads** — clicking "Check for Updates" downloads
+  the new version regardless of the Auto Update toggle (a manual check is an
+  explicit intent to update). Removed the misleading "downloading…" status that
+  appeared even when nothing was being downloaded.
+
+### Changed
+- **Redesigned RSS item search** — replaced the oversized full-width search bar
+  with a compact search box aligned in one row with the item count and clear
+  button.
+- **Removed the Catalog tab** — it was empty and duplicated the Search tab
+  (which has Internet Archive built in). Removed from the sidebar, routing and
+  the Ctrl+K shortcut.
+
 ## [1.5.8-beta] - 2026-06-03
 
 ### Added
@@ -43,6 +59,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.9-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.9-beta
 [1.5.8-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.8-beta
 [1.5.7-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.7-beta
 [1.5.6-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.6-beta

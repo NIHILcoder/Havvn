@@ -6,7 +6,6 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Sidebar, StatusBar, PageId, FilterMode } from './layout';
 import { DownloadStats, Download } from '../shared/types';
-import CatalogPage from './pages/CatalogPage';
 import CreateTorrentPage from './pages/CreateTorrentPage';
 import DownloadsPage from './pages/DownloadsPage';
 import SettingsPage from './pages/SettingsPage';
@@ -120,7 +119,6 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     const hotkeysMap: Record<string, string[]> = {
       'open-downloads': ['Ctrl', 'KeyD'],
-      'open-catalog': ['Ctrl', 'KeyK'],
       'open-settings': ['Ctrl', 'Comma'],
       'add-torrent': ['Ctrl', 'KeyO'],
       'create-torrent': ['Ctrl', 'KeyN'],
@@ -157,9 +155,6 @@ const AppContent: React.FC = () => {
           switch (action) {
             case 'open-downloads':
               setCurrentPage('downloads');
-              break;
-            case 'open-catalog':
-              setCurrentPage('catalog');
               break;
             case 'open-settings':
               setCurrentPage('settings');
@@ -198,8 +193,6 @@ const AppContent: React.FC = () => {
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'catalog':
-        return <CatalogPage />;
       case 'create-torrent':
         return <CreateTorrentPage onNavigateBack={() => setCurrentPage('downloads')} />;
       case 'downloads':

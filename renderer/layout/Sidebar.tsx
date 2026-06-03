@@ -8,7 +8,7 @@ import React, { useState, useEffect } from 'react';
 import { Icon, IconName } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 
-export type PageId = 'downloads' | 'catalog' | 'settings' | 'create-torrent' | 'search' | 'rss';
+export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss';
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
 interface NavItem {
@@ -62,7 +62,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'downloads', label: t('nav.downloads'), icon: 'download', hasSubmenu: true },
     { id: 'search', label: 'Search', icon: 'search' },
     { id: 'rss', label: 'RSS Feeds', icon: 'rss' },
-    { id: 'catalog', label: t('nav.catalog'), icon: 'book-open' },
     { id: 'settings', label: t('nav.settings'), icon: 'settings' },
   ];
 
