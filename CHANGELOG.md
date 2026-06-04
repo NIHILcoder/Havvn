@@ -4,6 +4,16 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.19-beta] - 2026-06-04
+
+### Fixed
+- **Create-Torrent header is readable in light theme.** The elevated header used
+  a dark gradient that wasn't overridden for light mode, leaving dark text on a
+  dark bar; it now uses a light gradient.
+- **Creating a torrent survives navigation.** The creation stage/progress/result
+  now lives in a store, so switching tabs mid-creation no longer loses the
+  window — coming back shows the live progress or the finished result.
+
 ## [1.5.18-beta] - 2026-06-04
 
 ### Fixed
@@ -155,6 +165,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.19-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.19-beta
 [1.5.18-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.18-beta
 [1.5.17-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.17-beta
 [1.5.16-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.16-beta

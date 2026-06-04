@@ -8,6 +8,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Icon, Input, ProgressBar, ToastContainer, FileTreeSelector, FileNode, QRCode, TrackerTemplates, MetadataPreview, BatchCreate } from '../components';
 import { CreateTorrentOptions, CreateTorrentProgress, CreateTorrentResult } from '../../shared/types';
 import { useTranslation } from '../utils/i18nContext';
+import { useCreateTorrentStore } from '../stores/createTorrentStore';
 import './CreateTorrentPage.css';
 
 // Utility functions
@@ -28,7 +29,6 @@ interface CreateTorrentPageProps {
 }
 
 type SourceMode = 'folder' | 'files';
-type CreateStage = 'setup' | 'creating' | 'success';
 
 // Toast item type
 interface ToastItem {
@@ -83,11 +83,17 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
   const [startSeeding, setStartSeeding] = useState(true);
   const [createdBy, setCreatedBy] = useState('TorrentHunt');
   
+  // Create-session state lives in a store so it survives navigation away from
+  // this page (creating in the background, returning to see the result).
+  const stage = useCreateTorrentStore(s => s.stage);
+  const progress = useCreateTorrentStore(s => s.progress);
+  const result = useCreateTorrentStore(s => s.result);
+  const error = useCreateTorrentStore(s => s.error);
+  const setError = useCreateTorrentStore(s => s.setError);
+  const startCreate = useCreateTorrentStore(s => s.start);
+  const resetCreate = useCreateTorrentStore(s => s.reset);
+
   // UI state
-  const [stage, setStage] = useState<CreateStage>('setup');
-  const [progress, setProgress] = useState<CreateTorrentProgress | null>(null);
-  const [result, setResult] = useState<CreateTorrentResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'basic' | 'trackers' | 'advanced'>('basic');
   const [copiedMagnet, setCopiedMagnet] = useState(false);
   const [copiedHash, setCopiedHash] = useState(false);
@@ -184,15 +190,6 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
 
     loadPathInfo();
   }, [sourcePaths]);
-
-  // Subscribe to progress updates
-  useEffect(() => {
-    const unsubscribe = window.api.onCreateTorrentProgress((progressUpdate) => {
-      setProgress(progressUpdate);
-    });
-
-    return () => unsubscribe();
-  }, []);
 
   // Handle file selection
   const handleSelectFiles = useCallback(async () => {
@@ -308,68 +305,59 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
     const outputPath = await window.api.selectSaveTorrentPath(name || 'torrent');
     if (!outputPath) return;
 
-    setStage('creating');
     setError(null);
-    setProgress({ stage: 'hashing', progress: 0, message: 'Initializing...' });
 
-    try {
-      // Parse trackers
-      const announceList: string[][] = [];
-      const trackerLines = trackers.split('\n').map(l => l.trim()).filter(l => l);
-      
-      for (const line of trackerLines) {
-        if (line.startsWith('udp://') || line.startsWith('http://') || line.startsWith('https://')) {
-          announceList.push([line]);
-        }
+    // Parse trackers
+    const announceList: string[][] = [];
+    const trackerLines = trackers.split('\n').map(l => l.trim()).filter(l => l);
+    for (const line of trackerLines) {
+      if (line.startsWith('udp://') || line.startsWith('http://') || line.startsWith('https://')) {
+        announceList.push([line]);
       }
+    }
 
-      // Parse web seeds
-      const urlList = webSeeds
-        .split('\n')
-        .map(l => l.trim())
-        .filter(l => l.startsWith('http://') || l.startsWith('https://'));
+    // Parse web seeds
+    const urlList = webSeeds
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('http://') || l.startsWith('https://'));
 
-      const options: CreateTorrentOptions = {
-        name: name || undefined,
-        comment: comment || undefined,
-        createdBy: createdBy || 'TorrentHunt',
-        announceList,
-        urlList: urlList.length > 0 ? urlList : undefined,
-        private: isPrivate,
-        pieceLength: pieceLength > 0 ? pieceLength : undefined,
-      };
+    const options: CreateTorrentOptions = {
+      name: name || undefined,
+      comment: comment || undefined,
+      createdBy: createdBy || 'TorrentHunt',
+      announceList,
+      urlList: urlList.length > 0 ? urlList : undefined,
+      private: isPrivate,
+      pieceLength: pieceLength > 0 ? pieceLength : undefined,
+    };
 
-      const createResult = await window.api.createTorrent({
-        sourcePaths,
-        outputPath,
-        options,
-        startSeeding,
-        excludePaths: excludedPaths.size > 0 ? Array.from(excludedPaths) : undefined,
-      });
+    // Runs in the store so it keeps going (and the result is preserved) even if
+    // the user navigates away mid-creation.
+    const r = await startCreate({
+      sourcePaths,
+      outputPath,
+      options,
+      startSeeding,
+      excludePaths: excludedPaths.size > 0 ? Array.from(excludedPaths) : undefined,
+    });
 
-      setResult(createResult);
-      setStage('success');
-      
-      // Add to history
+    if (r.ok && r.result) {
       const historyItem: CreatedTorrentHistory = {
-        id: createResult.infoHash,
+        id: r.result.infoHash,
         name: name || sourcePaths[0].split(/[/\\]/).pop() || 'Torrent',
-        path: createResult.torrentFilePath,
-        infoHash: createResult.infoHash,
-        size: createResult.totalSize,
+        path: r.result.torrentFilePath,
+        infoHash: r.result.infoHash,
+        size: r.result.totalSize,
         createdAt: new Date(),
         isSeeding: startSeeding,
       };
       setHistory(prev => [historyItem, ...prev.slice(0, 9)]); // Keep last 10
-      
       addToast('Torrent created successfully!', 'success');
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to create torrent';
-      setError(errorMessage);
-      setStage('setup');
-      addToast(errorMessage, 'error');
+    } else {
+      addToast(r.error || 'Failed to create torrent', 'error');
     }
-  }, [sourcePaths, name, comment, createdBy, trackers, webSeeds, isPrivate, pieceLength, startSeeding, excludedPaths, addToast]);
+  }, [sourcePaths, name, comment, createdBy, trackers, webSeeds, isPrivate, pieceLength, startSeeding, excludedPaths, addToast, setError, startCreate]);
 
   // Copy magnet link
   const handleCopyMagnet = useCallback(() => {
@@ -405,15 +393,12 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
     setSourceFileCount(0);
     setName('');
     setComment('');
-    setStage('setup');
-    setProgress(null);
-    setResult(null);
-    setError(null);
+    resetCreate();
     setActiveTab('basic');
     setExcludedPaths(new Set());
     setFileTree([]);
     setShowFileTree(false);
-  }, []);
+  }, [resetCreate]);
   
   // File tree handlers
   const handleToggleFile = useCallback((path: string, isDirectory: boolean) => {
