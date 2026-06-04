@@ -4,6 +4,16 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.20-beta] - 2026-06-04
+
+### Fixed
+- **Created torrents now seed instead of stalling at 0%.** When creating a
+  torrent from a single file, the auto-filled name stripped the extension, so
+  the torrent name no longer matched the file on disk — WebTorrent couldn't find
+  it and "start seeding" stuck at 0% (which also blocked making a share link).
+  The name now keeps the extension, so created torrents seed immediately (100%)
+  and can be shared.
+
 ## [1.5.19-beta] - 2026-06-04
 
 ### Fixed
@@ -165,6 +175,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.20-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.20-beta
 [1.5.19-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.19-beta
 [1.5.18-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.18-beta
 [1.5.17-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.17-beta

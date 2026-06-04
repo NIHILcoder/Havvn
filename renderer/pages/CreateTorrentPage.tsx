@@ -197,10 +197,12 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
     if (paths && paths.length > 0) {
       setSourcePaths(paths);
       
-      // Auto-set name from first file if not set
-      if (!name) {
-        const fileName = paths[0].split(/[/\\]/).pop() || '';
-        setName(fileName.replace(/\.[^/.]+$/, '')); // Remove extension
+      // Auto-set name from first file if not set. Keep the extension — for a
+      // single-file torrent the name IS the file name, and stripping it makes
+      // the torrent name diverge from the file on disk, so "start seeding"
+      // can't find it (stuck at 0%) and sharing breaks.
+      if (!name && paths.length === 1) {
+        setName(paths[0].split(/[/\\]/).pop() || '');
       }
       addToast(`Selected ${paths.length} file(s)`, 'success');
     }
