@@ -4,6 +4,20 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.13-beta] - 2026-06-04
+
+### Added
+- **Instant Share Links (beta).** Right-click a completed download → **Share
+  link…** to get a link anyone can open in a browser to download the file
+  peer-to-peer over WebRTC — no install and no cloud, the bytes go straight from
+  your machine. Built on a dedicated WebRTC-enabled WebTorrent client
+  (@roamhq/wrtc) + public WebSocket trackers, with a static receiver page hosted
+  on GitHub Pages. The app must stay open while people download.
+
+### Notes
+- Reliability depends on public WebRTC trackers and your NAT (no TURN yet), so
+  some connections may fail — this is an early beta of the feature.
+
 ## [1.5.12-beta] - 2026-06-04
 
 ### Added
@@ -97,6 +111,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.13-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.13-beta
 [1.5.12-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.12-beta
 [1.5.11-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.11-beta
 [1.5.10-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.10-beta

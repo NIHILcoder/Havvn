@@ -17,6 +17,7 @@ import {
   CreateTorrentResult,
   CreateTorrentProgress,
   PrivacyConfig,
+  ShareInfo,
 } from '../shared/types';
 
 const api: IpcApi = {
@@ -55,6 +56,19 @@ const api: IpcApi = {
 
   getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }> => {
     return ipcRenderer.invoke('downloads:getStreamUrl', id, fileIndex, opts);
+  },
+
+  shareStart: (downloadId: string): Promise<ShareInfo> => {
+    return ipcRenderer.invoke('share:start', downloadId);
+  },
+  shareStop: (downloadId: string): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('share:stop', downloadId);
+  },
+  shareGet: (downloadId: string): Promise<(ShareInfo & { peers: number }) | null> => {
+    return ipcRenderer.invoke('share:get', downloadId);
+  },
+  shareList: (): Promise<ShareInfo[]> => {
+    return ipcRenderer.invoke('share:list');
   },
 
   getTorrentInfo: (params: { torrentPath?: string; magnetUri?: string }): Promise<any> => {

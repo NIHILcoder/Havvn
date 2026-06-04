@@ -603,6 +603,14 @@ async function cleanup(): Promise<void> {
     logger.error('App', 'Error destroying seeding manager', { error: e });
   }
 
+  try {
+    const { getShareManager } = require('./sharing/share-manager');
+    getShareManager().destroy();
+    logger.info('App', 'Share manager destroyed.');
+  } catch (e) {
+    logger.error('App', 'Error destroying share manager', { error: e });
+  }
+
   // Stop scheduler
   try {
     const scheduler = getSchedulerEngine();

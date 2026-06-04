@@ -462,6 +462,20 @@ const dictionary = {
     'player.unsupported': "This file couldn't be played even after conversion. Try an external player.",
     'player.note': 'Streaming from the torrent — playback starts before the download finishes.',
 
+    // Share links
+    'share.title': 'Share link',
+    'share.close': 'Close',
+    'share.done': 'Done',
+    'share.creating': 'Creating share link…',
+    'share.notComplete': 'The download must be complete before you can share it.',
+    'share.linkLabel': 'Anyone with this link can download in their browser:',
+    'share.copy': 'Copy',
+    'share.copied': 'Copied',
+    'share.live': 'Live',
+    'share.peers': 'connected',
+    'share.note': 'Keep TorrentHunt open while people download. The transfer is peer-to-peer (WebRTC) — nothing is uploaded to a server.',
+    'share.stop': 'Stop sharing',
+
     // App statistics
     'stats.totalDownloads': 'Total Downloads',
     'stats.downloaded': 'Downloaded',
@@ -927,6 +941,20 @@ const dictionary = {
     'player.noMedia': 'В этом торренте нет воспроизводимых видео или аудио.',
     'player.unsupported': 'Файл не удалось воспроизвести даже после конвертации. Попробуйте внешний плеер.',
     'player.note': 'Стриминг прямо из торрента — воспроизведение начинается до завершения загрузки.',
+
+    // Ссылки-шеринг
+    'share.title': 'Ссылка для обмена',
+    'share.close': 'Закрыть',
+    'share.done': 'Готово',
+    'share.creating': 'Создаём ссылку…',
+    'share.notComplete': 'Чтобы поделиться, загрузка должна быть завершена.',
+    'share.linkLabel': 'Любой по этой ссылке скачает файл прямо в браузере:',
+    'share.copy': 'Копировать',
+    'share.copied': 'Скопировано',
+    'share.live': 'В эфире',
+    'share.peers': 'подключено',
+    'share.note': 'Держите TorrentHunt открытым, пока скачивают. Передача напрямую (WebRTC) — ничего не загружается на сервер.',
+    'share.stop': 'Остановить',
 
     // Статистика приложения
     'stats.totalDownloads': 'Всего загрузок',

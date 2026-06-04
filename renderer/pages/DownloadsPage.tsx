@@ -22,6 +22,7 @@ import {
   TorrentFileSelector,
   TorrentControlModal,
   StreamPlayerModal,
+  ShareLinkModal,
 } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import './DownloadsPage.css';
@@ -598,6 +599,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const controlModalDownload = controlModalId ? downloads.find(d => d.id === controlModalId) : null;
   const [streamModalId, setStreamModalId] = useState<string | null>(null);
   const streamModalDownload = streamModalId ? downloads.find(d => d.id === streamModalId) : null;
+  const [shareModalId, setShareModalId] = useState<string | null>(null);
+  const shareModalDownload = shareModalId ? downloads.find(d => d.id === shareModalId) : null;
 
   // Refs
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -1596,6 +1599,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
+              label: 'Share link…',
+              icon: 'share-2',
+              onClick: () => {
+                setShareModalId(contextMenu.downloadId);
+                setContextMenu(null);
+              }
+            },
+            {
               label: 'Advanced Controls...',
               icon: 'settings',
               onClick: () => {
@@ -1671,6 +1682,15 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           downloadId={streamModalDownload.id}
           downloadName={streamModalDownload.name}
           onClose={() => setStreamModalId(null)}
+        />
+      )}
+
+      {/* Share link */}
+      {shareModalDownload && (
+        <ShareLinkModal
+          downloadId={shareModalDownload.id}
+          downloadName={shareModalDownload.name}
+          onClose={() => setShareModalId(null)}
         />
       )}
     </div>

@@ -12,6 +12,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { logger, detectVPN, showVPNWarning, getAppIconPath } from '../utils';
 import { getRSSService } from '../services/rss-service';
+import { getShareManager, downloadContentPath } from '../sharing/share-manager';
 import { getSearchService } from '../services/search-service';
 import { getIPBlocklistService } from '../services/ip-blocklist';
 import { getWatchFolderService } from '../torrent/watch-folder';
@@ -117,6 +118,39 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     async (_event, id: string, fileIndex: number, opts?: { transcode?: boolean }) => {
       return torrentManager.getStreamUrl(id, fileIndex, opts);
     }
+  ));
+
+  // ── Share links (torrent → browser via WebRTC) ──────────────────────────
+  ipcMain.handle('share:start', wrapHandler('share:start',
+    async (_event, downloadId: string) => {
+      const download = await db.getDownloadById(downloadId);
+      if (!download) throw new TorrentError('Download not found', 'NOT_FOUND', downloadId);
+      const isComplete = download.progress >= 1 || download.status === 'completed' || download.status === 'seeding';
+      if (!isComplete) {
+        throw new TorrentError('Download must be complete to share', 'NOT_COMPLETE', downloadId);
+      }
+      const contentPath = downloadContentPath(download.savePath, download.name);
+      return getShareManager().share(downloadId, contentPath, download.name);
+    }
+  ));
+
+  ipcMain.handle('share:stop', wrapHandler('share:stop',
+    async (_event, downloadId: string) => {
+      await getShareManager().stop(downloadId);
+      return { ok: true };
+    }
+  ));
+
+  ipcMain.handle('share:get', wrapHandler('share:get',
+    async (_event, downloadId: string) => {
+      const share = getShareManager().getForDownload(downloadId);
+      if (!share) return null;
+      return { ...share, peers: getShareManager().getPeers(downloadId) };
+    }
+  ));
+
+  ipcMain.handle('share:list', wrapHandler('share:list',
+    async () => getShareManager().list()
   ));
 
   ipcMain.handle('downloads:getTorrentInfo', wrapHandler('downloads:getTorrentInfo',

@@ -61,6 +61,16 @@ export interface TorrentFile {
   priority?: FilePriority;
 }
 
+/** An active "share link" — a download re-seeded for browser download over WebRTC. */
+export interface ShareInfo {
+  downloadId: string;
+  name: string;
+  infoHash: string;
+  magnetURI: string;
+  link: string;
+  createdAt: number;
+}
+
 export type FilePriority = 'skip' | 'low' | 'normal' | 'high';
 
 export interface TrackerInfo {
@@ -374,6 +384,10 @@ export interface IpcApi {
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }>;
+  shareStart: (downloadId: string) => Promise<ShareInfo>;
+  shareStop: (downloadId: string) => Promise<{ ok: boolean }>;
+  shareGet: (downloadId: string) => Promise<(ShareInfo & { peers: number }) | null>;
+  shareList: () => Promise<ShareInfo[]>;
   getTorrentInfo: (params: { torrentPath?: string; magnetUri?: string }) => Promise<TorrentInfo>;
   setDownloadCategory: (id: string, category: string | null) => Promise<void>;
   getAppStats: () => Promise<{
