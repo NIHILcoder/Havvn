@@ -1211,7 +1211,7 @@ const SettingsPage: React.FC = () => {
 
         <div className="settings-group">
           <h3 className="settings-group-title">{t('settings.grp.theme')}</h3>
-          <div className="setting-item">
+          <div className="setting-item setting-item-stacked">
             <div className="setting-info">
               <div className="setting-label">{t('settings.theme')}</div>
               <p className="setting-description">{t('settings.theme.desc')}</p>

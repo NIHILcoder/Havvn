@@ -593,8 +593,14 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('app:getAutoLaunch', wrapHandler('app:getAutoLaunch',
     async () => {
-      const loginSettings = app.getLoginItemSettings();
-      return loginSettings.openAtLogin;
+      // The persisted preference is the source of truth. Reading the OS login
+      // item back is unreliable on Windows when it was registered under a custom
+      // name ("TorrentHunt"): getLoginItemSettings() without that name reports
+      // openAtLogin=false even though the registry entry exists, which made the
+      // toggle reset itself on every revisit. The actual OS login item is applied
+      // from this setting on startup (see main.ts) and updated on every toggle.
+      const settings = await db.getSettings();
+      return settings.autoLaunch ?? false;
     }
   ));
 

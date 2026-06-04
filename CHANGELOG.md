@@ -4,6 +4,17 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.10-beta] - 2026-06-04
+
+### Fixed
+- **Auto-launch toggle no longer resets itself.** The toggle state is now read
+  from the saved preference instead of the Windows login-item registry, which
+  reported "off" when the item was registered under a custom name. The OS
+  login item is still applied on startup and on every toggle.
+- **Theme picker no longer overlaps its label.** The theme cards now stack
+  full-width below the "Color scheme" label instead of overflowing into it at
+  standard window widths.
+
 ## [1.5.9-beta] - 2026-06-03
 
 ### Fixed
@@ -59,6 +70,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.10-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.10-beta
 [1.5.9-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.9-beta
 [1.5.8-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.8-beta
 [1.5.7-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.7-beta
