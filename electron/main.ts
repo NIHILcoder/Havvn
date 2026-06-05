@@ -597,6 +597,14 @@ async function cleanup(): Promise<void> {
     logger.error('App', 'Error destroying share manager', { error: e });
   }
 
+  try {
+    const { getRoomManager } = require('./sharing/room-manager');
+    getRoomManager().destroy();
+    logger.info('App', 'Room manager destroyed.');
+  } catch (e) {
+    logger.error('App', 'Error destroying room manager', { error: e });
+  }
+
   // Stop scheduler
   try {
     const scheduler = getSchedulerEngine();

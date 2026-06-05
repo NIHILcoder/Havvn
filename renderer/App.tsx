@@ -11,6 +11,7 @@ import DownloadsPage from './pages/DownloadsPage';
 import SettingsPage from './pages/SettingsPage';
 import SearchPage from './pages/SearchPage';
 import RSSPage from './pages/RSSPage';
+import RoomsPage from './pages/RoomsPage';
 import { formatBytes } from './utils/format-helpers';
 import { I18nProvider } from './utils/i18nContext';
 
@@ -203,6 +204,8 @@ const AppContent: React.FC = () => {
         return <SearchPage />;
       case 'rss':
         return <RSSPage />;
+      case 'rooms':
+        return <RoomsPage />;
       default:
         return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
     }

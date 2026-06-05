@@ -4,7 +4,7 @@
  */
 
 import Store from 'electron-store';
-import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, SearchProvider, IPBlocklist } from '../../shared/types';
+import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, SearchProvider, IPBlocklist, RoomProfile } from '../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
@@ -26,6 +26,17 @@ interface StoreSchema {
   defaultsSeeded: boolean;               // First-run seeding marker
   suggestedFeedSeeded: boolean;          // One-time seeding/migration of the working FOSS Torrents feed
   collaborativeSeedingEnabled: boolean;  // Collaborative Seeding Network opt-in (persisted)
+  rooms: Record<string, PersistedRoom>;  // Friend swarms / private rooms (Phase 3)
+  roomProfile: RoomProfile | null;       // This install's identity in rooms
+}
+
+/** Minimal persisted room record — re-joined on startup. */
+export interface PersistedRoom {
+  roomId: string;
+  name: string;
+  code: string;
+  folder: string;
+  createdAt: number;
 }
 
 const defaultCategories: Category[] = [
@@ -107,6 +118,8 @@ const store = new Store<StoreSchema>({
     defaultsSeeded: false,
     suggestedFeedSeeded: false,
     collaborativeSeedingEnabled: false,
+    rooms: {},
+    roomProfile: null,
   },
 });
 
@@ -796,6 +809,43 @@ export async function saveBlocklistData(id: string, data: string): Promise<void>
 export async function getBlocklistData(id: string): Promise<string | null> {
   const blocklistData = store.get('blocklistData') ?? {};
   return blocklistData[id] ?? null;
+}
+
+// === Friend swarms / private rooms (Phase 3) ===
+
+export function getPersistedRooms(): PersistedRoom[] {
+  const rooms = store.get('rooms') ?? {};
+  return Object.values(rooms).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function savePersistedRoom(room: PersistedRoom): void {
+  const rooms = store.get('rooms') ?? {};
+  rooms[room.roomId] = room;
+  store.set('rooms', rooms);
+}
+
+export function deletePersistedRoom(roomId: string): void {
+  const rooms = store.get('rooms') ?? {};
+  delete rooms[roomId];
+  store.set('rooms', rooms);
+}
+
+/** This install's room identity, lazily created and persisted on first use. */
+export function getRoomProfile(): RoomProfile {
+  let profile = store.get('roomProfile');
+  if (!profile) {
+    const memberId = uuidv4().replace(/-/g, '');
+    profile = { memberId, name: '', avatarSeed: memberId };
+    store.set('roomProfile', profile);
+  }
+  return profile;
+}
+
+export function updateRoomProfile(updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed'>>): RoomProfile {
+  const profile = getRoomProfile();
+  const next: RoomProfile = { ...profile, ...updates };
+  store.set('roomProfile', next);
+  return next;
 }
 
 // Export store for testing/debugging

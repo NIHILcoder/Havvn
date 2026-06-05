@@ -18,6 +18,9 @@ import {
   CreateTorrentProgress,
   PrivacyConfig,
   ShareInfo,
+  RoomProfile,
+  RoomState,
+  RoomSummary,
 } from '../shared/types';
 
 const api: IpcApi = {
@@ -417,6 +420,27 @@ const api: IpcApi = {
     updateProvider: (id: string, updates: any) => ipcRenderer.invoke('search:updateProvider', id, updates),
     removeProvider: (id: string) => ipcRenderer.invoke('search:removeProvider', id),
     testProvider: (id: string) => ipcRenderer.invoke('search:testProvider', id),
+  },
+
+  // Friend swarms / private rooms (Phase 3)
+  rooms: {
+    getProfile: (): Promise<RoomProfile> => ipcRenderer.invoke('rooms:getProfile'),
+    setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed'>>): Promise<RoomProfile> =>
+      ipcRenderer.invoke('rooms:setProfile', updates),
+    create: (name: string): Promise<RoomState> => ipcRenderer.invoke('rooms:create', name),
+    join: (code: string): Promise<RoomState> => ipcRenderer.invoke('rooms:join', code),
+    leave: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:leave', roomId),
+    list: (): Promise<RoomSummary[]> => ipcRenderer.invoke('rooms:list'),
+    get: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:get', roomId),
+    addFiles: (roomId: string, paths: string[]): Promise<RoomState> => ipcRenderer.invoke('rooms:addFiles', roomId, paths),
+    pickAndAddFiles: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:pickAndAddFiles', roomId),
+    openFolder: (roomId: string): Promise<void> => ipcRenderer.invoke('rooms:openFolder', roomId),
+  },
+
+  onRoomUpdate: (callback: (state: RoomState) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, state: RoomState) => callback(state);
+    ipcRenderer.on('rooms:update', handler);
+    return () => { ipcRenderer.removeListener('rooms:update', handler); };
   },
 
   // Priority 2: IP Blocklist

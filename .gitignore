@@ -63,3 +63,4 @@ $RECYCLE.BIN/
 *.local
 tmp/
 temp/
+.git-commit-msg.txt

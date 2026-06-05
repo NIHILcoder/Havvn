@@ -4,6 +4,22 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.25-beta] - 2026-06-06
+
+### Added
+- **Rooms — private friend swarms (Phase 3).** A new **Rooms** tab (sidebar) lets
+  you create a private group, share a speakable invite **code**
+  (e.g. `swift-amber-otter-comet-4821`) or QR, and have everyone's files
+  auto-distribute peer-to-peer into a shared folder — like a private Dropbox with
+  no cloud in the middle. Members find each other over the same WebRTC + tracker
+  (+ optional TURN) infrastructure as share links; the manifest and presence are
+  exchanged over **AES-256-GCM-encrypted** channels with the key derived from the
+  invite code, so only people with the code can read or join. Each member is shown
+  with a unique, auto-generated **identicon avatar** and an online indicator, plus
+  a live "who has what" view per file. Files you add are seeded from disk; files
+  others add download automatically with progress. Rooms persist and reconnect on
+  startup. Honors the existing "Use TURN relays" privacy toggle.
+
 ## [1.5.24-beta] - 2026-06-05
 
 ### Removed
@@ -224,6 +240,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.25-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.25-beta
 [1.5.24-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.24-beta
 [1.5.23-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.23-beta
 [1.5.22-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.22-beta

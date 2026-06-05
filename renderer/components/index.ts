@@ -46,3 +46,4 @@ export { PrivacySettings } from './PrivacySettings';
 export { TorrentControlModal } from './TorrentControlModal';
 export { StreamPlayerModal } from './StreamPlayerModal';
 export { ShareLinkModal } from './ShareLinkModal';
+export { Identicon } from './Identicon';

@@ -75,6 +75,79 @@ export interface ShareInfo {
   createdAt: number;
 }
 
+// ── Friend swarms / private rooms (Phase 3) ────────────────────────────────
+// A "room" is a serverless private group: members share an invite code, derive
+// a shared key from it, find each other via a tracker rendezvous (topicHash),
+// gossip an add-only file manifest over encrypted WebRTC data channels, and
+// auto-distribute the files P2P (same WebTorrent swarm infra as share links).
+
+/** One file in a room's shared, add-only manifest. Keyed by infoHash. */
+export interface RoomFile {
+  fileId: string;        // == infoHash (lowercase hex); the dedupe key
+  name: string;
+  size: number;
+  infoHash: string;
+  magnetURI: string;
+  addedBy: string;       // memberId of the member who first shared it
+  addedByName: string;
+  addedAt: number;
+}
+
+/** A member of a room (including yourself). */
+export interface RoomMember {
+  memberId: string;      // stable per-install identity
+  name: string;
+  avatarSeed: string;    // deterministic seed for the identicon (defaults to memberId)
+  online: boolean;
+  isSelf: boolean;
+  lastSeen: number;
+  have: string[];        // fileIds this member reports holding complete
+}
+
+/** Local transfer status of one room file on this machine. */
+export interface RoomTransfer {
+  fileId: string;
+  progress: number;      // 0..1
+  status: 'seeding' | 'downloading' | 'queued' | 'done' | 'error';
+  downSpeed: number;     // bytes/s
+  peers: number;
+  haveLocally: boolean;
+}
+
+/** Full live state of one room, pushed to the renderer. */
+export interface RoomState {
+  roomId: string;        // local uuid
+  name: string;
+  code: string;          // the secret invite code
+  folder: string;        // local shared folder path
+  topicHash: string;     // sha1 rendezvous topic derived from the code
+  createdAt: number;
+  members: RoomMember[];
+  files: RoomFile[];
+  transfers: Record<string, RoomTransfer>;
+  connected: boolean;    // tracker rendezvous connected
+  peerCount: number;     // live gossip peers right now
+}
+
+/** Lightweight room listing entry. */
+export interface RoomSummary {
+  roomId: string;
+  name: string;
+  code: string;
+  folder: string;
+  memberCount: number;
+  onlineCount: number;
+  fileCount: number;
+  createdAt: number;
+}
+
+/** This install's identity in rooms. */
+export interface RoomProfile {
+  memberId: string;
+  name: string;
+  avatarSeed: string;
+}
+
 export type FilePriority = 'skip' | 'low' | 'normal' | 'high';
 
 export interface TrackerInfo {
@@ -526,6 +599,21 @@ export interface IpcApi {
     removeProvider: (id: string) => Promise<void>;
     testProvider: (id: string) => Promise<{ success: boolean; message: string }>;
   };
+
+  // Friend swarms / private rooms (Phase 3)
+  rooms: {
+    getProfile: () => Promise<RoomProfile>;
+    setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed'>>) => Promise<RoomProfile>;
+    create: (name: string) => Promise<RoomState>;
+    join: (code: string) => Promise<RoomState>;
+    leave: (roomId: string) => Promise<{ ok: boolean }>;
+    list: () => Promise<RoomSummary[]>;
+    get: (roomId: string) => Promise<RoomState | null>;
+    addFiles: (roomId: string, paths: string[]) => Promise<RoomState>;
+    pickAndAddFiles: (roomId: string) => Promise<RoomState | null>;
+    openFolder: (roomId: string) => Promise<void>;
+  };
+  onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
 
   // IP Blocklist
   blocklist: {

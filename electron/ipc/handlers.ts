@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import { logger, detectVPN, showVPNWarning, getAppIconPath } from '../utils';
 import { getRSSService } from '../services/rss-service';
 import { getShareManager, downloadContentPath } from '../sharing/share-manager';
+import { getRoomManager } from '../sharing/room-manager';
 import { getSearchService } from '../services/search-service';
 import { getIPBlocklistService } from '../services/ip-blocklist';
 import { getWatchFolderService } from '../torrent/watch-folder';
@@ -56,6 +57,12 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
   const torrentManager = getTorrentManager();
 
   log.info('Setting up IPC handlers');
+
+  // Friend swarms: forward live room updates to this window, then re-join any
+  // persisted rooms shortly after startup so swarms reconnect on their own.
+  const roomManager = getRoomManager();
+  roomManager.setMainWindow(mainWindow);
+  setTimeout(() => { roomManager.restoreAll().catch((e) => log.warn('Room restore failed', { error: String(e) })); }, 4000);
 
   // Downloads
   ipcMain.handle('downloads:add', wrapHandler('downloads:add',
@@ -154,6 +161,60 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle('share:list', wrapHandler('share:list',
     async () => getShareManager().list()
+  ));
+
+  // ── Friend swarms / private rooms (Phase 3) ─────────────────────────────
+  ipcMain.handle('rooms:getProfile', wrapHandler('rooms:getProfile',
+    async () => roomManager.getProfile()
+  ));
+
+  ipcMain.handle('rooms:setProfile', wrapHandler('rooms:setProfile',
+    async (_event, updates: { name?: string; avatarSeed?: string }) => roomManager.setProfile(updates || {})
+  ));
+
+  ipcMain.handle('rooms:create', wrapHandler('rooms:create',
+    async (_event, name: string) => roomManager.createRoom(typeof name === 'string' ? name.trim() : '')
+  ));
+
+  ipcMain.handle('rooms:join', wrapHandler('rooms:join',
+    async (_event, code: string) => {
+      if (typeof code !== 'string' || !code.trim()) throw new Error('Room code is required');
+      return roomManager.joinRoom(code);
+    }
+  ));
+
+  ipcMain.handle('rooms:leave', wrapHandler('rooms:leave',
+    async (_event, roomId: string) => roomManager.leaveRoom(roomId)
+  ));
+
+  ipcMain.handle('rooms:list', wrapHandler('rooms:list',
+    async () => roomManager.list()
+  ));
+
+  ipcMain.handle('rooms:get', wrapHandler('rooms:get',
+    async (_event, roomId: string) => roomManager.getRoom(roomId)
+  ));
+
+  ipcMain.handle('rooms:addFiles', wrapHandler('rooms:addFiles',
+    async (_event, roomId: string, paths: string[]) => roomManager.addFiles(roomId, Array.isArray(paths) ? paths : [])
+  ));
+
+  ipcMain.handle('rooms:pickAndAddFiles', wrapHandler('rooms:pickAndAddFiles',
+    async (_event, roomId: string) => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Add files to room',
+        properties: ['openFile', 'multiSelections'],
+      });
+      if (result.canceled || !result.filePaths.length) return null;
+      return roomManager.addFiles(roomId, result.filePaths);
+    }
+  ));
+
+  ipcMain.handle('rooms:openFolder', wrapHandler('rooms:openFolder',
+    async (_event, roomId: string) => {
+      const folder = roomManager.folderOf(roomId);
+      if (folder) await shell.openPath(folder);
+    }
   ));
 
   ipcMain.handle('downloads:getTorrentInfo', wrapHandler('downloads:getTorrentInfo',
