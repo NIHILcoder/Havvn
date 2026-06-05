@@ -1,6 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
 import { getTorrentManager, TorrentError, createTorrentFile, getDefaultTrackers } from '../torrent';
-import { getCollaborativeSeedingManager } from '../seeding';
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority } from '../../shared/types';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
@@ -510,51 +509,6 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     async () => {
       return getDefaultTrackers();
     }
-  ));
-
-  // === Collaborative Seeding Network ===
-  const seedingManager = getCollaborativeSeedingManager();
-
-  ipcMain.handle('seeding:getReputation', wrapHandler('seeding:getReputation',
-    async () => {
-      return seedingManager.getReputation();
-    }
-  ));
-
-  ipcMain.handle('seeding:getSeedingPriorities', wrapHandler('seeding:getSeedingPriorities',
-    async () => {
-      const priorities = seedingManager.getSeedingPriorities();
-      // Convert Map to object for IPC transfer
-      return Object.fromEntries(priorities);
-    }
-  ));
-
-  ipcMain.handle('seeding:getSeedingRecommendations', wrapHandler('seeding:getSeedingRecommendations',
-    async (_event, maxSlots: number = 5) => {
-      return seedingManager.getSeedingRecommendations(maxSlots);
-    }
-  ));
-
-  ipcMain.handle('seeding:getRecentTransactions', wrapHandler('seeding:getRecentTransactions',
-    async (_event, limit: number = 20) => {
-      return seedingManager.getRecentTransactions(limit);
-    }
-  ));
-
-  ipcMain.handle('seeding:getBadges', wrapHandler('seeding:getBadges',
-    async () => {
-      return seedingManager.getBadges();
-    }
-  ));
-
-  ipcMain.handle('seeding:enable', wrapHandler('seeding:enable',
-    async (_event, enabled: boolean) => {
-      return seedingManager.setEnabled(enabled);
-    }
-  ));
-
-  ipcMain.handle('seeding:isEnabled', wrapHandler('seeding:isEnabled',
-    async () => seedingManager.isEnabled()
   ));
 
   // Privacy & Security handlers

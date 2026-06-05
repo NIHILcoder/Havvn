@@ -206,35 +206,6 @@ const api: IpcApi = {
     };
   },
 
-  // Collaborative Seeding Network
-  getReputation: () => {
-    return ipcRenderer.invoke('seeding:getReputation');
-  },
-
-  getSeedingPriorities: () => {
-    return ipcRenderer.invoke('seeding:getSeedingPriorities');
-  },
-
-  getSeedingRecommendations: (maxSlots: number) => {
-    return ipcRenderer.invoke('seeding:getSeedingRecommendations', maxSlots);
-  },
-
-  getRecentTransactions: (limit?: number) => {
-    return ipcRenderer.invoke('seeding:getRecentTransactions', limit);
-  },
-
-  getBadges: () => {
-    return ipcRenderer.invoke('seeding:getBadges');
-  },
-
-  enableCollaborativeSeeding: (enabled: boolean) => {
-    return ipcRenderer.invoke('seeding:enable', enabled);
-  },
-
-  isCollaborativeSeedingEnabled: () => {
-    return ipcRenderer.invoke('seeding:isEnabled');
-  },
-
   // Privacy & Security
   getPrivacyConfig: () => {
     return ipcRenderer.invoke('privacy:getConfig');

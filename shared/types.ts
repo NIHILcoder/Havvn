@@ -483,15 +483,6 @@ export interface IpcApi {
   onDownloadStats: (callback: (stats: DownloadStats[]) => void) => () => void;
   onCreateTorrentProgress: (callback: (progress: CreateTorrentProgress) => void) => () => void;
 
-  // Collaborative Seeding Network
-  getReputation: () => Promise<UserReputation>;
-  getSeedingPriorities: () => Promise<Map<string, SeedingPriority>>;
-  getSeedingRecommendations: (maxSlots: number) => Promise<SeedingPlan>;
-  getRecentTransactions: (limit?: number) => Promise<ReputationTransaction[]>;
-  getBadges: () => Promise<Badge[]>;
-  enableCollaborativeSeeding: (enabled: boolean) => Promise<void>;
-  isCollaborativeSeedingEnabled: () => Promise<boolean>;
-
   // Privacy & Security
   getPrivacyConfig: () => Promise<PrivacyConfig>;
   updatePrivacyConfig: (updates: Partial<PrivacyConfig>) => Promise<PrivacyConfig>;

@@ -15,7 +15,6 @@ import {
   AppStatistics,
   SettingsSidebar,
   SettingsCategory,
-  SeedingDashboard,
 } from '../components';
 import { PrivacySettings } from '../components/PrivacySettings';
 import './SettingsPage.css';
@@ -1213,10 +1212,6 @@ const SettingsPage: React.FC = () => {
             </div>
           )}
         </div>
-
-        <div className="settings-divider" />
-
-        <SeedingDashboard />
       </>
     );
   }

@@ -4,6 +4,14 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.24-beta] - 2026-06-05
+
+### Removed
+- **Collaborative Seeding Network.** The reputation/points/badges dashboard was a
+  local-only mock with no real networking, so it's been removed entirely (UI and
+  backend). The genuine per-torrent **seed ratio / time limits** stay (Settings →
+  Seeding).
+
 ## [1.5.23-beta] - 2026-06-05
 
 ### Added
@@ -216,6 +224,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.24-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.24-beta
 [1.5.23-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.23-beta
 [1.5.22-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.22-beta
 [1.5.21-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.21-beta

@@ -2,7 +2,6 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, sessi
 import path from 'path';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
-import { getCollaborativeSeedingManager } from './seeding';
 import { getSchedulerEngine } from './scheduler/scheduler-engine';
 import { setupIpcHandlers } from './ipc';
 import { logger, detectVPN, showVPNWarning, getAppIconPath } from './utils';
@@ -412,11 +411,6 @@ async function initializeApp(): Promise<void> {
     logger.error('App', 'Failed to seed defaults', { error: e });
   }
 
-  // Initialize collaborative seeding manager
-  const seedingManager = getCollaborativeSeedingManager();
-  await seedingManager.initialize();
-  logger.info('App', 'Collaborative Seeding Manager initialized.');
-
   // Start scheduler engine
   const scheduler = getSchedulerEngine();
   scheduler.start();
@@ -593,14 +587,6 @@ async function cleanup(): Promise<void> {
     logger.info('App', 'Torrent manager destroyed.');
   } catch (e) {
     logger.error('App', 'Error destroying torrent manager', { error: e });
-  }
-
-  try {
-    const seedingManager = getCollaborativeSeedingManager();
-    seedingManager.destroy();
-    logger.info('App', 'Collaborative Seeding Manager destroyed.');
-  } catch (e) {
-    logger.error('App', 'Error destroying seeding manager', { error: e });
   }
 
   try {
