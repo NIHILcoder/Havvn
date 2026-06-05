@@ -25,6 +25,21 @@ const SHARE_TRACKERS = [
 ];
 const RECEIVER_BASE = 'https://nihilcoder.github.io/TorrentHunt/share/';
 
+// STUN reveals each peer's public address (enough for most home NATs) and is
+// privacy-neutral. TURN relays route the (encrypted) traffic through a
+// third-party server so peers behind a symmetric NAT can still connect — but
+// that third party then sees both IPs, so it's opt-out via a setting.
+// Keep these in sync with the receiver page (docs/share/index.html).
+const STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+];
+const TURN_SERVERS = [
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+];
+
 const w = window as any;
 const nativeWrtc = {
   RTCPeerConnection: w.RTCPeerConnection,
@@ -37,15 +52,22 @@ interface ShareEntry {
 }
 
 let client: any = null;
+let clientUseTurn = true;
 const shares = new Map<string, ShareEntry>();
 
 function log(msg: string): void { try { ipcRenderer.send('share-log', msg); } catch { /* ignore */ } }
 
-function ensureClient(): any {
+function ensureClient(useTurn: boolean): any {
   if (!client) {
-    client = new WebTorrent({ utp: false, dht: false, tracker: { wrtc: nativeWrtc } } as any);
+    clientUseTurn = useTurn;
+    const iceServers = useTurn ? STUN_SERVERS.concat(TURN_SERVERS) : STUN_SERVERS;
+    client = new WebTorrent({
+      utp: false,
+      dht: false,
+      tracker: { wrtc: nativeWrtc, rtcConfig: { iceServers } },
+    } as any);
     client.on('error', (e: any) => log('share client error: ' + (e?.message || e)));
-    log('Share client ready (Chromium WebRTC)');
+    log('Share client ready (Chromium WebRTC, TURN=' + useTurn + ')');
   }
   return client;
 }
@@ -54,13 +76,13 @@ function toInfo(e: ShareEntry) {
   return { downloadId: e.downloadId, name: e.name, infoHash: e.infoHash, magnetURI: e.magnetURI, link: e.link, createdAt: e.createdAt };
 }
 
-function doShare(downloadId: string, contentPath: string, name: string): Promise<ShareEntry> {
+function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean): Promise<ShareEntry> {
   const existing = shares.get(downloadId);
   if (existing) return Promise.resolve(existing);
   if (!fs.existsSync(contentPath)) {
     return Promise.reject(new Error('File not found on disk — the download must be complete to share'));
   }
-  const c = ensureClient();
+  const c = ensureClient(useTurn);
   return new Promise<ShareEntry>((resolve, reject) => {
     let settled = false;
     const onError = (err: any) => {
@@ -80,8 +102,10 @@ function doShare(downloadId: string, contentPath: string, name: string): Promise
           infoHash: torrent.infoHash,
           magnetURI: torrent.magnetURI,
           // Short, name-independent link: just the infoHash. The receiver page
-          // reconstructs the magnet with its (matching) tracker list.
-          link: RECEIVER_BASE + '#' + torrent.infoHash,
+          // reconstructs the magnet with its (matching) tracker list. When TURN
+          // is off we tag the link ("|nt") so the receiver also skips TURN —
+          // otherwise the receiver could still pull us onto a relay.
+          link: RECEIVER_BASE + '#' + torrent.infoHash + (clientUseTurn ? '' : '|nt'),
           createdAt: Date.now(),
         };
         shares.set(downloadId, entry);
@@ -117,7 +141,7 @@ ipcRenderer.on('share-cmd', async (_e, msg: any) => {
   const { type, reqId } = msg;
   try {
     let data: any;
-    if (type === 'share') data = toInfo(await doShare(msg.downloadId, msg.contentPath, msg.name));
+    if (type === 'share') data = toInfo(await doShare(msg.downloadId, msg.contentPath, msg.name, msg.useTurn !== false));
     else if (type === 'stop') { doStop(msg.downloadId); data = { ok: true }; }
     else if (type === 'get') data = getInfo(msg.downloadId);
     else if (type === 'list') data = Array.from(shares.values()).map(toInfo).sort((a, b) => b.createdAt - a.createdAt);

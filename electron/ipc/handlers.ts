@@ -134,7 +134,9 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
       const contentPath = (download.seedPaths && download.seedPaths.length === 1)
         ? download.seedPaths[0]
         : downloadContentPath(download.savePath, download.name);
-      return getShareManager().share(downloadId, contentPath, download.name);
+      const settings = await db.getSettings();
+      const useTurn = settings.shareUseTurn !== false; // default on
+      return getShareManager().share(downloadId, contentPath, download.name, useTurn);
     }
   ));
 

@@ -99,6 +99,11 @@
     ];
     var raw = '';
     try { raw = decodeURIComponent(location.hash.replace(/^#/, '')); } catch (e) {}
+    // A "|nt" suffix means the sender disabled TURN (privacy) — honour it so we
+    // don't relay them either.
+    var noTurn = false;
+    var pipe = raw.indexOf('|nt');
+    if (pipe !== -1) { noTurn = true; raw = raw.slice(0, pipe); }
     var magnet = '';
     if (raw.indexOf('magnet:') === 0) {
       magnet = raw;
@@ -115,7 +120,18 @@
       return;
     }
 
-    var client = new WebTorrent();
+    // ICE servers — keep in sync with the desktop seeder (share-seeder.ts).
+    var STUN_SERVERS = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' }
+    ];
+    var TURN_SERVERS = [
+      { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+      { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    ];
+    var ICE_SERVERS = noTurn ? STUN_SERVERS : STUN_SERVERS.concat(TURN_SERVERS);
+    var client = new WebTorrent({ tracker: { rtcConfig: { iceServers: ICE_SERVERS } } });
     client.on('error', function (e) { fail('Error: ' + (e && e.message ? e.message : e)); });
 
     setStatus('Connecting to the sender…', true);

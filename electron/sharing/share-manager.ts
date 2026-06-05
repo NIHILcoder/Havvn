@@ -102,9 +102,9 @@ export class ShareManager {
   }
 
   /** Start sharing a completed download's content (seeded from disk). */
-  share(downloadId: string, contentPath: string, name: string): Promise<ShareInfo> {
+  share(downloadId: string, contentPath: string, name: string, useTurn: boolean): Promise<ShareInfo> {
     // No timeout: hashing a large file before seeding can take a while.
-    return this.call<ShareInfo>('share', { downloadId, contentPath, name });
+    return this.call<ShareInfo>('share', { downloadId, contentPath, name, useTurn });
   }
 
   stop(downloadId: string): Promise<{ ok: boolean }> {

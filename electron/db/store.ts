@@ -78,6 +78,8 @@ const store = new Store<StoreSchema>({
       // Disk-space guard
       diskGuardEnabled: true,
       diskGuardMinFreeMB: 2048,
+      // Sharing
+      shareUseTurn: true,
       updatedAt: new Date(),
     },
     categories: defaultCategories,

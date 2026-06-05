@@ -90,6 +90,9 @@ const SettingsPage: React.FC = () => {
   const [diskGuardEnabled, setDiskGuardEnabled] = useState(true);
   const [diskGuardMinFreeMB, setDiskGuardMinFreeMB] = useState(2048);
 
+  // Sharing
+  const [shareUseTurn, setShareUseTurn] = useState(true);
+
   // Default seeding limits
   const [defaultSeedRatioLimit, setDefaultSeedRatioLimit] = useState(0);
   const [defaultSeedTimeLimitMinutes, setDefaultSeedTimeLimitMinutes] = useState(0);
@@ -277,6 +280,9 @@ const SettingsPage: React.FC = () => {
       // Disk-space guard
       setDiskGuardEnabled(s.diskGuardEnabled ?? true);
       setDiskGuardMinFreeMB(s.diskGuardMinFreeMB ?? 2048);
+
+      // Sharing
+      setShareUseTurn(s.shareUseTurn ?? true);
 
       // Default seeding limits
       setDefaultSeedRatioLimit(s.defaultSeedRatioLimit ?? 0);
@@ -946,6 +952,21 @@ const SettingsPage: React.FC = () => {
               </div>
             </>
           )}
+        </div>
+
+        <div className="settings-divider" />
+
+        <div className="settings-group">
+          <h3 className="settings-group-title">{t('settings.grp.sharing')}</h3>
+          {renderSettingItem(
+            t('settings.shareTurn'),
+            t('settings.shareTurn.desc'),
+            renderToggle(shareUseTurn, () => applyToggle(!shareUseTurn, setShareUseTurn, { shareUseTurn: !shareUseTurn }))
+          )}
+          <div className="settings-notice-compact">
+            <Icon name="info" size={14} />
+            <span>{t('settings.shareTurn.note')}</span>
+          </div>
         </div>
       </>
     );

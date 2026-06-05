@@ -4,6 +4,20 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.23-beta] - 2026-06-05
+
+### Added
+- **"Use TURN relays for share links" setting** (Network → Sharing, on by
+  default). TURN relays let shares connect through strict (symmetric) NAT, but
+  route the encrypted transfer through a third-party server that sees both IPs.
+  Turn it off for a more private, direct-only connection (which won't work
+  through symmetric NAT). The choice applies to both sides of the transfer.
+
+### Changed
+- **More reliable share connections across networks.** WebRTC now uses explicit
+  STUN + (optional) TURN, so shares can also connect when a peer is behind a
+  symmetric NAT — not just on the same network.
+
 ## [1.5.22-beta] - 2026-06-05
 
 ### Fixed
@@ -202,6 +216,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.5.23-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.23-beta
 [1.5.22-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.22-beta
 [1.5.21-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.21-beta
 [1.5.20-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.5.20-beta

@@ -136,6 +136,10 @@ export interface AppSettings {
   // Disk-space guard
   diskGuardEnabled: boolean;       // Auto-pause all torrents when free space is low
   diskGuardMinFreeMB: number;      // Threshold in MB (default 2048)
+  // Sharing
+  shareUseTurn?: boolean;          // Use TURN relays for share links (default true).
+                                   // Off = more private (no third-party relay) but
+                                   // won't connect through symmetric NAT.
   updatedAt: Date;
 }
 
