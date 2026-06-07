@@ -64,3 +64,6 @@ $RECYCLE.BIN/
 tmp/
 temp/
 .git-commit-msg.txt
+rel-created.json
+rel-payload.json
+*.output
