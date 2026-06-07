@@ -1,13 +1,16 @@
 # TorrentHunt
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Version](https://img.shields.io/badge/Version-1.5.23--beta-orange)
+![Version](https://img.shields.io/badge/Version-1.6.0--beta-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 
 A modern, privacy-focused desktop BitTorrent client built with Electron, React and
 WebTorrent. TorrentHunt ships ready to use — search the Internet Archive out of the
-box — while keeping everything else opt-in and under your control.
+box — while keeping everything else opt-in and under your control. It also does the
+things classic clients can't: **stream a torrent to any device on your Wi-Fi**, send
+files to a friend's **browser over WebRTC**, and sync an add-only shared folder in a
+private **room** — all peer-to-peer, no cloud.
 
 > **Legal use only.** TorrentHunt does not bundle indexers for copyrighted material.
 > Built-in sources point at public-domain / Creative Commons / open-source content
@@ -56,11 +59,25 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   legal FOSS feeds are pre-seeded **disabled** (opt-in, no background traffic until you
   enable them) — plus one-click list cleanup
 
+### Stream & watch
+- **Built-in player** — watch/listen to a file *while it's still downloading*; playback
+  starts before the download finishes
+- **On-the-fly transcoding** — formats the browser can't decode (mkv, HEVC, AVI…) are
+  converted live via the bundled ffmpeg, no external player needed
+- **Watch on another device** — one click shows a QR code + link; open it on a phone,
+  tablet or TV on the **same Wi-Fi** and stream the torrent with **seeking**, even for
+  exotic codecs (served as adaptive HLS straight from your PC — no cloud, no app on the
+  other device)
+
 ### Create & share
 - Create torrents from files or folders (single or batch), custom trackers, private flag,
   start-seeding-immediately
 - **Instant Share Links** — send a completed download to anyone via a browser link
-  (peer-to-peer over WebRTC, no install on their side)
+  (peer-to-peer over WebRTC, no install on their side); short links + QR
+- **Rooms (friend swarms)** — create a private group, share a speakable invite code, and
+  everyone's files auto-distribute peer-to-peer into a shared folder. No cloud: members
+  find each other over WebRTC, the file manifest and presence ride **AES-256-GCM**
+  channels keyed from the code, and each member gets an auto-generated identicon avatar
 
 ### Automation & networking
 - **Scheduler** for time-based bandwidth/activity rules
@@ -134,9 +151,9 @@ Packaged output is written to `release/`.
 
 ```
 electron/            Main process (TypeScript)
-  torrent/           WebTorrent manager, creator, watch folder
+  torrent/           WebTorrent manager, creator, watch folder, LAN cast/HLS server
   services/          RSS, search, IP blocklist
-  sharing/           Instant Share Links (WebRTC seeder in a hidden window)
+  sharing/           Share Links + Rooms (WebRTC seeder/engine in a hidden window)
   scheduler/         Time-based scheduler engine
   db/                electron-store wrapper
   ipc/               Typed IPC handlers
