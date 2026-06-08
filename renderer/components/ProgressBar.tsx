@@ -32,12 +32,12 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
 
   return (
     <div className={`progress-wrapper ${className}`} style={{ position: 'relative' }}>
-      <div 
-        className="progress" 
+      <div
+        className="progress-bar"
         style={{ height: heightMap[size] }}
       >
         <div
-          className={`progress-bar ${variant !== 'default' ? variant : ''}`}
+          className={`progress-bar-fill ${variant !== 'default' ? variant : ''}`}
           style={{ width: `${percentage}%` }}
         />
       </div>

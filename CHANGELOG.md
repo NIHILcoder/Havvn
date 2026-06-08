@@ -4,6 +4,19 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.2-beta] - 2026-06-08
+
+### Fixed
+- **Progress bars now actually show (and are coloured) everywhere.** A class-name
+  mismatch in the ProgressBar component made every progress bar render as a flat
+  grey line with no fill — across Downloads and Create Torrent. They now show a
+  proper track + coloured fill (green when complete, accent while downloading).
+
+### Changed
+- **Downloads expanded card looks cleaner.** The stats dropped the awkward
+  outlined "pills" for tidy label-over-value columns inside one subtle panel, the
+  percentage is smaller, and the layout is tighter.
+
 ## [1.7.1-beta] - 2026-06-08
 
 ### Changed
@@ -329,6 +342,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.7.2-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.2-beta
 [1.7.1-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.1-beta
 [1.7.0-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.0-beta
 [1.6.3-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.6.3-beta
