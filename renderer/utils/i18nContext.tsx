@@ -523,6 +523,13 @@ const dictionary = {
     'player.castRemote': 'Anywhere',
     'player.castRemoteDesc': 'Open on any device, on any network — even mobile data.',
     'player.castRemoteHint': 'Streams over the Internet (P2P). Keep this window open while they watch; seeking is limited.',
+    'player.castTv': 'TV',
+    'player.castTvOn': 'Playing on',
+    'player.castTvSearching': 'Searching for TVs on your network…',
+    'player.castTvHint': 'Works with Chromecast / Android TV on the same Wi-Fi. Keep this window open while it plays.',
+    'player.resume': 'Resume',
+    'player.pause': 'Pause',
+    'player.stop': 'Stop',
 
     // Share links
     'share.title': 'Share link',
@@ -1068,6 +1075,13 @@ const dictionary = {
     'player.castRemote': 'Где угодно',
     'player.castRemoteDesc': 'Откройте на любом устройстве в любой сети — даже на мобильном интернете.',
     'player.castRemoteHint': 'Стриминг через интернет (P2P). Держите это окно открытым, пока смотрят; перемотка ограничена.',
+    'player.castTv': 'ТВ',
+    'player.castTvOn': 'Идёт на',
+    'player.castTvSearching': 'Ищу телевизоры в сети…',
+    'player.castTvHint': 'Работает с Chromecast / Android TV в той же Wi-Fi. Держите это окно открытым, пока идёт показ.',
+    'player.resume': 'Продолжить',
+    'player.pause': 'Пауза',
+    'player.stop': 'Стоп',
 
     // Ссылки-шеринг
     'share.title': 'Ссылка для обмена',

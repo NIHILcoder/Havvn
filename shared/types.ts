@@ -608,6 +608,11 @@ export interface IpcApi {
     // Remote streaming over WebRTC (watch on a device outside your network)
     remoteStart: (id: string, fileIndex: number) => Promise<{ url: string; sessionId: string }>;
     remoteStop: (sessionId: string) => Promise<{ ok: boolean }>;
+    // Cast to TV (Chromecast / Android TV)
+    tvList: () => Promise<Array<{ name: string; host: string }>>;
+    tvRefresh: () => Promise<Array<{ name: string; host: string }>>;
+    tvPlay: (id: string, fileIndex: number, host: string) => Promise<{ ok: boolean }>;
+    tvControl: (host: string, action: 'pause' | 'resume' | 'stop') => Promise<{ ok: boolean }>;
   };
 
   // Friend swarms / private rooms (Phase 3)

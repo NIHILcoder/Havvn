@@ -621,6 +621,14 @@ async function cleanup(): Promise<void> {
     logger.error('App', 'Error destroying remote-cast manager', { error: e });
   }
 
+  try {
+    const { getChromecastManager } = require('./torrent/chromecast');
+    getChromecastManager().destroy();
+    logger.info('App', 'Chromecast manager destroyed.');
+  } catch (e) {
+    logger.error('App', 'Error destroying chromecast manager', { error: e });
+  }
+
   // Stop scheduler
   try {
     const scheduler = getSchedulerEngine();

@@ -114,6 +114,28 @@ export class CastServer {
 
   unpublish(id: string, fileIndex: number): void { this.published.delete(`${id}/${fileIndex}`); }
 
+  /**
+   * Build a direct media URL + content type for a TV (Chromecast/DLNA), which
+   * fetches the URL itself. Browser-playable files go via /direct (seekable);
+   * everything else via HLS, which Chromecast plays natively.
+   */
+  async tvMedia(id: string, fileIndex: number): Promise<{ url: string; contentType: string; title: string }> {
+    const info = this.resolveFile(id, fileIndex);
+    if (!info) throw new Error('File not available for casting');
+    if (info.kind === 'other') throw new Error('This file is not a playable media file');
+    if (!info.direct && !this.getFfmpeg()) throw new Error('Casting this format needs the bundled ffmpeg, which is unavailable');
+    await this.ensureServer();
+    const lan = CastServer.lanAddress();
+    if (!lan) throw new Error('No local network address found');
+    this.published.add(`${id}/${fileIndex}`);
+    const base = `http://${lan}:${this.port}`;
+    const path = `/${encodeURIComponent(id)}/${fileIndex}`;
+    if (info.direct) {
+      return { url: `${base}/direct${path}?k=${this.token}`, contentType: directContentType(info.name), title: info.name };
+    }
+    return { url: `${base}/hls${path}/master.m3u8?k=${this.token}`, contentType: 'application/x-mpegurl', title: info.name };
+  }
+
   // ── Request routing ────────────────────────────────────────────────────────
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
     try {

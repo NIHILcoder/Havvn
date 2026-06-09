@@ -1,6 +1,6 @@
 {
   "name": "torrenthunt",
-  "version": "1.7.3-beta",
+  "version": "1.8.0-beta",
   "description": "A modern, agent-built BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
@@ -21,6 +21,7 @@
     "@hookform/resolvers": "^3.3.4",
     "@tanstack/react-virtual": "^3.0.4",
     "@types/webtorrent": "^0.109.7",
+    "chromecast-api": "^0.4.2",
     "crypto-browserify": "^3.12.1",
     "dotenv": "^16.3.1",
     "electron-store": "^8.1.0",

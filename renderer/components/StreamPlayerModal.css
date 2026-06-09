@@ -338,3 +338,46 @@
 .player-cast-url span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-cast-url:hover { border-color: var(--color-border-hover); }
 .player-cast-hint { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.68rem; line-height: 1.4; color: var(--color-text-muted); }
+
+/* Cast to TV */
+.player-cast-tv { width: 100%; display: flex; flex-direction: column; gap: 0.6rem; }
+.player-cast-tv-list { display: flex; flex-direction: column; gap: 0.4rem; width: 100%; }
+.player-cast-tv-device {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition-fast, 150ms), background var(--transition-fast, 150ms);
+}
+.player-cast-tv-device span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.player-cast-tv-device:hover { border-color: var(--color-border-hover); background: var(--color-bg-hover); }
+.player-cast-tv-now { display: flex; align-items: center; gap: 0.45rem; font-size: 0.82rem; color: var(--color-text-secondary); text-align: center; flex-wrap: wrap; justify-content: center; }
+.player-cast-tv-now strong { color: var(--color-text-primary); }
+.player-cast-tv-controls { display: flex; gap: 0.5rem; width: 100%; }
+.player-cast-tv-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition-fast, 150ms), color var(--transition-fast, 150ms);
+}
+.player-cast-tv-btn:hover { border-color: var(--color-border-hover); }
+.player-cast-tv-btn.stop { color: #f87171; }
+.player-cast-tv-btn.stop:hover { border-color: #f87171; }

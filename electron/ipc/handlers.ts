@@ -194,6 +194,44 @@ export function setupIpcHandlers(mainWindow: BrowserWindow): void {
     }
   ));
 
+  // Cast to TV (Chromecast / Android TV)
+  ipcMain.handle('cast:tvList', wrapHandler('cast:tvList',
+    async () => {
+      const { getChromecastManager } = require('../torrent/chromecast');
+      return getChromecastManager().list();
+    }
+  ));
+
+  ipcMain.handle('cast:tvRefresh', wrapHandler('cast:tvRefresh',
+    async () => {
+      const { getChromecastManager } = require('../torrent/chromecast');
+      const mgr = getChromecastManager();
+      mgr.refresh();
+      return mgr.list();
+    }
+  ));
+
+  ipcMain.handle('cast:tvPlay', wrapHandler('cast:tvPlay',
+    async (_event, id: string, fileIndex: number, host: string) => {
+      const { getCastServer } = require('../torrent/cast-server');
+      const { getChromecastManager } = require('../torrent/chromecast');
+      const media = await getCastServer().tvMedia(id, fileIndex);
+      await getChromecastManager().play(host, media);
+      return { ok: true };
+    }
+  ));
+
+  ipcMain.handle('cast:tvControl', wrapHandler('cast:tvControl',
+    async (_event, host: string, action: 'pause' | 'resume' | 'stop') => {
+      const { getChromecastManager } = require('../torrent/chromecast');
+      const mgr = getChromecastManager();
+      if (action === 'pause') await mgr.pause(host);
+      else if (action === 'resume') await mgr.resume(host);
+      else await mgr.stop(host);
+      return { ok: true };
+    }
+  ));
+
   // ── Friend swarms / private rooms (Phase 3) ─────────────────────────────
   ipcMain.handle('rooms:getProfile', wrapHandler('rooms:getProfile',
     async () => roomManager.getProfile()

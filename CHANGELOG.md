@@ -4,6 +4,16 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.8.0-beta] - 2026-06-08
+
+### Added
+- **Cast to TV (Chromecast / Android TV).** The player's "Watch on another device"
+  panel has a new **TV** tab that finds Chromecast / Android TV / Google TV devices
+  on your Wi-Fi and plays the torrent on the big screen in one click, with
+  pause / resume / stop controls. The TV pulls the stream straight from your PC
+  (H.264/AAC MP4 for browser-friendly files, HLS for everything else — transcoded
+  on the fly), so there's nothing to install on the TV and no cloud involved.
+
 ## [1.7.3-beta] - 2026-06-08
 
 ### Changed
@@ -353,6 +363,7 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 - Real encryption / anonymity options, VPN kill-switch, disk-space guard,
   and torrent health indicators.
 
+[1.8.0-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.8.0-beta
 [1.7.3-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.3-beta
 [1.7.2-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.2-beta
 [1.7.1-beta]: https://github.com/NIHILcoder/TorrentHunt/releases/tag/v1.7.1-beta

@@ -52,10 +52,15 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [castBusy, setCastBusy] = useState(false);
   const [castError, setCastError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [castMode, setCastMode] = useState<'lan' | 'remote'>('lan');
+  const [castMode, setCastMode] = useState<'lan' | 'tv' | 'remote'>('lan');
   const [remoteInfo, setRemoteInfo] = useState<{ url: string; sessionId: string } | null>(null);
   const [remoteBusy, setRemoteBusy] = useState(false);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+  // Cast to TV (Chromecast)
+  const [tvDevices, setTvDevices] = useState<Array<{ name: string; host: string }>>([]);
+  const [tvError, setTvError] = useState<string | null>(null);
+  const [tvPlaying, setTvPlaying] = useState<{ host: string; name: string } | null>(null);
+  const [tvPaused, setTvPaused] = useState(false);
 
   // Load the streamable files in this torrent once.
   useEffect(() => {
@@ -177,6 +182,50 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   // Reset remote session when switching files.
   useEffect(() => { setRemoteInfo(null); setRemoteError(null); }, [activeIndex]);
 
+  // Cast to TV (Chromecast)
+  const playOnTv = useCallback(async (host: string, name: string) => {
+    if (activeIndex === null) return;
+    setTvError(null);
+    try {
+      await window.api.cast.tvPlay(downloadId, activeIndex, host);
+      setTvPlaying({ host, name });
+      setTvPaused(false);
+    } catch (err: unknown) {
+      setTvError(err instanceof Error ? err.message : String(err));
+    }
+  }, [downloadId, activeIndex]);
+
+  const tvControl = useCallback(async (action: 'pause' | 'resume' | 'stop') => {
+    if (!tvPlaying) return;
+    try {
+      await window.api.cast.tvControl(tvPlaying.host, action);
+      if (action === 'stop') setTvPlaying(null);
+      else setTvPaused(action === 'pause');
+    } catch (err: unknown) {
+      setTvError(err instanceof Error ? err.message : String(err));
+    }
+  }, [tvPlaying]);
+
+  // Discover TVs while the TV tab is open (mDNS results trickle in).
+  useEffect(() => {
+    if (!(castOpen && castMode === 'tv')) return;
+    let alive = true;
+    let n = 0;
+    const scan = async (refresh: boolean) => {
+      try {
+        const list = refresh ? await window.api.cast.tvRefresh() : await window.api.cast.tvList();
+        if (alive) setTvDevices(list);
+      } catch (err) { if (alive) setTvError(err instanceof Error ? err.message : String(err)); }
+    };
+    scan(false);
+    const iv = setInterval(() => { n++; scan(true); if (n >= 6) clearInterval(iv); }, 2500);
+    return () => { alive = false; clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [castOpen, castMode]);
+
+  // Reset TV state when switching files.
+  useEffect(() => { setTvPlaying(null); setTvDevices([]); setTvError(null); }, [activeIndex]);
+
   const activeCastUrl = castMode === 'remote' ? remoteInfo?.url : castInfo?.url;
   const copyCastUrl = useCallback(() => {
     if (!activeCastUrl) return;
@@ -267,12 +316,43 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
               <button className={`player-cast-tab ${castMode === 'lan' ? 'active' : ''}`} onClick={() => setCastMode('lan')}>
                 <Icon name="monitor" size={13} /> {t('player.castLan')}
               </button>
+              <button className={`player-cast-tab ${castMode === 'tv' ? 'active' : ''}`} onClick={() => setCastMode('tv')}>
+                <Icon name="tv" size={13} /> {t('player.castTv')}
+              </button>
               <button className={`player-cast-tab ${castMode === 'remote' ? 'active' : ''}`} onClick={() => setCastMode('remote')}>
                 <Icon name="globe" size={13} /> {t('player.castRemote')}
               </button>
             </div>
 
-            {castMode === 'lan' ? (
+            {castMode === 'tv' ? (
+              <div className="player-cast-tv">
+                {tvError && <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> {tvError}</div>}
+                {tvPlaying ? (
+                  <>
+                    <div className="player-cast-tv-now"><Icon name="tv" size={16} /> {t('player.castTvOn')} <strong>{tvPlaying.name}</strong></div>
+                    <div className="player-cast-tv-controls">
+                      {tvPaused ? (
+                        <button className="player-cast-tv-btn" onClick={() => tvControl('resume')}><Icon name="play" size={14} /> {t('player.resume')}</button>
+                      ) : (
+                        <button className="player-cast-tv-btn" onClick={() => tvControl('pause')}><Icon name="pause" size={14} /> {t('player.pause')}</button>
+                      )}
+                      <button className="player-cast-tv-btn stop" onClick={() => tvControl('stop')}><Icon name="x" size={14} /> {t('player.stop')}</button>
+                    </div>
+                  </>
+                ) : tvDevices.length === 0 ? (
+                  <div className="player-cast-loading"><span className="spinner" /> {t('player.castTvSearching')}</div>
+                ) : (
+                  <div className="player-cast-tv-list">
+                    {tvDevices.map((d) => (
+                      <button key={d.host} className="player-cast-tv-device" onClick={() => playOnTv(d.host, d.name)}>
+                        <Icon name="tv" size={16} /> <span>{d.name}</span> <Icon name="play" size={14} />
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="player-cast-hint"><Icon name="info" size={12} /> {t('player.castTvHint')}</div>
+              </div>
+            ) : castMode === 'lan' ? (
               castBusy ? (
                 <div className="player-cast-loading"><span className="spinner" /> {t('player.castStarting')}</div>
               ) : castError ? (

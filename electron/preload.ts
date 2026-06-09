@@ -432,6 +432,12 @@ const api: IpcApi = {
       ipcRenderer.invoke('cast:remoteStart', id, fileIndex),
     remoteStop: (sessionId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('cast:remoteStop', sessionId),
+    tvList: (): Promise<Array<{ name: string; host: string }>> => ipcRenderer.invoke('cast:tvList'),
+    tvRefresh: (): Promise<Array<{ name: string; host: string }>> => ipcRenderer.invoke('cast:tvRefresh'),
+    tvPlay: (id: string, fileIndex: number, host: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('cast:tvPlay', id, fileIndex, host),
+    tvControl: (host: string, action: 'pause' | 'resume' | 'stop'): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('cast:tvControl', host, action),
   },
 
   // Friend swarms / private rooms (Phase 3)
