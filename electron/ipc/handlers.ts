@@ -691,6 +691,30 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  // Live privacy dashboard: VPN detection + geo/ISP of the public IP, with a
+  // leak flag. Only runs when the user opens the Privacy tab or hits Refresh.
+  ipcMain.handle('privacy:getIpInfo', wrapHandler('privacy:getIpInfo',
+    async () => {
+      const { getIpInfo } = await import('../utils');
+      return getIpInfo();
+    }
+  ));
+
+  ipcMain.handle('privacy:openLogsFolder', wrapHandler('privacy:openLogsFolder',
+    async () => {
+      const dir = logger.getLogDir();
+      if (dir) await shell.openPath(dir);
+      return { ok: !!dir };
+    }
+  ));
+
+  ipcMain.handle('privacy:clearLogs', wrapHandler('privacy:clearLogs',
+    async () => {
+      const removed = logger.clearLogs();
+      return { removed };
+    }
+  ));
+
   ipcMain.handle('privacy:showVPNWarning', wrapHandler('privacy:showVPNWarning',
     async () => {
       const result = await detectVPN();

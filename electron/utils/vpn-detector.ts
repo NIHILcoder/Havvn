@@ -343,6 +343,73 @@ function calculateConfidence(indicators: VPNDetectionResult['indicators']): {
 }
 
 /**
+ * Resolve geo/ISP details for a public IP via ipinfo.io (HTTPS, no key needed
+ * for basic lookups). Best-effort — returns {} on any failure so the privacy
+ * dashboard degrades gracefully. Only called when the user opens the Privacy
+ * tab or hits Refresh, so it adds no background traffic.
+ */
+export function fetchIpGeo(ip: string): Promise<{ country?: string; region?: string; city?: string; org?: string }> {
+  return new Promise((resolve) => {
+    const done = (v: { country?: string; region?: string; city?: string; org?: string }) => resolve(v);
+    try {
+      const req = https.get(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
+        headers: { 'User-Agent': 'TorrentHunt', 'Accept': 'application/json' },
+        timeout: 5000,
+      }, (res) => {
+        if (!res.statusCode || res.statusCode >= 400) { res.resume(); return done({}); }
+        let data = '';
+        res.on('data', (c) => { data += c; });
+        res.on('end', () => {
+          try {
+            const j = JSON.parse(data);
+            done({ country: j.country, region: j.region, city: j.city, org: j.org });
+          } catch { done({}); }
+        });
+        res.on('error', () => done({}));
+      });
+      req.on('error', () => done({}));
+      req.on('timeout', () => { req.destroy(); done({}); });
+    } catch {
+      done({});
+    }
+  });
+}
+
+/**
+ * One-call privacy snapshot for the dashboard: VPN detection + geo/ISP of the
+ * public IP. `exposedIsp` flags the likely-leak case where the torrent-facing
+ * IP resolves to a consumer ISP rather than a VPN/hosting provider while no VPN
+ * is detected — most clients never surface this.
+ */
+export async function getIpInfo(): Promise<{
+  ip?: string; country?: string; region?: string; city?: string; org?: string;
+  vpnActive: boolean; vpnProvider?: string; confidence: VPNDetectionResult['confidence'];
+  interfaces: string[]; exposedIsp: boolean; fetchedAt: number;
+}> {
+  const vpn = await detectVPN();
+  const ip = vpn.details.publicIP;
+  const geo = ip ? await fetchIpGeo(ip) : {};
+  // Heuristic leak signal: no VPN detected AND the IP belongs to an org that
+  // doesn't look like a VPN/hosting provider.
+  const orgL = (geo.org || '').toLowerCase();
+  const looksLikeVpnHost = /vpn|mullvad|nord|proton|express|hosting|datacenter|data center|m247|leaseweb|ovh|server|cloud|colo|host/.test(orgL);
+  const exposedIsp = !vpn.isVPNActive && !!geo.org && !looksLikeVpnHost;
+  return {
+    ip,
+    country: geo.country,
+    region: geo.region,
+    city: geo.city,
+    org: geo.org,
+    vpnActive: vpn.isVPNActive,
+    vpnProvider: vpn.details.vpnProvider,
+    confidence: vpn.confidence,
+    interfaces: vpn.details.detectedInterfaces,
+    exposedIsp,
+    fetchedAt: Date.now(),
+  };
+}
+
+/**
  * Show VPN warning dialog
  * Note: Translation keys are passed to renderer for i18n support
  */

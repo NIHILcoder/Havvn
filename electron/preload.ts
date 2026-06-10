@@ -222,12 +222,24 @@ const api: IpcApi = {
     return ipcRenderer.invoke('privacy:checkVPN');
   },
 
+  getIpInfo: () => {
+    return ipcRenderer.invoke('privacy:getIpInfo');
+  },
+
   isEncryptionAvailable: () => {
     return ipcRenderer.invoke('privacy:isEncryptionAvailable');
   },
 
   clearAllData: () => {
     return ipcRenderer.invoke('privacy:clearAllData');
+  },
+
+  openLogsFolder: () => {
+    return ipcRenderer.invoke('privacy:openLogsFolder');
+  },
+
+  clearLogs: () => {
+    return ipcRenderer.invoke('privacy:clearLogs');
   },
 
   // Dialog API

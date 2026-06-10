@@ -246,6 +246,21 @@ export interface VPNDetectionResult {
   };
 }
 
+/** One-call privacy snapshot for the dashboard (VPN + geo/ISP of public IP). */
+export interface IpInfo {
+  ip?: string;
+  country?: string;
+  region?: string;
+  city?: string;
+  org?: string;            // ISP / hosting org, e.g. "AS9009 M247 Europe SRL"
+  vpnActive: boolean;
+  vpnProvider?: string;
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+  interfaces: string[];
+  exposedIsp: boolean;     // true ⇒ no VPN and IP looks like a consumer ISP (likely leak)
+  fetchedAt: number;
+}
+
 // Scheduler types
 export interface ScheduleEntry {
   id: string;
@@ -561,8 +576,11 @@ export interface IpcApi {
   getPrivacyConfig: () => Promise<PrivacyConfig>;
   updatePrivacyConfig: (updates: Partial<PrivacyConfig>) => Promise<PrivacyConfig>;
   checkVPN: () => Promise<VPNDetectionResult>;
+  getIpInfo: () => Promise<IpInfo>;
   isEncryptionAvailable: () => Promise<boolean>;
   clearAllData: () => Promise<{ success: boolean }>;
+  openLogsFolder: () => Promise<{ ok: boolean }>;
+  clearLogs: () => Promise<{ removed: number }>;
 
   // App events
   onOpenTorrent: (callback: (torrentUri: string) => void) => () => void;

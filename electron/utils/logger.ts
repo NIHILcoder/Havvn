@@ -276,6 +276,38 @@ class Logger {
   getLogDir(): string {
     return this.logDir;
   }
+
+  /**
+   * Delete all log files immediately (privacy "clear logs now" action).
+   * Closes the active stream, removes every torrenthunt-*.log, then reopens a
+   * fresh stream so logging continues. Returns the number of files removed.
+   */
+  clearLogs(): number {
+    let removed = 0;
+    try {
+      // Stop writing so the current file can be deleted on Windows
+      if (this.writeStream) {
+        this.writeStream.end();
+        this.writeStream = null;
+      }
+      this.currentLogDate = null;
+
+      if (this.logDir && fs.existsSync(this.logDir)) {
+        for (const file of fs.readdirSync(this.logDir)) {
+          if (!file.startsWith('torrenthunt-') || !file.endsWith('.log')) continue;
+          try { fs.unlinkSync(path.join(this.logDir, file)); removed++; } catch { /* locked — skip */ }
+        }
+      }
+    } catch {
+      /* best-effort */
+    } finally {
+      // Reopen a fresh log file unless file logging is disabled
+      if (this.initialized && !this.fileLoggingDisabled) {
+        this.rotateLogFile();
+      }
+    }
+    return removed;
+  }
 }
 
 /**
