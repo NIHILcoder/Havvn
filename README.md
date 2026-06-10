@@ -1,21 +1,21 @@
 # TorrentHunt
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Version](https://img.shields.io/badge/Version-1.6.0--beta-orange)
+![Version](https://img.shields.io/badge/Version-1.8.3--beta-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 
 A modern, privacy-focused desktop BitTorrent client built with Electron, React and
-WebTorrent. TorrentHunt ships ready to use — search the Internet Archive out of the
-box — while keeping everything else opt-in and under your control. It also does the
-things classic clients can't: **stream a torrent to any device on your Wi-Fi**, send
-files to a friend's **browser over WebRTC**, and sync an add-only shared folder in a
-private **room** — all peer-to-peer, no cloud.
+WebTorrent. TorrentHunt keeps you in control — you bring your own indexers and feeds,
+and a **live privacy dashboard** shows exactly what the swarm can see about you. It also
+does the things classic clients can't: **stream a torrent to any device on your Wi-Fi
+or TV**, send files to a friend's **browser over WebRTC**, and sync an add-only shared
+folder in a private **room** — all peer-to-peer, no cloud.
 
 > **Legal use only.** TorrentHunt does not bundle indexers for copyrighted material.
-> Built-in sources point at public-domain / Creative Commons / open-source content
-> (Internet Archive, FOSS Torrents). Any additional search providers or RSS feeds are
-> added by you, and you are responsible for what you download and share.
+> The only pre-seeded source is a Creative Commons / open-source RSS feed (FOSS Torrents),
+> shipped **disabled**. Any search providers or additional RSS feeds are added by you, and
+> you are responsible for what you download and share.
 
 ---
 
@@ -51,23 +51,28 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - Open the OS "open with" dialog when you double-click a `.torrent` — no silent adds
 
 ### Discover content
-- **Built-in Internet Archive search** — keyless, on-demand, public-domain & CC torrents
-  (web-seeded, so they download even with no peers)
 - **Pluggable search providers** — bring your own **Jackett**, **Prowlarr (Torznab)**, or
-  a custom JSON API; test connectivity from the UI
-- **RSS feeds** with auto-download, regex title filters and per-feed intervals; a few
-  legal FOSS feeds are pre-seeded **disabled** (opt-in, no background traffic until you
-  enable them) — plus one-click list cleanup
+  a custom JSON API; test connectivity from the UI. No indexers are bundled
+- **RSS feeds** with auto-download, regex title filters and per-feed intervals; only new
+  items (after you subscribe) are grabbed, never the whole back-catalogue. One legal FOSS
+  feed is pre-seeded **disabled** (opt-in, no background traffic until you enable it) —
+  plus one-click list cleanup
 
 ### Stream & watch
 - **Built-in player** — watch/listen to a file *while it's still downloading*; playback
   starts before the download finishes
+- **Subtitles** — embedded text tracks (mkv, etc.) and sidecar `.srt` / `.ass` / `.vtt`
+  files are converted to WebVTT on the fly and overlaid on playback
 - **On-the-fly transcoding** — formats the browser can't decode (mkv, HEVC, AVI…) are
   converted live via the bundled ffmpeg, no external player needed
-- **Watch on another device** — one click shows a QR code + link; open it on a phone,
-  tablet or TV on the **same Wi-Fi** and stream the torrent with **seeking**, even for
+- **Watch on another device (LAN)** — one click shows a QR code + link; open it on a phone,
+  tablet or laptop on the **same Wi-Fi** and stream the torrent with **seeking**, even for
   exotic codecs (served as adaptive HLS straight from your PC — no cloud, no app on the
   other device)
+- **Cast to TV** — find Chromecast / Android TV / Google TV devices on your network and
+  play a torrent on the big screen with pause / resume / stop controls
+- **Watch anywhere (experimental)** — stream a torrent to a device *outside* your network
+  over WebRTC, transcoded on the fly
 
 ### Create & share
 - Create torrents from files or folders (single or batch), custom trackers, private flag,
@@ -80,11 +85,11 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   channels keyed from the code, and each member gets an auto-generated identicon avatar
 
 ### Automation & networking
-- **Scheduler** for time-based bandwidth/activity rules
+- **Scheduler** for time-based bandwidth rules (supports windows that cross midnight)
 - **Watch folder** — auto-add `.torrent` files dropped into a directory
-- **IP blocklist** support
-- **VPN detection** with a startup warning when no VPN is active
-- Proxy configuration
+- **IP blocklist** support (load lists by URL, applied to the engine)
+- **Advanced engine controls** — DHT toggle, max connections, listening port
+- **Pause All / Resume All** from the toolbar or the system-tray menu
 
 ### Desktop experience
 - **Background mode** — closing the window minimizes to the **system tray** so torrents
@@ -95,10 +100,22 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **Localization** — English & Russian
 - Settings export / import
 
-### Privacy & security
+### Privacy & anonymity
+- **Live exposure dashboard** — see your public IP (the one peers connect to), ISP,
+  location and VPN status at a glance, with a colour-coded posture banner
+- **IP-leak detection** — warns when your torrent-facing IP looks like a consumer ISP
+  rather than a VPN, so you catch a leak before downloading (lookups run only on open /
+  refresh, no background traffic)
+- **VPN kill-switch** — auto-pauses all torrents if your VPN drops, plus a startup check
+- **One-click recommended privacy preset**, ephemeral peer ID, log sanitization, clear
+  data on exit, and open/clear-logs controls
+- **Secrets encrypted at rest** via OS-level encryption (DPAPI / Keychain / libsecret)
+
+### Application security
 - Context isolation, sandboxed renderer, Node integration disabled, type-safe IPC bridge
 - Content-Security-Policy and navigation guards in production builds
-- Privacy options: clear data on exit, ephemeral peer ID, log sanitization
+- The local streaming server refuses cross-origin and DNS-rebinding requests, so a web
+  page open in your browser can't read what you're streaming
 
 ---
 
@@ -204,9 +221,14 @@ multiple severity levels, and automatic cleanup of old files.
 - **Speed limits** are applied best-effort via WebTorrent's throttling API and may vary by
   version. For strict control, use OS-level network management.
 - **Peer statistics**: WebTorrent reports aggregate peers and does not cleanly separate
-  seeds from leechers, so those numbers are approximate. For Internet Archive results the
-  "seeds" column reflects download count (a popularity proxy), since the Archive does not
-  expose swarm stats.
+  seeds from leechers, so those numbers are approximate.
+- **VPN / IP-leak detection** is heuristic (network interfaces, IP/ISP lookup) — it's a
+  strong safety net, not a guarantee. A VPN with its own kill-switch remains the real
+  protection.
+- **Proxy**: there is no SOCKS/HTTP proxy option — WebTorrent can't route peer traffic
+  through one, so use a VPN for network privacy.
+- **Watch anywhere (remote WebRTC streaming)** is experimental and depends on NAT
+  traversal; it may not connect on every network.
 
 ---
 
