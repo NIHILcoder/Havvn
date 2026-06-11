@@ -4,6 +4,14 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.8.6-beta] - 2026-06-11
+
+### Changed
+- **Reworked the About tab** (Settings → About) into something nicer to look at:
+  an animated app header with a floating logo, version and tech badges, and quick
+  actions (check for updates, set as default app, GitHub). The statistics below
+  now count up and animate in, with subtle hover effects. Purely cosmetic.
+
 ## [1.8.5-beta] - 2026-06-10
 
 ### Added

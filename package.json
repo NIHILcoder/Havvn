@@ -1,6 +1,6 @@
 {
   "name": "torrenthunt",
-  "version": "1.8.5-beta",
+  "version": "1.8.6-beta",
   "description": "A modern, agent-built BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
