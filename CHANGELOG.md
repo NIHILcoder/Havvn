@@ -4,6 +4,15 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.9.1-beta] - 2026-06-11
+
+### Added
+- **Watch shared files inside a room — together.** In a room, downloaded media files
+  now have a **Watch** button that plays them right in the app (with seeking; mkv / avi /
+  HEVC are transcoded on the fly). Turn on **"Watch together"** and play / pause / seek
+  stay in sync for everyone in the room — a private watch party over the same encrypted
+  peer-to-peer channel the room already uses, no cloud involved.
+
 ## [1.9.0-beta] - 2026-06-11
 
 ### Added
