@@ -132,9 +132,26 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  // Alternative ("turbo"/turtle) speed-limit quick toggle
+  ipcMain.handle('speed:setAlt', wrapHandler('speed:setAlt',
+    async (_event, enabled: boolean) => {
+      return torrentManager.setAltSpeed(!!enabled);
+    }
+  ));
+
+  ipcMain.handle('speed:getAlt', wrapHandler('speed:getAlt',
+    async () => ({ altSpeedEnabled: torrentManager.isAltSpeedEnabled() })
+  ));
+
   ipcMain.handle('downloads:retry', wrapHandler('downloads:retry',
     async (_event, id: string) => {
       return await torrentManager.retryDownload(id);
+    }
+  ));
+
+  ipcMain.handle('downloads:recheck', wrapHandler('downloads:recheck',
+    async (_event, id: string) => {
+      return await torrentManager.recheckDownload(id);
     }
   ));
 

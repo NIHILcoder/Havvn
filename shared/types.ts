@@ -194,6 +194,11 @@ export interface AppSettings {
   defaultDownloadDir: string;
   maxDownKbps: number;
   maxUpKbps: number;
+  // Alternative ("turbo"/turtle) speed limits — a second set you flip to with
+  // one click. When altSpeedEnabled, these replace the normal limits live.
+  altSpeedEnabled: boolean;
+  altDownKbps: number;             // 0 = unlimited
+  altUpKbps: number;               // 0 = unlimited
   maxActiveDownloads: number;
   minimizeToTray: boolean;
   closeToTray: boolean;
@@ -218,6 +223,9 @@ export interface AppSettings {
   watchFolderEnabled: boolean;
   watchFolderPath: string;
   watchFolderDeleteAfterAdd: boolean;
+  // Move completed downloads to another folder, then keep seeding from there
+  autoMoveEnabled: boolean;
+  autoMovePath: string;
   // Default seeding limits
   defaultSeedRatioLimit: number;     // 0 = unlimited
   defaultSeedTimeLimitMinutes: number; // 0 = unlimited
@@ -508,6 +516,7 @@ export interface IpcApi {
   removeDownload: (id: string, deleteFiles: boolean) => Promise<void>;
   stopSeeding: (id: string) => Promise<void>;
   retryDownload: (id: string) => Promise<void>;
+  recheckDownload: (id: string) => Promise<void>;
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }>;
@@ -624,6 +633,9 @@ export interface IpcApi {
   // Bulk torrent actions (the tray menu calls the manager directly)
   pauseAll: () => Promise<{ paused: number }>;
   resumeAll: () => Promise<{ resumed: number }>;
+  // Alternative ("turbo"/turtle) speed-limit quick toggle
+  setAltSpeed: (enabled: boolean) => Promise<{ altSpeedEnabled: boolean }>;
+  getAltSpeed: () => Promise<{ altSpeedEnabled: boolean }>;
   onVpnDropped: (callback: (info: { paused: number; publicIP?: string }) => void) => () => void;
   onVpnRestored: (callback: () => void) => () => void;
   onDiskLow: (callback: (info: { paused: number; freeBytes: number; thresholdBytes: number }) => void) => () => void;

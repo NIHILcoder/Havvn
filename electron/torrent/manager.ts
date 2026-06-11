@@ -22,6 +22,7 @@ import {
   InvalidStateTransitionError,
   canPause,
   canResume,
+  canRecheck,
   isActiveState,
 } from '../../shared/state-machine';
 import * as db from '../db/store';
@@ -183,6 +184,15 @@ export class TorrentManager {
   private maxActiveDownloads = 3;
   private maxDownKbps = 0;
   private maxUpKbps = 0;
+  // Alternative ("turbo"/turtle) speed limits and whether they're active.
+  private altSpeedEnabled = false;
+  private altDownKbps = 0;
+  private altUpKbps = 0;
+  // Auto-move completed downloads to this folder, then re-seed from there.
+  private autoMoveEnabled = false;
+  private autoMovePath = '';
+  // Guards re-entrant auto-move while a torrent is being relocated.
+  private movingIds: Set<string> = new Set();
   // The TCP port the engine listens on for incoming peers (from settings.portMin;
   // 0 = OS-chosen). Used by the UPnP port-forwarding service.
   private configuredPort = 0;
@@ -228,6 +238,11 @@ export class TorrentManager {
     this.maxActiveDownloads = settings.maxActiveDownloads;
     this.maxDownKbps = settings.maxDownKbps;
     this.maxUpKbps = settings.maxUpKbps;
+    this.altSpeedEnabled = settings.altSpeedEnabled ?? false;
+    this.altDownKbps = settings.altDownKbps ?? 0;
+    this.altUpKbps = settings.altUpKbps ?? 0;
+    this.autoMoveEnabled = settings.autoMoveEnabled ?? false;
+    this.autoMovePath = settings.autoMovePath ?? '';
     this.defaultSeedRatioLimit = settings.defaultSeedRatioLimit ?? 0;
     this.defaultSeedTimeLimitMinutes = settings.defaultSeedTimeLimitMinutes ?? 0;
 
@@ -254,9 +269,10 @@ export class TorrentManager {
       dht: settings.enableDHT !== false,
       maxConns: settings.maxConnections > 0 ? settings.maxConnections : 100,
       torrentPort: this.configuredPort,
-      // -1 = unlimited (0 would mean "0 bytes/sec" and stall all traffic)
-      downloadLimit: this.maxDownKbps > 0 ? this.maxDownKbps * 1024 : -1,
-      uploadLimit: this.maxUpKbps > 0 ? this.maxUpKbps * 1024 : -1,
+      // -1 = unlimited (0 would mean "0 bytes/sec" and stall all traffic).
+      // Effective limits honour the alternative-speed toggle.
+      downloadLimit: this.effectiveDownBytes(),
+      uploadLimit: this.effectiveUpBytes(),
     } as any);
 
     this.client.on('error', (err: string | Error) => {
@@ -1133,6 +1149,8 @@ export class TorrentManager {
           for (const cb of this.completionCallbacks) {
             try { cb({ id, name: managed.download.name }); } catch (_) { /* ignore */ }
           }
+          // Auto-move to the completed folder (then keep seeding from there).
+          void this.moveCompletedIfNeeded(id);
         }
       });
 
@@ -1546,11 +1564,167 @@ export class TorrentManager {
     
     // Re-queue (transitionStatus will clear the error)
     await this.transitionStatus(id, 'queued');
-    
+
     // Process queue
     await this.processQueue();
 
     log.debug('Download re-queued for retry', { id });
+  }
+
+  /**
+   * Force a data recheck: re-hash the files already on disk against the
+   * torrent's piece hashes. Implemented by dropping the live torrent instance
+   * (keeping the data) and re-adding it — WebTorrent verifies existing pieces
+   * on add, so valid data is kept and only missing/corrupt pieces re-download.
+   * Works from any state that may have data on disk.
+   */
+  async recheckDownload(id: string): Promise<void> {
+    await this.whenReady();
+    log.info('Rechecking download', { id });
+
+    const managed = this.managedTorrents.get(id);
+    if (!managed) {
+      throw new TorrentError('Download not found', 'NOT_FOUND', id);
+    }
+
+    if (!canRecheck(managed.download.status)) {
+      throw new TorrentError(
+        `Cannot recheck a download in ${managed.download.status} state`,
+        'INVALID_STATE',
+        id
+      );
+    }
+
+    // Drop the live instance but keep the data on disk (destroyStore: false).
+    this.closeStreamServer(managed);
+    if (managed.torrent) {
+      try {
+        managed.torrent.destroy({ destroyStore: false } as any);
+      } catch (e) {
+        log.warn('Error destroying torrent during recheck (non-fatal)', { error: String(e) });
+      }
+      managed.torrent = null;
+    }
+
+    // Reflect the re-verification in the UI: progress climbs from 0 as pieces
+    // are validated. Lifetime up/down byte counters are left untouched.
+    managed.download.progress = 0;
+    managed.download.downSpeedBps = 0;
+    managed.download.upSpeedBps = 0;
+    try { await db.updateDownloadField(id, 'progress', 0); } catch (_) { /* best-effort */ }
+
+    // Re-queue → processQueue re-adds it → WebTorrent verifies on-disk data.
+    await this.transitionStatus(id, 'queued');
+    await this.processQueue();
+
+    log.debug('Download re-queued for recheck', { id });
+  }
+
+  /**
+   * Move a freshly-completed download to the configured "completed" folder and
+   * keep seeding from the new location. Best-effort and fully guarded: any
+   * failure leaves the torrent seeding from its original path.
+   */
+  private async moveCompletedIfNeeded(id: string): Promise<void> {
+    if (!this.autoMoveEnabled || !this.autoMovePath) return;
+    if (this.movingIds.has(id)) return;
+
+    const managed = this.managedTorrents.get(id);
+    if (!managed) return;
+    // "Start seeding" entries live at their original source — never relocate.
+    if (managed.download.seedPaths && managed.download.seedPaths.length > 0) return;
+
+    const name = managed.download.name;
+    const srcDir = managed.download.savePath;
+    if (!name || !srcDir) return;
+    if (path.resolve(srcDir) === path.resolve(this.autoMovePath)) return; // already there
+
+    const src = path.join(srcDir, name);
+    const dest = path.join(this.autoMovePath, name);
+    if (!fs.existsSync(src)) return;            // nothing on disk to move
+    if (fs.existsSync(dest)) {
+      log.warn('Auto-move skipped: destination already exists', { id, dest });
+      return;
+    }
+
+    this.movingIds.add(id);
+    // Prefer re-seeding offline from the .torrent metadata we have in memory.
+    const metaBuffer: Buffer | null = (() => {
+      try { return (managed.torrent as any)?.torrentFile ?? null; } catch { return null; }
+    })();
+
+    try {
+      log.info('Auto-moving completed download', { id, from: src, to: dest });
+
+      // Release file handles before moving (WebTorrent holds them while seeding).
+      this.closeStreamServer(managed);
+      if (managed.torrent) {
+        try { managed.torrent.destroy({ destroyStore: false } as any); } catch (_) { /* ignore */ }
+        managed.torrent = null;
+      }
+      await new Promise((r) => setTimeout(r, 800));
+
+      if (!fs.existsSync(this.autoMovePath)) fs.mkdirSync(this.autoMovePath, { recursive: true });
+
+      // rename() is atomic on the same volume; across volumes it throws EXDEV,
+      // so fall back to a recursive copy + delete.
+      try {
+        fs.renameSync(src, dest);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+          this.copyRecursiveSync(src, dest);
+          await this.deletePathRecursive(src, id);
+        } else {
+          throw e;
+        }
+      }
+
+      // Persist the new location. Save the metadata so re-seeding is offline
+      // (a magnet-sourced torrent would otherwise need peers to re-verify).
+      const fields: Partial<Download> = { savePath: this.autoMovePath };
+      if (metaBuffer) {
+        const dir = path.join(app.getPath('userData'), 'torrents');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const tf = path.join(dir, `${id}.torrent`);
+        try {
+          fs.writeFileSync(tf, metaBuffer);
+          fields.torrentFilePath = tf;
+          fields.sourceType = 'torrent_file';
+          fields.sourceUri = tf;
+        } catch (_) { /* fall back to existing source */ }
+      }
+      Object.assign(managed.download, fields);
+      await db.updateDownloadFields(id, fields);
+
+      // Re-seed from the new path (isNew=false preserves the 'seeding' state).
+      const source = managed.download.torrentFilePath || managed.download.sourceUri;
+      await this.addTorrentInternal(id, source, this.autoMovePath, false, managed.selectedFiles);
+      log.info('Auto-move complete; re-seeding from new location', { id, dest });
+    } catch (e) {
+      log.error('Auto-move failed; re-seeding from original location', { id, error: e instanceof Error ? e.message : String(e) });
+      // Best-effort: keep seeding from wherever the data still is.
+      try {
+        if (!managed.torrent) {
+          const source = managed.download.torrentFilePath || managed.download.sourceUri;
+          await this.addTorrentInternal(id, source, managed.download.savePath, false, managed.selectedFiles);
+        }
+      } catch (_) { /* give up; user can recheck manually */ }
+    } finally {
+      this.movingIds.delete(id);
+    }
+  }
+
+  /** Recursive synchronous copy (file or directory) for cross-volume moves. */
+  private copyRecursiveSync(src: string, dest: string): void {
+    const stat = fs.statSync(src);
+    if (stat.isDirectory()) {
+      fs.mkdirSync(dest, { recursive: true });
+      for (const entry of fs.readdirSync(src)) {
+        this.copyRecursiveSync(path.join(src, entry), path.join(dest, entry));
+      }
+    } else {
+      fs.copyFileSync(src, dest);
+    }
   }
 
   /**
@@ -2079,6 +2253,11 @@ export class TorrentManager {
     maxActiveDownloads?: number;
     maxDownKbps?: number;
     maxUpKbps?: number;
+    altSpeedEnabled?: boolean;
+    altDownKbps?: number;
+    altUpKbps?: number;
+    autoMoveEnabled?: boolean;
+    autoMovePath?: string;
     defaultSeedRatioLimit?: number;
     defaultSeedTimeLimitMinutes?: number;
   }): Promise<void> {
@@ -2087,16 +2266,17 @@ export class TorrentManager {
     if (settings.maxActiveDownloads !== undefined) {
       this.maxActiveDownloads = settings.maxActiveDownloads;
     }
-    // NOTE: -1 disables the throttle in WebTorrent; 0 would mean "0 bytes/sec"
-    // and silently stall all traffic after a limit is removed.
-    if (settings.maxDownKbps !== undefined) {
-      this.maxDownKbps = settings.maxDownKbps;
-      try { (this.client as any).throttleDownload?.(this.maxDownKbps > 0 ? this.maxDownKbps * 1024 : -1); } catch (_) { /* unsupported */ }
-    }
-    if (settings.maxUpKbps !== undefined) {
-      this.maxUpKbps = settings.maxUpKbps;
-      try { (this.client as any).throttleUpload?.(this.maxUpKbps > 0 ? this.maxUpKbps * 1024 : -1); } catch (_) { /* unsupported */ }
-    }
+    let speedDirty = false;
+    if (settings.maxDownKbps !== undefined) { this.maxDownKbps = settings.maxDownKbps; speedDirty = true; }
+    if (settings.maxUpKbps !== undefined) { this.maxUpKbps = settings.maxUpKbps; speedDirty = true; }
+    if (settings.altSpeedEnabled !== undefined) { this.altSpeedEnabled = settings.altSpeedEnabled; speedDirty = true; }
+    if (settings.altDownKbps !== undefined) { this.altDownKbps = settings.altDownKbps; speedDirty = true; }
+    if (settings.altUpKbps !== undefined) { this.altUpKbps = settings.altUpKbps; speedDirty = true; }
+    if (speedDirty) this.applySpeedLimits();
+
+    if (settings.autoMoveEnabled !== undefined) this.autoMoveEnabled = settings.autoMoveEnabled;
+    if (settings.autoMovePath !== undefined) this.autoMovePath = settings.autoMovePath;
+
     if (settings.defaultSeedRatioLimit !== undefined) {
       this.defaultSeedRatioLimit = settings.defaultSeedRatioLimit;
     }
@@ -2106,6 +2286,41 @@ export class TorrentManager {
 
     await this.processQueue();
   }
+
+  // ── Speed limits (normal vs alternative/"turbo") ──────────────────────────
+
+  /** Effective download cap in bytes/sec (-1 = unlimited), honouring alt mode. */
+  private effectiveDownBytes(): number {
+    const kbps = this.altSpeedEnabled ? this.altDownKbps : this.maxDownKbps;
+    return kbps > 0 ? kbps * 1024 : -1;
+  }
+  private effectiveUpBytes(): number {
+    const kbps = this.altSpeedEnabled ? this.altUpKbps : this.maxUpKbps;
+    return kbps > 0 ? kbps * 1024 : -1;
+  }
+
+  /** Push the current effective limits to the live WebTorrent client. */
+  private applySpeedLimits(): void {
+    try { (this.client as any).throttleDownload?.(this.effectiveDownBytes()); } catch (_) { /* unsupported */ }
+    try { (this.client as any).throttleUpload?.(this.effectiveUpBytes()); } catch (_) { /* unsupported */ }
+    log.info('Speed limits applied', {
+      alt: this.altSpeedEnabled,
+      downKbps: this.altSpeedEnabled ? this.altDownKbps : this.maxDownKbps,
+      upKbps: this.altSpeedEnabled ? this.altUpKbps : this.maxUpKbps,
+    });
+  }
+
+  /** One-click toggle of the alternative ("turbo"/turtle) speed limits. */
+  async setAltSpeed(enabled: boolean): Promise<{ altSpeedEnabled: boolean }> {
+    await this.whenReady();
+    this.altSpeedEnabled = enabled;
+    this.applySpeedLimits();
+    await db.updateSettings({ altSpeedEnabled: enabled } as any);
+    return { altSpeedEnabled: enabled };
+  }
+
+  /** Current alt-speed state (for the toolbar/tray toggle to read on load). */
+  isAltSpeedEnabled(): boolean { return this.altSpeedEnabled; }
 
   // ============================================================
   // Priority 1: New Engine Features

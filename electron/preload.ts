@@ -49,6 +49,10 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:retry', id);
   },
 
+  recheckDownload: (id: string): Promise<void> => {
+    return ipcRenderer.invoke('downloads:recheck', id);
+  },
+
   getDownloads: (): Promise<Download[]> => {
     return ipcRenderer.invoke('downloads:getAll');
   },
@@ -352,6 +356,14 @@ const api: IpcApi = {
 
   resumeAll: (): Promise<{ resumed: number }> => {
     return ipcRenderer.invoke('downloads:resumeAll');
+  },
+
+  setAltSpeed: (enabled: boolean): Promise<{ altSpeedEnabled: boolean }> => {
+    return ipcRenderer.invoke('speed:setAlt', enabled);
+  },
+
+  getAltSpeed: (): Promise<{ altSpeedEnabled: boolean }> => {
+    return ipcRenderer.invoke('speed:getAlt');
   },
 
   onVpnDropped: (callback: (info: { paused: number; publicIP?: string }) => void): (() => void) => {

@@ -654,6 +654,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [altSpeed, setAltSpeed] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   // Torrent control modal
@@ -782,6 +783,11 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         unsubscribe();
       }
     };
+  }, []);
+
+  // Load the alternative-speed toggle state on mount (reflects the toolbar button)
+  useEffect(() => {
+    window.api.getAltSpeed().then(({ altSpeedEnabled }) => setAltSpeed(altSpeedEnabled)).catch(() => {});
   }, []);
 
   // (Filter/sort dropdown state was removed — sorting lives in the list header)
@@ -1016,6 +1022,16 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
   };
 
+  const handleToggleAltSpeed = async () => {
+    try {
+      const { altSpeedEnabled } = await window.api.setAltSpeed(!altSpeed);
+      setAltSpeed(altSpeedEnabled);
+      addToast(altSpeedEnabled ? 'Alternative speed limits ON' : 'Alternative speed limits OFF', 'info');
+    } catch (error) {
+      addToast(`Failed to toggle speed mode: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    }
+  };
+
   const handleFileSelectionConfirm = async (selectedIndices: number[]) => {
     if (!pendingTorrent) return;
 
@@ -1115,6 +1131,19 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       );
     }
   }, [addToast]);
+
+  const handleRecheck = useCallback(async (id: string) => {
+    try {
+      await window.api.recheckDownload(id);
+      addToast('Rechecking data on disk…', 'success');
+      loadDownloads();
+    } catch (error) {
+      addToast(
+        `Failed to recheck: ${error instanceof Error ? error.message : String(error)}`,
+        'error'
+      );
+    }
+  }, [addToast, loadDownloads]);
 
   const handleOpenFolder = useCallback(async (path: string) => {
     try {
@@ -1265,6 +1294,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             icon={<Icon name="play" size={16} />}
             onClick={handleResumeAll}
             title="Resume all"
+          />
+          <Button
+            variant={altSpeed ? 'primary' : 'ghost'}
+            size="sm"
+            iconOnly
+            icon={<Icon name="gauge" size={16} />}
+            onClick={handleToggleAltSpeed}
+            title={altSpeed ? 'Alternative speed limits: ON' : 'Alternative speed limits: OFF'}
           />
           <Button
             variant="ghost"
@@ -1670,6 +1707,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 if (download) {
                   handleOpenFolder(download.savePath);
                 }
+                setContextMenu(null);
+              }
+            },
+            {
+              label: 'Force recheck',
+              icon: 'refresh-cw',
+              onClick: () => {
+                handleRecheck(contextMenu.downloadId);
                 setContextMenu(null);
               }
             },

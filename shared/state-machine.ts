@@ -50,11 +50,13 @@ export const DOWNLOAD_STATUSES: readonly DownloadStatus[] = [
  * Value: array of valid next states
  */
 export const STATE_TRANSITIONS: Record<DownloadStatus, readonly DownloadStatus[]> = {
+  // 'queued' targets from active/finished states exist to support a force
+  // recheck: the torrent is re-queued so WebTorrent re-verifies on-disk data.
   queued: ['downloading', 'paused', 'error', 'removed'],
-  downloading: ['paused', 'seeding', 'completed', 'error', 'removed'],
+  downloading: ['queued', 'paused', 'seeding', 'completed', 'error', 'removed'],
   paused: ['queued', 'downloading', 'seeding', 'completed', 'error', 'removed'],
-  seeding: ['paused', 'completed', 'error', 'removed'],
-  completed: ['seeding', 'removed'], // Can re-seed
+  seeding: ['queued', 'paused', 'completed', 'error', 'removed'],
+  completed: ['queued', 'seeding', 'removed'], // Can re-seed or re-check
   error: ['queued', 'downloading', 'removed'], // Can retry (goes back to queue) or resume directly to downloading
   removed: [], // Terminal state
 };
@@ -108,6 +110,19 @@ export const PAUSABLE_STATES: readonly DownloadStatus[] = ['downloading', 'seedi
  * States that represent finished downloads (successful)
  */
 export const FINISHED_STATES: readonly DownloadStatus[] = ['seeding', 'completed'] as const;
+
+/**
+ * States from which a force recheck (re-verify on-disk data) is allowed —
+ * anything that has, or may have, data on disk worth verifying.
+ */
+export const RECHECKABLE_STATES: readonly DownloadStatus[] = ['downloading', 'paused', 'seeding', 'completed', 'error'] as const;
+
+/**
+ * Check if a download can be force-rechecked
+ */
+export function canRecheck(status: DownloadStatus): boolean {
+  return RECHECKABLE_STATES.includes(status);
+}
 
 /**
  * Check if a download is in an active state
