@@ -1082,6 +1082,9 @@ export class TorrentManager {
             log.error('Failed to apply file selection', { id, error: err });
           }
         }
+        // Restore the piece-picking strategy from the persisted flag (WebTorrent
+        // defaults new instances to 'sequential', so always set it explicitly).
+        this.applyStrategy(torrent, managed.download.sequentialDownload === true);
         // Store infoHash for duplicate detection
         const infoHash = torrent.infoHash;
         
@@ -2340,8 +2343,14 @@ export class TorrentManager {
   // ============================================================
 
   /**
-   * Toggle sequential download mode.
-   * In WebTorrent this is approximated by controlling file select/deselect order.
+   * Toggle sequential download mode (download pieces in order, e.g. for
+   * progressive playback). WebTorrent's piece picker reads `torrent.strategy`
+   * on every request cycle: 'rarest' → rarity-based (the healthy default for a
+   * normal download), anything else → in-order selection (lib/torrent.js
+   * trySelectWire). Flipping the property takes effect on the next request, so
+   * there's nothing else to trigger — and we no longer re-select files (which
+   * would clobber the user's per-file "skip" choices) or mark every piece
+   * critical (which defeats hotswap).
    */
   async setSequentialDownload(id: string, enabled: boolean): Promise<void> {
     await this.whenReady();
@@ -2352,20 +2361,22 @@ export class TorrentManager {
     await db.updateDownloadField(id, 'sequentialDownload', enabled);
 
     if (managed.torrent) {
-      try {
-        // WebTorrent: enable criticalLength to download pieces sequentially
-        if (enabled) {
-          // Select files in order to force sequential piece selection
-          managed.torrent.files.forEach((file, i) => {
-            file.select();
-          });
-          // If the torrent library supports it, try to set sequential mode
-          (managed.torrent as any).critical?.(0, managed.torrent.pieces?.length ?? 0);
-        }
-      } catch (_) { /* unsupported — best effort */ }
+      this.applyStrategy(managed.torrent, enabled);
     }
 
     log.info('Sequential download set', { id, enabled });
+  }
+
+  /**
+   * Apply the piece-picking strategy for a torrent. Always set explicitly
+   * (WebTorrent 1.9.7 defaults new torrents to 'sequential'); a normal download
+   * should be rarest-first for swarm health unless the user opted into
+   * sequential. Called on toggle and whenever a torrent instance is (re)attached.
+   */
+  private applyStrategy(torrent: Torrent, sequential: boolean): void {
+    try {
+      (torrent as any).strategy = sequential ? 'sequential' : 'rarest';
+    } catch (_) { /* property unsupported on this version — best effort */ }
   }
 
   /**
