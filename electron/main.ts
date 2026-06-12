@@ -318,10 +318,12 @@ async function createWindow(): Promise<void> {
   }
 
   // === Tray behavior: Minimize to Tray ===
-  mainWindow.on('minimize', (event: Electron.Event) => {
+  // Electron no longer passes a preventable event to 'minimize' (and
+  // preventDefault here stopped working long ago). Just hide to the tray — the
+  // window minimizes then disappears, which is the intended behaviour.
+  mainWindow.on('minimize', () => {
     const settings = store.get('settings') as any;
     if (settings?.minimizeToTray) {
-      event.preventDefault();
       mainWindow?.hide();
       showTrayHintOnce();
     }
