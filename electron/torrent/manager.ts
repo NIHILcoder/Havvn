@@ -128,6 +128,13 @@ interface ManagedTorrent {
   // and report baseline + live session bytes.
   sessionBaseDownloaded?: number;
   sessionBaseUploaded?: number;
+  // Per-tracker scrape data (seeders/leechers + last-announce time), captured
+  // from the tracker client's 'update'/'scrape' events and keyed by announce
+  // URL. WebTorrent exposes no per-tracker peer counts otherwise.
+  trackerStats?: Map<string, { complete: number; incomplete: number; lastAnnounce: number }>;
+  // The tracker client we've attached listeners to. Torrents are recreated on
+  // pause/resume, so we re-hook when the client instance changes.
+  trackerHookedClient?: unknown;
   // Lazily-created per-torrent HTTP server used for in-app streaming. Bound to
   // the specific torrent instance it was created for (torrents are recreated on
   // pause/resume), so we can tell when it has gone stale.
@@ -2508,20 +2515,75 @@ export class TorrentManager {
   }
 
   /**
-   * Get current tracker info for a torrent.
+   * Subscribe to a torrent's tracker client so we capture per-tracker scrape
+   * data (seeders/leechers, last-announce time) keyed by announce URL. Idempotent
+   * per client instance — re-hooks when the torrent (and thus its tracker client)
+   * is recreated on pause/resume.
+   */
+  private attachTrackerListeners(managed: ManagedTorrent): void {
+    const client = (managed.torrent as any)?.discovery?.tracker;
+    if (!client || managed.trackerHookedClient === client) return;
+    managed.trackerHookedClient = client;
+    if (!managed.trackerStats) managed.trackerStats = new Map();
+
+    const record = (data: any): void => {
+      const url = data?.announce;
+      if (typeof url !== 'string') return;
+      managed.trackerStats!.set(url, {
+        complete: Number(data.complete) || 0,
+        incomplete: Number(data.incomplete) || 0,
+        lastAnnounce: Date.now(),
+      });
+    };
+
+    try {
+      client.on('update', record);
+      client.on('scrape', record);
+    } catch (_) { /* tracker client without EventEmitter — ignore */ }
+  }
+
+  /** Short "Ns/Nm/Nh ago" string for the last-announce timestamp. */
+  private relativeTime(ts: number): string {
+    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    return `${Math.round(m / 60)}h ago`;
+  }
+
+  /**
+   * Get current tracker info for a torrent. Reads the live tracker client
+   * (torrent.discovery.tracker._trackers) — the previous code read a
+   * non-existent torrent._trackers and reported a fake "connected" status from a
+   * method reference. Status now reflects real state:
+   *   • error      — the tracker connection was destroyed
+   *   • connected  — announced OK and a re-announce interval is scheduled
+   *   • updating   — added but no successful announce yet
+   * Peer counts come from cached scrape data (see attachTrackerListeners).
    */
   getTrackers(id: string): TrackerInfo[] {
     const managed = this.managedTorrents.get(id);
     if (!managed?.torrent) return [];
 
     try {
-      const trackers: any[] = (managed.torrent as any)._trackers ?? [];
-      return trackers.map((t: any): TrackerInfo => ({
-        url: t.announce || t.announceUrl || String(t),
-        status: t.destroy ? 'connected' : 'disconnected',
-        peers: typeof t.peers === 'number' ? t.peers : 0,
-        lastAnnounce: t.lastAnnounce ? new Date(t.lastAnnounce).toISOString() : undefined,
-      }));
+      // Ensure scrape data is being captured (lazy — hooks on first read).
+      this.attachTrackerListeners(managed);
+
+      const trackers: any[] = (managed.torrent as any).discovery?.tracker?._trackers ?? [];
+      return trackers.map((t: any): TrackerInfo => {
+        const url = t.announceUrl || t.announce || String(t);
+        const stat = managed.trackerStats?.get(url);
+        let status: TrackerInfo['status'];
+        if (t.destroyed) status = 'error';
+        else if (t.interval) status = 'connected';
+        else status = 'updating';
+        return {
+          url,
+          status,
+          peers: stat ? stat.complete + stat.incomplete : 0,
+          lastAnnounce: stat ? this.relativeTime(stat.lastAnnounce) : undefined,
+        };
+      });
     } catch (_) {
       return [];
     }

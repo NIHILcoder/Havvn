@@ -154,7 +154,9 @@ export type FilePriority = 'skip' | 'low' | 'normal' | 'high';
 
 export interface TrackerInfo {
   url: string;
-  status: 'connected' | 'disconnected' | 'error';
+  // connected = announced OK and re-announce scheduled; updating = added but no
+  // successful announce yet; error = the tracker connection was torn down.
+  status: 'connected' | 'updating' | 'disconnected' | 'error';
   peers: number;
   lastAnnounce?: string;
 }

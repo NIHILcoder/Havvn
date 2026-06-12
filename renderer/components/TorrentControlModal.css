@@ -464,6 +464,7 @@
 }
 
 .tcm-tracker-dot.connected { background: #22c55e; }
+.tcm-tracker-dot.updating { background: #f59e0b; }
 .tcm-tracker-dot.disconnected { background: #6b7280; }
 .tcm-tracker-dot.error { background: #ef4444; }
 
