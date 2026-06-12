@@ -381,3 +381,34 @@
   border-top: 1px solid var(--color-border-default, #23232a);
   display: flex; align-items: center; gap: 6px;
 }
+
+/* Delete shared file */
+.room-file-del {
+  width: 30px; height: 30px; display: grid; place-items: center;
+  border-radius: 8px; border: 1px solid transparent;
+  background: transparent; color: var(--color-text-tertiary, #6b6b73); cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.room-file-del:hover { color: #f87171; background: rgba(248,113,113,0.1); }
+
+/* Cinema watchers strip */
+.room-player-watchers {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px;
+  border-top: 1px solid var(--color-border-default, #23232a);
+  background: #0a0a0b;
+}
+.room-player-watchers-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #9a9aa2);
+}
+.room-player-avatars { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.room-watcher { position: relative; line-height: 0; border-radius: 50%; }
+.room-watcher .room-watcher-dot {
+  position: absolute; right: -1px; bottom: -1px;
+  width: 9px; height: 9px; border-radius: 50%;
+  border: 2px solid #0a0a0b;
+}
+.room-watcher.playing .room-watcher-dot { background: #22c55e; }
+.room-watcher.paused .room-watcher-dot { background: #f59e0b; }
+.room-player-alone { font-size: 12px; color: var(--color-text-tertiary, #6b6b73); }

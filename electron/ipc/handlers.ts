@@ -391,10 +391,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:broadcastSync', wrapHandler('rooms:broadcastSync',
-    async (_event, roomId: string, payload: { fileId: string; action: string; position: number; rate?: number }) => {
+    async (_event, roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean }) => {
       roomManager.broadcastSync(roomId, payload);
       return { ok: true };
     }
+  ));
+
+  ipcMain.handle('rooms:removeFile', wrapHandler('rooms:removeFile',
+    async (_event, roomId: string, fileId: string) => roomManager.removeFile(roomId, fileId)
   ));
 
   ipcMain.handle('downloads:getTorrentInfo', wrapHandler('downloads:getTorrentInfo',

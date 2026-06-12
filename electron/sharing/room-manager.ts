@@ -70,6 +70,10 @@ export class RoomManager {
         this.mainWindow.webContents.send('rooms:sync', payload);
       }
     });
+    // A peer deleted a file — persist the tombstone so it stays gone after restart.
+    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string }) => {
+      try { if (payload?.roomId && payload?.fileId) db.addRoomTombstone(payload.roomId, payload.fileId); } catch { /* ignore */ }
+    });
   }
 
   private failAll(message: string): void {
@@ -138,6 +142,7 @@ export class RoomManager {
         self: { memberId: profile.memberId, name: profile.name, avatarSeed: profile.avatarSeed },
         useTurn,
         turnServers: TURN_SERVERS,
+        tombstones: db.getRoomTombstones(roomId),
       },
     };
   }
@@ -199,6 +204,7 @@ export class RoomManager {
   async leaveRoom(roomId: string): Promise<{ ok: boolean }> {
     try { await this.call('leave', { roomId }, 8000); } catch { /* engine may be down */ }
     db.deletePersistedRoom(roomId);
+    db.clearRoomTombstones(roomId);
     this.cache.delete(roomId);
     return { ok: true };
   }
@@ -265,14 +271,27 @@ export class RoomManager {
     const file = state?.files.find((f) => f.fileId === fileId);
     const folder = this.folderOf(roomId);
     if (!file || !folder) throw new Error('File not available in this room');
-    const abs = path.join(folder, file.name);
+    // Prefer the engine-known on-disk path: a *shared* file is seeded from its
+    // original location (not the room folder), while a *downloaded* one lives in
+    // the room folder. Fall back to the room folder for older state.
+    const tr = state?.transfers?.[fileId];
+    const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath : path.join(folder, file.name);
     if (!fs.existsSync(abs)) throw new Error('This file is not fully downloaded yet');
     const { getCastServer } = await import('../torrent/cast-server');
     return getCastServer().publishDiskFile(abs);
   }
 
+  /** Remove a shared file from the room for everyone (persists a tombstone). */
+  async removeFile(roomId: string, fileId: string): Promise<{ ok: boolean }> {
+    db.addRoomTombstone(roomId, fileId);
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'removeFile', reqId: ++this.reqSeq, roomId, fileId });
+    }
+    return { ok: true };
+  }
+
   /** Watch-together: broadcast a local playback action to the room's peers. */
-  broadcastSync(roomId: string, payload: { fileId: string; action: string; position: number; rate?: number }): void {
+  broadcastSync(roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean }): void {
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'sync', reqId: ++this.reqSeq, roomId, payload });
     }

@@ -309,7 +309,12 @@ const RoomsPage: React.FC = () => {
 
       {/* In-app player (watch a downloaded shared file, optionally in sync) */}
       {watch && room && (
-        <RoomPlayer roomId={room.roomId} file={watch.file} onClose={() => setWatch(null)} />
+        <RoomPlayer
+          roomId={room.roomId}
+          file={watch.file}
+          self={room.members.find((m) => m.isSelf) || { memberId: 'self', name: 'You', avatarSeed: 'self' }}
+          onClose={() => setWatch(null)}
+        />
       )}
     </div>
   );
@@ -439,6 +444,16 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           <Icon name="external-link" size={14} /> {t('rooms.openFile')}
         </button>
       )}
+      <button
+        className="room-file-del"
+        onClick={() => {
+          if (window.confirm(t('rooms.deleteConfirm')))
+            window.api.rooms.removeFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+        }}
+        title={t('rooms.deleteHint')}
+      >
+        <Icon name="trash" size={14} />
+      </button>
       <div className="room-file-status">
         {haveLocally ? (
           <span className="room-status seeding" title={t('rooms.haveLocal')}><Icon name="check-circle" size={16} /></span>
@@ -456,7 +471,9 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // the cast server's /direct (seekable); others go through hls.js against the
 // on-the-fly HLS transcode. "Watch together" keeps playback in sync across the
 // room by broadcasting play/pause/seek over the encrypted gossip channel.
-const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; onClose: () => void }> = ({ roomId, file, onClose }) => {
+interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
+
+const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; onClose: () => void }> = ({ roomId, file, self, onClose }) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -466,7 +483,39 @@ const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; onClose: () => void
   const [controller, setController] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [watchers, setWatchers] = useState<Record<string, Watcher>>({});
   togetherRef.current = together;
+
+  // ── Cinema presence: announce we're watching, heartbeat, and leave ────────
+  const presence = useCallback((action: 'join' | 'leave' | 'beat') => {
+    const v = videoRef.current;
+    window.api.rooms.broadcastSync(roomId, {
+      fileId: file.fileId, action,
+      position: v ? v.currentTime : 0,
+      playing: v ? !v.paused : false,
+    }).catch(() => {});
+  }, [roomId, file.fileId]);
+
+  useEffect(() => {
+    // Seed self into the watcher list right away.
+    setWatchers({ [self.memberId]: { memberId: self.memberId, name: self.name || 'You', avatarSeed: self.avatarSeed, playing: false, lastSeen: Date.now() } });
+    presence('join');
+    const beat = setInterval(() => presence('beat'), 5000);
+    // Self heartbeat so our own card stays fresh and reflects play state.
+    const selfTick = setInterval(() => {
+      const v = videoRef.current;
+      setWatchers((w) => ({ ...w, [self.memberId]: { ...(w[self.memberId] || { memberId: self.memberId, name: self.name || 'You', avatarSeed: self.avatarSeed }), playing: v ? !v.paused : false, lastSeen: Date.now() } as Watcher }));
+    }, 2000);
+    // Prune members we haven't heard from for a while.
+    const prune = setInterval(() => {
+      setWatchers((w) => {
+        const now = Date.now(); const next: Record<string, Watcher> = {};
+        for (const k of Object.keys(w)) if (k === self.memberId || now - w[k].lastSeen < 16000) next[k] = w[k];
+        return next;
+      });
+    }, 4000);
+    return () => { presence('leave'); clearInterval(beat); clearInterval(selfTick); clearInterval(prune); };
+  }, [presence, self.memberId, self.name, self.avatarSeed]);
 
   // Load the media (direct or HLS).
   useEffect(() => {
@@ -512,10 +561,19 @@ const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; onClose: () => void
     return () => { v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); v.removeEventListener('seeked', onSeeked); };
   }, [roomId, file.fileId]);
 
-  // Apply remote sync actions, correcting drift only when it exceeds ~1.5s.
+  // Track who's watching (presence) + apply remote sync when "together" is on.
   useEffect(() => {
     const off = window.api.onRoomSync((msg) => {
-      if (msg.roomId !== roomId || msg.fileId !== file.fileId || !togetherRef.current) return;
+      if (msg.roomId !== roomId || msg.fileId !== file.fileId) return;
+      // Presence: every message means that member is in the session right now.
+      if (msg.action === 'leave') {
+        setWatchers((w) => { const n = { ...w }; delete n[msg.memberId]; return n; });
+      } else {
+        setWatchers((w) => ({ ...w, [msg.memberId]: { memberId: msg.memberId, name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, playing: !!msg.playing, lastSeen: Date.now() } }));
+      }
+      // Playback follow — only the actual control actions, only when in sync.
+      if (!togetherRef.current) return;
+      if (msg.action !== 'play' && msg.action !== 'pause' && msg.action !== 'seek') return;
       const v = videoRef.current;
       if (!v) return;
       setController(msg.name);
@@ -552,6 +610,18 @@ const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; onClose: () => void
           <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
         <video ref={videoRef} className="room-player-video" controls autoPlay playsInline />
+        <div className="room-player-watchers">
+          <span className="room-player-watchers-label"><Icon name="users" size={13} /> {t('rooms.watching')}</span>
+          <div className="room-player-avatars">
+            {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
+              <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ' (you)' : ''} — ${w.playing ? '▶' : '❚❚'}`}>
+                <Identicon seed={w.avatarSeed} size={26} />
+                <span className="room-watcher-dot" />
+              </span>
+            ))}
+          </div>
+          {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
+        </div>
         {loading && !error && <div className="room-player-msg">{t('common.loading')}</div>}
         {error && <div className="room-player-msg err">{error}</div>}
         {together && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}

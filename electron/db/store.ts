@@ -29,6 +29,7 @@ interface StoreSchema {
   collaborativeSeedingEnabled: boolean;  // Collaborative Seeding Network opt-in (persisted)
   rooms: Record<string, PersistedRoom>;  // Friend swarms / private rooms (Phase 3)
   roomProfile: RoomProfile | null;       // This install's identity in rooms
+  roomTombstones: Record<string, string[]>; // roomId → deleted fileIds (stop resurrection)
   windowBounds: WindowBounds | null;     // Last main-window size/position
 }
 
@@ -141,9 +142,30 @@ const store = new Store<StoreSchema>({
     collaborativeSeedingEnabled: false,
     rooms: {},
     roomProfile: null,
+    roomTombstones: {},
     windowBounds: null,
   },
 });
+
+// === Room tombstones (deleted shared files — keep them from reappearing) ===
+
+export function getRoomTombstones(roomId: string): string[] {
+  return (store.get('roomTombstones') ?? {})[roomId] ?? [];
+}
+
+export function addRoomTombstone(roomId: string, fileId: string): void {
+  const all = store.get('roomTombstones') ?? {};
+  const set = new Set(all[roomId] ?? []);
+  set.add(fileId);
+  all[roomId] = Array.from(set).slice(-500); // cap
+  store.set('roomTombstones', all);
+}
+
+export function clearRoomTombstones(roomId: string): void {
+  const all = store.get('roomTombstones') ?? {};
+  delete all[roomId];
+  store.set('roomTombstones', all);
+}
 
 // === Web remote token (lazily generated, persisted) ===
 

@@ -65,6 +65,11 @@ const dictionary = {
     'rooms.together.on': 'In sync',
     'rooms.together.hint': 'Sync play / pause / seek with everyone in the room.',
     'rooms.together.synced': 'Following',
+    'rooms.watching': 'Watching now',
+    'rooms.watchAlone': 'You’re the only one here right now.',
+    'rooms.delete': 'Remove',
+    'rooms.deleteHint': 'Remove this file from the room for everyone. Downloaded copies are deleted; the original a member shared from is left alone.',
+    'rooms.deleteConfirm': 'Remove this file from the room for everyone? This can’t be undone.',
 
     // Downloads
     'filter.all': 'All',
@@ -706,7 +711,12 @@ const dictionary = {
     'rooms.together.on': 'Синхронно',
     'rooms.together.hint': 'Синхронизировать воспроизведение / паузу / перемотку со всеми в комнате.',
     'rooms.together.synced': 'Следуем за',
-    
+    'rooms.watching': 'Смотрят сейчас',
+    'rooms.watchAlone': 'Пока вы здесь один.',
+    'rooms.delete': 'Удалить',
+    'rooms.deleteHint': 'Удалить файл из комнаты у всех. Скачанные копии удаляются; оригинал, которым поделился участник, не трогается.',
+    'rooms.deleteConfirm': 'Удалить файл из комнаты у всех? Это нельзя отменить.',
+
     // Downloads
     'filter.all': 'Все',
     'filter.downloading': 'Загружаются',

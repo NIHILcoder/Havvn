@@ -113,6 +113,7 @@ export interface RoomTransfer {
   peers: number;
   haveLocally: boolean;
   released?: boolean;    // user stopped seeding this file to unlock it on disk
+  localPath?: string;    // real on-disk path (original for shared, room folder for downloaded)
 }
 
 /** Full live state of one room, pushed to the renderer. */
@@ -708,10 +709,11 @@ export interface IpcApi {
     openFolder: (roomId: string) => Promise<void>;
     openFile: (roomId: string, fileId: string) => Promise<void>;
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; direct: boolean; kind: string; name: string }>;
-    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number }) => Promise<{ ok: boolean }>;
+    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean }) => Promise<{ ok: boolean }>;
+    removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
   };
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
-  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string }) => void) => () => void;
+  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean }) => void) => () => void;
 
   // IP Blocklist
   blocklist: {
