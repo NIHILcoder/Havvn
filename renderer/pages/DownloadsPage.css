@@ -745,6 +745,29 @@
   gap: var(--space-3);
 }
 
+/* === Virtualized list === */
+/* The list is its own scroll container so the toolbar/stats above stay put and
+   the virtualizer's scrollMargin can stay 0. */
+.downloads-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Rows are absolutely positioned by the virtualizer, so flex gap no longer
+   applies — the inter-row spacing moves into each row's padding-bottom, which
+   is what the virtualizer measures. */
+.downloads-list-virtual {
+  display: block;
+}
+
+.downloads-list-virtual.downloads-list-compact .downloads-vrow { padding-bottom: var(--space-2); }
+.downloads-list-virtual.downloads-list-detailed .downloads-vrow { padding-bottom: var(--space-3); }
+
+/* Rows mount/unmount while scrolling — the entrance animation would re-fire on
+   every scroll, so suppress it for virtualized rows. */
+.downloads-vrow .download-item { animation: none; }
+
 /* === Download Item - Shared === */
 .download-item {
   background: var(--gradient-card);

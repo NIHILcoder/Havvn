@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Download, DownloadStats } from '../../shared/types';
 import { canPause, canResume } from '../../shared/state-machine';
 import {
@@ -667,6 +668,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
   // Refs
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const scrollParentRef = useRef<HTMLDivElement>(null);
 
   // File selector state
   const [showFileSelector, setShowFileSelector] = useState(false);
@@ -1241,6 +1243,24 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       .reduce((sum, s) => sum + s.upSpeedBps, 0),
   };
 
+  // Virtualize the downloads list so only the rows in view are mounted. The list
+  // is its own scroll container (scrollMargin stays 0); rows are absolutely
+  // positioned and measured dynamically, so compact/detailed/expanded heights
+  // are all handled. estimateSize only seeds the first paint.
+  const rowVirtualizer = useVirtualizer({
+    count: sortedDownloads.length,
+    getScrollElement: () => scrollParentRef.current,
+    estimateSize: () => (viewMode === 'detailed' ? 168 : 76),
+    getItemKey: (index) => sortedDownloads[index].id,
+    overscan: 8,
+  });
+
+  // Item heights change wholesale when the view mode flips — drop the cached
+  // measurements so rows aren't briefly positioned with stale sizes.
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [viewMode]);
+
   if (loading) {
     return (
       <div className="page-loading">
@@ -1601,30 +1621,49 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             description="Try selecting a different filter or adding more downloads."
           />
         ) : (
-          <>
-            <div className={`downloads-list downloads-list-${viewMode}`}>
-              {sortedDownloads.map((download) => (
-                <DownloadItem
-                  key={download.id}
-                  download={download}
-                  stats={stats.get(download.id)}
-                  viewMode={viewMode}
-                  expanded={expandedIds.has(download.id)}
-                  onToggleExpand={handleToggleExpand}
-                  isSelected={selectedIds.has(download.id)}
-                  onSelect={handleSelectItem}
-                  onContextMenu={handleContextMenu}
-                  onPause={handlePause}
-                  onResume={handleResume}
-                  onRemove={handleRemove}
-                  onStopSeeding={handleStopSeeding}
-                  onRetry={handleRetry}
-                  onOpenFolder={handleOpenFolder}
-                  onShowFiles={(id) => setPreviewId(id)}
-                />
-              ))}
+          <div ref={scrollParentRef} className="downloads-scroll">
+            <div
+              className={`downloads-list downloads-list-${viewMode} downloads-list-virtual`}
+              style={{ height: rowVirtualizer.getTotalSize(), position: 'relative' }}
+            >
+              {rowVirtualizer.getVirtualItems().map((vItem) => {
+                const download = sortedDownloads[vItem.index];
+                return (
+                  <div
+                    key={vItem.key}
+                    data-index={vItem.index}
+                    ref={rowVirtualizer.measureElement}
+                    className="downloads-vrow"
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    <DownloadItem
+                      download={download}
+                      stats={stats.get(download.id)}
+                      viewMode={viewMode}
+                      expanded={expandedIds.has(download.id)}
+                      onToggleExpand={handleToggleExpand}
+                      isSelected={selectedIds.has(download.id)}
+                      onSelect={handleSelectItem}
+                      onContextMenu={handleContextMenu}
+                      onPause={handlePause}
+                      onResume={handleResume}
+                      onRemove={handleRemove}
+                      onStopSeeding={handleStopSeeding}
+                      onRetry={handleRetry}
+                      onOpenFolder={handleOpenFolder}
+                      onShowFiles={(id) => setPreviewId(id)}
+                    />
+                  </div>
+                );
+              })}
             </div>
-          </>
+          </div>
         )}
 
         {previewId && (
