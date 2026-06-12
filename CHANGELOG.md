@@ -4,6 +4,21 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [1.9.2-beta] - 2026-06-11
+
+### Fixed
+- **Watching a file you shared in a room now works.** It previously said "this file
+  is not fully downloaded yet" because a shared file is seeded from its original
+  location, not the room folder; the player now finds it correctly.
+
+### Added
+- **Interactive cinema.** The room player now shows **who's watching the same file
+  right now** — each member's avatar with a play / paused indicator, updated live.
+- **Remove shared files from a room.** Each file has a delete button that removes it
+  for everyone; downloaded copies are deleted, while the original a member shared
+  from is left untouched. Removed files won't reappear (even after a restart or when
+  an offline member reconnects).
+
 ## [1.9.1-beta] - 2026-06-11
 
 ### Added
