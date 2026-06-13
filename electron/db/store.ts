@@ -1,6 +1,21 @@
 /**
- * Simple JSON-based storage using electron-store
- * Replaces PostgreSQL for simplicity
+ * JSON-based storage using electron-store, split across several files by concern
+ * so the on-disk data is easy to inspect/edit and the hot path is cheap to write.
+ *
+ * electron-store rewrites a file in full on every `set()`. Keeping everything in
+ * one file meant the 5-second download-progress persist also rewrote the (often
+ * multi-MB) IP blocklist and up to 5000 RSS items each tick. The data now lives
+ * in dedicated files:
+ *   config.json      — settings, categories, scheduler, privacy, window, flags
+ *   downloads.json   — downloads (the hot, frequently-written one)
+ *   rss.json         — RSS feeds + items
+ *   blocklists.json  — IP blocklists + packed range data
+ *   search.json      — search providers
+ *   rooms.json       — friend-swarm rooms, profile, tombstones
+ *   reputation.json  — collaborative-seeding reputation + transactions
+ *
+ * Existing installs are migrated once from the old monolithic config.json (see
+ * migrateToSplitStores).
  */
 
 import Store from 'electron-store';
@@ -11,26 +26,48 @@ import path from 'path';
 import crypto from 'crypto';
 import { encryptSecret, decryptSecret } from './secrets';
 
-interface StoreSchema {
-  downloads: Record<string, Download>;
+// === Per-file store schemas ===
+
+interface ConfigSchema {
   settings: AppSettings;
   categories: Category[];
   scheduler: SchedulerConfig;
-  reputation: Record<string, UserReputation>;
-  transactions: Record<string, ReputationTransaction[]>;
   privacyConfig: PrivacyConfig;
-  rssFeeds: RSSFeed[];
-  rssItems: RSSItem[];
-  searchProviders: SearchProvider[];
-  ipBlocklists: IPBlocklist[];
-  blocklistData: Record<string, string>; // id -> packed IP ranges as CSV
+  windowBounds: WindowBounds | null;
   defaultsSeeded: boolean;               // First-run seeding marker
   suggestedFeedSeeded: boolean;          // One-time seeding/migration of the working FOSS Torrents feed
   collaborativeSeedingEnabled: boolean;  // Collaborative Seeding Network opt-in (persisted)
-  rooms: Record<string, PersistedRoom>;  // Friend swarms / private rooms (Phase 3)
-  roomProfile: RoomProfile | null;       // This install's identity in rooms
-  roomTombstones: Record<string, string[]>; // roomId → deleted fileIds (stop resurrection)
-  windowBounds: WindowBounds | null;     // Last main-window size/position
+  trayHintShown?: boolean;               // One-time "running in tray" hint (set from main.ts)
+  splitStoresMigrated?: boolean;         // One-time migration marker (see migrateToSplitStores)
+}
+
+interface DownloadsSchema {
+  downloads: Record<string, Download>;
+}
+
+interface RssSchema {
+  rssFeeds: RSSFeed[];
+  rssItems: RSSItem[];
+}
+
+interface BlocklistSchema {
+  ipBlocklists: IPBlocklist[];
+  blocklistData: Record<string, string>; // id -> packed IP ranges as CSV
+}
+
+interface SearchSchema {
+  searchProviders: SearchProvider[];
+}
+
+interface RoomsSchema {
+  rooms: Record<string, PersistedRoom>;      // Friend swarms / private rooms (Phase 3)
+  roomProfile: RoomProfile | null;           // This install's identity in rooms
+  roomTombstones: Record<string, string[]>;  // roomId → deleted fileIds (stop resurrection)
+}
+
+interface ReputationSchema {
+  reputation: Record<string, UserReputation>;
+  transactions: Record<string, ReputationTransaction[]>;
 }
 
 /** Persisted main-window geometry, restored on next launch. */
@@ -58,9 +95,13 @@ const defaultCategories: Category[] = [
   { id: 'other', name: 'Other', icon: 'folder', color: '#6b7280' },
 ];
 
-const store = new Store<StoreSchema>({
+// === Store instances (one file each) ===
+// 'config' is electron-store's default name, so configStore reuses the existing
+// config.json — settings/categories/etc. stay put with no migration needed.
+
+const configStore = new Store<ConfigSchema>({
+  name: 'config',
   defaults: {
-    downloads: {},
     settings: {
       id: 1,
       defaultDownloadDir: path.join(app.getPath('downloads'), 'TorrentHunt'),
@@ -120,8 +161,6 @@ const store = new Store<StoreSchema>({
       enabled: false,
       schedules: [],
     },
-    reputation: {},
-    transactions: {},
     privacyConfig: {
       anonymousMode: true,
       encryptStorage: true,
@@ -132,66 +171,127 @@ const store = new Store<StoreSchema>({
       sanitizeLogs: true,
       vpnKillSwitch: false,
     },
-    rssFeeds: [],
-    rssItems: [],
-    searchProviders: [],
-    ipBlocklists: [],
-    blocklistData: {},
+    windowBounds: null,
     defaultsSeeded: false,
     suggestedFeedSeeded: false,
     collaborativeSeedingEnabled: false,
-    rooms: {},
-    roomProfile: null,
-    roomTombstones: {},
-    windowBounds: null,
   },
 });
+
+const downloadsStore = new Store<DownloadsSchema>({
+  name: 'downloads',
+  defaults: { downloads: {} },
+});
+
+const rssStore = new Store<RssSchema>({
+  name: 'rss',
+  defaults: { rssFeeds: [], rssItems: [] },
+});
+
+const blocklistStore = new Store<BlocklistSchema>({
+  name: 'blocklists',
+  defaults: { ipBlocklists: [], blocklistData: {} },
+});
+
+const searchStore = new Store<SearchSchema>({
+  name: 'search',
+  defaults: { searchProviders: [] },
+});
+
+const roomsStore = new Store<RoomsSchema>({
+  name: 'rooms',
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {} },
+});
+
+const reputationStore = new Store<ReputationSchema>({
+  name: 'reputation',
+  defaults: { reputation: {}, transactions: {} },
+});
+
+/**
+ * One-time migration from the old single-file layout. Older versions kept
+ * everything in config.json; move the relocated keys into their dedicated files
+ * and drop them from config. Idempotent: already-moved keys are gone from the
+ * legacy store, so re-running (e.g. after a crash mid-migration) is safe.
+ */
+function migrateToSplitStores(): void {
+  if (configStore.get('splitStoresMigrated')) return;
+
+  const legacy = configStore as unknown as {
+    has(key: string): boolean;
+    get(key: string): unknown;
+    delete(key: string): void;
+  };
+
+  const move = (key: string, target: Store<any>): void => {
+    if (legacy.has(key)) {
+      target.set(key, legacy.get(key));
+      legacy.delete(key);
+    }
+  };
+
+  move('downloads', downloadsStore);
+  move('rssFeeds', rssStore);
+  move('rssItems', rssStore);
+  move('ipBlocklists', blocklistStore);
+  move('blocklistData', blocklistStore);
+  move('searchProviders', searchStore);
+  move('rooms', roomsStore);
+  move('roomProfile', roomsStore);
+  move('roomTombstones', roomsStore);
+  move('reputation', reputationStore);
+  move('transactions', reputationStore);
+
+  configStore.set('splitStoresMigrated', true);
+}
+
+migrateToSplitStores();
 
 // === Room tombstones (deleted shared files — keep them from reappearing) ===
 
 export function getRoomTombstones(roomId: string): string[] {
-  return (store.get('roomTombstones') ?? {})[roomId] ?? [];
+  return (roomsStore.get('roomTombstones') ?? {})[roomId] ?? [];
 }
 
 export function addRoomTombstone(roomId: string, fileId: string): void {
-  const all = store.get('roomTombstones') ?? {};
+  const all = roomsStore.get('roomTombstones') ?? {};
   const set = new Set(all[roomId] ?? []);
   set.add(fileId);
   all[roomId] = Array.from(set).slice(-500); // cap
-  store.set('roomTombstones', all);
+  roomsStore.set('roomTombstones', all);
 }
 
 export function clearRoomTombstones(roomId: string): void {
-  const all = store.get('roomTombstones') ?? {};
+  const all = roomsStore.get('roomTombstones') ?? {};
   delete all[roomId];
-  store.set('roomTombstones', all);
+  roomsStore.set('roomTombstones', all);
 }
 
 // === Web remote token (lazily generated, persisted) ===
 
 export async function getOrCreateWebRemoteToken(): Promise<string> {
-  const s = store.get('settings');
+  const s = configStore.get('settings');
   if (s.webRemoteToken && s.webRemoteToken.length >= 32) return s.webRemoteToken;
   const token = crypto.randomBytes(24).toString('hex');
-  store.set('settings', { ...s, webRemoteToken: token });
+  configStore.set('settings', { ...s, webRemoteToken: token });
   return token;
 }
 
 export async function regenerateWebRemoteToken(): Promise<string> {
-  const s = store.get('settings');
+  const s = configStore.get('settings');
   const token = crypto.randomBytes(24).toString('hex');
-  store.set('settings', { ...s, webRemoteToken: token });
+  configStore.set('settings', { ...s, webRemoteToken: token });
   return token;
 }
 
 // === Window bounds ===
 
 export function getWindowBounds(): WindowBounds | null {
-  return store.get('windowBounds') ?? null;
+  return configStore.get('windowBounds') ?? null;
 }
 
 export function saveWindowBounds(bounds: WindowBounds): void {
-  store.set('windowBounds', bounds);
+  configStore.set('windowBounds', bounds);
 }
 
 
@@ -236,25 +336,25 @@ export async function createDownload(data: {
     lastError: null,
   };
 
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 
   return download;
 }
 
 export async function getAllDownloads(): Promise<Download[]> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   return Object.values(downloads);
 }
 
 export async function getDownloadById(id: string): Promise<Download | null> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   return downloads[id] || null;
 }
 
 export async function getDownloadsByStatus(status: Download['status']): Promise<Download[]> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   return Object.values(downloads).filter(d => d.status === status);
 }
 
@@ -263,7 +363,7 @@ export async function updateDownloadStatus(
   status: Download['status'],
   lastError: string | null = null
 ): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
 
   if (!download) {
@@ -275,7 +375,7 @@ export async function updateDownloadStatus(
   download.updatedAt = new Date();
 
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 export async function updateDownloadProgress(
@@ -293,7 +393,7 @@ export async function updateDownloadProgress(
     totalSize?: number;
   }
 ): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
 
   if (!download) {
@@ -318,7 +418,7 @@ export async function updateDownloadProgress(
   }
 
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 export interface DownloadProgressUpdate {
@@ -348,7 +448,7 @@ export async function updateDownloadsProgressBatch(
 ): Promise<void> {
   if (updates.length === 0) return;
 
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   let changed = false;
 
   for (const data of updates) {
@@ -374,11 +474,11 @@ export async function updateDownloadsProgressBatch(
     changed = true;
   }
 
-  if (changed) store.set('downloads', downloads);
+  if (changed) downloadsStore.set('downloads', downloads);
 }
 
 export async function markDownloadRemoved(id: string): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
 
   if (!download) {
@@ -389,13 +489,13 @@ export async function markDownloadRemoved(id: string): Promise<void> {
   download.updatedAt = new Date();
 
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 export async function deleteDownload(id: string): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   delete downloads[id];
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 /**
@@ -407,13 +507,13 @@ export async function updateDownloadField<K extends keyof Download>(
   field: K,
   value: Download[K]
 ): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
   if (!download) throw new Error(`Download not found: ${id}`);
   (download as any)[field] = value;
   download.updatedAt = new Date();
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 /**
@@ -423,20 +523,20 @@ export async function updateDownloadFields(
   id: string,
   fields: Partial<Download>
 ): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
   if (!download) throw new Error(`Download not found: ${id}`);
   Object.assign(download, fields);
   download.updatedAt = new Date();
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 
 // === Settings ===
 
 export async function getSettings(): Promise<AppSettings> {
-  const s = store.get('settings');
+  const s = configStore.get('settings');
   // Decrypt secrets transparently so callers always see plaintext
   return { ...s, proxyPassword: decryptSecret(s.proxyPassword) };
 }
@@ -444,13 +544,13 @@ export async function getSettings(): Promise<AppSettings> {
 export async function updateSettings(
   settings: Partial<AppSettings>
 ): Promise<AppSettings> {
-  const current = store.get('settings');
+  const current = configStore.get('settings');
   const updated = { ...current, ...settings };
   // Encrypt the proxy password at rest (only re-encrypt when it actually changed)
   if (settings.proxyPassword !== undefined) {
     updated.proxyPassword = encryptSecret(settings.proxyPassword);
   }
-  store.set('settings', updated);
+  configStore.set('settings', updated);
   // Return plaintext view to the caller
   return { ...updated, proxyPassword: decryptSecret(updated.proxyPassword) };
 }
@@ -458,7 +558,7 @@ export async function updateSettings(
 // === Cleanup ===
 
 export async function cleanupOldDownloads(daysOld: number = 30): Promise<number> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - daysOld);
 
@@ -471,7 +571,7 @@ export async function cleanupOldDownloads(daysOld: number = 30): Promise<number>
   }
 
   if (removed > 0) {
-    store.set('downloads', downloads);
+    downloadsStore.set('downloads', downloads);
   }
 
   return removed;
@@ -480,48 +580,50 @@ export async function cleanupOldDownloads(daysOld: number = 30): Promise<number>
 // === Categories ===
 
 export async function getCategories(): Promise<Category[]> {
-  return store.get('categories');
+  return configStore.get('categories');
 }
 
 export async function addCategory(category: Omit<Category, 'id'>): Promise<Category> {
-  const categories = store.get('categories');
+  const categories = configStore.get('categories');
   const newCategory: Category = {
     id: uuidv4(),
     ...category,
   };
   categories.push(newCategory);
-  store.set('categories', categories);
+  configStore.set('categories', categories);
   return newCategory;
 }
 
 export async function updateCategory(id: string, updates: Partial<Category>): Promise<Category> {
-  const categories = store.get('categories');
+  const categories = configStore.get('categories');
   const index = categories.findIndex(c => c.id === id);
   if (index === -1) {
     throw new Error(`Category not found: ${id}`);
   }
   categories[index] = { ...categories[index], ...updates };
-  store.set('categories', categories);
+  configStore.set('categories', categories);
   return categories[index];
 }
 
 export async function deleteCategory(id: string): Promise<void> {
-  const categories = store.get('categories');
+  const categories = configStore.get('categories');
   const filtered = categories.filter(c => c.id !== id);
-  store.set('categories', filtered);
+  configStore.set('categories', filtered);
 
   // Also update downloads that had this category
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
+  let changed = false;
   for (const download of Object.values(downloads)) {
     if (download.category === id) {
       download.category = null;
+      changed = true;
     }
   }
-  store.set('downloads', downloads);
+  if (changed) downloadsStore.set('downloads', downloads);
 }
 
 export async function setDownloadCategory(id: string, category: string | null): Promise<void> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
   if (!download) {
     throw new Error(`Download not found: ${id}`);
@@ -529,7 +631,7 @@ export async function setDownloadCategory(id: string, category: string | null): 
   download.category = category;
   download.updatedAt = new Date();
   downloads[id] = download;
-  store.set('downloads', downloads);
+  downloadsStore.set('downloads', downloads);
 }
 
 // === App Statistics (computed from real data) ===
@@ -550,7 +652,7 @@ export async function getAppStatistics(): Promise<{
   activeDownloads: number;
   completedDownloads: number;
 }> {
-  const downloads = store.get('downloads');
+  const downloads = downloadsStore.get('downloads');
   const all = Object.values(downloads);
 
   let totalUploadedBytes = 0;
@@ -584,31 +686,31 @@ export async function getAppStatistics(): Promise<{
 // === Scheduler ===
 
 export async function getScheduler(): Promise<SchedulerConfig> {
-  return store.get('scheduler');
+  return configStore.get('scheduler');
 }
 
 export async function updateScheduler(config: Partial<SchedulerConfig>): Promise<SchedulerConfig> {
-  const current = store.get('scheduler');
+  const current = configStore.get('scheduler');
   const updated = { ...current, ...config };
-  store.set('scheduler', updated);
+  configStore.set('scheduler', updated);
   return updated;
 }
 
 // === Collaborative Seeding - Reputation ===
 
 export async function getReputation(userId: string): Promise<UserReputation | null> {
-  const reputations = store.get('reputation');
+  const reputations = reputationStore.get('reputation');
   return reputations[userId] || null;
 }
 
 export async function saveReputation(reputation: UserReputation): Promise<void> {
-  const reputations = store.get('reputation');
+  const reputations = reputationStore.get('reputation');
   reputations[reputation.userId] = reputation;
-  store.set('reputation', reputations);
+  reputationStore.set('reputation', reputations);
 }
 
 export async function saveReputationTransaction(userId: string, transaction: ReputationTransaction): Promise<void> {
-  const transactions = store.get('transactions');
+  const transactions = reputationStore.get('transactions');
   if (!transactions[userId]) {
     transactions[userId] = [];
   }
@@ -619,11 +721,11 @@ export async function saveReputationTransaction(userId: string, transaction: Rep
     transactions[userId] = transactions[userId].slice(-1000);
   }
 
-  store.set('transactions', transactions);
+  reputationStore.set('transactions', transactions);
 }
 
 export async function getReputationTransactions(userId: string, limit: number = 20): Promise<ReputationTransaction[]> {
-  const transactions = store.get('transactions');
+  const transactions = reputationStore.get('transactions');
   const userTransactions = transactions[userId] || [];
 
   // Return last N transactions (most recent first)
@@ -633,59 +735,63 @@ export async function getReputationTransactions(userId: string, limit: number = 
 // === Privacy Settings ===
 
 export async function getPrivacyConfig(): Promise<PrivacyConfig> {
-  return store.get('privacyConfig');
+  return configStore.get('privacyConfig');
 }
 
 export async function updatePrivacyConfig(updates: Partial<PrivacyConfig>): Promise<PrivacyConfig> {
-  const current = store.get('privacyConfig');
+  const current = configStore.get('privacyConfig');
   const updated = { ...current, ...updates };
-  store.set('privacyConfig', updated);
+  configStore.set('privacyConfig', updated);
   return updated;
 }
 
 export async function clearAllData(): Promise<void> {
-  store.clear();
-  store.set('categories', defaultCategories);
-  store.set('rssFeeds', []);
-  store.set('rssItems', []);
-  store.set('searchProviders', []);
-  store.set('ipBlocklists', []);
-  store.set('blocklistData', {});
+  // .clear() resets each store to its defaults.
+  configStore.clear();
+  downloadsStore.clear();
+  rssStore.clear();
+  blocklistStore.clear();
+  searchStore.clear();
+  roomsStore.clear();
+  reputationStore.clear();
+  // Keep the migration marker set so wiping data doesn't re-trigger migration.
+  configStore.set('splitStoresMigrated', true);
+  configStore.set('categories', defaultCategories);
 }
 
 // === RSS Feeds ===
 
 export async function getRSSFeeds(): Promise<RSSFeed[]> {
-  return store.get('rssFeeds') ?? [];
+  return rssStore.get('rssFeeds') ?? [];
 }
 
 export async function addRSSFeed(feed: Omit<RSSFeed, 'id'>): Promise<RSSFeed> {
-  const feeds = store.get('rssFeeds') ?? [];
+  const feeds = rssStore.get('rssFeeds') ?? [];
   const newFeed: RSSFeed = { ...feed, id: uuidv4() };
   feeds.push(newFeed);
-  store.set('rssFeeds', feeds);
+  rssStore.set('rssFeeds', feeds);
   return newFeed;
 }
 
 export async function updateRSSFeed(id: string, updates: Partial<RSSFeed>): Promise<RSSFeed> {
-  const feeds = store.get('rssFeeds') ?? [];
+  const feeds = rssStore.get('rssFeeds') ?? [];
   const idx = feeds.findIndex(f => f.id === id);
   if (idx === -1) throw new Error(`RSS feed not found: ${id}`);
   feeds[idx] = { ...feeds[idx], ...updates };
-  store.set('rssFeeds', feeds);
+  rssStore.set('rssFeeds', feeds);
   return feeds[idx];
 }
 
 export async function removeRSSFeed(id: string): Promise<void> {
-  const feeds = (store.get('rssFeeds') ?? []).filter((f: RSSFeed) => f.id !== id);
-  store.set('rssFeeds', feeds);
+  const feeds = (rssStore.get('rssFeeds') ?? []).filter((f: RSSFeed) => f.id !== id);
+  rssStore.set('rssFeeds', feeds);
   // Remove associated items
-  const items = (store.get('rssItems') ?? []).filter((i: RSSItem) => i.feedId !== id);
-  store.set('rssItems', items);
+  const items = (rssStore.get('rssItems') ?? []).filter((i: RSSItem) => i.feedId !== id);
+  rssStore.set('rssItems', items);
 }
 
 export async function getRSSItems(feedId?: string): Promise<RSSItem[]> {
-  const items: RSSItem[] = store.get('rssItems') ?? [];
+  const items: RSSItem[] = rssStore.get('rssItems') ?? [];
   return feedId ? items.filter(i => i.feedId === feedId) : items;
 }
 
@@ -695,14 +801,14 @@ export async function getRSSItems(feedId?: string): Promise<RSSItem[]> {
  * auto-download just the fresh entries instead of the whole feed history.
  */
 export async function saveRSSItems(items: RSSItem[]): Promise<RSSItem[]> {
-  const existing: RSSItem[] = store.get('rssItems') ?? [];
+  const existing: RSSItem[] = rssStore.get('rssItems') ?? [];
   // Merge: only add new items (by guid)
   const existingGuids = new Set(existing.map(i => i.guid));
   const newItems = items.filter(i => !existingGuids.has(i.guid));
   const merged = [...existing, ...newItems];
   // Keep last 5000 items total
   const trimmed = merged.slice(-5000);
-  store.set('rssItems', trimmed);
+  rssStore.set('rssItems', trimmed);
   return newItems;
 }
 
@@ -713,7 +819,7 @@ export async function saveRSSItems(items: RSSItem[]): Promise<RSSItem[]> {
  * Returns how many items were removed.
  */
 export async function clearRSSItems(feedId?: string, onlyDownloaded = false): Promise<number> {
-  const items: RSSItem[] = store.get('rssItems') ?? [];
+  const items: RSSItem[] = rssStore.get('rssItems') ?? [];
   const kept = items.filter(i => {
     const inScope = feedId ? i.feedId === feedId : true;
     if (!inScope) return true;                  // out of scope → keep
@@ -721,39 +827,39 @@ export async function clearRSSItems(feedId?: string, onlyDownloaded = false): Pr
     return false;                               // scoped, clear everything → drop
   });
   const removed = items.length - kept.length;
-  if (removed > 0) store.set('rssItems', kept);
+  if (removed > 0) rssStore.set('rssItems', kept);
   return removed;
 }
 
 export async function markRSSItemDownloaded(guid: string): Promise<void> {
-  const items: RSSItem[] = store.get('rssItems') ?? [];
+  const items: RSSItem[] = rssStore.get('rssItems') ?? [];
   const idx = items.findIndex(i => i.guid === guid);
   if (idx !== -1) {
     items[idx].downloaded = true;
-    store.set('rssItems', items);
+    rssStore.set('rssItems', items);
   }
 }
 
 // === Search Providers ===
 
 export async function getSearchProviders(): Promise<SearchProvider[]> {
-  const providers = store.get('searchProviders') ?? [];
+  const providers = searchStore.get('searchProviders') ?? [];
   // Decrypt API keys transparently for callers (search service, UI)
   return providers.map(p => ({ ...p, apiKey: p.apiKey ? decryptSecret(p.apiKey) : p.apiKey }));
 }
 
 export async function addSearchProvider(provider: Omit<SearchProvider, 'id'>): Promise<SearchProvider> {
-  const providers = store.get('searchProviders') ?? [];
+  const providers = searchStore.get('searchProviders') ?? [];
   const newProvider: SearchProvider = { ...provider, id: uuidv4() };
   // Encrypt the API key at rest
   const stored = { ...newProvider, apiKey: encryptSecret(newProvider.apiKey) };
   providers.push(stored);
-  store.set('searchProviders', providers);
+  searchStore.set('searchProviders', providers);
   return newProvider; // return plaintext view
 }
 
 export async function updateSearchProvider(id: string, updates: Partial<SearchProvider>): Promise<SearchProvider> {
-  const providers = store.get('searchProviders') ?? [];
+  const providers = searchStore.get('searchProviders') ?? [];
   const idx = providers.findIndex((p: SearchProvider) => p.id === id);
   if (idx === -1) throw new Error(`Search provider not found: ${id}`);
   const merged = { ...providers[idx], ...updates };
@@ -761,13 +867,13 @@ export async function updateSearchProvider(id: string, updates: Partial<SearchPr
     merged.apiKey = encryptSecret(updates.apiKey);
   }
   providers[idx] = merged;
-  store.set('searchProviders', providers);
+  searchStore.set('searchProviders', providers);
   return { ...merged, apiKey: merged.apiKey ? decryptSecret(merged.apiKey) : merged.apiKey };
 }
 
 export async function removeSearchProvider(id: string): Promise<void> {
-  const providers = (store.get('searchProviders') ?? []).filter((p: SearchProvider) => p.id !== id);
-  store.set('searchProviders', providers);
+  const providers = (searchStore.get('searchProviders') ?? []).filter((p: SearchProvider) => p.id !== id);
+  searchStore.set('searchProviders', providers);
 }
 
 // === First-run defaults ===
@@ -814,25 +920,25 @@ const DEPRECATED_FEED_URLS = new Set<string>([
  */
 export async function seedDefaultsIfNeeded(): Promise<void> {
   // Migration: drop the dead built-in Internet Archive provider if present
-  const providers = store.get('searchProviders') ?? [];
+  const providers = searchStore.get('searchProviders') ?? [];
   const cleanedProviders = providers.filter((p: SearchProvider) => !(p.builtIn && p.type === 'archive'));
   if (cleanedProviders.length !== providers.length) {
-    store.set('searchProviders', cleanedProviders);
+    searchStore.set('searchProviders', cleanedProviders);
   }
 
   // Migration: remove the broken news feeds (only if the user left them disabled)
-  const feeds = store.get('rssFeeds') ?? [];
+  const feeds = rssStore.get('rssFeeds') ?? [];
   const cleanedFeeds = feeds.filter((f: RSSFeed) => !(DEPRECATED_FEED_URLS.has(f.url) && !f.enabled));
   let feedsChanged = cleanedFeeds.length !== feeds.length;
 
   // Seed the working feed exactly once — on a true first run, or as a one-time
   // migration for installs that previously got the broken feeds. A dedicated
   // flag keeps it idempotent and lets the user delete it for good afterwards.
-  const firstRun = !store.get('defaultsSeeded');
-  if (firstRun) store.set('defaultsSeeded', true);
+  const firstRun = !configStore.get('defaultsSeeded');
+  if (firstRun) configStore.set('defaultsSeeded', true);
 
-  if (!store.get('suggestedFeedSeeded')) {
-    store.set('suggestedFeedSeeded', true);
+  if (!configStore.get('suggestedFeedSeeded')) {
+    configStore.set('suggestedFeedSeeded', true);
     const hasSuggested = cleanedFeeds.some((f: RSSFeed) =>
       SUGGESTED_RSS_FEEDS.some(s => s.url === f.url));
     if (!hasSuggested) {
@@ -842,78 +948,78 @@ export async function seedDefaultsIfNeeded(): Promise<void> {
   }
 
   if (feedsChanged) {
-    store.set('rssFeeds', cleanedFeeds);
+    rssStore.set('rssFeeds', cleanedFeeds);
   }
 }
 
 // === IP Blocklists ===
 
 export async function getIPBlocklists(): Promise<IPBlocklist[]> {
-  return store.get('ipBlocklists') ?? [];
+  return blocklistStore.get('ipBlocklists') ?? [];
 }
 
 export async function addIPBlocklist(name: string, url: string): Promise<IPBlocklist> {
-  const lists = store.get('ipBlocklists') ?? [];
+  const lists = blocklistStore.get('ipBlocklists') ?? [];
   const newList: IPBlocklist = { id: uuidv4(), name, url, enabled: true };
   lists.push(newList);
-  store.set('ipBlocklists', lists);
+  blocklistStore.set('ipBlocklists', lists);
   return newList;
 }
 
 export async function removeIPBlocklist(id: string): Promise<void> {
-  const lists = (store.get('ipBlocklists') ?? []).filter((l: IPBlocklist) => l.id !== id);
-  store.set('ipBlocklists', lists);
-  const data = store.get('blocklistData') ?? {};
+  const lists = (blocklistStore.get('ipBlocklists') ?? []).filter((l: IPBlocklist) => l.id !== id);
+  blocklistStore.set('ipBlocklists', lists);
+  const data = blocklistStore.get('blocklistData') ?? {};
   delete data[id];
-  store.set('blocklistData', data);
+  blocklistStore.set('blocklistData', data);
 }
 
 export async function updateIPBlocklist(id: string, updates: Partial<IPBlocklist>): Promise<void> {
-  const lists = store.get('ipBlocklists') ?? [];
+  const lists = blocklistStore.get('ipBlocklists') ?? [];
   const idx = lists.findIndex((l: IPBlocklist) => l.id === id);
   if (idx !== -1) {
     lists[idx] = { ...lists[idx], ...updates };
-    store.set('ipBlocklists', lists);
+    blocklistStore.set('ipBlocklists', lists);
   }
 }
 
 export async function saveBlocklistData(id: string, data: string): Promise<void> {
-  const blocklistData = store.get('blocklistData') ?? {};
+  const blocklistData = blocklistStore.get('blocklistData') ?? {};
   blocklistData[id] = data;
-  store.set('blocklistData', blocklistData);
+  blocklistStore.set('blocklistData', blocklistData);
 }
 
 export async function getBlocklistData(id: string): Promise<string | null> {
-  const blocklistData = store.get('blocklistData') ?? {};
+  const blocklistData = blocklistStore.get('blocklistData') ?? {};
   return blocklistData[id] ?? null;
 }
 
 // === Friend swarms / private rooms (Phase 3) ===
 
 export function getPersistedRooms(): PersistedRoom[] {
-  const rooms = store.get('rooms') ?? {};
+  const rooms = roomsStore.get('rooms') ?? {};
   return Object.values(rooms).sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export function savePersistedRoom(room: PersistedRoom): void {
-  const rooms = store.get('rooms') ?? {};
+  const rooms = roomsStore.get('rooms') ?? {};
   rooms[room.roomId] = room;
-  store.set('rooms', rooms);
+  roomsStore.set('rooms', rooms);
 }
 
 export function deletePersistedRoom(roomId: string): void {
-  const rooms = store.get('rooms') ?? {};
+  const rooms = roomsStore.get('rooms') ?? {};
   delete rooms[roomId];
-  store.set('rooms', rooms);
+  roomsStore.set('rooms', rooms);
 }
 
 /** This install's room identity, lazily created and persisted on first use. */
 export function getRoomProfile(): RoomProfile {
-  let profile = store.get('roomProfile');
+  let profile = roomsStore.get('roomProfile');
   if (!profile) {
     const memberId = uuidv4().replace(/-/g, '');
     profile = { memberId, name: '', avatarSeed: memberId };
-    store.set('roomProfile', profile);
+    roomsStore.set('roomProfile', profile);
   }
   return profile;
 }
@@ -921,10 +1027,10 @@ export function getRoomProfile(): RoomProfile {
 export function updateRoomProfile(updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed'>>): RoomProfile {
   const profile = getRoomProfile();
   const next: RoomProfile = { ...profile, ...updates };
-  store.set('roomProfile', next);
+  roomsStore.set('roomProfile', next);
   return next;
 }
 
-// Export store for testing/debugging
-export { store };
-
+// Export the config store as `store` for the few main-process callers that read
+// settings/privacyConfig/trayHintShown directly.
+export { configStore as store };
