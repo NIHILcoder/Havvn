@@ -53,10 +53,10 @@ function log(msg: string): void { try { ipcRenderer.send('room-log', msg); } cat
 
 // ── Gossip message shapes (post-decrypt) ───────────────────────────────────
 type Msg =
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[] }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; roomName: string }
   | { t: 'add'; file: RoomFile }
   | { t: 'have'; memberId: string; fileId: string }
-  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[] }
+  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string }
   // Remove a shared file from the room (everyone drops it; tombstone prevents resurrection).
   | { t: 'del'; fileId: string; memberId: string }
   // Watch-together: relayed verbatim to peers; the renderers keep playback in sync
@@ -173,7 +173,21 @@ function helloMsg(room: Room): Msg {
     have: buildState(room).members[0].have,
     files: Array.from(room.files.values()),
     tombs: Array.from(room.tombstones), // share deletions so peers converge
+    roomName: room.name, // so a joiner (who only knows the code) learns the name
   };
+}
+
+/**
+ * Adopt a friendlier room name a peer advertised. A joiner starts with its name
+ * set to the invite code (it has nothing better); the creator broadcasts the
+ * real name in HELLO/PING. Only adopt when ours is still the code placeholder
+ * and the incoming name is a real one — and tell the main process to persist it.
+ */
+function maybeAdoptRoomName(room: Room, incoming?: string): void {
+  if (!incoming || incoming === room.code) return;   // empty or still a placeholder
+  if (room.name && room.name !== room.code) return;   // we already have a real name
+  room.name = incoming;
+  try { ipcRenderer.send('room-name', { roomId: room.roomId, name: incoming }); } catch { /* ignore */ }
 }
 
 function touchMember(room: Room, memberId: string, name: string, avatarSeed: string): RoomMember {
@@ -203,6 +217,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       wire.memberId = msg.memberId;
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       m.have = Array.from(new Set(msg.have || []));
+      maybeAdoptRoomName(room, msg.roomName);
       // Apply peer deletions first so their HELLO file list can't re-add them.
       for (const id of msg.tombs || []) applyTombstone(room, id);
       for (const f of msg.files || []) mergeFile(room, f);
@@ -213,6 +228,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       wire.memberId = msg.memberId;
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       m.have = Array.from(new Set(msg.have || []));
+      maybeAdoptRoomName(room, msg.roomName);
       pushState(room);
       break;
     }
@@ -447,7 +463,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
   const beat = setInterval(() => {
     const r = rooms.get(p.roomId);
     if (!r) { clearInterval(beat); return; }
-    broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have });
+    broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have, roomName: r.name });
     pushState(r);
   }, PING_INTERVAL);
 
@@ -517,7 +533,7 @@ function updateProfile(p: { name?: string; avatarSeed?: string }): void {
   for (const room of rooms.values()) {
     if (typeof p.name === 'string') room.self.name = p.name;
     if (typeof p.avatarSeed === 'string' && p.avatarSeed) room.self.avatarSeed = p.avatarSeed;
-    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: buildState(room).members[0].have });
+    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: buildState(room).members[0].have, roomName: room.name });
     pushState(room, true);
   }
 }

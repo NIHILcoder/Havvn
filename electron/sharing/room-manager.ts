@@ -74,6 +74,19 @@ export class RoomManager {
     ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string }) => {
       try { if (payload?.roomId && payload?.fileId) db.addRoomTombstone(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
+    // A joiner learned the room's friendly name from a peer (it had only the
+    // code) — persist it so the name survives restart and shows in the list even
+    // before the room reconnects. Live UI updates ride the normal room-update.
+    ipcMain.on('room-name', (_e, payload: { roomId: string; name: string }) => {
+      try {
+        if (!payload?.roomId || !payload?.name) return;
+        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        if (r && r.name !== payload.name) {
+          db.savePersistedRoom({ ...r, name: payload.name });
+          log.info('Room name learned from peer', { roomId: payload.roomId, name: payload.name });
+        }
+      } catch { /* ignore */ }
+    });
   }
 
   private failAll(message: string): void {
@@ -181,7 +194,7 @@ export class RoomManager {
     const existing = db.getPersistedRooms().find((r) => normalizeCode(r.code) === code);
     if (existing) return this.getRoom(existing.roomId).then((s) => s || this.reactivate(existing));
     const roomId = uuidv4();
-    const name = code; // until peers share a friendlier name in HELLO (future)
+    const name = code; // placeholder until a peer's HELLO/PING carries the real name
     const folder = path.join(await this.roomsBase(), slugify(code) + '-' + roomId.slice(0, 6));
     fs.mkdirSync(folder, { recursive: true });
     const createdAt = Date.now();
