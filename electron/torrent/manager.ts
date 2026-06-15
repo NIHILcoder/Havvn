@@ -8,6 +8,7 @@ import http from 'http';
 import { URL } from 'url';
 import { getHostEnv } from './host/env';
 import { TorrentError } from './errors';
+import { ipToNum, ipInRanges } from '../../shared/ip-range';
 import {
   Download,
   DownloadStatus,
@@ -2022,28 +2023,9 @@ export class TorrentManager {
     if (this.blocklistHooked || !this.client) return;
     this.blocklistHooked = true;
 
-    const ipToNum = (ip: string): number | null => {
-      const stripped = ip.replace(/^::ffff:/i, '');
-      const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(stripped);
-      if (!m) return null;
-      const p = [m[1], m[2], m[3], m[4]].map(Number);
-      if (p.some((n) => n < 0 || n > 255)) return null;
-      return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
-    };
-    const isBlocked = (ipNum: number): boolean => {
-      const r = this.blockedRanges;
-      let lo = 0, hi = r.length - 1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >>> 1;
-        if (ipNum < r[mid][0]) hi = mid - 1;
-        else if (ipNum > r[mid][1]) lo = mid + 1;
-        else return true;
-      }
-      return false;
-    };
     const checkWire = (wire: any): void => {
       const n = typeof wire?.remoteAddress === 'string' ? ipToNum(wire.remoteAddress) : null;
-      if (n !== null && isBlocked(n)) { try { wire.destroy(); } catch { /* ignore */ } }
+      if (n !== null && ipInRanges(this.blockedRanges, n)) { try { wire.destroy(); } catch { /* ignore */ } }
     };
     const hookTorrent = (torrent: any): void => {
       torrent.on('wire', checkWire);

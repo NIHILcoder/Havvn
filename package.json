@@ -13,6 +13,8 @@
     "typecheck": "npm run typecheck:electron && npm run typecheck:renderer",
     "typecheck:electron": "tsc -p tsconfig.electron.json --noEmit",
     "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint \"electron/**/*.ts\" \"renderer/**/*.{ts,tsx}\" \"shared/**/*.ts\"",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win"
@@ -67,6 +69,7 @@
     "ts-loader": "^9.5.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.2",
+    "vitest": "^4.1.9",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.15.1"

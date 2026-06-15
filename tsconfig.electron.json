@@ -6,5 +6,5 @@
     "module": "CommonJS"
   },
   "include": ["electron/**/*.ts", "shared/**/*.ts"],
-  "exclude": ["node_modules", "dist", "renderer"]
+  "exclude": ["node_modules", "dist", "renderer", "**/*.test.ts"]
 }

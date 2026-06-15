@@ -11,5 +11,5 @@
     "esModuleInterop": true
   },
   "include": ["renderer/**/*.ts", "renderer/**/*.tsx", "shared/**/*.ts", "locales/**/*.json"],
-  "exclude": ["node_modules", "dist", "electron"]
+  "exclude": ["node_modules", "dist", "electron", "**/*.test.ts"]
 }
