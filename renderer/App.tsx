@@ -2,16 +2,19 @@
  * TorrentHunt Main App Component
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Sidebar, StatusBar, PageId, FilterMode } from './layout';
 import { DownloadStats, Download } from '../shared/types';
-import CreateTorrentPage from './pages/CreateTorrentPage';
+// Downloads is the default route — keep it eager. The rest are code-split into
+// their own chunks so the initial bundle is smaller and the app (and the startup
+// splash) reaches interactive sooner.
 import DownloadsPage from './pages/DownloadsPage';
-import SettingsPage from './pages/SettingsPage';
-import SearchPage from './pages/SearchPage';
-import RSSPage from './pages/RSSPage';
-import RoomsPage from './pages/RoomsPage';
+const CreateTorrentPage = lazy(() => import('./pages/CreateTorrentPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const SearchPage = lazy(() => import('./pages/SearchPage'));
+const RSSPage = lazy(() => import('./pages/RSSPage'));
+const RoomsPage = lazy(() => import('./pages/RoomsPage'));
 import { formatBytes } from './utils/format-helpers';
 import { I18nProvider } from './utils/i18nContext';
 import { dismissSplash } from './utils/splash';
@@ -268,7 +271,9 @@ const AppContent: React.FC = () => {
               <button className="vpn-alert-close" onClick={() => setDiskAlert(null)} aria-label="Dismiss">×</button>
             </div>
           )}
-          {renderPage()}
+          <Suspense fallback={<div className="page-loading" />}>
+            {renderPage()}
+          </Suspense>
 
           <StatusBar
             activeDownloads={activeDownloads}
