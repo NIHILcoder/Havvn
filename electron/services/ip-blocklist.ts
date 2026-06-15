@@ -8,7 +8,6 @@ import https from 'https';
 import http from 'http';
 import zlib from 'zlib';
 import { URL } from 'url';
-import WebTorrent from 'webtorrent';
 import { logger } from '../utils';
 import * as db from '../db/store';
 
@@ -21,8 +20,6 @@ interface IPRange {
 
 export class IPBlocklistService {
   private ranges: IPRange[] = [];
-  private appliedToClient = false;
-  private clientRef: WebTorrent.Instance | null = null;
 
   get entryCount(): number {
     return this.ranges.length;
@@ -79,16 +76,6 @@ export class IPBlocklistService {
     return merged;
   }
 
-  /**
-   * Normalize a peer address to a plain IPv4 string, or null if it isn't one.
-   * Incoming TCP/uTP peers surface as IPv4-mapped IPv6 ("::ffff:1.2.3.4"); the
-   * raw form makes ipToNum() throw, so such peers were never actually filtered.
-   */
-  private normalizeIp(ip: unknown): string | null {
-    if (typeof ip !== 'string' || !ip) return null;
-    const stripped = ip.replace(/^::ffff:/i, '');
-    return /^\d+\.\d+\.\d+\.\d+$/.test(stripped) ? stripped : null;
-  }
 
   /**
    * Download and parse a blocklist, save to store, reload.
@@ -119,65 +106,9 @@ export class IPBlocklistService {
     return ranges.length;
   }
 
-  isBlocked(ip: string): boolean {
-    if (this.ranges.length === 0) return false;
-
-    try {
-      const ipNum = this.ipToNum(ip);
-      // Binary search
-      let lo = 0;
-      let hi = this.ranges.length - 1;
-
-      while (lo <= hi) {
-        const mid = (lo + hi) >>> 1;
-        const range = this.ranges[mid];
-
-        if (ipNum < range.start) {
-          hi = mid - 1;
-        } else if (ipNum > range.end) {
-          lo = mid + 1;
-        } else {
-          return true; // IP is in blocked range
-        }
-      }
-    } catch (_) {
-      // Malformed IP — don't block
-    }
-
-    return false;
-  }
-
-  /**
-   * Apply blocklist filtering to a WebTorrent client instance.
-   * Must be called after client is created.
-   */
-  applyToClient(client: WebTorrent.Instance): void {
-    this.clientRef = client;
-    this.appliedToClient = true;
-
-    const checkWire = (wire: any): void => {
-      const peerIp = this.normalizeIp(wire?.remoteAddress);
-      if (!peerIp) return;
-      if (this.isBlocked(peerIp)) {
-        log.debug('Blocked peer', { ip: peerIp });
-        try { wire.destroy(); } catch (_) { /* ignore */ }
-      }
-    };
-
-    const hookTorrent = (torrent: any): void => {
-      torrent.on('wire', checkWire);
-      // Peers that connected before we attached (e.g. on restored torrents).
-      for (const w of (torrent.wires || [])) checkWire(w);
-    };
-
-    client.on('torrent', hookTorrent);
-    // The blocklist is applied after startup, so torrents restored during
-    // initialize() already exist and won't fire another 'torrent' event —
-    // hook them (and their live wires) explicitly.
-    for (const t of ((client as any).torrents || [])) hookTorrent(t);
-
-    log.info('IP blocklist applied to WebTorrent client');
-  }
+  // Peer filtering itself now runs in the torrent-host process (see
+  // TorrentManager.applyIpBlocklist) — this service owns the lists/parsing in
+  // main and ships the merged ranges over via getRanges().
 
   private parseBlocklistContent(content: string): IPRange[] {
     const ranges: IPRange[] = [];

@@ -1,5 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
-import { getTorrentManager, TorrentError, createTorrentFile, getDefaultTrackers } from '../torrent';
+import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent';
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority } from '../../shared/types';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
@@ -597,6 +597,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   });
 
+  // Torrent-creation progress — created in the host, relayed to the renderer.
+  torrentManager.onCreateProgress((progress) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('torrent:createProgress', progress);
+    }
+  });
+
   // Download completion — OS notification
   torrentManager.onComplete(({ name }) => {
     if (Notification.isSupported()) {
@@ -746,7 +753,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, request: CreateTorrentRequest) => {
       log.info('Creating torrent', { sourcePaths: request.sourcePaths });
       
-      const result = await createTorrentFile(request, mainWindow);
+      const result = await torrentManager.createTorrentFile(request);
       
       // If startSeeding is true, seed the created torrent from the source files
       // on disk (so a custom name can't break the content mapping → 0% stall).

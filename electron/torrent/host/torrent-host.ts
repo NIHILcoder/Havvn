@@ -13,6 +13,8 @@ import { wireDbBridge, resolveDbResponse, failAllDbRequests } from './db-bridge'
 import { ToHost, FromHost } from './protocol';
 import { TorrentManager } from '../manager';
 import { setCastManager, getCastServer } from '../cast-server';
+import { createTorrentFile } from '../creator';
+import type { CreateTorrentProgress } from '../../../shared/types';
 
 // parentPort is the MessagePortMain to the main process (utilityProcess).
 const port = (process as unknown as { parentPort: { on(ev: string, cb: (e: { data: ToHost }) => void): void; postMessage(m: FromHost): void } }).parentPort;
@@ -72,7 +74,12 @@ port.on('message', async (e) => {
       try {
         let result: unknown;
         const cast = CAST_METHODS[method];
-        if (cast) {
+        if (method === 'createTorrentFile') {
+          // Standalone creator fn — relay its hashing progress as an event.
+          result = await createTorrentFile(args[0] as Parameters<typeof createTorrentFile>[0], (p: CreateTorrentProgress) => {
+            post({ kind: 'event', event: 'create-progress', payload: p });
+          });
+        } else if (cast) {
           result = await (getCastServer() as unknown as Record<string, (...a: unknown[]) => unknown>)[cast](...args);
         } else {
           result = await (manager as unknown as Record<string, (...a: unknown[]) => unknown>)[method](...args);

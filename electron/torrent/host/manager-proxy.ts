@@ -19,7 +19,7 @@ import { getHostEnv } from './env';
 import { FromHost, DbRequest, EventMsg } from './protocol';
 import type { TorrentManager } from '../manager';
 import type { CastServer } from '../cast-server';
-import type { DownloadStats } from '../../../shared/types';
+import type { DownloadStats, CreateTorrentRequest, CreateTorrentResult, CreateTorrentProgress } from '../../../shared/types';
 
 const log = logger.child('TorrentHostProxy');
 
@@ -39,6 +39,7 @@ class TorrentManagerProxy {
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private statsCbs = new Set<StatsCb>();
   private completeCbs = new Set<CompleteCb>();
+  private createProgressCbs = new Set<(p: CreateTorrentProgress) => void>();
   // Mirror of host state for the synchronous getters main relies on.
   private lastStats: DownloadStats[] = [];
   private listeningPort = 0;
@@ -110,6 +111,8 @@ class TorrentManagerProxy {
     } else if (msg.event === 'state') {
       const s = msg.payload as { ffmpeg: string | null; listeningPort: number; altSpeedEnabled: boolean };
       this.ffmpeg = s.ffmpeg; this.listeningPort = s.listeningPort; this.altSpeed = s.altSpeedEnabled;
+    } else if (msg.event === 'create-progress') {
+      for (const cb of this.createProgressCbs) { try { cb(msg.payload as CreateTorrentProgress); } catch { /* ignore */ } }
     }
   }
 
@@ -135,6 +138,12 @@ class TorrentManagerProxy {
   // ── Event subscriptions (local) ──────────────────────────────────────────
   onStats(cb: StatsCb): () => void { this.statsCbs.add(cb); return () => this.statsCbs.delete(cb); }
   onComplete(cb: CompleteCb): () => void { this.completeCbs.add(cb); return () => this.completeCbs.delete(cb); }
+  onCreateProgress(cb: (p: CreateTorrentProgress) => void): () => void { this.createProgressCbs.add(cb); return () => this.createProgressCbs.delete(cb); }
+
+  /** Create a .torrent in the host (off the main thread); progress via onCreateProgress. */
+  createTorrentFile(request: CreateTorrentRequest): Promise<CreateTorrentResult> {
+    return this.rpc('createTorrentFile', [request]);
+  }
 
   // ── Synchronous getters (served from the mirror) ───────────────────────────
   getStats(): DownloadStats[] { return this.lastStats; }

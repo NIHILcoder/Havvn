@@ -5,4 +5,7 @@ export type { TorrentManager } from './manager';
 export type { TorrentManagerProxy } from './host/manager-proxy';
 export { getTorrentManager } from './host/manager-proxy';
 export { TorrentError } from './errors';
-export { createTorrentFile, getDefaultTrackers, DEFAULT_TRACKERS } from './creator';
+// Torrent CREATION now runs in the host (via the proxy's createTorrentFile);
+// only the lightweight tracker list is exported to main here. creator.ts (which
+// imports WebTorrent) must not be value-imported by the main process.
+export { getDefaultTrackers, DEFAULT_TRACKERS } from './trackers';

@@ -9,29 +9,20 @@ import WebTorrent from 'webtorrent';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { BrowserWindow } from 'electron';
 import {
   CreateTorrentRequest,
   CreateTorrentResult,
   CreateTorrentProgress,
 } from '../../shared/types';
 import { logger } from '../utils';
+import { DEFAULT_TRACKERS } from './trackers';
 
 const log = logger.child('TorrentCreator');
 
-// Default public trackers
-export const DEFAULT_TRACKERS: string[][] = [
-  ['udp://tracker.opentrackr.org:1337/announce'],
-  ['udp://open.tracker.cl:1337/announce'],
-  ['udp://tracker.openbittorrent.com:6969/announce'],
-  ['udp://open.stealth.si:80/announce'],
-  ['udp://tracker.torrent.eu.org:451/announce'],
-  ['udp://exodus.desync.com:6969/announce'],
-  ['udp://tracker.moeking.me:6969/announce'],
-  ['udp://explodie.org:6969/announce'],
-  ['udp://tracker.theoks.net:6969/announce'],
-  ['udp://tracker1.bt.moack.co.kr:80/announce'],
-];
+/** Progress sink — the host relays these to the renderer (no BrowserWindow here). */
+type ProgressCb = (progress: CreateTorrentProgress) => void;
+
+export { DEFAULT_TRACKERS };
 
 // Piece size thresholds (total size -> piece size)
 const PIECE_SIZE_THRESHOLDS: [number, number][] = [
@@ -181,20 +172,20 @@ function safeSize(p: string): number {
  * Send progress update to renderer
  */
 function sendProgress(
-  mainWindow: BrowserWindow | null,
+  onProgress: ProgressCb | undefined,
   progress: CreateTorrentProgress
 ): void {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('torrent:createProgress', progress);
-  }
+  try { onProgress?.(progress); } catch { /* ignore */ }
 }
 
 /**
- * Create a torrent file from source files/folders using WebTorrent
+ * Create a torrent file from source files/folders using WebTorrent.
+ * Runs in the torrent-host process; progress is reported via the callback, which
+ * the host relays to the renderer (it has no BrowserWindow).
  */
 export async function createTorrentFile(
   request: CreateTorrentRequest,
-  mainWindow: BrowserWindow | null = null
+  onProgress?: ProgressCb
 ): Promise<CreateTorrentResult> {
   const { sourcePaths, outputPath, options } = request;
   const excludeSet = new Set((request.excludePaths || []).map(p => path.resolve(p)));
@@ -214,7 +205,7 @@ export async function createTorrentFile(
   }
 
   // Stage 1: scanning — resolve what actually goes into the torrent.
-  sendProgress(mainWindow, { stage: 'hashing', progress: 0.05, message: 'Scanning files...' });
+  sendProgress(onProgress, { stage: 'hashing', progress: 0.05, message: 'Scanning files...' });
 
   // Build the concrete file list, honoring exclusions. When nothing is excluded
   // and a single folder is selected we pass the folder path directly (preserves
@@ -262,7 +253,7 @@ export async function createTorrentFile(
   });
 
   // Stage 2: hashing begins
-  sendProgress(mainWindow, {
+  sendProgress(onProgress, {
     stage: 'hashing',
     progress: 0.15,
     message: 'Hashing files...',
@@ -291,7 +282,7 @@ export async function createTorrentFile(
       const elapsed = Date.now() - startedAt;
       const frac = Math.min(1, elapsed / estMs);
       const progress = HASH_FLOOR + (HASH_CEIL - HASH_FLOOR) * frac;
-      sendProgress(mainWindow, {
+      sendProgress(onProgress, {
         stage: 'hashing',
         progress,
         message: 'Hashing files...',
@@ -316,7 +307,7 @@ export async function createTorrentFile(
 
       try {
         // Send writing progress
-        sendProgress(mainWindow, {
+        sendProgress(onProgress, {
           stage: 'writing',
           progress: 0.9,
           message: 'Writing torrent file...',
@@ -345,7 +336,7 @@ export async function createTorrentFile(
         });
 
         // Send complete progress
-        sendProgress(mainWindow, {
+        sendProgress(onProgress, {
           stage: 'complete',
           progress: 1,
           message: 'Torrent created successfully!',
@@ -391,11 +382,4 @@ export async function createTorrentFile(
       reject(new Error('Torrent creation timed out'));
     }, 5 * 60 * 1000);
   });
-}
-
-/**
- * Get default tracker list
- */
-export function getDefaultTrackers(): string[][] {
-  return DEFAULT_TRACKERS;
 }
