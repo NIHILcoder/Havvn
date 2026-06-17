@@ -454,6 +454,7 @@ const api: IpcApi = {
     updateProvider: (id: string, updates: any) => ipcRenderer.invoke('search:updateProvider', id, updates),
     removeProvider: (id: string) => ipcRenderer.invoke('search:removeProvider', id),
     testProvider: (id: string) => ipcRenderer.invoke('search:testProvider', id),
+    checkPython: (force?: boolean) => ipcRenderer.invoke('search:checkPython', force),
   },
 
   // Cast to a device on the LAN

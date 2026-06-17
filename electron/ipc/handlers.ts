@@ -14,6 +14,7 @@ import { getRSSService } from '../services/rss-service';
 import { getShareManager, downloadContentPath } from '../sharing/share-manager';
 import { getRoomManager } from '../sharing/room-manager';
 import { getSearchService } from '../services/search-service';
+import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
 import { getWatchFolderService } from '../torrent/watch-folder';
 
@@ -1234,6 +1235,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       const searchSvc = getSearchService();
       return searchSvc.testProvider(id);
     }
+  ));
+
+  ipcMain.handle('search:checkPython', wrapHandler('search:checkPython',
+    async (_event, force?: boolean) => getPythonStatus(!!force)
   ));
 
   // ============================================================
