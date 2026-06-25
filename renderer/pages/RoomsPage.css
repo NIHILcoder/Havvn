@@ -414,6 +414,52 @@
 .rooms-profile-edit { display: flex; align-items: center; gap: var(--space-4); }
 .rooms-profile-edit .rooms-input { flex: 1; }
 
+/* Avatar picker */
+.rooms-avatar-pick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+.rooms-avatar-pick-label { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); }
+.rooms-avatar-shuffle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-family: var(--font-family);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.rooms-avatar-shuffle:hover { border-color: var(--color-border-hover); color: var(--color-text-primary); }
+
+.rooms-avatar-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--space-2);
+}
+.rooms-avatar-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), transform var(--transition-fast);
+}
+.rooms-avatar-option:hover { border-color: var(--color-border-hover); transform: translateY(-1px); }
+.rooms-avatar-option.active {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
 /* Invite */
 .rooms-invite-code {
   display: flex;

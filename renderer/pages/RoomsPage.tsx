@@ -12,6 +12,7 @@ import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile } from '../../shared/types';
 import { Button, Icon, EmptyState, Identicon, QRCode } from '../components';
+import { avatarCandidates } from '../components/Identicon';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
@@ -62,6 +63,8 @@ const RoomsPage: React.FC = () => {
   const [createE2E, setCreateE2E] = useState(false);
   const [joinCode, setJoinCode] = useState('');
   const [profileName, setProfileName] = useState('');
+  const [profileSeed, setProfileSeed] = useState('');
+  const [avatarPool, setAvatarPool] = useState<string[]>([]);
 
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
@@ -152,10 +155,18 @@ const RoomsPage: React.FC = () => {
     finally { setBusy(false); }
   };
 
+  const openProfile = () => {
+    if (!profile) return;
+    setProfileName(profile.name);
+    setProfileSeed(profile.avatarSeed);
+    setAvatarPool(avatarCandidates(3, profile.avatarSeed));
+    setDialog('profile');
+  };
+
   const handleSaveProfile = async () => {
     setBusy(true);
     try {
-      const p = await window.api.rooms.setProfile({ name: profileName.trim() });
+      const p = await window.api.rooms.setProfile({ name: profileName.trim(), avatarSeed: profileSeed });
       setProfile(p);
       setDialog(null);
       toast.success(t('rooms.profileSaved'));
@@ -181,7 +192,7 @@ const RoomsPage: React.FC = () => {
         </h1>
         <div className="rooms-header-actions">
           {profile && (
-            <button className="rooms-profile-chip" onClick={() => { setProfileName(profile.name); setDialog('profile'); }} title={t('rooms.editProfile')}>
+            <button className="rooms-profile-chip" onClick={openProfile} title={t('rooms.editProfile')}>
               <Identicon seed={profile.avatarSeed} size={28} ring />
               <span>{profile.name || t('rooms.you')}</span>
             </button>
@@ -303,7 +314,7 @@ const RoomsPage: React.FC = () => {
               <>
                 <h3>{t('rooms.profileTitle')}</h3>
                 <div className="rooms-profile-edit">
-                  <Identicon seed={profile.avatarSeed} size={64} ring />
+                  <Identicon seed={profileSeed} size={64} ring />
                   <input
                     className="rooms-input"
                     autoFocus
@@ -313,6 +324,32 @@ const RoomsPage: React.FC = () => {
                     onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
                   />
                 </div>
+
+                <div className="rooms-avatar-pick-head">
+                  <span className="rooms-avatar-pick-label">{t('rooms.avatarPick')}</span>
+                  <button
+                    type="button"
+                    className="rooms-avatar-shuffle"
+                    onClick={() => setAvatarPool(avatarCandidates(3, profileSeed))}
+                    title={t('rooms.avatarShuffle')}
+                  >
+                    <Icon name="refresh" size={13} /> {t('rooms.avatarShuffle')}
+                  </button>
+                </div>
+                <div className="rooms-avatar-grid">
+                  {avatarPool.map((seed) => (
+                    <button
+                      key={seed}
+                      type="button"
+                      className={`rooms-avatar-option ${seed === profileSeed ? 'active' : ''}`}
+                      onClick={() => setProfileSeed(seed)}
+                      aria-pressed={seed === profileSeed}
+                    >
+                      <Identicon seed={seed} size={44} />
+                    </button>
+                  ))}
+                </div>
+
                 <p className="rooms-modal-desc">{t('rooms.profileDesc')}</p>
                 <div className="rooms-modal-actions">
                   <Button variant="ghost" onClick={() => setDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
