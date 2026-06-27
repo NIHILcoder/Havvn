@@ -31,6 +31,8 @@
   "rooms.noFiles": "Файлов пока нет. Добавьте — они синхронизируются со всеми в комнате.",
   "rooms.online": "В сети",
   "rooms.offline": "Не в сети",
+  "rooms.direct": "Прямое соединение",
+  "rooms.relayed": "Через другого участника (релей)",
   "rooms.addedBy": "Добавил",
   "rooms.haveLocal": "Файл есть у вас",
   "rooms.queued": "Ожидает загрузки",

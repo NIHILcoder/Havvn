@@ -118,6 +118,7 @@ export interface RoomMember {
   have: string[];        // fileIds this member reports holding complete
   role: 'owner' | 'member';  // owner = room creator; can kick + rekey
   muted?: boolean;       // locally hidden/ignored on THIS install (not broadcast)
+  relayed?: boolean;     // online but reached only via another member (no direct wire)
 }
 
 /** A chat message in a room (gossiped between members; capped + persisted locally). */

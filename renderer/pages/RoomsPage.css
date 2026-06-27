@@ -189,6 +189,7 @@
   text-overflow: ellipsis;
 }
 .room-member-owner { color: var(--color-text-secondary); flex-shrink: 0; }
+.room-member-relay { color: var(--color-text-tertiary); flex-shrink: 0; opacity: 0.8; }
 .room-member-have { font-size: 11px; color: var(--color-text-tertiary); font-variant-numeric: tabular-nums; }
 .room-member-mute {
   position: absolute;

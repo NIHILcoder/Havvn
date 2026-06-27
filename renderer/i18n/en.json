@@ -31,6 +31,8 @@
   "rooms.noFiles": "No files shared yet. Add some — they will sync to everyone in the room.",
   "rooms.online": "Online",
   "rooms.offline": "Offline",
+  "rooms.direct": "Connected directly",
+  "rooms.relayed": "Connected via another member (relay)",
   "rooms.addedBy": "Added by",
   "rooms.haveLocal": "You have this file",
   "rooms.queued": "Waiting to download",

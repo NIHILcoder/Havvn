@@ -157,10 +157,15 @@ function buildState(room: Room): RoomState {
       .map((f) => f.fileId),
     role: roleOf(room.self.memberId),
   };
+  // A member is reached "directly" if some live wire is bound to their id;
+  // otherwise we only hear them through another member forwarding (relayed).
+  const directIds = new Set<string>();
+  for (const w of room.wires.values()) if (w.memberId) directIds.add(w.memberId);
   const members: RoomMember[] = [self];
   for (const m of room.members.values()) {
     if (m.memberId === room.self.memberId) continue; // never show self as a remote member (self-loop guard)
-    members.push({ ...m, online: now - m.lastSeen < OFFLINE_AFTER, isSelf: false, role: roleOf(m.memberId), muted: room.mutes.has(m.memberId) });
+    const online = now - m.lastSeen < OFFLINE_AFTER;
+    members.push({ ...m, online, isSelf: false, role: roleOf(m.memberId), muted: room.mutes.has(m.memberId), relayed: online && !directIds.has(m.memberId) });
   }
   const transfers: Record<string, RoomTransfer> = {};
   for (const [k, v] of room.transfers) transfers[k] = v;

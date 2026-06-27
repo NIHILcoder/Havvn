@@ -453,11 +453,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
         <div className="room-section-title">{t('rooms.members')} · {totalMembers}</div>
         <div className="room-members">
           {room.members.map((m) => (
-            <div key={m.memberId} className={`room-member ${m.online ? '' : 'offline'} ${m.muted ? 'muted' : ''}`} title={m.online ? t('rooms.online') : t('rooms.offline')}>
+            <div key={m.memberId} className={`room-member ${m.online ? '' : 'offline'} ${m.muted ? 'muted' : ''}`} title={m.isSelf ? t('rooms.you') : m.relayed ? t('rooms.relayed') : m.online ? t('rooms.direct') : t('rooms.offline')}>
               <Identicon seed={m.avatarSeed} size={46} online={m.online} ring={m.isSelf} />
               <span className="room-member-name">
                 {m.role === 'owner' && <Icon name="star" size={11} className="room-member-owner" />}
                 {m.isSelf ? (m.name && m.name !== 'You' ? m.name : t('rooms.you')) : m.name}
+                {m.relayed && <Icon name="network" size={11} className="room-member-relay" />}
               </span>
               <span className="room-member-have">
                 {m.muted ? t('rooms.muted') : `${m.have.length}/${room.files.length}`}
