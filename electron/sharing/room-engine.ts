@@ -58,6 +58,19 @@ const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
 const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye']);
 
+// ── Gossip input hardening ────────────────────────────────────────────────────
+// Decryption already proves a peer holds the room code, but a *malicious member*
+// could still send oversized/malformed gossip to exhaust memory — and peer-relay
+// would re-flood it. So every inbound frame is size-capped before we even decrypt,
+// and the decoded message's strings/arrays are clamped to sane bounds (in place,
+// so the relayed copy is bounded too). Limits are far above any legitimate use.
+const MAX_FRAME_CHARS = 1_000_000;   // reject an encrypted frame larger than ~1 MB
+const MAX_ARRAY = 5000;              // have / files / tombs entries
+const MAX_STR = 1024;                // ids, names, seeds
+const MAX_MAGNET = 4096;             // a magnet URI
+const MAX_TEXT = 2000;               // a chat message body
+const MAX_SECRET = 256;              // E2E content key (hex)
+
 function log(msg: string): void { try { ipcRenderer.send('room-log', msg); } catch { /* ignore */ } }
 
 // ── Gossip message shapes (post-decrypt) ───────────────────────────────────
@@ -409,15 +422,56 @@ function dropSelfWire(room: Room, wire: Wire): void {
   if (room.members.delete(room.self.memberId)) pushState(room, true);
 }
 
+function clampStr(v: any, n: number): string {
+  return typeof v === 'string' ? v.slice(0, n) : '';
+}
+
+/** Coerce a peer-supplied file entry to a sane shape, or null if unusable. */
+function clampFile(f: any): RoomFile | null {
+  if (!f || typeof f !== 'object') return null;
+  const fileId = clampStr(f.fileId, MAX_STR);
+  const magnetURI = clampStr(f.magnetURI, MAX_MAGNET);
+  if (!fileId || !magnetURI) return null;
+  return {
+    fileId,
+    name: clampStr(f.name, MAX_STR),
+    size: Number.isFinite(f.size) ? f.size : 0,
+    magnetURI,
+    addedBy: clampStr(f.addedBy, MAX_STR),
+    addedAt: Number.isFinite(f.addedAt) ? f.addedAt : Date.now(),
+    ...(f.enc ? { enc: true } : {}),
+  } as RoomFile;
+}
+
+/** Bound a decoded gossip message's strings/arrays in place (anti-DoS). */
+function clampGossip(msg: any): void {
+  if ('memberId' in msg) msg.memberId = clampStr(msg.memberId, MAX_STR);
+  if ('name' in msg) msg.name = clampStr(msg.name, MAX_STR);
+  if ('roomName' in msg) msg.roomName = clampStr(msg.roomName, MAX_STR);
+  if ('avatarSeed' in msg) msg.avatarSeed = clampStr(msg.avatarSeed, MAX_STR);
+  if ('ownerId' in msg) msg.ownerId = clampStr(msg.ownerId, MAX_STR);
+  if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
+  if ('secret' in msg) msg.secret = clampStr(msg.secret, MAX_SECRET);
+  if ('text' in msg) msg.text = clampStr(msg.text, MAX_TEXT);
+  if ('pub' in msg) msg.pub = clampStr(msg.pub, MAX_STR * 2);
+  if ('sig' in msg) msg.sig = clampStr(msg.sig, MAX_STR);
+  if (Array.isArray(msg.have)) msg.have = msg.have.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
+  if (Array.isArray(msg.tombs)) msg.tombs = msg.tombs.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
+  if (Array.isArray(msg.files)) msg.files = msg.files.slice(0, MAX_ARRAY).map(clampFile).filter(Boolean);
+  if ('file' in msg) msg.file = clampFile(msg.file);
+}
+
 function onMessage(room: Room, wire: Wire, raw: any): void {
   let msg: Msg;
   try {
     const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8');
+    if (text.length > MAX_FRAME_CHARS) { log('oversized gossip frame dropped (' + text.length + ' chars)'); return; }
     msg = decrypt<Msg>(room.key, text);
   } catch {
     // Wrong key / not a member / corrupt — ignore silently.
     return;
   }
+  clampGossip(msg);
   const meta = msg as any;
   // `direct` = arrived straight from its author (undecremented hop count), vs a
   // relayed copy forwarded by another member. Only direct messages identify the
@@ -469,6 +523,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       break;
     }
     case 'add': {
+      if (!msg.file) break; // clampGossip rejected a malformed file entry
       mergeFile(room, msg.file);
       pushState(room);
       break;
