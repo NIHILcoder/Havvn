@@ -414,12 +414,6 @@ export async function getIpInfo(): Promise<{
  */
 export function showVPNWarning(result: VPNDetectionResult): void {
 
-  // Send localized warning via IPC (translations handled in renderer)
-  const warningData = {
-    type: 'vpn-warning',
-    result,
-  };
-
   // For now, show English version (will be replaced with i18n in main process)
   const message = 'VPN not detected! Your real IP address may be visible to peers.';
   let detail = 'Consider using a VPN for better privacy when using BitTorrent.\n\n';

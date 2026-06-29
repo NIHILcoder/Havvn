@@ -4,7 +4,7 @@
  * seed ratio/time, file priorities, tracker management.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Download, TorrentFile, TrackerInfo, FilePriority, PeerInfo } from '../../shared/types';
 import { Button, Icon } from './index';
 import { useTranslation } from '../utils/i18nContext';
