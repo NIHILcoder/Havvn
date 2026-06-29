@@ -4,6 +4,24 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] - 2026-06-27
+
+A maintenance release — a security hardening for rooms plus internal cleanup. No
+user-facing feature changes.
+
+### Security
+- **Room gossip is now bounded and validated on the way in.** A malicious room member
+  could previously send oversized or malformed gossip to exhaust memory — and the new
+  peer-relay would re-flood it. Inbound frames are now size-capped *before* they are
+  decrypted, and the decoded fields (names, ids, file lists, chat text) are clamped to
+  sane limits, so the mesh can't be used to amplify a bad payload. Normal traffic is
+  unaffected.
+
+### Changed
+- Internal cleanup with no behaviour change: several **Settings** sections were
+  extracted into their own components, dead code was removed, and **eight unused
+  dependencies were dropped** (smaller install and a smaller supply-chain surface).
+
 ## [2.4.0] - 2026-06-27
 
 The rooms ("friend swarms") release: talk, personalise, and connect across more

@@ -1,7 +1,7 @@
 # TorrentHunt
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Version](https://img.shields.io/badge/Version-2.4.0--beta-orange)
+![Version](https://img.shields.io/badge/Version-2.4.1--beta-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 
