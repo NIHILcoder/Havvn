@@ -57,6 +57,13 @@ interface ManagedTorrent {
   download: Download;
   infoHash: string | null;
   selectedFiles?: number[];
+  // True once this torrent has reached WebTorrent's 'ready' event at least once
+  // (in this process's lifetime). processQueue() passes isNew=true for every
+  // torrent it starts — including resumes — so that flag alone can't tell a
+  // genuinely-new add from a resume/recheck re-add; this can. Used to persist
+  // totalSize/name to the DB only the first time we actually learn them, so a
+  // resume can't re-stamp it from a transient mid-reattach reading.
+  everReady?: boolean;
   // WebTorrent's torrent.downloaded/uploaded count only the CURRENT session and
   // reset to 0 every time the torrent instance is recreated (pause/resume/
   // recheck/auto-move/restart). To keep lifetime totals — and a stable share
@@ -1124,6 +1131,11 @@ export class TorrentManager {
         if (settled) return;
         settled = true;
         clearTimeout(metadataTimeout);
+        // See the ManagedTorrent.everReady doc comment: this is the reliable
+        // "have we actually learned totalSize/name before" signal, independent
+        // of the isNew param (processQueue always passes isNew=true).
+        const firstTimeReady = !managed.everReady;
+        managed.everReady = true;
         // Drop any trackers the user removed (their announce client is built now).
         this.pruneRemovedTrackersLive(managed);
         // Apply file selection after torrent is ready
@@ -1201,8 +1213,11 @@ export class TorrentManager {
 
         log.debug('Torrent ready', { id, name, infoHash, totalSize });
 
-        // Update database with torrent metadata
-        if (isNew || managed.download.name === 'Loading...') {
+        // Update database with torrent metadata — only the first time we ever
+        // learn it for this torrent, so a resume/recheck re-add can't re-stamp
+        // totalSize from a transient mid-reattach reading (isNew is unreliable
+        // here: processQueue always passes true, even for resumes).
+        if (firstTimeReady) {
           await db.updateDownloadProgress(id, {
             progress: torrent.progress,
             downloadedBytes: torrent.downloaded,
@@ -1493,11 +1508,29 @@ export class TorrentManager {
       );
     }
     
-    // Destroy the WebTorrent instance to actually stop data transfer.
-    // WebTorrent 1.9.7 does not reliably support torrent.pause().
-    // Data on disk is preserved (destroyStore: false).
-    if (managed.torrent) {
-      log.debug('Destroying torrent instance for pause', { id, infoHash: managed.infoHash });
+    if (managed.torrent && !managed.torrent.done) {
+      // Soft pause: deselect every file so the torrent stops wanting pieces,
+      // but keep the torrent (and its peer connections) alive. WebTorrent 1.x's
+      // own torrent.pause() is unreliable, but deselecting everything is a
+      // first-class, already-used-elsewhere op (setFilePriority does the same
+      // per-file) — _amInterested goes false and the torrent goes idle without
+      // tearing down wires. Destroying-and-recreating on every pause/resume
+      // used to drop the whole swarm (peers fell from dozens to a handful),
+      // force a full on-disk re-hash, and produce a burst of distorted stats
+      // while WebTorrent recomputed lifetime totals from a fresh instance.
+      log.debug('Soft-pausing in-progress torrent (deselect files, keep wires)', { id, infoHash: managed.infoHash });
+      this.closeStreamServer(managed);
+      try {
+        managed.torrent.files.forEach((file) => file.deselect());
+      } catch (e) {
+        log.warn('Error deselecting files during soft pause (non-fatal)', { error: String(e) });
+      }
+    } else if (managed.torrent) {
+      // Already complete (seeding): nothing to lose by destroying, and doing so
+      // is what releases the on-disk file handle — WebTorrent keeps it open
+      // while seeding, which can make the file look "in use"/locked until
+      // paused. Data on disk is preserved (destroyStore: false).
+      log.debug('Destroying completed torrent instance for pause', { id, infoHash: managed.infoHash });
       this.closeStreamServer(managed);
       try {
         managed.torrent.destroy({ destroyStore: false } as any);
@@ -1536,16 +1569,31 @@ export class TorrentManager {
     }
     
     if (managed.torrent) {
-      // Torrent still in memory but shouldn't be — destroy it cleanly first
-      log.debug('Torrent still in memory on resume, destroying first', { id });
-      this.closeStreamServer(managed);
+      // Soft-paused: the torrent (and its peers) never left memory. Just want
+      // pieces again instead of tearing everything down and re-adding from
+      // scratch — that full re-add is what used to drop peers and force a
+      // complete on-disk re-verify on every single resume.
+      log.debug('Torrent still in memory on resume — re-selecting instead of re-adding', { id });
+      const torrent = managed.torrent;
       try {
-        managed.torrent.destroy({ destroyStore: false } as any);
-      } catch (_) { /* ignore */ }
-      managed.torrent = null;
+        if (managed.selectedFiles && managed.selectedFiles.length > 0) {
+          torrent.files.forEach((file) => file.deselect());
+          managed.selectedFiles.forEach((index) => {
+            if (index < torrent.files.length) torrent.files[index].select();
+          });
+        } else {
+          torrent.files.forEach((file) => file.select());
+        }
+      } catch (e) {
+        log.warn('Error re-selecting files on resume (non-fatal)', { error: String(e) });
+      }
+      await this.transitionStatus(id, 'downloading');
+      log.debug('Download resumed in place (no re-add)', { id });
+      return;
     }
 
-    // Re-queue the download so processQueue will re-add it to WebTorrent
+    // No live torrent (paused while seeding, queued, or never attached) —
+    // re-queue so processQueue() re-adds it from scratch.
     log.debug('Re-queueing download for resume', { id });
     await this.transitionStatus(id, 'queued');
     await this.processQueue();
