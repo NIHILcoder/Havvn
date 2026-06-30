@@ -381,6 +381,7 @@ const RoomsPage: React.FC = () => {
       {/* In-app player (watch a downloaded shared file, optionally in sync) */}
       {watch && room && (
         <RoomPlayer
+          room={room}
           roomId={room.roomId}
           file={watch.file}
           self={room.members.find((m) => m.isSelf) || { memberId: 'self', name: 'You', avatarSeed: 'self' }}
@@ -690,7 +691,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // room by broadcasting play/pause/seek over the encrypted gossip channel.
 interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
 
-const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; onClose: () => void }> = ({ roomId, file, self, onClose }) => {
+const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; onClose: () => void }> = ({ room, roomId, file, self, onClose }) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -845,34 +846,42 @@ const RoomPlayer: React.FC<{ roomId: string; file: RoomFile; self: { memberId: s
           </button>
           <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
-        <div className="room-player-stage">
-          <video ref={videoRef} className="room-player-video" controls autoPlay playsInline />
-          <div className="room-player-reactions" aria-hidden="true">
-            {reactions.map((r) => (
-              <span key={r.id} className="room-reaction" style={{ left: `${r.x}%` }}>{r.emoji}</span>
-            ))}
+        <div className="room-player-body">
+          <div className="room-player-main">
+            <div className="room-player-stage">
+              <video ref={videoRef} className="room-player-video" controls autoPlay playsInline />
+              <div className="room-player-reactions" aria-hidden="true">
+                {reactions.map((r) => (
+                  <span key={r.id} className="room-reaction" style={{ left: `${r.x}%` }}>{r.emoji}</span>
+                ))}
+              </div>
+            </div>
+            <div className="room-player-reactbar">
+              {['😂', '❤️', '🔥', '😮', '👏', '🎉', '😢', '💀'].map((e) => (
+                <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>
+              ))}
+            </div>
+            {loading && !error && <div className="room-player-msg">{t('common.loading')}</div>}
+            {error && <div className="room-player-msg err">{error}</div>}
+            {together && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}
           </div>
+
+          <aside className="room-player-side">
+            <div className="room-player-watchers">
+              <span className="room-player-watchers-label"><Icon name="users" size={13} /> {t('rooms.watching')}</span>
+              <div className="room-player-avatars">
+                {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
+                  <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ' (you)' : ''} — ${w.playing ? '▶' : '❚❚'}`}>
+                    <Identicon seed={w.avatarSeed} size={26} />
+                    <span className="room-watcher-dot" />
+                  </span>
+                ))}
+              </div>
+              {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
+            </div>
+            <div className="room-player-chat"><RoomChat room={room} /></div>
+          </aside>
         </div>
-        <div className="room-player-reactbar">
-          {['😂', '❤️', '🔥', '😮', '👏', '🎉', '😢', '💀'].map((e) => (
-            <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>
-          ))}
-        </div>
-        <div className="room-player-watchers">
-          <span className="room-player-watchers-label"><Icon name="users" size={13} /> {t('rooms.watching')}</span>
-          <div className="room-player-avatars">
-            {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
-              <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ' (you)' : ''} — ${w.playing ? '▶' : '❚❚'}`}>
-                <Identicon seed={w.avatarSeed} size={26} />
-                <span className="room-watcher-dot" />
-              </span>
-            ))}
-          </div>
-          {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
-        </div>
-        {loading && !error && <div className="room-player-msg">{t('common.loading')}</div>}
-        {error && <div className="room-player-msg err">{error}</div>}
-        {together && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}
       </div>
     </div>
   );
