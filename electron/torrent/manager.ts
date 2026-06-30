@@ -1522,6 +1522,12 @@ export class TorrentManager {
       this.closeStreamServer(managed);
       try {
         managed.torrent.files.forEach((file) => file.deselect());
+        // WebTorrent auto-adds its own whole-torrent selection (0..pieces.length-1,
+        // priority false) when no `so` option was passed to client.add(). Per-file
+        // deselect() only removes selections matching that exact file's piece range,
+        // so on multi-file torrents this default selection survives, _amInterested
+        // stays true, and pieces keep flowing from peers despite the "paused" status.
+        managed.torrent.deselect(0, managed.torrent.pieces.length - 1, 0);
       } catch (e) {
         log.warn('Error deselecting files during soft pause (non-fatal)', { error: String(e) });
       }
