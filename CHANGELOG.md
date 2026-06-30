@@ -4,6 +4,30 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-06-29
+
+### Fixed
+- **Pausing a download no longer drops your peers or corrupts the swarm.**
+  Pause used to fully tear down and recreate the torrent, which dropped peers from
+  dozens down to a handful on resume, forced a complete on-disk re-verify of
+  everything already downloaded, and produced visibly distorted progress/size/speed
+  numbers on every stop/resume — reported as "health went from normal to weak after
+  resume", "downloads in bursts", and "can't reach 100%". Pausing an in-progress
+  download now keeps the torrent and its peer connections alive and simply stops it
+  from wanting new pieces; resuming just wants pieces again — no re-add, no re-hash,
+  no peer loss. (A finished/seeding torrent still fully releases its file handle on
+  pause, same as before, so a just-finished archive that says "in use" opens fine
+  once paused.)
+- Fixed a related correctness bug where every resume was internally treated as a
+  brand-new download, which could re-stamp a torrent's reported size from a
+  transient mid-reattach reading.
+
+### Added
+- **Cinema mode for watch-together.** The room player gained a proper theater
+  layout — video on one side, a sidebar with who's watching and the room's live
+  chat on the other, so you can talk without leaving the player — plus floating
+  emoji reactions everyone in the session can see in real time.
+
 ## [2.4.1] - 2026-06-27
 
 A maintenance release — a security hardening for rooms plus internal cleanup. No
