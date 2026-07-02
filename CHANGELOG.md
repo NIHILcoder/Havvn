@@ -4,6 +4,28 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.1] - 2026-07-02
+
+### Fixed
+- **Pause now truly stops downloading.** Root cause finally found and pinned by
+  a regression test against real peer connections: WebTorrent accumulates
+  duplicate piece-selections (every select call adds one; the app selects on
+  ready, on resume, and on stream-open), and deselect removes only one matching
+  entry — leftovers kept the torrent downloading no matter how it was "paused".
+  Pause now clears the selection list outright; peers stay connected and resume
+  is instant, but bytes stop flowing immediately.
+- **Swarm map is no longer empty.** Peer addresses carry a port ("1.2.3.4:6881"),
+  and the map's geo filter mistook everything containing ":" for IPv6 — every
+  single peer was discarded before lookup. The map now actually lights up.
+- **Returning to the Downloads tab no longer flashes "no peers"** on active
+  rows: the last stats snapshot survives tab switches.
+- **Adding a torrent no longer freezes the dialog or produces a stuck
+  "Loading..." twin.** Add confirms instantly (magnet metadata resolves in the
+  background), a second click can't fire a duplicate add anymore, and re-adding
+  a torrent whose earlier attempt failed retries the existing entry instead of
+  creating a second row over the same torrent (which is what made deleting one
+  appear to delete both).
+
 ## [2.6.0] - 2026-07-01
 
 ### Added
