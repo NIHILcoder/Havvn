@@ -43,6 +43,12 @@ interface DownloadsPageProps {
   onOpenHandled?: () => void;
 }
 
+// Last stats snapshot, kept at module scope so it survives the page unmounting.
+// Pages unmount on tab switch; a fresh mount used to start with an empty stats
+// map, so every return to Downloads flashed "no peers" on active rows until the
+// next stats tick arrived (~1s later).
+let lastStatsSnapshot: Map<string, DownloadStats> | null = null;
+
 const DownloadsPage: React.FC<DownloadsPageProps> = ({
   filterMode: externalFilterMode = 'all',
   onFilterChange,
@@ -51,7 +57,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 }) => {
   const { t } = useTranslation();
   const [downloads, setDownloads] = useState<Download[]>([]);
-  const [stats, setStats] = useState<Map<string, DownloadStats>>(new Map());
+  const [stats, setStats] = useState<Map<string, DownloadStats>>(() => lastStatsSnapshot ?? new Map());
   const [loading, setLoading] = useState(true);
 
   // Toast notifications
@@ -229,6 +235,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       for (const stat of newStats) {
         statsMap.set(stat.id, stat);
       }
+      lastStatsSnapshot = statsMap;
       setStats(statsMap);
 
       // Update download statuses from stats
@@ -499,19 +506,29 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   };
 
   const handleFileSelectionConfirm = async (selectedIndices: number[]) => {
-    if (!pendingTorrent) return;
+    // Re-entry guard: a second click while the add is in flight used to fire a
+    // second addDownload and surface a confusing "already being added" error.
+    if (!pendingTorrent || isAddingTorrent) return;
+
+    const request = {
+      sourceType: (pendingTorrent.path ? 'torrent_file' : 'magnet') as 'torrent_file' | 'magnet',
+      sourceUri: pendingTorrent.path || pendingTorrent.magnetUri!,
+      selectedFiles: selectedIndices,
+    };
+
+    // Close the dialog immediately — the engine confirms fast now (metadata
+    // resolves in the background) and the row appears in the list.
+    setShowFileSelector(false);
+    setPendingTorrent(null);
+    setSelectedFile(null);
+    setIsAddingTorrent(true);
 
     try {
-      const download = await window.api.addDownload({
-        sourceType: pendingTorrent.path ? 'torrent_file' : 'magnet',
-        sourceUri: pendingTorrent.path || pendingTorrent.magnetUri!,
-        selectedFiles: selectedIndices,
-      });
+      const download = await window.api.addDownload(request);
 
-      setDownloads((prev) => [download, ...prev]);
-      setShowFileSelector(false);
-      setPendingTorrent(null);
-      setSelectedFile(null);
+      // De-dupe by id: a re-add of a previously failed download returns the
+      // EXISTING record, which may already be in the list.
+      setDownloads((prev) => [download, ...prev.filter((d) => d.id !== download.id)]);
 
       addToast(
         `Download added with ${selectedIndices.length} file${selectedIndices.length > 1 ? 's' : ''}`,
@@ -519,6 +536,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       );
     } catch (error) {
       addToast(`Failed to add torrent: ${cleanError(error)}`, 'error');
+    } finally {
+      setIsAddingTorrent(false);
     }
   };
 

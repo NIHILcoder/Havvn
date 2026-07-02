@@ -500,6 +500,39 @@ export class TorrentManager {
   }
 
   /**
+   * Find an existing (non-removed) download holding this infoHash. Checks the
+   * live index first, then scans all records — INCLUDING magnet records whose
+   * torrent never reached 'ready' (their hash lives only in the source URI;
+   * after a restart such stuck/failed rows are absent from infoHashIndex,
+   * which used to let the very same torrent be added a second time).
+   */
+  private findDuplicateDownload(infoHash: string): string | null {
+    const hash = infoHash.toLowerCase();
+    const indexed = this.getDuplicateByInfoHash(hash) || this.getDuplicateByInfoHash(infoHash);
+    if (indexed) return indexed;
+    for (const [existingId, managed] of this.managedTorrents.entries()) {
+      if (managed.download.status === 'removed') continue;
+      let candidate = managed.infoHash;
+      if (!candidate && managed.download.sourceType === 'magnet') {
+        candidate = this.extractInfoHashFromMagnet(managed.download.sourceUri);
+      }
+      if (candidate && candidate.toLowerCase() === hash) return existingId;
+    }
+    return null;
+  }
+
+  /** Copy a .torrent (local path or fetched temp) into app data so restarts survive the source file moving. */
+  private copyTorrentIntoAppData(localTorrentPath: string): string {
+    const appDataDir = path.join(getHostEnv().userDataDir, 'torrents');
+    if (!fs.existsSync(appDataDir)) {
+      fs.mkdirSync(appDataDir, { recursive: true });
+    }
+    const dest = path.join(appDataDir, `${Date.now()}_${path.basename(localTorrentPath)}`);
+    fs.copyFileSync(localTorrentPath, dest);
+    return dest;
+  }
+
+  /**
    * Extract infoHash from a magnet URI, normalized to lowercase hex.
    * Magnets may carry the hash as 40-char hex OR 32-char base32 — WebTorrent
    * normalizes to hex internally, so we must too or duplicate detection misses.
@@ -784,33 +817,47 @@ export class TorrentManager {
     try {
       // Continue with duplicate checks
       if (infoHashToCheck) {
-        // Check index first
-        const existingId = this.infoHashIndex.get(infoHashToCheck);
-        if (existingId) {
-          const existing = this.managedTorrents.get(existingId);
-          if (existing && existing.download.status !== 'removed') {
-            const errorMessage = `This torrent is already in downloads: "${existing.download.name}"`;
-            log.warn('Duplicate torrent rejected (by infoHash index)', {
+        const dupId = this.findDuplicateDownload(infoHashToCheck);
+        if (dupId) {
+          const existing = this.managedTorrents.get(dupId)!;
+          if (existing.download.status === 'error') {
+            // Re-adding something that previously FAILED (typically a magnet
+            // whose metadata timed out, leaving a stuck "Loading..." row).
+            // Creating a second record here used to be possible — failed magnet
+            // rows aren't in infoHashIndex after a restart — and two records
+            // over one torrent meant removing one visually killed both. Retry
+            // the existing record instead of duplicating it.
+            log.info('Re-add of a failed download — retrying existing record', {
+              existingId: dupId,
               infoHash: infoHashToCheck,
-              existingId,
-              existingName: existing.download.name
             });
-            throw new TorrentError(errorMessage, 'DUPLICATE');
+            if (params.selectedFiles && params.selectedFiles.length > 0) {
+              existing.selectedFiles = params.selectedFiles;
+              existing.download.selectedFiles = params.selectedFiles;
+              await db.updateDownloadField(dupId, 'selectedFiles', params.selectedFiles);
+            }
+            // A .torrent source is strictly better than a magnet (instant
+            // metadata) — upgrade the record's source if we were handed one.
+            if (params.sourceType === 'torrent_file') {
+              const upgradedPath = this.copyTorrentIntoAppData(localTorrentPath);
+              existing.download.sourceType = 'torrent_file';
+              existing.download.sourceUri = params.sourceUri;
+              existing.download.torrentFilePath = upgradedPath;
+              await db.updateDownloadField(dupId, 'sourceType', 'torrent_file');
+              await db.updateDownloadField(dupId, 'sourceUri', params.sourceUri);
+              await db.updateDownloadField(dupId, 'torrentFilePath', upgradedPath);
+            }
+            await this.transitionStatus(dupId, 'queued');
+            this.processQueue().catch((e) => log.error('Queue processing after retry-add failed', { error: String(e) }));
+            return existing.download;
           }
-        }
-
-        // Also check all managed torrents directly (in case index is out of sync)
-        for (const [existingId, managed] of this.managedTorrents.entries()) {
-          if (managed.download.status === 'removed') continue;
-          if (managed.infoHash === infoHashToCheck) {
-            const errorMessage = `This torrent is already in downloads: "${managed.download.name}"`;
-            log.warn('Duplicate torrent rejected (by managed torrents scan)', {
-              infoHash: infoHashToCheck,
-              existingId,
-              existingName: managed.download.name
-            });
-            throw new TorrentError(errorMessage, 'DUPLICATE');
-          }
+          const errorMessage = `This torrent is already in downloads: "${existing.download.name}"`;
+          log.warn('Duplicate torrent rejected', {
+            infoHash: infoHashToCheck,
+            existingId: dupId,
+            existingName: existing.download.name,
+          });
+          throw new TorrentError(errorMessage, 'DUPLICATE');
         }
       }
 
@@ -882,14 +929,7 @@ export class TorrentManager {
 
       // If it's a torrent file, copy it (local path or freshly-fetched temp) to app data
       if (params.sourceType === 'torrent_file') {
-        const appDataDir = path.join(getHostEnv().userDataDir, 'torrents');
-        if (!fs.existsSync(appDataDir)) {
-          fs.mkdirSync(appDataDir, { recursive: true });
-        }
-
-        const fileName = path.basename(localTorrentPath);
-        torrentFilePath = path.join(appDataDir, `${Date.now()}_${fileName}`);
-        fs.copyFileSync(localTorrentPath, torrentFilePath);
+        torrentFilePath = this.copyTorrentIntoAppData(localTorrentPath);
         log.debug('Torrent file copied', { from: localTorrentPath, to: torrentFilePath });
       }
 
@@ -921,8 +961,13 @@ export class TorrentManager {
         log.debug('InfoHash registered early', { id: download.id, infoHash: infoHashToCheck });
       }
 
-      // Process queue to potentially start this download
-      await this.processQueue();
+      // Kick the queue but do NOT await it: for magnets, processQueue waits on
+      // metadata (up to 120s), and awaiting here kept the renderer's add dialog
+      // frozen for the whole fetch — users clicked "Download" again, hit the
+      // duplicate guard, and got a confusing "already being added" error. The
+      // record exists and is visible; metadata resolves in the background and
+      // failures land on the row itself (status 'error' + message).
+      this.processQueue().catch((e) => log.error('Queue processing after add failed', { error: String(e) }));
 
       return download;
     } finally {
@@ -1207,6 +1252,13 @@ export class TorrentManager {
         // Restore the piece-picking strategy from the persisted flag (WebTorrent
         // defaults new instances to 'sequential', so always set it explicitly).
         this.applyStrategy(torrent, managed.download.sequentialDownload === true);
+        // If the user paused while metadata was still being fetched, the
+        // selections applied above would start the download despite the
+        // 'paused' status (soft pause keeps wires alive, so 'ready' still
+        // fires). Halt again to honour the paused state.
+        if (managed.download.status === 'paused') {
+          this.haltTorrent(torrent);
+        }
         // Store infoHash for duplicate detection
         const infoHash = torrent.infoHash;
         
@@ -1548,28 +1600,12 @@ export class TorrentManager {
     }
     
     if (managed.torrent && !managed.torrent.done) {
-      // Soft pause: deselect every file so the torrent stops wanting pieces,
-      // but keep the torrent (and its peer connections) alive. WebTorrent 1.x's
-      // own torrent.pause() is unreliable, but deselecting everything is a
-      // first-class, already-used-elsewhere op (setFilePriority does the same
-      // per-file) — _amInterested goes false and the torrent goes idle without
-      // tearing down wires. Destroying-and-recreating on every pause/resume
-      // used to drop the whole swarm (peers fell from dozens to a handful),
-      // force a full on-disk re-hash, and produce a burst of distorted stats
-      // while WebTorrent recomputed lifetime totals from a fresh instance.
-      log.debug('Soft-pausing in-progress torrent (deselect files, keep wires)', { id, infoHash: managed.infoHash });
+      // Soft pause: stop the torrent from wanting pieces but keep it (and its
+      // peer connections) alive — destroying-and-recreating on every pause used
+      // to drop the whole swarm and force a full on-disk re-hash on resume.
+      log.debug('Soft-pausing in-progress torrent (halt selections, keep wires)', { id, infoHash: managed.infoHash });
       this.closeStreamServer(managed);
-      try {
-        managed.torrent.files.forEach((file) => file.deselect());
-        // WebTorrent auto-adds its own whole-torrent selection (0..pieces.length-1,
-        // priority false) when no `so` option was passed to client.add(). Per-file
-        // deselect() only removes selections matching that exact file's piece range,
-        // so on multi-file torrents this default selection survives, _amInterested
-        // stays true, and pieces keep flowing from peers despite the "paused" status.
-        managed.torrent.deselect(0, managed.torrent.pieces.length - 1, 0);
-      } catch (e) {
-        log.warn('Error deselecting files during soft pause (non-fatal)', { error: String(e) });
-      }
+      this.haltTorrent(managed.torrent);
     } else if (managed.torrent) {
       // Already complete (seeding): nothing to lose by destroying, and doing so
       // is what releases the on-disk file handle — WebTorrent keeps it open
@@ -1592,7 +1628,36 @@ export class TorrentManager {
 
     log.debug('Download paused successfully', { id });
   }
-  
+
+  /**
+   * Actually stop a live torrent from downloading while keeping wires alive.
+   *
+   * WebTorrent's public deselect() CANNOT do this reliably: every select() call
+   * pushes a NEW entry onto torrent._selections (and the app selects on ready,
+   * on resume, on stream-open, plus WebTorrent adds its own whole-torrent
+   * default), while deselect() removes only the FIRST entry matching its exact
+   * (from,to,priority) triple. Leftover duplicate selections keep the torrent
+   * interested and pieces keep flowing — verified against real loopback wires:
+   * after duplicated selects, "deselect everything" left 1 selection and the
+   * download kept growing at full speed; clearing _selections stopped it dead
+   * (0 bytes over 4s) and resume()+select() restarted it cleanly.
+   *
+   * So: clear the selection list directly (private but stable across
+   * webtorrent 1.x — both piece-request loops iterate _selections), drop
+   * critical marks, pause() (blocks NEW peers), and push wire uninterest.
+   */
+  private haltTorrent(torrent: Torrent): void {
+    const t = torrent as any;
+    try { t.pause(); } catch { /* ignore */ }
+    try {
+      if (Array.isArray(t._selections)) t._selections.length = 0;
+      t._critical = [];
+      if (typeof t._updateInterest === 'function') t._updateInterest();
+    } catch (e) {
+      log.warn('haltTorrent: failed to clear selections (non-fatal)', { error: String(e) });
+    }
+  }
+
   /**
    * Resume a download
    */
@@ -1621,14 +1686,19 @@ export class TorrentManager {
       log.debug('Torrent still in memory on resume — re-selecting instead of re-adding', { id });
       const torrent = managed.torrent;
       try {
+        const t = torrent as any;
+        try { t.resume(); } catch { /* ignore */ }
+        // Start from a clean slate: selections accumulate (see haltTorrent) and
+        // a pile of stale entries is exactly what used to defeat pause.
+        if (Array.isArray(t._selections)) t._selections.length = 0;
         if (managed.selectedFiles && managed.selectedFiles.length > 0) {
-          torrent.files.forEach((file) => file.deselect());
           managed.selectedFiles.forEach((index) => {
             if (index < torrent.files.length) torrent.files[index].select();
           });
         } else {
           torrent.files.forEach((file) => file.select());
         }
+        this.applyStrategy(torrent, managed.download.sequentialDownload === true);
       } catch (e) {
         log.warn('Error re-selecting files on resume (non-fatal)', { error: String(e) });
       }
@@ -2956,12 +3026,20 @@ export class TorrentManager {
     catch (e) { log.warn('Country geo DB init failed (swarm map degraded)', { error: String(e) }); }
   }
 
-  /** IPv4 public address → ISO country code, or null (IPv6/private/unknown). */
+  /**
+   * Peer address → ISO country code, or null (IPv6/private/unknown).
+   * NOTE: getPeers() returns "ip:port" (peer.addr keeps the port), so the port
+   * must be split off before the lookup — a naive "contains ':' ⇒ IPv6" guard
+   * here used to reject EVERY peer and left the swarm map permanently empty.
+   */
   private lookupCountry(addr: string): string | null {
-    if (!this.geoReady || !addr || addr.indexOf(':') !== -1) return null; // IPv6 unsupported
-    if (isPrivateOrReservedIPv4(addr)) return null;
+    if (!this.geoReady || !addr) return null;
+    const m = /^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d+)?$/.exec(addr);
+    if (!m) return null; // IPv6 or hostname — the country DB is IPv4-only
+    const ip = m[1];
+    if (isPrivateOrReservedIPv4(ip)) return null;
     try {
-      const cc = ip3country.lookupStr(addr);
+      const cc = ip3country.lookupStr(ip);
       return cc && /^[A-Za-z]{2}$/.test(cc) ? cc.toUpperCase() : null;
     } catch { return null; }
   }
