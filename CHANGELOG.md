@@ -4,6 +4,40 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.7.0] - 2026-07-05
+
+A hardening + housekeeping release from a full product review. It makes the app
+smaller and better-tested, not bigger: net −470 lines of code and the test suite
+grew from 68 to 100.
+
+### Security
+- **Closed a path-traversal write in rooms.** A room member (with only the room
+  code) could send a file named `..\..\evil.exe` and have it written outside the
+  shared room folder — an arbitrary-file-write. Peer-supplied file names are now
+  reduced to a bare basename before any write.
+
+### Fixed / Performance
+- **No more constant disk writes while idle.** The downloads store was being
+  rewritten every 5 seconds the whole time the app was open — even with nothing
+  downloading. It now writes only when real progress changes, so a laptop sitting
+  on completed/seeding torrents stops churning the SSD.
+- **Smoother list.** The downloads list no longer rebuilds and re-sorts every row
+  ~1.3×/second; live numbers still update, but the UI does far less work.
+
+### Changed
+- **Removed the per-torrent speed limit control.** The underlying engine only
+  supports a global speed limit, so a per-torrent value never actually applied —
+  the control was removed rather than left as a setting that does nothing. Use the
+  global / alternative-speed limits in Settings.
+- **Removed an unused Catalog screen** that was never reachable in the UI.
+- **More of the app is translated** — the VPN/low-disk safety banners and the
+  add-torrent file picker are now localized (they were English-only).
+
+### Internal
+- Extracted the engine's trickiest correctness logic (magnet infoHash
+  normalization, seed-limit decisions, startup restore planning) into small pure
+  modules with unit tests, so the bugs fixed in 2.6.x can't silently return.
+
 ## [2.6.3] - 2026-07-05
 
 ### Fixed
