@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Button, Icon } from './index';
+import { useTranslation } from '../utils/i18nContext';
 import './TorrentFileSelector.css';
 
 interface TorrentFile {
@@ -41,6 +42,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
   onConfirm,
   onCancel,
 }) => {
+  const { t } = useTranslation();
   const [torrentInfo, setTorrentInfo] = useState<TorrentInfo | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -184,7 +186,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         <div className="torrent-file-selector">
           <div className="file-selector-loading">
             <span className="spinner spinner-lg" />
-            <p>Loading torrent information...</p>
+            <p>{t('filePicker.loading')}</p>
           </div>
         </div>
       </div>
@@ -197,9 +199,9 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         <div className="torrent-file-selector">
           <div className="file-selector-error">
             <Icon name="alert-circle" size={48} />
-            <h3>Failed to Load Torrent</h3>
+            <h3>{t('filePicker.loadFailed')}</h3>
             <p>{error || 'Unknown error occurred'}</p>
-            <Button onClick={onCancel}>Close</Button>
+            <Button onClick={onCancel}>{t('player.close')}</Button>
           </div>
         </div>
       </div>
@@ -214,7 +216,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
           <div className="file-selector-title">
             <Icon name="file" size={24} />
             <div>
-              <h2>Select Files to Download</h2>
+              <h2>{t('filePicker.title')}</h2>
               <p className="torrent-name">{torrentInfo.name}</p>
             </div>
           </div>
@@ -228,7 +230,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
           <div className="stat">
             <Icon name="file" size={16} />
             <span>
-              <strong>{selectedFiles.size}</strong> of <strong>{torrentInfo.files.length}</strong> files
+              <strong>{selectedFiles.size}</strong> {t('filePicker.of')} <strong>{torrentInfo.files.length}</strong> {t('filePicker.files')}
             </span>
           </div>
           <div className="stat">
@@ -245,7 +247,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
             <Icon name="search" size={16} />
             <input
               type="text"
-              placeholder="Search files..."
+              placeholder={t('filePicker.searchPlaceholder')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -267,12 +269,12 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
               }
               onClick={handleSelectAll}
             >
-              {selectAllState === 'all' ? 'Deselect All' : 'Select All'}
+              {selectAllState === 'all' ? t('filePicker.deselectAll') : t('filePicker.selectAll')}
             </Button>
             
             <div className="dropdown-wrapper">
               <Button variant="ghost" size="sm">
-                Quick Select
+                {t('filePicker.quickSelect')}
                 <Icon name="chevron-down" size={14} />
               </Button>
               <div className="quick-select-menu">
@@ -302,7 +304,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
           {filteredFiles.length === 0 ? (
             <div className="no-results">
               <Icon name="search" size={48} />
-              <p>No files match your search</p>
+              <p>{t('filePicker.noMatch')}</p>
             </div>
           ) : (
             filteredFiles.map((file) => (

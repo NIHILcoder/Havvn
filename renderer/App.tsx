@@ -17,11 +17,12 @@ const RSSPage = lazy(() => import('./pages/RSSPage'));
 const RoomsPage = lazy(() => import('./pages/RoomsPage'));
 const SwarmPage = lazy(() => import('./pages/SwarmPage'));
 import { formatBytes } from './utils/format-helpers';
-import { I18nProvider } from './utils/i18nContext';
+import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { dismissSplash } from './utils/splash';
 
 
 const AppContent: React.FC = () => {
+  const { t } = useTranslation();
   const [currentPage, setCurrentPage] = useState<PageId>('downloads');
   const [stats, setStats] = useState<DownloadStats[]>([]);
   const [downloads, setDownloads] = useState<Download[]>([]);
@@ -83,14 +84,19 @@ const AppContent: React.FC = () => {
     const unsubscribe = window.api.onDownloadStats((newStats) => {
       setStats(newStats);
 
-      // Update download statuses from stats
-      setDownloads(prev => prev.map(d => {
-        const stat = newStats.find(s => s.id === d.id);
-        if (stat) {
-          return { ...d, status: stat.status };
-        }
-        return d;
-      }));
+      // Update download statuses from stats — but ONLY when a status actually
+      // flips. Live progress/speed are read from the stats Map by the rows, so
+      // rebuilding every download object every tick just churns GC and defeats
+      // memoization. Returning the same array reference makes React bail out.
+      setDownloads(prev => {
+        let changed = false;
+        const next = prev.map(d => {
+          const stat = newStats.find(s => s.id === d.id);
+          if (stat && stat.status !== d.status) { changed = true; return { ...d, status: stat.status }; }
+          return d;
+        });
+        return changed ? next : prev;
+      });
     });
     return () => unsubscribe();
   }, []);
@@ -250,12 +256,12 @@ const AppContent: React.FC = () => {
             <div className="vpn-alert-banner" role="alert">
               <span className="vpn-alert-icon">⚠</span>
               <div className="vpn-alert-text">
-                <strong>VPN connection lost — torrents paused.</strong>{' '}
+                <strong>{t('app.banner.vpnLostTitle')}</strong>{' '}
                 {vpnAlert.paused > 0
-                  ? `${vpnAlert.paused} torrent${vpnAlert.paused === 1 ? '' : 's'} were paused to protect your IP.`
-                  : 'Your VPN appears to be down.'}
-                {vpnAlert.publicIP ? ` Current public IP: ${vpnAlert.publicIP}.` : ''}
-                {' '}Reconnect your VPN, then resume downloads manually.
+                  ? `${vpnAlert.paused} ${t('app.banner.torrentsPausedIp')}`
+                  : t('app.banner.vpnDown')}
+                {vpnAlert.publicIP ? ` ${t('app.banner.currentIp')} ${vpnAlert.publicIP}.` : ''}
+                {' '}{t('app.banner.vpnReconnect')}
               </div>
               <button className="vpn-alert-close" onClick={() => setVpnAlert(null)} aria-label="Dismiss">×</button>
             </div>
@@ -264,12 +270,12 @@ const AppContent: React.FC = () => {
             <div className="vpn-alert-banner" role="alert">
               <span className="vpn-alert-icon">⚠</span>
               <div className="vpn-alert-text">
-                <strong>Low disk space — torrents paused.</strong>{' '}
-                {`Only ${formatBytes(diskAlert.freeBytes)} free (threshold ${formatBytes(diskAlert.thresholdBytes)}).`}
+                <strong>{t('app.banner.diskLowTitle')}</strong>{' '}
+                {`${t('app.banner.diskFree')} ${formatBytes(diskAlert.freeBytes)} / ${formatBytes(diskAlert.thresholdBytes)}.`}
                 {diskAlert.paused > 0
-                  ? ` ${diskAlert.paused} torrent${diskAlert.paused === 1 ? '' : 's'} paused.`
+                  ? ` ${diskAlert.paused} ${t('app.banner.torrentsPausedShort')}`
                   : ''}
-                {' '}Free up space, then resume downloads manually.
+                {' '}{t('app.banner.diskResume')}
               </div>
               <button className="vpn-alert-close" onClick={() => setDiskAlert(null)} aria-label="Dismiss">×</button>
             </div>
