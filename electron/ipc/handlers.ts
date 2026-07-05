@@ -215,6 +215,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  ipcMain.handle('downloads:stopStream', wrapHandler('downloads:stopStream',
+    async (_event, id: string, fileIndex?: number) => {
+      return torrentManager.stopStream(id, fileIndex);
+    }
+  ));
+
   // ── Share links (torrent → browser via WebRTC) ──────────────────────────
   ipcMain.handle('share:start', wrapHandler('share:start',
     async (_event, downloadId: string) => {

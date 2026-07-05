@@ -65,6 +65,10 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:getStreamUrl', id, fileIndex, opts);
   },
 
+  stopStream: (id: string, fileIndex?: number): Promise<void> => {
+    return ipcRenderer.invoke('downloads:stopStream', id, fileIndex);
+  },
+
   shareStart: (downloadId: string): Promise<ShareInfo> => {
     return ipcRenderer.invoke('share:start', downloadId);
   },

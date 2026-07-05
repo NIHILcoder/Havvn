@@ -40,6 +40,11 @@ export interface RpcResponse {
   ok: boolean;
   result?: unknown;
   error?: string;
+  // Error identity carried across the boundary so the proxy can rebuild a real
+  // TorrentError (with .code) — otherwise every `err.code` check downstream breaks.
+  code?: string;
+  name?: string;
+  downloadId?: string;
 }
 export interface DbRequest {
   kind: 'db';

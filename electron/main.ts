@@ -485,10 +485,19 @@ async function initializeApp(): Promise<void> {
   await createWindow();
   logger.info('App', 'Main window created.');
 
-  // Initialize torrent manager (restores + verifies persisted torrents)
+  // Initialize torrent manager (restores + verifies persisted torrents).
+  // The out-of-process host can now REJECT this (fail-fast) if it dies before
+  // signalling ready — previously it hung here forever. Catch it so the rest of
+  // startup (window is already up, RSS, tray) still proceeds in a degraded mode
+  // rather than aborting with an unhandled rejection; a later engine call will
+  // re-spawn the host.
   const torrentManager = getTorrentManager();
-  await torrentManager.initialize();
-  logger.info('App', 'Torrent manager initialized with electron-store.');
+  try {
+    await torrentManager.initialize();
+    logger.info('App', 'Torrent manager initialized with electron-store.');
+  } catch (e) {
+    logger.error('App', 'Torrent engine failed to initialize — continuing in degraded mode', { error: e instanceof Error ? e.message : String(e) });
+  }
 
   // Seed first-run defaults (built-in Internet Archive provider + suggested
   // disabled RSS feeds). Runs once; no network traffic results from this.

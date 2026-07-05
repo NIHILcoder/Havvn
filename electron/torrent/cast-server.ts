@@ -53,6 +53,7 @@ type Resolver = (id: string, fileIndex: number) => FileInfo | null;
 
 export class CastServer {
   private server: http.Server | null = null;
+  private serverPromise: Promise<void> | null = null;
   private port = 0;
   private token = '';
   private published = new Set<string>(); // `${id}/${fileIndex}`
@@ -60,7 +61,7 @@ export class CastServer {
   // manager so they don't need to be a managed torrent.
   private diskPublished = new Map<string, FileInfo>(); // `${id}/0` → info
   private durations = new Map<string, number>(); // diskPath → seconds
-  private active = new Set<ChildProcess>();
+  private active = new Map<ChildProcess, string>(); // transcode proc → owning download id
   private hlsLib: Buffer | null = null;          // cached hls.min.js
   private resolveFile: Resolver;
   private getFfmpeg: () => string | null;
@@ -86,10 +87,14 @@ export class CastServer {
 
   private ensureServer(): Promise<void> {
     if (this.server) return Promise.resolve();
+    // Memoize the in-flight bind — server is only assigned inside listen(), so
+    // concurrent first publishes would otherwise each bind their own server and
+    // orphan all but the last (open socket + reachable handler, never closed).
+    if (this.serverPromise) return this.serverPromise;
     this.token = crypto.randomBytes(12).toString('hex');
-    return new Promise((resolve, reject) => {
+    this.serverPromise = new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => this.handle(req, res));
-      server.on('error', reject);
+      server.on('error', (e) => { this.serverPromise = null; reject(e); });
       // Bind to all interfaces so LAN devices can reach it (may prompt the OS firewall).
       server.listen(0, '0.0.0.0', () => {
         this.server = server;
@@ -98,6 +103,7 @@ export class CastServer {
         resolve();
       });
     });
+    return this.serverPromise;
   }
 
   /**
@@ -118,6 +124,26 @@ export class CastServer {
   }
 
   unpublish(id: string, fileIndex: number): void { this.published.delete(`${id}/${fileIndex}`); }
+
+  /**
+   * Tear down everything a torrent published/is transcoding — called when the
+   * download is removed. Kills any in-flight ffmpeg (which reads the on-disk file
+   * directly and would otherwise keep the handle open, blocking file deletion on
+   * Windows and leaving an orphaned transcode of a removed torrent) and drops its
+   * published entries. Safe to call for a torrent that never cast (no-op).
+   */
+  teardownDownload(id: string): void {
+    const prefix = `${id}/`;
+    for (const key of Array.from(this.published)) {
+      if (key.startsWith(prefix)) this.published.delete(key);
+    }
+    for (const [proc, procId] of Array.from(this.active)) {
+      if (procId === id) {
+        try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+        this.active.delete(proc);
+      }
+    }
+  }
 
   /** Resolve a published file — disk-published entries first, then manager torrents. */
   private resolve(id: string, fileIndex: number): FileInfo | null {
@@ -197,13 +223,13 @@ export class CastServer {
 
       if (route === 'play') return void this.servePlayer(res, info, id, fileIndex);
       if (route === 'direct') return this.serveDirect(req, res, info);
-      if (route === 'stream') return this.serveProgressive(req, res, info); // single-pass MP4 fallback
+      if (route === 'stream') return this.serveProgressive(req, res, info, id); // single-pass MP4 fallback
       if (route === 'hls') {
         if (parts[3] === 'master.m3u8') return void this.serveMaster(res, id, fileIndex);
         const variant = parts[3];
         if (parts[4] === 'index.m3u8') return void this.serveMedia(res, info, id, fileIndex, variant);
         const segMatch = /^seg-(\d+)\.ts$/.exec(parts[4] || '');
-        if (segMatch) return this.serveSegment(req, res, info, variant, Number(segMatch[1]));
+        if (segMatch) return this.serveSegment(req, res, info, variant, Number(segMatch[1]), id);
       }
       res.writeHead(404); res.end('not found');
     } catch (e) {
@@ -341,7 +367,7 @@ export class CastServer {
    * from the in-app player. No seeking, but it "just works" for avi/mkv/HEVC and
    * is the fallback when HLS misbehaves on the device.
    */
-  private serveProgressive(req: http.IncomingMessage, res: http.ServerResponse, info: FileInfo): void {
+  private serveProgressive(req: http.IncomingMessage, res: http.ServerResponse, info: FileInfo, id: string): void {
     const ffmpeg = this.getFfmpeg();
     if (!ffmpeg) { res.writeHead(503); res.end('ffmpeg unavailable'); return; }
     const args = info.kind === 'audio'
@@ -355,7 +381,7 @@ export class CastServer {
         ];
     res.writeHead(200, { 'Content-Type': info.kind === 'audio' ? 'audio/mpeg' : 'video/mp4', 'Cache-Control': 'no-store' });
     const proc = spawn(ffmpeg, args, { windowsHide: true });
-    this.active.add(proc);
+    this.active.set(proc, id);
     const done = () => { this.active.delete(proc); try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
     proc.stdout.pipe(res);
     proc.stderr.on('data', () => { /* discard */ });
@@ -399,7 +425,7 @@ export class CastServer {
   }
 
   // ── On-demand segment transcode ───────────────────────────────────────────────
-  private serveSegment(req: http.IncomingMessage, res: http.ServerResponse, info: FileInfo, variantId: string, index: number): void {
+  private serveSegment(req: http.IncomingMessage, res: http.ServerResponse, info: FileInfo, variantId: string, index: number, id: string): void {
     const variant = VARIANTS.find((v) => v.id === variantId);
     const ffmpeg = this.getFfmpeg();
     if (!variant || !ffmpeg) { res.writeHead(404); res.end(); return; }
@@ -422,7 +448,7 @@ export class CastServer {
 
     res.writeHead(200, { 'Content-Type': 'video/mp2t', 'Cache-Control': 'no-store' });
     const proc = spawn(ffmpeg, args, { windowsHide: true });
-    this.active.add(proc);
+    this.active.set(proc, id);
     const done = () => { this.active.delete(proc); try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
     proc.stdout.pipe(res);
     proc.stderr.on('data', () => { /* discard ffmpeg chatter */ });
@@ -454,9 +480,10 @@ export class CastServer {
   }
 
   destroy(): void {
-    for (const p of this.active) { try { p.kill('SIGKILL'); } catch { /* ignore */ } }
+    for (const p of this.active.keys()) { try { p.kill('SIGKILL'); } catch { /* ignore */ } }
     this.active.clear();
     if (this.server) { try { this.server.close(); } catch { /* ignore */ } this.server = null; }
+    this.serverPromise = null;
     log.info('Cast server destroyed');
   }
 }
@@ -494,6 +521,10 @@ let castManager: CastManager | null = null;
 export function setCastManager(m: CastManager): void { castManager = m; }
 
 let castServer: CastServer | null = null;
+/** The cast server instance IF one has been created — without creating it. Used
+ *  by the manager to tear down a removed torrent's transcodes only when casting
+ *  has actually been used this session. */
+export function peekCastServer(): CastServer | null { return castServer; }
 export function getCastServer(): CastServer {
   if (!castServer) {
     if (!castManager) throw new Error('Cast server used before setCastManager()');

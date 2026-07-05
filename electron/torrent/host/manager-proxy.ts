@@ -17,6 +17,7 @@ import * as db from '../../db/store';
 import { logger } from '../../utils';
 import { getHostEnv } from './env';
 import { FromHost, DbRequest, EventMsg } from './protocol';
+import { TorrentError } from '../errors';
 import type { TorrentManager } from '../manager';
 import type { CastServer } from '../cast-server';
 import type { DownloadStats, CreateTorrentRequest, CreateTorrentResult, CreateTorrentProgress } from '../../../shared/types';
@@ -31,10 +32,24 @@ type Fwd<F extends (...a: never[]) => unknown> = Promise<Awaited<ReturnType<F>>>
 type StatsCb = (stats: DownloadStats[]) => void;
 type CompleteCb = (info: { id: string; name: string }) => void;
 
+/**
+ * Rebuild a rejected RPC error on the main side. When the host carried a `code`,
+ * reconstruct a real TorrentError so `instanceof TorrentError` (IPC wrapHandler)
+ * and `err.code === 'DUPLICATE'` (watch-folder, RSS) work as intended.
+ */
+function reviveError(message?: string, code?: string, name?: string, downloadId?: string): Error {
+  const msg = message || 'host error';
+  if (code) return new TorrentError(msg, code, downloadId);
+  const e = new Error(msg);
+  if (name) e.name = name;
+  return e;
+}
+
 class TorrentManagerProxy {
   private child: UtilityProcess | null = null;
   private readyPromise: Promise<void> | null = null;
   private resolveReady: (() => void) | null = null;
+  private rejectReady: ((e: Error) => void) | null = null;
   private seq = 0;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private statsCbs = new Set<StatsCb>();
@@ -51,7 +66,7 @@ class TorrentManagerProxy {
 
   private ensureReady(): Promise<void> {
     if (!this.readyPromise) {
-      this.readyPromise = new Promise<void>((res) => { this.resolveReady = res; });
+      this.readyPromise = new Promise<void>((res, rej) => { this.resolveReady = res; this.rejectReady = rej; });
       this.spawn();
     }
     return this.readyPromise;
@@ -68,9 +83,15 @@ class TorrentManagerProxy {
     child.on('exit', (code) => {
       log.warn('Torrent host exited', { code });
       this.failAll('torrent host stopped');
+      // If the host died BEFORE signalling ready, its readiness promise is still
+      // pending and its awaiter (e.g. initialize() on the startup critical path) is
+      // not in `pending`, so failAll can't reach it. Reject it so the awaiter fails
+      // fast (and a later call re-spawns) instead of hanging forever.
+      this.rejectReady?.(new Error('torrent host exited before ready'));
       this.child = null;
       this.readyPromise = null; // next call re-spawns (crash recovery)
       this.resolveReady = null;
+      this.rejectReady = null;
     });
   }
 
@@ -81,10 +102,10 @@ class TorrentManagerProxy {
 
   private onMessage(msg: FromHost): void {
     switch (msg.kind) {
-      case 'ready': this.resolveReady?.(); break;
+      case 'ready': this.resolveReady?.(); this.resolveReady = null; this.rejectReady = null; break;
       case 'rpc-res': {
         const p = this.pending.get(msg.id);
-        if (p) { this.pending.delete(msg.id); msg.ok ? p.resolve(msg.result) : p.reject(new Error(msg.error || 'host error')); }
+        if (p) { this.pending.delete(msg.id); msg.ok ? p.resolve(msg.result) : p.reject(reviveError(msg.error, msg.code, msg.name, msg.downloadId)); }
         break;
       }
       case 'db': void this.handleDb(msg); break;
@@ -132,7 +153,7 @@ class TorrentManagerProxy {
       try { this.child.kill(); } catch { /* ignore */ }
       this.child = null;
     }
-    this.readyPromise = null; this.resolveReady = null;
+    this.readyPromise = null; this.resolveReady = null; this.rejectReady = null;
   }
 
   // ── Event subscriptions (local) ──────────────────────────────────────────
@@ -163,6 +184,7 @@ class TorrentManagerProxy {
   getTrackers(...a: Parameters<TM['getTrackers']>): Fwd<TM['getTrackers']> { return this.rpc('getTrackers', a); }
   getCastFileInfo(...a: Parameters<TM['getCastFileInfo']>): Fwd<TM['getCastFileInfo']> { return this.rpc('getCastFileInfo', a); }
   getStreamUrl(...a: Parameters<TM['getStreamUrl']>): Fwd<TM['getStreamUrl']> { return this.rpc('getStreamUrl', a); }
+  stopStream(...a: Parameters<TM['stopStream']>): Fwd<TM['stopStream']> { return this.rpc('stopStream', a); }
   getSubtitleTracks(...a: Parameters<TM['getSubtitleTracks']>): Fwd<TM['getSubtitleTracks']> { return this.rpc('getSubtitleTracks', a); }
   getSubtitleVtt(...a: Parameters<TM['getSubtitleVtt']>): Fwd<TM['getSubtitleVtt']> { return this.rpc('getSubtitleVtt', a); }
   getTorrentInfo(...a: Parameters<TM['getTorrentInfo']>): Fwd<TM['getTorrentInfo']> { return this.rpc('getTorrentInfo', a); }

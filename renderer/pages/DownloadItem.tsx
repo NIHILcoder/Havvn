@@ -113,7 +113,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             <span className="download-item-name truncate">{download.name}</span>
             <div className="download-compact-meta">
               <span className="progress-text">{(progress * 100).toFixed(1)}%</span>
-              {(status === 'downloading' || status === 'queued') && (
+              {status === 'downloading' && (
                 <>
                   <span className="meta-separator">•</span>
                   <HealthBadge

@@ -23,6 +23,25 @@ function post(msg: FromHost): void {
   try { port.postMessage(msg); } catch { /* main gone */ }
 }
 
+/**
+ * Serialize a rejected RPC preserving the error identity (message + code + name +
+ * downloadId). Without the code, every downstream `err.code === 'DUPLICATE'` /
+ * `'NO_SPACE'` check in main (IPC wrapHandler, watch-folder, RSS) silently fails.
+ * Duck-typed so the host stays decoupled from the TorrentError class.
+ */
+function errPayload(err: unknown): { error: string; code?: string; name?: string; downloadId?: string } {
+  if (err instanceof Error) {
+    const e = err as Error & { code?: unknown; downloadId?: unknown };
+    return {
+      error: e.message,
+      code: typeof e.code === 'string' ? e.code : undefined,
+      name: e.name,
+      downloadId: typeof e.downloadId === 'string' ? e.downloadId : undefined,
+    };
+  }
+  return { error: String(err) };
+}
+
 // The experimental µTP transport (and other native socket ops) can emit transient
 // errors under load — notably WSAENOBUFS/ENOBUFS/EMFILE on Windows. Those used to
 // crash the MAIN process; now they surface here in the isolated host. Swallow the
@@ -70,15 +89,26 @@ port.on('message', async (e) => {
   const msg = e.data;
   try {
     if (msg.kind === 'init') {
-      setHostEnv(msg.env);
-      wireDbBridge((req) => post(req));
-      manager = new TorrentManager();
-      setCastManager(manager);
-      manager.onStats((stats) => post({ kind: 'event', event: 'stats', payload: stats }));
-      manager.onComplete((info) => post({ kind: 'event', event: 'complete', payload: info }));
-      try { await manager.initialize(); } catch { /* manager logs + recovers per-torrent */ }
-      postState();
-      post({ kind: 'ready' });
+      // A throw anywhere in setup (constructor, cast wiring) would otherwise leave
+      // the proxy's readiness promise unresolved forever — hanging app startup with
+      // no error. Exit instead so the proxy's 'exit' handler rejects and can respawn.
+      try {
+        setHostEnv(msg.env);
+        wireDbBridge((req) => post(req));
+        manager = new TorrentManager();
+        setCastManager(manager);
+        manager.onStats((stats) => post({ kind: 'event', event: 'stats', payload: stats }));
+        manager.onComplete((info) => post({ kind: 'event', event: 'complete', payload: info }));
+        // Re-push state when the TCP pool actually binds — the port isn't known
+        // yet at the postState() below, so main's mirror would otherwise keep 0.
+        manager.onListening(() => postState());
+        try { await manager.initialize(); } catch { /* manager logs + recovers per-torrent */ }
+        postState();
+        post({ kind: 'ready' });
+      } catch (err) {
+        console.error('[host] fatal init error:', err instanceof Error ? err.stack : String(err));
+        process.exit(1);
+      }
       return;
     }
 
@@ -107,13 +137,13 @@ port.on('message', async (e) => {
         // Speed/port/alt-speed may have changed — refresh main's mirror.
         if (method === 'setAltSpeed' || method === 'updateSettings' || method === 'initialize') postState();
       } catch (err) {
-        post({ kind: 'rpc-res', id, ok: false, error: err instanceof Error ? err.message : String(err) });
+        post({ kind: 'rpc-res', id, ok: false, ...errPayload(err) });
       }
     }
   } catch (err) {
     // Never let a message handler throw uncaught (would kill the host).
     if (msg && (msg as { kind?: string }).kind === 'rpc') {
-      post({ kind: 'rpc-res', id: (msg as { id: number }).id, ok: false, error: err instanceof Error ? err.message : String(err) });
+      post({ kind: 'rpc-res', id: (msg as { id: number }).id, ok: false, ...errPayload(err) });
     }
   }
 });

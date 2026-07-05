@@ -30,10 +30,12 @@ import {
   canResume,
   canRecheck,
   isActiveState,
+  isFinished,
 } from '../../shared/state-machine';
 import * as db from './host/db-bridge';
 import { logger, checkDiskSpace, formatBytes } from '../utils';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
+import { peekCastServer } from './cast-server';
 import { spawn, ChildProcess } from 'child_process';
 import { AdaptiveThrottle } from './adaptive-throttle';
 import { installDohLookup, configureDoh } from './host/doh-lookup';
@@ -70,6 +72,13 @@ interface ManagedTorrent {
   // totalSize/name to the DB only the first time we actually learn them, so a
   // resume can't re-stamp it from a transient mid-reattach reading.
   everReady?: boolean;
+  // Set by recheckDownload when re-verifying an already-FINISHED torrent
+  // (seeding/completed). recheck re-adds via the queue, which briefly flips the
+  // status to 'downloading', so the immediate 'done' on re-verify would otherwise
+  // masquerade as a fresh completion — re-firing the "download complete"
+  // notification and resetting the seed-time clock. This remembers the status to
+  // restore silently instead. Cleared as soon as it's consumed by 'done'.
+  recheckReturnStatus?: DownloadStatus | null;
   // WebTorrent's torrent.downloaded/uploaded count only the CURRENT session and
   // reset to 0 every time the torrent instance is recreated (pause/resume/
   // recheck/auto-move/restart). To keep lifetime totals — and a stable share
@@ -104,6 +113,14 @@ interface ManagedTorrent {
 // the default whole-torrent/whole-file selections (0) so the watched head wins.
 const STREAM_HEAD_BYTES = 16 * 1024 * 1024;
 const STREAM_HEAD_PRIORITY = 10;
+
+// Per-file download priorities mapped to webtorrent selection priorities. All are
+// >0 so the file still downloads (the default whole-torrent selection is 0), and
+// the picker fetches higher-priority files first (it sorts _selections desc).
+// Kept below STREAM_HEAD_PRIORITY so an actively-streamed head still wins.
+const FILE_PRIORITY_LOW = 1;
+const FILE_PRIORITY_NORMAL = 3;
+const FILE_PRIORITY_HIGH = 6;
 
 // True for IPv4 addresses that must never be geo-located: private (RFC1918),
 // loopback, link-local, CGNAT (100.64/10), and 0.0.0.0/8. Keeps LAN/relay peers
@@ -147,6 +164,9 @@ export class TorrentManager {
   // Chromium can't play directly (avi, mkv, HEVC, …). Started lazily.
   private transcodeServer: http.Server | null = null;
   private transcodePort = 0;
+  // In-flight ensureTranscodeServer() promise. Memoized so two concurrent first
+  // stream requests don't each bind their own server and leak all but the last.
+  private transcodeServerPromise: Promise<number> | null = null;
   private activeTranscodes: Set<ChildProcess> = new Set();
   private readonly ffmpegPath: string | null = resolveFfmpegPath();
     private addingTorrents: Set<string> = new Set();
@@ -160,6 +180,9 @@ export class TorrentManager {
   private static readonly METADATA_TIMEOUT_MS = 120_000;
   private statsCallbacks: Set<StatsCallback> = new Set();
   private completionCallbacks: Set<CompletionCallback> = new Set();
+  // Fired when the WebTorrent TCP pool actually binds its listening port, so the
+  // host can re-push the real port to main's mirror (see onListening).
+  private listeningCallbacks: Set<() => void> = new Set();
   private maxActiveDownloads = 3;
   private maxDownKbps = 0;
   private maxUpKbps = 0;
@@ -212,6 +235,10 @@ export class TorrentManager {
   private autoMovePath = '';
   // Guards re-entrant auto-move while a torrent is being relocated.
   private movingIds: Set<string> = new Set();
+  // Resolves when an in-flight auto-move for this id finishes. remove/stopSeeding/
+  // recheck await this so they never act on the stale savePath mid-move (which
+  // would delete the already-emptied source and orphan the moved copy).
+  private movingPromises: Map<string, Promise<void>> = new Map();
   // The TCP port the engine listens on for incoming peers (from settings.portMin;
   // 0 = OS-chosen). Used by the UPnP port-forwarding service.
   private configuredPort = 0;
@@ -320,6 +347,15 @@ export class TorrentManager {
 
     this.client.on('error', (err: string | Error) => {
       log.error('WebTorrent client error', { error: err });
+    });
+
+    // The TCP pool binds asynchronously — client.torrentPort is only real once
+    // 'listening' fires, which is typically AFTER initialize() resolves. Notify
+    // listeners then so the main-process mirror (and UPnP port-forwarding) picks
+    // up the actual OS-assigned port instead of a stale 0 / configuredPort.
+    (this.client as unknown as NodeJS.EventEmitter).on('listening', () => {
+      log.info('WebTorrent listening', { port: this.getListeningPort() });
+      for (const cb of this.listeningCallbacks) { try { cb(); } catch { /* ignore */ } }
     });
 
     // Begin connection slow-start immediately, before any torrent is restored,
@@ -902,10 +938,33 @@ export class TorrentManager {
 
       // Check available disk space
       const availableSpace = await checkDiskSpace(savePath);
-      const minimumRequired = 100 * 1024 * 1024; // 100 MB minimum
+      let minimumRequired = 100 * 1024 * 1024; // 100 MB floor
+
+      // When the payload size is known up front (a .torrent file), require space
+      // for the actual content — not just a fixed floor. Otherwise a 50 GB torrent
+      // starts happily on a 500 MB drive and only errors out mid-write. Magnets
+      // have no metadata yet, so they keep the floor. Best-effort: any parse
+      // failure falls back to the floor rather than blocking the add.
+      if (params.sourceType === 'torrent_file' && fs.existsSync(localTorrentPath)) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          const parseTorrent = require('parse-torrent');
+          const parsed = await parseTorrent(fs.readFileSync(localTorrentPath));
+          const files: Array<{ length: number }> = parsed.files || [];
+          let payload = 0;
+          if (params.selectedFiles && params.selectedFiles.length > 0 && files.length > 0) {
+            for (const idx of params.selectedFiles) payload += files[idx]?.length || 0;
+          } else {
+            payload = parsed.length || files.reduce((s, f) => s + (f.length || 0), 0);
+          }
+          if (payload > minimumRequired) minimumRequired = payload;
+        } catch (e) {
+          log.debug('Could not determine torrent size for disk-space check', { error: String(e) });
+        }
+      }
 
       if (availableSpace !== null && availableSpace < minimumRequired) {
-        const errorMessage = `Not enough disk space. Available: ${formatBytes(availableSpace)}, minimum required: ${formatBytes(minimumRequired)}`;
+        const errorMessage = `Not enough disk space. Available: ${formatBytes(availableSpace)}, required: ${formatBytes(minimumRequired)}`;
         log.error('Insufficient disk space', {
           savePath,
           available: availableSpace,
@@ -1065,6 +1124,7 @@ export class TorrentManager {
               managed.torrent = null;
               await db.deleteDownload(id);
               this.managedTorrents.delete(id);
+              this.seedOptionsCache.delete(id); // terminal outcome — don't leak the cache entry
               reject(new TorrentError('This torrent is already added', 'DUPLICATE', id));
               return;
             }
@@ -1182,6 +1242,22 @@ export class TorrentManager {
       // than overwriting them (see ManagedTorrent.sessionBase* docs).
       managed.sessionBaseDownloaded = managed.download.downloadedBytes || 0;
       managed.sessionBaseUploaded = managed.download.uploadedBytes || 0;
+
+      // Recheck bookkeeping: recheckReturnStatus assumes the re-verify completes
+      // silently from intact on-disk data (no network transfer). If this instance
+      // pulls ANY real bytes from a peer, the re-verify found the data incomplete
+      // and this is effectively a fresh re-download — so a later 'done' must be
+      // treated as a GENUINE completion (notify + auto-move), not a silent
+      // restore. The 'download' event fires only on network bytes (disk
+      // verification never emits it), so clearing the flag on it is exact.
+      if (managed.recheckReturnStatus) {
+        (torrent as unknown as NodeJS.EventEmitter).once('download', () => {
+          if (managed.recheckReturnStatus) {
+            log.debug('Recheck re-verify pulled network data — treating completion as genuine', { id });
+            managed.recheckReturnStatus = null;
+          }
+        });
+      }
 
       // Guard against magnets that never find peers: without metadata 'ready'
       // never fires and this promise would hang forever (blocking the IPC add
@@ -1328,21 +1404,48 @@ export class TorrentManager {
       
       torrent.on('done', async () => {
         log.info('Torrent completed', { id, name: managed.download.name });
-        if (managed.download.status === 'downloading') {
-          await this.transitionStatus(id, 'seeding');
-          // Record when seeding started for time-limit tracking
-          await db.updateDownloadField(id, 'seedingStartedAt', Date.now());
-          managed.download.seedingStartedAt = Date.now();
-          // Notify completion listeners (used for OS notifications)
-          for (const cb of this.completionCallbacks) {
-            try { cb({ id, name: managed.download.name }); } catch (_) { /* ignore */ }
+        if (managed.download.status !== 'downloading') return;
+
+        // Persist the completion snapshot NOW rather than waiting on the throttled
+        // 5s stats tick — auto-move destroys the instance right after 'done', and an
+        // app quit in that window would otherwise leave the DB at sub-1.0 progress.
+        managed.download.progress = 1;
+        try { await db.updateDownloadField(id, 'progress', 1); } catch (_) { /* best-effort */ }
+
+        // Was this 'done' just a force-recheck re-verifying already-complete data?
+        // Restore the pre-recheck status silently: no spurious "download complete"
+        // notification and DON'T reset the seed-time clock.
+        const recheckReturn = managed.recheckReturnStatus;
+        managed.recheckReturnStatus = null;
+        if (recheckReturn) {
+          // A 'completed' torrent was explicitly STOPPED (no live instance) — a
+          // recheck must not leave it seeding, or it uploads forever with the UI
+          // showing "Completed" and no way to stop it (stopSeeding/pause both
+          // reject that state). Tear the instance down like stopSeeding does.
+          if (recheckReturn === 'completed') {
+            this.closeStreamServer(managed);
+            try { managed.torrent?.destroy({ destroyStore: false } as any); } catch (_) { /* ignore */ }
+            managed.torrent = null;
           }
-          // Auto-move to the completed folder (then keep seeding from there).
-          void this.moveCompletedIfNeeded(id);
-          // The download slot this torrent held just freed up (seeding doesn't
-          // count toward maxActiveDownloads) — promote the next queued download.
+          await this.transitionStatus(id, recheckReturn);
+          // The recheck occupied a download slot while verifying — free it.
           void this.processQueue();
+          return;
         }
+
+        await this.transitionStatus(id, 'seeding');
+        // Record when seeding started for time-limit tracking
+        await db.updateDownloadField(id, 'seedingStartedAt', Date.now());
+        managed.download.seedingStartedAt = Date.now();
+        // Notify completion listeners (used for OS notifications)
+        for (const cb of this.completionCallbacks) {
+          try { cb({ id, name: managed.download.name }); } catch (_) { /* ignore */ }
+        }
+        // Auto-move to the completed folder (then keep seeding from there).
+        void this.moveCompletedIfNeeded(id);
+        // The download slot this torrent held just freed up (seeding doesn't
+        // count toward maxActiveDownloads) — promote the next queued download.
+        void this.processQueue();
       });
 
       
@@ -1404,8 +1507,26 @@ export class TorrentManager {
     for (let i = 0; i < Math.min(queued.length, slotsAvailable); i++) {
       const download = queued[i];
       const managed = this.managedTorrents.get(download.id);
+      if (!managed) continue;
 
-      if (managed && !managed.torrent) {
+      if (managed.torrent) {
+        // A soft-paused torrent that was re-queued in place because we were at
+        // the active limit (see resumeDownload). Its instance is still live —
+        // resume it directly rather than re-adding from scratch.
+        try {
+          this.resumeInPlace(managed);
+          await this.transitionStatus(download.id, 'downloading');
+          log.debug('Promoted re-queued in-memory download', { id: download.id });
+        } catch (error) {
+          log.error('Failed to promote queued in-memory download', {
+            id: download.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        continue;
+      }
+
+      {
         try {
           // "Start seeding" entries seed the original files from disk.
           if (download.seedPaths && download.seedPaths.length > 0) {
@@ -1659,6 +1780,35 @@ export class TorrentManager {
   }
 
   /**
+   * Re-arm a soft-paused torrent that never left memory so it actively wants
+   * pieces again — without the full tear-down/re-add that drops peers and forces
+   * an on-disk re-verify. Caller is responsible for the status transition.
+   * Shared by resumeDownload (direct resume) and processQueue (promotion of a
+   * torrent that was re-queued in place because we were at the active limit).
+   */
+  private resumeInPlace(managed: ManagedTorrent): void {
+    const torrent = managed.torrent;
+    if (!torrent) return;
+    try {
+      const t = torrent as any;
+      try { t.resume(); } catch { /* ignore */ }
+      // Start from a clean slate: selections accumulate (see haltTorrent) and a
+      // pile of stale entries is exactly what used to defeat pause.
+      if (Array.isArray(t._selections)) t._selections.length = 0;
+      if (managed.selectedFiles && managed.selectedFiles.length > 0) {
+        managed.selectedFiles.forEach((index) => {
+          if (index < torrent.files.length) torrent.files[index].select();
+        });
+      } else {
+        torrent.files.forEach((file) => file.select());
+      }
+      this.applyStrategy(torrent, managed.download.sequentialDownload === true);
+    } catch (e) {
+      log.warn('Error re-selecting files on resume (non-fatal)', { error: String(e) });
+    }
+  }
+
+  /**
    * Resume a download
    */
   async resumeDownload(id: string): Promise<void> {
@@ -1683,25 +1833,20 @@ export class TorrentManager {
       // pieces again instead of tearing everything down and re-adding from
       // scratch — that full re-add is what used to drop peers and force a
       // complete on-disk re-verify on every single resume.
-      log.debug('Torrent still in memory on resume — re-selecting instead of re-adding', { id });
-      const torrent = managed.torrent;
-      try {
-        const t = torrent as any;
-        try { t.resume(); } catch { /* ignore */ }
-        // Start from a clean slate: selections accumulate (see haltTorrent) and
-        // a pile of stale entries is exactly what used to defeat pause.
-        if (Array.isArray(t._selections)) t._selections.length = 0;
-        if (managed.selectedFiles && managed.selectedFiles.length > 0) {
-          managed.selectedFiles.forEach((index) => {
-            if (index < torrent.files.length) torrent.files[index].select();
-          });
-        } else {
-          torrent.files.forEach((file) => file.select());
-        }
-        this.applyStrategy(torrent, managed.download.sequentialDownload === true);
-      } catch (e) {
-        log.warn('Error re-selecting files on resume (non-fatal)', { error: String(e) });
+      //
+      // But respect the concurrency limit: resuming straight to 'downloading'
+      // without a slot check let pause→resume (and "Resume All") blow past
+      // maxActiveDownloads, since pauseDownload already promoted a queued torrent
+      // into the freed slot. If we're at capacity, re-queue it (kept halted) and
+      // let processQueue promote it in place when a slot frees.
+      if (this.getActiveCount() >= this.maxActiveDownloads) {
+        this.haltTorrent(managed.torrent);
+        await this.transitionStatus(id, 'queued');
+        log.debug('Resume deferred — at max active downloads; re-queued in place', { id });
+        return;
       }
+      log.debug('Torrent still in memory on resume — re-selecting instead of re-adding', { id });
+      this.resumeInPlace(managed);
       await this.transitionStatus(id, 'downloading');
       log.debug('Download resumed in place (no re-add)', { id });
       return;
@@ -1727,7 +1872,12 @@ export class TorrentManager {
     if (!managed) {
       throw new TorrentError(`Download not found: ${id}`, 'NOT_FOUND', id);
     }
-    
+
+    // If an auto-move is in flight, wait for it: otherwise we'd read the stale
+    // pre-move savePath below and delete the already-emptied source, orphaning the
+    // moved copy (and the DB row would point at the new path we never cleaned).
+    await this.waitForMove(id);
+
     // Remove from infoHash index
     if (managed.infoHash) {
       this.infoHashIndex.delete(managed.infoHash);
@@ -1735,6 +1885,10 @@ export class TorrentManager {
 
     // Stop any active stream server first
     this.closeStreamServer(managed);
+    // Kill any cast/transcode ffmpeg reading this torrent's files from disk —
+    // otherwise the open handle blocks file deletion on Windows and the process
+    // keeps transcoding a removed torrent. No-op if casting was never used.
+    try { peekCastServer()?.teardownDownload(id); } catch (_) { /* non-fatal */ }
 
     // Remove from WebTorrent if torrent exists
     if (managed.torrent) {
@@ -1751,20 +1905,36 @@ export class TorrentManager {
         log.error('Failed to remove torrent from WebTorrent', { id, error: e });
         // Don't throw - continue with cleanup even if WebTorrent removal fails
       }
+      // Detach the live instance NOW. The managed entry lingers in the map through
+      // the 500ms delete delay below, and the stats broadcast (every 750ms) would
+      // otherwise read counters off the just-destroyed torrent (freed state) and
+      // briefly emit a torrent that's mid-deletion. Also mark it removed so the
+      // broadcast skips it entirely. Mirrors stopSeeding/recheck cleanup.
+      managed.torrent = null;
+      managed.download.status = 'removed';
     }
-    
+
     // Delete files if requested
     if (deleteFiles) {
       // Wait a bit for file handles to be released
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      const downloadPath = managed.download.savePath;
-      if (fs.existsSync(downloadPath)) {
-        const downloadName = managed.download.name;
-        const targetPath = path.join(downloadPath, downloadName);
-
-        if (fs.existsSync(targetPath)) {
-          await this.deletePathRecursive(targetPath, id);
+      const seedPaths = managed.download.seedPaths;
+      if (seedPaths && seedPaths.length > 0) {
+        // "Start seeding" entries point at the user's ACTUAL files. Delete those
+        // exact paths — never path.join(savePath, name): a custom torrent name
+        // would miss the real files (silent failure) or, worse, match unrelated
+        // data that happens to share the name in the same folder and destroy it.
+        for (const p of seedPaths) {
+          if (fs.existsSync(p)) await this.deletePathRecursive(p, id);
+        }
+      } else {
+        const downloadPath = managed.download.savePath;
+        if (fs.existsSync(downloadPath)) {
+          const targetPath = path.join(downloadPath, managed.download.name);
+          if (fs.existsSync(targetPath)) {
+            await this.deletePathRecursive(targetPath, id);
+          }
         }
       }
     }
@@ -1788,13 +1958,17 @@ export class TorrentManager {
     
     // Remove from managed map
     this.managedTorrents.delete(id);
-    
+    // Release any cached seed options (announce list / piece length buffers) —
+    // a "start seeding" entry removed while still queued never hit the success
+    // path in addSeedInternal that would otherwise clear this.
+    this.seedOptionsCache.delete(id);
+
     // Remove from infoHash index to prevent memory leaks
     if (managed.infoHash) {
       this.infoHashIndex.delete(managed.infoHash);
       log.debug('Removed from infoHash index', { id, infoHash: managed.infoHash });
     }
-    
+
     // Process queue
     await this.processQueue();
 
@@ -1820,6 +1994,9 @@ export class TorrentManager {
         id
       );
     }
+
+    // Don't race an in-flight auto-move (which destroys+re-seeds the instance).
+    await this.waitForMove(id);
 
     // Destroy the torrent instance — torrent.pause() in WebTorrent 1.9.7 only
     // stops new connections; already-connected peers keep downloading from us.
@@ -1895,6 +2072,17 @@ export class TorrentManager {
       );
     }
 
+    // Don't race an in-flight auto-move (which destroys+re-seeds the instance).
+    await this.waitForMove(id);
+
+    // If we're re-verifying an already-finished torrent, remember its status so
+    // the immediate 'done' on re-verify restores it silently (no completion
+    // notification, no seed-clock reset) rather than looking like a fresh
+    // completion. Incomplete rechecks download normally and notify as usual.
+    managed.recheckReturnStatus = isFinished(managed.download.status)
+      ? managed.download.status
+      : null;
+
     // Drop the live instance but keep the data on disk (destroyStore: false).
     this.closeStreamServer(managed);
     if (managed.torrent) {
@@ -1948,6 +2136,8 @@ export class TorrentManager {
     }
 
     this.movingIds.add(id);
+    let resolveMove: () => void = () => {};
+    this.movingPromises.set(id, new Promise<void>((r) => { resolveMove = r; }));
     // Prefer re-seeding offline from the .torrent metadata we have in memory.
     const metaBuffer: Buffer | null = (() => {
       try { return (managed.torrent as any)?.torrentFile ?? null; } catch { return null; }
@@ -2011,6 +2201,18 @@ export class TorrentManager {
       } catch (_) { /* give up; user can recheck manually */ }
     } finally {
       this.movingIds.delete(id);
+      this.movingPromises.delete(id);
+      resolveMove();
+    }
+  }
+
+  /** Await any in-flight auto-move for this id (no-op if none). Lets remove/
+   *  stopSeeding/recheck operate on the final savePath, not a mid-move one. */
+  private async waitForMove(id: string): Promise<void> {
+    const p = this.movingPromises.get(id);
+    if (p) {
+      log.debug('Waiting for in-flight auto-move to settle before mutating', { id });
+      try { await p; } catch { /* the move guards its own errors */ }
     }
   }
 
@@ -2131,6 +2333,46 @@ export class TorrentManager {
     } catch (e) {
       log.warn('Failed to close stream server', { id: managed.id, error: String(e) });
     }
+  }
+
+  /** Whether a file is supposed to be downloading per the user's intent (per-file
+   *  'skip' priority and any selected-files subset). */
+  private fileShouldDownload(managed: ManagedTorrent, fileIndex: number): boolean {
+    if (managed.download.filePriorities?.[fileIndex] === 'skip') return false;
+    if (managed.selectedFiles && managed.selectedFiles.length > 0) {
+      return managed.selectedFiles.includes(fileIndex);
+    }
+    return true;
+  }
+
+  /**
+   * Called by the renderer when the in-app player closes. getStreamUrl pins the
+   * torrent into forced-sequential mode with a priority-10 head selection and
+   * whole-file-selects the streamed file; without a pause/remove none of that
+   * ever reverts, so the torrent stays stuck in sequential mode (defeating
+   * rarest-first) and a previously "skipped" file keeps downloading forever.
+   * This reverts all of it.
+   */
+  async stopStream(id: string, fileIndex?: number): Promise<void> {
+    await this.whenReady();
+    const managed = this.managedTorrents.get(id);
+    if (!managed) return;
+    const torrent = managed.torrent;
+    // Revert head prioritization + forced-sequential strategy, close the server.
+    this.closeStreamServer(managed);
+    // getStreamUrl force-selects (whole-file) EVERY file the user previews this
+    // session, and switching files never deselects the prior one — so re-assert
+    // the intended selection across ALL files, not just the last active index.
+    // Any file that shouldn't be downloading (skip / outside the selection) is
+    // re-deselected so a quick preview doesn't permanently re-enable it.
+    if (torrent && torrent.files) {
+      torrent.files.forEach((f: any, idx: number) => {
+        if (!this.fileShouldDownload(managed, idx)) {
+          try { f.deselect(); } catch { /* ignore */ }
+        }
+      });
+    }
+    log.debug('Stream stopped and reverted', { id, fileIndex });
   }
 
   /**
@@ -2432,9 +2674,14 @@ export class TorrentManager {
    */
   private ensureTranscodeServer(): Promise<number> {
     if (this.transcodeServer) return Promise.resolve(this.transcodePort);
-    return new Promise((resolve, reject) => {
+    // Memoize the in-flight bind: transcodeServer is only assigned inside the
+    // async listen() callback, so two concurrent first calls would otherwise both
+    // pass the guard above, both listen(), and the second would overwrite the
+    // reference — orphaning the first server (open socket, never closed).
+    if (this.transcodeServerPromise) return this.transcodeServerPromise;
+    this.transcodeServerPromise = new Promise((resolve, reject) => {
       const server = http.createServer((req, res) => this.handleTranscodeRequest(req, res));
-      server.on('error', reject);
+      server.on('error', (e) => { this.transcodeServerPromise = null; reject(e); });
       server.listen(0, '127.0.0.1', () => {
         this.transcodeServer = server;
         this.transcodePort = (server.address() as any).port;
@@ -2442,6 +2689,7 @@ export class TorrentManager {
         resolve(this.transcodePort);
       });
     });
+    return this.transcodeServerPromise;
   }
 
   private handleTranscodeRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -2530,7 +2778,16 @@ export class TorrentManager {
         // Lifetime totals = persisted baseline (from before this instance was
         // attached) + this session's bytes. Prevents the ratio from resetting
         // on pause/resume/recheck/restart.
-        const lifetimeDownloaded = (managed.sessionBaseDownloaded || 0) + (torrent.downloaded || 0);
+        //
+        // Use torrent.RECEIVED, not torrent.downloaded, for the download side:
+        // torrent.downloaded sums verified on-disk pieces, so re-attaching a
+        // completed torrent (restart/recheck/auto-move re-verify existing data)
+        // makes it jump back to ~full length with zero network transfer — adding
+        // that to the persisted baseline DOUBLED the lifetime total every restart.
+        // torrent.received counts only bytes actually pulled from peers this
+        // session (disk verification never touches it), so base + received stays
+        // the true lifetime. (Upload side is already a genuine session counter.)
+        const lifetimeDownloaded = (managed.sessionBaseDownloaded || 0) + (torrent.received || 0);
         const lifetimeUploaded = (managed.sessionBaseUploaded || 0) + (torrent.uploaded || 0);
         stats.push({
           id: download.id,
@@ -2591,6 +2848,12 @@ export class TorrentManager {
     return () => {
       this.completionCallbacks.delete(callback);
     };
+  }
+
+  /** Subscribe to the WebTorrent 'listening' event (TCP port bound). */
+  onListening(callback: () => void): () => void {
+    this.listeningCallbacks.add(callback);
+    return () => { this.listeningCallbacks.delete(callback); };
   }
   
   /**
@@ -2869,14 +3132,34 @@ export class TorrentManager {
     await db.updateDownloadField(id, 'filePriorities', priorities);
 
     if (managed.torrent) {
-      const file = managed.torrent.files[fileIndex];
+      const torrent = managed.torrent;
+      const file: any = torrent.files[fileIndex];
       if (file) {
+        // Clear this file's previous priority selection(s) so repeated changes
+        // don't pile up duplicate entries in torrent._selections. We only touch
+        // OUR known priority levels — never priority 0 (webtorrent's default
+        // whole-torrent selection), so a single-file torrent's base download
+        // isn't accidentally dropped.
+        const start = file._startPiece, end = file._endPiece;
+        if (typeof start === 'number' && typeof end === 'number') {
+          for (const pr of [FILE_PRIORITY_LOW, FILE_PRIORITY_NORMAL, FILE_PRIORITY_HIGH]) {
+            try { (torrent as any).deselect(start, end, pr); } catch { /* ignore */ }
+          }
+        }
         if (priority === 'skip') {
           file.deselect();
           log.info('File deselected (skip)', { id, fileIndex, name: file.name });
         } else {
-          file.select();
-          log.info('File selected', { id, fileIndex, name: file.name, priority });
+          // Map to a real webtorrent selection priority. The piece picker sorts
+          // _selections by priority descending (torrent.js), so a 'high' file's
+          // pieces are requested before a 'low' file's — instead of every
+          // non-skip file being identical as before. All levels are >0, so they
+          // still beat the default whole-torrent selection and do download.
+          const prio = priority === 'high' ? FILE_PRIORITY_HIGH
+            : priority === 'low' ? FILE_PRIORITY_LOW
+            : FILE_PRIORITY_NORMAL;
+          file.select(prio);
+          log.info('File selected', { id, fileIndex, name: file.name, priority, prio });
         }
       }
     }
@@ -2894,15 +3177,16 @@ export class TorrentManager {
     managed.download.maxUploadSpeed = upKbps;
     await db.updateDownloadFields(id, { maxDownloadSpeed: downKbps, maxUploadSpeed: upKbps });
 
-    if (managed.torrent) {
-      try {
-        (managed.torrent as any).throttleDownload?.(downKbps > 0 ? downKbps * 1024 : 0);
-      } catch (_) { /* unsupported */ }
-      try {
-        (managed.torrent as any).throttleUpload?.(upKbps > 0 ? upKbps * 1024 : 0);
-      } catch (_) { /* unsupported */ }
+    // NOTE: webtorrent 1.9.7 only throttles GLOBALLY — the ThrottleGroups live on
+    // the client and are baked into every peer at creation (peer.setThrottlePipes),
+    // with no per-torrent handle. A Torrent has no throttleDownload/throttleUpload,
+    // so the previous `(torrent as any).throttleDownload?.()` calls were a silent
+    // no-op that made the UI look like the limit applied when it never did. We
+    // persist the preference (retained in the UI, and a future engine could honor
+    // it) but do NOT pretend to enforce it here.
+    if (downKbps > 0 || upKbps > 0) {
+      log.warn('Per-torrent speed limits are stored but not enforced (engine throttles globally only)', { id, downKbps, upKbps });
     }
-
     log.info('Per-torrent speed limits set', { id, downKbps, upKbps });
   }
 
@@ -3312,6 +3596,7 @@ export class TorrentManager {
       try { this.transcodeServer.close(); } catch { /* ignore */ }
       this.transcodeServer = null;
     }
+    this.transcodeServerPromise = null;
 
     // Save final stats (single batched write, speeds zeroed since we're stopping)
     try {

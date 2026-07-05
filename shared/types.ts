@@ -710,6 +710,7 @@ export interface IpcApi {
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }>;
+  stopStream: (id: string, fileIndex?: number) => Promise<void>;
   shareStart: (downloadId: string) => Promise<ShareInfo>;
   shareStop: (downloadId: string) => Promise<{ ok: boolean }>;
   shareGet: (downloadId: string) => Promise<(ShareInfo & { peers: number }) | null>;

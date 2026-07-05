@@ -127,6 +127,18 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // When the player closes, tell the engine to undo instant-play prioritization
+  // (forced-sequential strategy + priority-10 head selection) and re-deselect the
+  // streamed file if it was skip-marked — none of which reverts on its own.
+  const activeIndexRef = React.useRef<number | null>(null);
+  useEffect(() => { activeIndexRef.current = activeIndex; }, [activeIndex]);
+  useEffect(() => {
+    return () => {
+      const idx = activeIndexRef.current;
+      void window.api.stopStream(downloadId, idx === null ? undefined : idx);
+    };
+  }, [downloadId]);
+
   const selectFile = useCallback((index: number) => {
     setActiveIndex(index);
     setForceTranscode(false);

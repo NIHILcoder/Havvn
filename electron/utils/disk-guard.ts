@@ -66,37 +66,50 @@ async function tick(): Promise<void> {
 
     const manager = getTorrentManager();
     const downloads = await manager.getDownloads();
-    const active = downloads.filter(
-      d => d.status === 'downloading' || d.status === 'queued'
+    const active = downloads.filter(d => d.status === 'downloading' || d.status === 'queued');
+
+    // Idle and not in a low-space episode → nothing to guard.
+    if (active.length === 0 && !tripped) return;
+
+    // Check every DISTINCT volume we're actually writing to (or would resume onto),
+    // not just the default dir: a torrent can save to another drive, so checking
+    // only the default both misses a full target drive and false-alarms when the
+    // default drive is low but no active torrent writes there. Include paused
+    // torrents' paths too, so recovery is detected on the same volume that tripped
+    // even after everything was auto-paused (which empties `active`).
+    const relevant = downloads.filter(
+      d => d.status === 'downloading' || d.status === 'queued' || d.status === 'paused'
     );
-    if (active.length === 0) {
-      // Nothing writing to disk → reset latch and skip
-      tripped = false;
-      return;
+    const paths = new Set<string>([settings.defaultDownloadDir]);
+    for (const d of relevant) { if (d.savePath) paths.add(d.savePath); }
+
+    let minFree: number | null = null;
+    let minPath = settings.defaultDownloadDir;
+    for (const p of paths) {
+      const free = await checkDiskSpace(p);
+      if (free === null) continue; // couldn't determine this one — skip it
+      if (minFree === null || free < minFree) { minFree = free; minPath = p; }
     }
+    if (minFree === null) return; // couldn't determine ANY — don't act blindly
 
-    const free = await checkDiskSpace(settings.defaultDownloadDir);
-    if (free === null) return; // couldn't determine — don't act blindly
-
-    if (free < thresholdBytes && !tripped) {
+    if (minFree < thresholdBytes && !tripped && active.length > 0) {
       tripped = true;
       const count = await manager.pauseAllActive();
       log.warn('Low disk space — auto-paused all torrents', {
-        free: formatBytes(free),
+        free: formatBytes(minFree),
+        path: minPath,
         threshold: formatBytes(thresholdBytes),
         paused: count,
       });
-      notifyLowSpace(free, count);
-      sendToRenderer('app:diskLow', {
-        paused: count,
-        freeBytes: free,
-        thresholdBytes,
-      });
-    } else if (free >= thresholdBytes && tripped) {
-      // Space recovered — re-arm (resume stays manual)
+      notifyLowSpace(minFree, count);
+      sendToRenderer('app:diskLow', { paused: count, freeBytes: minFree, thresholdBytes });
+    } else if (minFree >= thresholdBytes && tripped) {
+      // Genuine recovery — signal the renderer to clear its banner, THEN re-arm.
+      // (Previously the latch was cleared the moment `active` emptied after the
+      // auto-pause, so this recovery branch could never fire and the banner stuck.)
       tripped = false;
-      log.info('Disk space recovered — guard re-armed (resume is manual)');
-      sendToRenderer('app:diskRecovered', { freeBytes: free });
+      log.info('Disk space recovered — guard re-armed (resume is manual)', { free: formatBytes(minFree), path: minPath });
+      sendToRenderer('app:diskRecovered', { freeBytes: minFree });
     }
   } catch (e) {
     log.error('Disk guard tick failed', { error: e instanceof Error ? e.message : String(e) });

@@ -594,25 +594,27 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const handleStopSeeding = useCallback(async (id: string) => {
     try {
       await window.api.stopSeeding(id);
+      await loadDownloads(); // Reflect the new 'completed' status immediately
     } catch (error) {
       addToast(
         `Failed to stop seeding: ${error instanceof Error ? error.message : String(error)}`,
         'error'
       );
     }
-  }, [addToast]);
+  }, [addToast, loadDownloads]);
 
   const handleRetry = useCallback(async (id: string) => {
     try {
       await window.api.retryDownload(id);
       addToast('Retrying download...', 'success');
+      await loadDownloads(); // Reflect the re-queued status immediately
     } catch (error) {
       addToast(
         `Failed to retry: ${error instanceof Error ? error.message : String(error)}`,
         'error'
       );
     }
-  }, [addToast]);
+  }, [addToast, loadDownloads]);
 
   const handleRecheck = useCallback(async (id: string) => {
     try {
@@ -1206,6 +1208,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             {
               label: 'Pause',
               icon: 'pause',
+              // Only enabled when the current state can actually pause — otherwise
+              // clicking threw a red "Cannot pause in <state> state" error toast.
+              disabled: !canPause(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {
                 handlePause(contextMenu.downloadId);
                 setContextMenu(null);
@@ -1214,6 +1219,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             {
               label: 'Resume',
               icon: 'play',
+              disabled: !canResume(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {
                 handleResume(contextMenu.downloadId);
                 setContextMenu(null);
