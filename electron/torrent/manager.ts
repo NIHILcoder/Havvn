@@ -35,6 +35,9 @@ import {
 import * as db from './host/db-bridge';
 import { logger, checkDiskSpace, formatBytes } from '../utils';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
+import { extractInfoHashFromMagnet } from '../../shared/magnet';
+import { shouldStopSeeding } from '../../shared/seeding-limits';
+import { planRestore } from '../../shared/restore-plan';
 import { peekCastServer } from './cast-server';
 import { spawn, ChildProcess } from 'child_process';
 import { AdaptiveThrottle } from './adaptive-throttle';
@@ -402,29 +405,14 @@ export class TorrentManager {
     // time — the source of the startup disk thrash and UI lag. Downloads beyond
     // the limit are re-queued so processQueue() starts them as slots free, just
     // like a freshly-added download.
-    const toRestore: Download[] = [];
-    let downloadSlots = this.maxActiveDownloads;
-    // Higher priority first so the most important downloads claim the live slots.
-    const restorable = activeDownloads
-      .filter((d) => ['downloading', 'seeding', 'queued'].includes(d.status))
-      .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-
-    for (const download of restorable) {
-      if (download.status === 'seeding') {
-        toRestore.push(download);
-      } else if (download.status === 'downloading') {
-        if (downloadSlots > 0) {
-          toRestore.push(download);
-          downloadSlots--;
-        } else {
-          // Exceeds the active-download limit — defer to the queue rather than
-          // starting it live now and overloading the disk.
-          await this.transitionStatus(download.id, 'queued').catch((err) => {
-            log.warn('Failed to re-queue download during restore', { id: download.id, error: String(err) });
-          });
-        }
-      }
-      // 'queued' downloads are left untouched for processQueue() below.
+    // Partitioning extracted to shared/restore-plan (pure + unit-tested).
+    const { live: toRestore, requeue } = planRestore(activeDownloads, this.maxActiveDownloads);
+    for (const download of requeue) {
+      // Exceeds the active-download limit — defer to the queue rather than
+      // starting it live now and overloading the disk.
+      await this.transitionStatus(download.id, 'queued').catch((err) => {
+        log.warn('Failed to re-queue download during restore', { id: download.id, error: String(err) });
+      });
     }
 
     // Re-add the chosen torrents in parallel. Doing this serially meant a single
@@ -550,7 +538,7 @@ export class TorrentManager {
       if (managed.download.status === 'removed') continue;
       let candidate = managed.infoHash;
       if (!candidate && managed.download.sourceType === 'magnet') {
-        candidate = this.extractInfoHashFromMagnet(managed.download.sourceUri);
+        candidate = extractInfoHashFromMagnet(managed.download.sourceUri);
       }
       if (candidate && candidate.toLowerCase() === hash) return existingId;
     }
@@ -573,38 +561,6 @@ export class TorrentManager {
    * Magnets may carry the hash as 40-char hex OR 32-char base32 — WebTorrent
    * normalizes to hex internally, so we must too or duplicate detection misses.
    */
-  private extractInfoHashFromMagnet(magnetUri: string): string | null {
-    try {
-      const match = magnetUri.match(/xt=urn:btih:([a-zA-Z0-9]+)/i);
-      if (!match) return null;
-      const hash = match[1];
-      if (/^[a-fA-F0-9]{40}$/.test(hash)) return hash.toLowerCase();
-      if (/^[a-zA-Z2-7]{32}$/.test(hash)) return this.base32ToHex(hash);
-      return null;
-    } catch (err) {
-      return null;
-    }
-  }
-
-  /** Decode an RFC 4648 base32 infohash (32 chars) to 40-char lowercase hex. */
-  private base32ToHex(b32: string): string | null {
-    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-    let bits = 0;
-    let value = 0;
-    const bytes: number[] = [];
-    for (const ch of b32.toUpperCase()) {
-      const idx = alphabet.indexOf(ch);
-      if (idx === -1) return null;
-      value = (value << 5) | idx;
-      bits += 5;
-      if (bits >= 8) {
-        bytes.push((value >>> (bits - 8)) & 0xff);
-        bits -= 8;
-      }
-    }
-    return bytes.length === 20 ? Buffer.from(bytes).toString('hex') : null;
-  }
-
   /**
    * Parse torrent file to extract infoHash without adding to WebTorrent
    * Uses parse-torrent library (version 11 - CommonJS)
@@ -821,7 +777,7 @@ export class TorrentManager {
     let infoHashToCheck: string | null = null;
 
     if (params.sourceType === 'magnet') {
-      infoHashToCheck = this.extractInfoHashFromMagnet(params.sourceUri);
+      infoHashToCheck = extractInfoHashFromMagnet(params.sourceUri);
       log.debug('Extracted infoHash from magnet', { infoHash: infoHashToCheck });
     } else if (params.sourceType === 'torrent_file') {
       infoHashToCheck = await this.extractInfoHashFromFile(localTorrentPath);
@@ -3184,30 +3140,11 @@ export class TorrentManager {
     }
   }
 
-  /**
-   * Set per-torrent speed limits (overrides global limits for this torrent).
-   */
-  async setTorrentSpeedLimits(id: string, downKbps: number, upKbps: number): Promise<void> {
-    await this.whenReady();
-    const managed = this.managedTorrents.get(id);
-    if (!managed) throw new TorrentError('Download not found', 'NOT_FOUND', id);
-
-    managed.download.maxDownloadSpeed = downKbps;
-    managed.download.maxUploadSpeed = upKbps;
-    await db.updateDownloadFields(id, { maxDownloadSpeed: downKbps, maxUploadSpeed: upKbps });
-
-    // NOTE: webtorrent 1.9.7 only throttles GLOBALLY — the ThrottleGroups live on
-    // the client and are baked into every peer at creation (peer.setThrottlePipes),
-    // with no per-torrent handle. A Torrent has no throttleDownload/throttleUpload,
-    // so the previous `(torrent as any).throttleDownload?.()` calls were a silent
-    // no-op that made the UI look like the limit applied when it never did. We
-    // persist the preference (retained in the UI, and a future engine could honor
-    // it) but do NOT pretend to enforce it here.
-    if (downKbps > 0 || upKbps > 0) {
-      log.warn('Per-torrent speed limits are stored but not enforced (engine throttles globally only)', { id, downKbps, upKbps });
-    }
-    log.info('Per-torrent speed limits set', { id, downKbps, upKbps });
-  }
+  // NOTE: there is deliberately NO setTorrentSpeedLimits. webtorrent 1.9.7 only
+  // throttles GLOBALLY (client-level ThrottleGroups baked into every peer at
+  // creation), so a per-torrent limit cannot be enforced. The old method stored a
+  // value the UI showed as active while the engine ignored it — a placebo, now
+  // removed. Only the global / alt-speed limits (which work) remain.
 
   /**
    * Set seed ratio limit for a specific torrent.
@@ -3549,35 +3486,15 @@ export class TorrentManager {
    * Called every stats tick.
    */
   private async checkSeedingLimits(): Promise<void> {
+    const defaults = { ratioLimit: this.defaultSeedRatioLimit, timeLimitMinutes: this.defaultSeedTimeLimitMinutes };
+    const now = Date.now();
     for (const managed of this.managedTorrents.values()) {
       if (managed.download.status !== 'seeding') continue;
-
-      const d = managed.download;
-      const ratio = d.downloadedBytes > 0 ? d.uploadedBytes / d.downloadedBytes : 0;
-
-      // Effective ratio limit: per-torrent overrides global
-      const ratioLimit = (d.seedRatioLimit != null && d.seedRatioLimit > 0)
-        ? d.seedRatioLimit
-        : this.defaultSeedRatioLimit;
-
-      if (ratioLimit > 0 && ratio >= ratioLimit) {
-        log.info('Auto-stopped seeding (ratio limit reached)', { id: managed.id, ratio: ratio.toFixed(2), limit: ratioLimit });
-        try { await this.stopSeeding(managed.id); } catch (_) { /* already stopped */ }
-        continue;
-      }
-
-      // Effective time limit: per-torrent overrides global
-      const timeLimit = (d.seedTimeLimitMinutes != null && d.seedTimeLimitMinutes > 0)
-        ? d.seedTimeLimitMinutes
-        : this.defaultSeedTimeLimitMinutes;
-
-      if (timeLimit > 0 && d.seedingStartedAt) {
-        const elapsedMinutes = (Date.now() - d.seedingStartedAt) / 60000;
-        if (elapsedMinutes >= timeLimit) {
-          log.info('Auto-stopped seeding (time limit reached)', { id: managed.id, elapsedMinutes: Math.round(elapsedMinutes), limit: timeLimit });
-          try { await this.stopSeeding(managed.id); } catch (_) { /* already stopped */ }
-        }
-      }
+      // Decision extracted to shared/seeding-limits (pure + unit-tested).
+      const { stop, reason } = shouldStopSeeding(managed.download, defaults, now);
+      if (!stop) continue;
+      log.info('Auto-stopped seeding', { id: managed.id, reason });
+      try { await this.stopSeeding(managed.id); } catch (_) { /* already stopped */ }
     }
   }
 
