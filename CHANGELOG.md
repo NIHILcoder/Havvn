@@ -4,6 +4,57 @@ All notable changes to TorrentHunt are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.6.2] - 2026-07-05
+
+A large stability release: a multi-agent audit of the whole download engine
+surfaced 28 verified bugs, all fixed here (plus 4 regressions caught and fixed by
+an adversarial self-review). Typecheck, all 67 tests, and lint are green.
+
+### Fixed
+- **App no longer hangs on startup if the torrent engine's background process
+  dies before it's ready.** The readiness handshake had no failure path, so a
+  crash during engine init froze the whole app on a blank-looking window with no
+  error. It now fails fast and recovers.
+- **Duplicate detection works again across the process boundary.** Engine error
+  codes (e.g. "already in downloads") were being stripped when crossing to the
+  main process, so RSS auto-download retried the same item forever and the watch
+  folder logged every duplicate as an error. Codes are now preserved.
+- **Pause/Resume respects the concurrent-download limit.** Resuming a paused
+  torrent (or "Resume All") could blow past your max-active-downloads setting and
+  run everything at once; it now re-queues correctly.
+- **Force Recheck no longer misbehaves.** Rechecking a finished torrent used to
+  re-fire the "download complete" notification and reset the seed-time-limit
+  clock (so the limit never triggered); rechecking a stopped torrent silently
+  started it seeding again. Both fixed.
+- **Lifetime "downloaded" total no longer doubles** on every restart / recheck /
+  auto-move (it was counting already-on-disk data as freshly downloaded, which
+  also halved your share ratio).
+- **Removing a torrent while casting/streaming no longer leaves files undeletable
+  on Windows** (the transcoder kept the file open) or orphaned background
+  processes running.
+- **"Delete files" is safer** — a "start seeding" entry with a custom name now
+  deletes the real files instead of possibly missing them or hitting an unrelated
+  folder.
+- **Per-file priority (Low/Normal/High) now actually affects download order**
+  instead of being visual-only.
+- **Closing the player reverts instant-play mode** — the torrent no longer stays
+  stuck in forced-sequential order, and a previewed "skipped" file no longer
+  keeps downloading.
+- **Disk-space guard** now checks every drive your torrents write to (not just
+  the default folder) and correctly clears its warning once space is recovered.
+- **Add-time disk check** rejects a torrent up front when its known size won't
+  fit, instead of failing mid-download.
+- Numerous smaller fixes: streaming servers no longer leak on rapid opens, stats
+  no longer read a torrent mid-removal, completion progress is persisted
+  immediately, queued rows no longer show a stray separator, and context-menu
+  Pause/Resume no longer error on states where they don't apply.
+
+### Known limitations
+- **Per-torrent speed limits are stored but not enforced.** The engine
+  (WebTorrent 1.9.7) only supports a global speed limit; the previous per-torrent
+  calls were a silent no-op. This release stops pretending they apply — a future
+  release will either wire real per-torrent throttling or remove the control.
+
 ## [2.6.1] - 2026-07-02
 
 ### Fixed
