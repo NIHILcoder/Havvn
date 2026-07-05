@@ -4,7 +4,7 @@
  * Main downloads management page with compact/detailed view modes.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Download, DownloadStats } from '../../shared/types';
 import { canPause, canResume } from '../../shared/state-machine';
@@ -238,16 +238,19 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       lastStatsSnapshot = statsMap;
       setStats(statsMap);
 
-      // Update download statuses from stats
-      setDownloads((prev) =>
-        prev.map((d) => {
+      // Update download statuses from stats — ONLY when a status actually flips.
+      // Rows read live progress/speed from the stats Map, so rebuilding every
+      // download object each tick just churns GC and re-sorts the whole list for
+      // nothing. Same-reference return makes React skip the update.
+      setDownloads((prev) => {
+        let changed = false;
+        const next = prev.map((d) => {
           const stat = statsMap.get(d.id);
-          if (stat) {
-            return { ...d, status: stat.status };
-          }
+          if (stat && stat.status !== d.status) { changed = true; return { ...d, status: stat.status }; }
           return d;
-        })
-      );
+        });
+        return changed ? next : prev;
+      });
     });
 
     // Cleanup listener on unmount to prevent memory leaks
@@ -662,7 +665,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   }, []);
 
   // Filter downloads based on filter mode
-  const filteredDownloads = downloads.filter(download => {
+  const filteredDownloads = useMemo(() => downloads.filter(download => {
     // Filter by status
     if (filterMode !== 'all') {
       if (filterMode === 'downloading' && !['downloading', 'queued'].includes(download.status)) {
@@ -683,34 +686,37 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
 
     return true;
-  });
+  }), [downloads, filterMode, searchQuery]);
 
   // Sort downloads based on sort mode and direction.
   // Convention: every comparator returns ascending order for direction=1, so
   // 'asc'/'desc' mean the same thing in every column.
-  const sortedDownloads = [...filteredDownloads].sort((a, b) => {
-    const statA = stats.get(a.id);
-    const statB = stats.get(b.id);
+  //
+  // Only the 'progress'/'speed' modes read live stats, so only those depend on
+  // the per-tick stats Map. For 'name'/'added' the memo stays stable across stats
+  // ticks (statsForSort is null), so we don't re-sort the whole list ~1.3x/second.
+  const statsForSort = (sortMode === 'progress' || sortMode === 'speed') ? stats : null;
+  const sortedDownloads = useMemo(() => [...filteredDownloads].sort((a, b) => {
     const direction = sortDirection === 'asc' ? 1 : -1;
 
     switch (sortMode) {
       case 'name':
         return a.name.localeCompare(b.name) * direction;
       case 'progress': {
-        const progressA = statA?.progress ?? a.progress;
-        const progressB = statB?.progress ?? b.progress;
+        const progressA = statsForSort?.get(a.id)?.progress ?? a.progress;
+        const progressB = statsForSort?.get(b.id)?.progress ?? b.progress;
         return (progressA - progressB) * direction;
       }
       case 'speed': {
-        const speedA = statA?.downSpeedBps ?? 0;
-        const speedB = statB?.downSpeedBps ?? 0;
+        const speedA = statsForSort?.get(a.id)?.downSpeedBps ?? 0;
+        const speedB = statsForSort?.get(b.id)?.downSpeedBps ?? 0;
         return (speedA - speedB) * direction;
       }
       case 'added':
       default:
         return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * direction;
     }
-  });
+  }), [filteredDownloads, sortMode, sortDirection, statsForSort]);
 
   // Calculate global stats
   const globalStats = {

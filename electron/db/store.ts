@@ -611,16 +611,30 @@ export async function updateDownloadsProgressBatch(
     const download = downloads[data.id];
     if (!download) continue;
 
-    download.progress = data.progress;
-    download.downloadedBytes = data.downloadedBytes;
-    download.uploadedBytes = data.uploadedBytes;
+    // Speeds/eta/peers/seeds are TRANSIENT — 0 on load and re-derived live from
+    // the stats broadcast — so keep them in the in-memory copy but never let them
+    // trigger a disk write. Otherwise the whole downloads store was rewritten
+    // every 5s forever (even at total idle: idle seeders, all speeds 0), churning
+    // the SSD and waking a laptop for nothing.
     download.downSpeedBps = data.downSpeedBps;
     download.upSpeedBps = data.upSpeedBps;
     download.etaSeconds = data.etaSeconds;
     download.peers = data.peers;
     download.seeds = data.seeds;
-    download.updatedAt = new Date();
 
+    // Only a DURABLE change (progress/bytes/name/size) justifies persisting.
+    const durableChanged =
+      download.progress !== data.progress ||
+      download.downloadedBytes !== data.downloadedBytes ||
+      download.uploadedBytes !== data.uploadedBytes ||
+      (!!data.name && download.name !== data.name) ||
+      (data.totalSize !== undefined && data.totalSize > 0 && download.totalSize !== data.totalSize);
+    if (!durableChanged) continue;
+
+    download.progress = data.progress;
+    download.downloadedBytes = data.downloadedBytes;
+    download.uploadedBytes = data.uploadedBytes;
+    download.updatedAt = new Date();
     if (data.name) download.name = data.name;
     if (data.totalSize !== undefined && data.totalSize > 0) {
       download.totalSize = data.totalSize;
