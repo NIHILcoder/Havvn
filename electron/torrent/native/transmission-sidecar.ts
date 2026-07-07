@@ -178,6 +178,11 @@ export class TransmissionSidecar {
       'peer-port-random-on-start': false,
       'port-forwarding-enabled': true, // daemon's own UPnP/NAT-PMP
       'download-dir': this.opts.downloadDir,
+      // Keep incomplete files at their FINAL name (default renames them to
+      // "<name>.part"). Streaming, cast, and subtitles resolve the on-disk path
+      // from the final name, so a ".part" suffix would break serving a file
+      // mid-download. Purely an on-disk-naming choice; safe to flip.
+      'rename-partial-files': false,
       // The app has its own queue/limits semantics; don't let the daemon's
       // download queue hold torrents in "queued" states the UI doesn't know.
       'download-queue-enabled': false,

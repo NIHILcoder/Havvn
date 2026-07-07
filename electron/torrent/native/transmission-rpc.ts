@@ -103,6 +103,7 @@ export interface TrTorrent {
   pieceCount?: number;
   pieceSize?: number;
   pieces?: string; // base64 bitfield
+  trackerList?: string; // announce URLs, one per line, blank line between tiers (4.0+)
 }
 
 export type TrIds = number | string | Array<number | string>; // id | hashString

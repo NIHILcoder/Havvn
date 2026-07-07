@@ -4,8 +4,10 @@
  */
 
 import path from 'node:path';
-import type { Download, DownloadStats, DownloadStatus, TorrentFile, PeerInfo, TrackerInfo, FilePriority } from '../../../shared/types';
-import { TrStatus, TrTorrent } from './transmission-rpc';
+import type { Download, DownloadStats, DownloadStatus, TorrentFile, PeerInfo, TrackerInfo, FilePriority, SwarmGeo, SwarmGeoPoint } from '../../../shared/types';
+import { TrStatus, TrTorrent, TrPeer } from './transmission-rpc';
+import { numToIp } from '../../../shared/ip-range';
+import { TorrentError } from '../errors';
 
 /** torrent-get fields the 750ms stats tick requests (request only what you read). */
 export const ENGINE_STAT_FIELDS = [
@@ -126,4 +128,98 @@ export function mapTrackers(t: TrTorrent): TrackerInfo[] {
     peers: Math.max(0, s.lastAnnouncePeerCount || s.seederCount + s.leecherCount || 0),
     lastAnnounce: s.lastAnnounceTime > 0 ? s.lastAnnounceTime * 1000 : undefined,
   }));
+}
+
+/**
+ * Aggregate connected peers across all torrents into the swarm-map shape.
+ * Pure: the caller injects `lookupCountry` (ip → ISO-2 or null) so ip3country
+ * init stays out of this function. transmission peer `address` is a bare IP (no
+ * port), unlike webtorrent's ip:port. A peer counts as a seed at progress≈1.
+ */
+export function aggregateSwarmGeo(peerLists: TrPeer[][], lookupCountry: (ip: string) => string | null): SwarmGeo {
+  const byCountry = new Map<string, { count: number; downBps: number; upBps: number; seeds: number }>();
+  let totalConns = 0;
+  let resolved = 0;
+  let torrents = 0;
+  for (const peers of peerLists) {
+    if (peers.length > 0) torrents++;
+    for (const p of peers) {
+      totalConns++;
+      const cc = lookupCountry(p.address);
+      if (!cc) continue;
+      resolved++;
+      const e = byCountry.get(cc) ?? { count: 0, downBps: 0, upBps: 0, seeds: 0 };
+      e.count++;
+      e.downBps += p.rateToClient;
+      e.upBps += p.rateToPeer;
+      if (p.progress >= 0.999) e.seeds++;
+      byCountry.set(cc, e);
+    }
+  }
+  const points: SwarmGeoPoint[] = [];
+  for (const [country, e] of byCountry) points.push({ country, ...e });
+  points.sort((a, b) => b.count - a.count);
+  return { points, totalConns, resolved, torrents };
+}
+
+// ── Trackers (torrent-set trackerList is the 4.0+ replacement for trackerAdd/Remove) ──
+
+/** Drop a single trailing slash so tracker URLs compare/dedupe consistently. */
+export function stripTrackerSlash(url: string): string {
+  const s = String(url || '').trim();
+  return s.endsWith('/') ? s.slice(0, -1) : s;
+}
+
+/** Validate + normalize a tracker URL, or throw INVALID_INPUT (parity with webtorrent). */
+export function normalizeTrackerUrl(raw: string): string {
+  const url = String(raw || '').trim();
+  if (!url) throw new TorrentError('Tracker URL is empty', 'INVALID_INPUT');
+  let proto: string;
+  try { proto = new URL(url).protocol; } catch { throw new TorrentError('Invalid tracker URL', 'INVALID_INPUT'); }
+  if (!['http:', 'https:', 'udp:', 'ws:', 'wss:'].includes(proto)) {
+    throw new TorrentError('Unsupported tracker protocol (use http/https/udp/ws)', 'INVALID_INPUT');
+  }
+  return stripTrackerSlash(url);
+}
+
+/**
+ * Read-modify-write of transmission's `trackerList` string. Splits the current
+ * list into announce URLs, applies removes (by normalized compare) then adds
+ * (append-if-absent), and rejoins one-URL-per-tier ('\n\n'). Empty result = all
+ * trackers cleared (legitimate only when removing the last one).
+ */
+export function editTrackerList(current: string | undefined, opts: { add?: string[]; remove?: string[] }): string {
+  const removeSet = new Set((opts.remove ?? []).map(stripTrackerSlash));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (url: string) => {
+    const u = String(url || '').trim();
+    if (!u) return;
+    const key = stripTrackerSlash(u);
+    if (removeSet.has(key) || seen.has(key)) return;
+    seen.add(key);
+    out.push(u);
+  };
+  for (const line of String(current ?? '').split(/\r?\n/)) push(line);
+  for (const url of opts.add ?? []) push(url);
+  return out.join('\n\n');
+}
+
+// ── IP blocklist (transmission P2P-plaintext format) ──
+
+/**
+ * Build a transmission P2P-plaintext blocklist from merged [startInt,endInt]
+ * IPv4 ranges. One `label:A.B.C.D-E.F.G.H` line per range (range form required
+ * even for a single IP).
+ */
+export function buildBlocklistP2P(ranges: ReadonlyArray<readonly [number, number]>): string {
+  return ranges.map(([s, e]) => `havvn:${numToIp(s)}-${numToIp(e)}`).join('\n');
+}
+
+/** Byte offset of file `fileIndex`'s first piece → piece index (sequential head). */
+export function fileBeginPiece(fileLengths: number[], fileIndex: number, pieceSize: number): number {
+  if (pieceSize <= 0) return 0;
+  let offset = 0;
+  for (let i = 0; i < fileIndex && i < fileLengths.length; i++) offset += fileLengths[i];
+  return Math.floor(offset / pieceSize);
 }

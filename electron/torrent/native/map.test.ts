@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { mapStatus, mapStats, mapFiles, mapPeers, mapTrackers } from './map';
+import {
+  mapStatus, mapStats, mapFiles, mapPeers, mapTrackers, aggregateSwarmGeo,
+  editTrackerList, normalizeTrackerUrl, stripTrackerSlash, buildBlocklistP2P, fileBeginPiece,
+} from './map';
 import { TrStatus, TrTorrent, TrPeer, TrTrackerStat } from './transmission-rpc';
+import { TorrentError } from '../errors';
 import type { Download } from '../../../shared/types';
 
 const tr = (over: Partial<TrTorrent>): TrTorrent => ({
@@ -110,5 +114,78 @@ describe('mapTrackers', () => {
     expect(ok).toMatchObject({ status: 'connected', peers: 7, lastAnnounce: 1_000_000 });
     expect(err.status).toBe('error');
     expect(fresh.status).toBe('updating');
+  });
+});
+
+describe('aggregateSwarmGeo', () => {
+  const peer = (over: Partial<TrPeer>): TrPeer => ({
+    address: '1.2.3.4', port: 1, clientName: '', isUTP: false, isEncrypted: false, isIncoming: false,
+    rateToClient: 0, rateToPeer: 0, progress: 0, flagStr: '', clientIsChoked: false, clientIsInterested: false,
+    peerIsChoked: false, peerIsInterested: false, bytesToClient: 0, bytesToPeer: 0, ...over,
+  });
+  it('aggregates by country with a stubbed lookup; counts seeds at progress≈1', () => {
+    const lookup = (ip: string): string | null => (ip.startsWith('9.') ? null : ip.startsWith('1.') ? 'US' : 'DE');
+    const geo = aggregateSwarmGeo([
+      [peer({ address: '1.1.1.1', rateToClient: 100, rateToPeer: 10, progress: 1 }),
+       peer({ address: '2.2.2.2', rateToClient: 50, rateToPeer: 5, progress: 0.5 })],
+      [peer({ address: '1.9.9.9', rateToClient: 20, rateToPeer: 2, progress: 1 }),
+       peer({ address: '9.9.9.9', progress: 1 })], // 9.* unresolved
+    ], lookup);
+    expect(geo.totalConns).toBe(4);
+    expect(geo.resolved).toBe(3);
+    expect(geo.torrents).toBe(2);
+    const us = geo.points.find((p) => p.country === 'US')!;
+    expect(us).toMatchObject({ count: 2, downBps: 120, upBps: 12, seeds: 2 });
+    expect(geo.points.find((p) => p.country === 'DE')).toMatchObject({ count: 1, seeds: 0 });
+    expect(geo.points[0].count).toBeGreaterThanOrEqual(geo.points[geo.points.length - 1].count); // sorted desc
+  });
+  it('returns the zeroed shape for no peers', () => {
+    expect(aggregateSwarmGeo([[], []], () => 'US')).toEqual({ points: [], totalConns: 0, resolved: 0, torrents: 0 });
+  });
+});
+
+describe('tracker list editing', () => {
+  it('normalizeTrackerUrl validates protocol and strips a trailing slash', () => {
+    expect(normalizeTrackerUrl('udp://t.example:80/announce/')).toBe('udp://t.example:80/announce');
+    expect(() => normalizeTrackerUrl('')).toThrow(TorrentError);
+    expect(() => normalizeTrackerUrl('ftp://nope')).toThrow(/protocol/);
+    expect(() => normalizeTrackerUrl('not a url')).toThrow(/Invalid/);
+  });
+  it('stripTrackerSlash removes at most one trailing slash', () => {
+    expect(stripTrackerSlash('http://x/a/')).toBe('http://x/a');
+    expect(stripTrackerSlash('http://x/a')).toBe('http://x/a');
+  });
+  it('editTrackerList adds if absent, dedupes, and joins one-per-tier', () => {
+    const out = editTrackerList('udp://a/announce\n\nudp://b/announce', { add: ['udp://c/announce', 'udp://a/announce'] });
+    expect(out).toBe('udp://a/announce\n\nudp://b/announce\n\nudp://c/announce');
+  });
+  it('editTrackerList removes by normalized compare (trailing slash tolerant)', () => {
+    const out = editTrackerList('udp://a/announce\nudp://b/announce', { remove: ['udp://a/announce/'] });
+    expect(out).toBe('udp://b/announce');
+  });
+  it('editTrackerList tolerates CRLF/blank lines and can clear to empty', () => {
+    expect(editTrackerList('udp://a\r\n\r\nudp://b', { remove: ['udp://a', 'udp://b'] })).toBe('');
+  });
+});
+
+describe('buildBlocklistP2P', () => {
+  it('emits label:start-end dotted-quad lines', () => {
+    // 1.2.3.4 = 0x01020304, 1.2.3.10 = 0x0102030a
+    expect(buildBlocklistP2P([[0x01020304, 0x0102030a], [0x0a000000, 0x0a0000ff]]))
+      .toBe('havvn:1.2.3.4-1.2.3.10\nhavvn:10.0.0.0-10.0.0.255');
+  });
+  it('is empty for no ranges', () => {
+    expect(buildBlocklistP2P([])).toBe('');
+  });
+});
+
+describe('fileBeginPiece', () => {
+  it('computes the first piece of a file from prior file lengths', () => {
+    expect(fileBeginPiece([1000, 2000, 3000], 0, 512)).toBe(0);
+    expect(fileBeginPiece([1000, 2000, 3000], 1, 512)).toBe(Math.floor(1000 / 512)); // 1
+    expect(fileBeginPiece([1000, 2000, 3000], 2, 512)).toBe(Math.floor(3000 / 512)); // 5
+  });
+  it('is 0 for a non-positive piece size', () => {
+    expect(fileBeginPiece([1000], 0, 0)).toBe(0);
   });
 });

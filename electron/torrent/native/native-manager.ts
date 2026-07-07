@@ -19,19 +19,30 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import * as db from '../host/db-bridge';
 import { getHostEnv } from '../host/env';
 import { TorrentError } from '../errors';
 import { logger } from '../../utils';
 import { TransmissionSidecar } from './transmission-sidecar';
 import { TransmissionRpc, TrTorrent, TrStatus, TrFile } from './transmission-rpc';
-import { ENGINE_STAT_FIELDS, mapStats, mapStatus, mapFiles, mapPeers, mapTrackers } from './map';
+import {
+  ENGINE_STAT_FIELDS, mapStats, mapStatus, mapFiles, mapPeers, mapTrackers, aggregateSwarmGeo,
+  editTrackerList, normalizeTrackerUrl, stripTrackerSlash, buildBlocklistP2P, fileBeginPiece,
+} from './map';
+import { NativeMediaServer } from './media-server';
 import { extractInfoHashFromMagnet } from '../../../shared/magnet';
 import { classifyMediaKind, isDirectlyPlayable } from '../../../shared/media';
+import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
 import type {
-  AppSettings, Download, DownloadStats, FilePriority, PeerInfo, SourceType,
-  TorrentFile, TorrentInfo, TrackerInfo,
+  AppSettings, Download, DownloadStats, FilePriority, NetworkHealth, PeerInfo, SourceType,
+  SwarmGeo, TorrentFile, TorrentInfo, TrackerInfo,
 } from '../../../shared/types';
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+import ip3country = require('ip3country');
 
 const log = logger.child('NativeEngine');
 
@@ -56,10 +67,6 @@ function resolveFfmpeg(): string | null {
   }
 }
 
-function notImplemented(what: string): never {
-  throw new TorrentError(`${what} is not available with the native engine yet`, 'NOT_IMPLEMENTED');
-}
-
 const ACTIVE: ReadonlySet<Download['status']> = new Set(['downloading', 'seeding', 'queued']);
 
 export class NativeTorrentManager {
@@ -79,6 +86,21 @@ export class NativeTorrentManager {
   private persistCounter = 0;
   private altSpeedEnabled = false;
   private readonly ffmpegPath = resolveFfmpeg();
+  private geoReady = false;
+
+  // Streaming: one shared 127.0.0.1 media server (loopback + per-session token),
+  // and per-torrent the set of files pinned into sequential/priority-high head
+  // mode so stopStream reverts them.
+  private mediaServer: NativeMediaServer | null = null;
+  private readonly streamToken = crypto.randomBytes(12).toString('hex');
+  private readonly streamHeads = new Map<string, Set<number>>();
+
+  // IP blocklist: a tiny loopback server serves the generated P2P list, which the
+  // daemon fetches via blocklist-update (transmission has no file:// blocklist).
+  private blocklistServer: http.Server | null = null;
+  private blocklistBody = '';
+  private readonly blocklistToken = crypto.randomBytes(16).toString('hex');
+  private dohWarned = false;
 
   private readonly statsCbs = new Set<(s: DownloadStats[]) => void>();
   private readonly completeCbs = new Set<(i: { id: string; name: string }) => void>();
@@ -124,6 +146,9 @@ export class NativeTorrentManager {
 
   async destroy(): Promise<void> {
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+    this.mediaServer?.close();
+    this.mediaServer = null;
+    if (this.blocklistServer) { try { this.blocklistServer.close(); } catch { /* ignore */ } this.blocklistServer = null; }
     this.rpc = null;
     await this.sidecar?.stop();
     this.sidecar = null;
@@ -151,6 +176,15 @@ export class NativeTorrentManager {
     if ((s.defaultSeedRatioLimit ?? 0) > 0) args['seedRatioLimit'] = s.defaultSeedRatioLimit;
     await this.rpc!.sessionSet(args);
     this.altSpeedEnabled = s.altSpeedEnabled ?? false;
+
+    // DoH is honestly unsupported by the external daemon: transmission resolves
+    // DNS in its own process via the OS resolver and exposes no DoH knob, so we
+    // must NOT pretend it's active. Warn once; the webtorrent engine still
+    // honors dohEnabled for users who switch back to it.
+    if ((s.dohEnabled ?? false) && !this.dohWarned) {
+      this.dohWarned = true;
+      log.warn('DoH is not supported by the native (transmission) engine — DNS uses the OS resolver. Switch Settings → engine to "webtorrent" for DoH.');
+    }
   }
 
   async updateSettings(partial: Partial<AppSettings>): Promise<void> {
@@ -245,6 +279,12 @@ export class NativeTorrentManager {
     const hash = res.hashString.toLowerCase();
     this.link(d.id, hash);
     if (d.infoHash !== hash) { d.infoHash = hash; await db.updateDownloadField(d.id, 'infoHash', hash); }
+    // Re-apply the user's tracker edits — the daemon's own resume state has them
+    // only if it kept the torrent across the restart; on a fresh re-add it doesn't.
+    if (d.customTrackers?.length || d.removedTrackers?.length) {
+      await this.applyTrackerListEdit(hash, { add: d.customTrackers, remove: d.removedTrackers })
+        .catch((e) => log.warn('tracker re-apply failed', { id: d.id, error: String(e) }));
+    }
     return hash;
   }
 
@@ -329,7 +369,9 @@ export class NativeTorrentManager {
 
   async getTorrentInfo(params: { sourceType: SourceType; sourceUri: string }): Promise<TorrentInfo> {
     await this.whenReady();
-    if (params.sourceType !== 'torrent_file') notImplemented('Magnet metadata preview');
+    if (params.sourceType !== 'torrent_file') {
+      throw new TorrentError('Magnet metadata preview is not available with the native engine yet', 'NOT_IMPLEMENTED');
+    }
     let file = params.sourceUri;
     let temp: string | null = null;
     if (/^https?:\/\//i.test(file)) { file = await this.fetchTorrentToTemp(file); temp = file; }
@@ -387,6 +429,7 @@ export class NativeTorrentManager {
       this.hashToId.delete(hash);
     }
     this.metaCache.delete(id);
+    this.streamHeads.delete(id); // any pinned stream head goes away with the torrent
     // Tombstone until next boot (same as webtorrent manager) so late stats
     // ticks/UI reads don't resurrect the row; reconcile() purges it.
     await this.setStatus(d, 'removed');
@@ -507,8 +550,10 @@ export class NativeTorrentManager {
     await this.whenReady();
     const d = this.getRecord(id);
     const hash = await this.ensureInDaemon(d);
-    // transmission 4.1+ (snake_case only — the field postdates the rename)
-    await this.rpc!.torrentSet(hash, { sequential_download: enabled });
+    // transmission 4.1+ (snake_case only — the field postdates the rename). Reset
+    // the start offset too, so a leftover stream head-offset can't make a whole-
+    // torrent sequential download start from the middle.
+    await this.rpc!.torrentSet(hash, { sequential_download: enabled, sequential_download_from_piece: 0 });
     d.sequentialDownload = enabled;
     await db.updateDownloadField(id, 'sequentialDownload', enabled);
   }
@@ -530,22 +575,327 @@ export class NativeTorrentManager {
     await db.updateDownloadField(id, 'seedTimeLimitMinutes', minutes); // enforced by the stats tick
   }
 
-  // Blocklist filtering happens engine-side later (session blocklist-url);
-  // no-op keeps main's unconditional startup call clean.
-  applyIpBlocklist(_ranges: Array<[number, number]>): void {
-    log.info('applyIpBlocklist: not wired to the native engine yet (no-op)');
+  // ── IP blocklist ────────────────────────────────────────────────────────────
+  /**
+   * Push the app's merged [startInt,endInt] IPv4 ranges into the daemon.
+   * transmission can't load a file:// blocklist, and won't hot-reload a dropped
+   * file — but blocklist-update fetches from blocklist-url and compiles + activates
+   * live. So serve the generated P2P list from a tiny loopback endpoint and point
+   * the daemon at it. Fire-and-forget: main calls this unconditionally at startup.
+   */
+  applyIpBlocklist(ranges: Array<[number, number]>): void {
+    void this.applyBlocklist(ranges).catch((e) => log.warn('blocklist apply failed', { error: String(e) }));
   }
 
-  // ── Not yet ported (explicit, typed errors instead of dispatch crashes) ─────
-  addSeed(): never { return notImplemented('Seeding an existing folder'); }
-  addTracker(): never { return notImplemented('Editing trackers'); }
-  removeTracker(): never { return notImplemented('Editing trackers'); }
-  getSwarmGeo(): never { return notImplemented('The swarm map'); }
-  getStreamUrl(): never { return notImplemented('In-app streaming'); }
-  stopStream(): never { return notImplemented('In-app streaming'); }
-  getSubtitleTracks(): never { return notImplemented('Subtitles'); }
-  getSubtitleVtt(): never { return notImplemented('Subtitles'); }
-  getNetworkHealth(): never { return notImplemented('Network health'); }
+  private async applyBlocklist(ranges: Array<[number, number]>): Promise<void> {
+    if (!this.rpc) return;
+    if (ranges.length === 0) { await this.rpc.sessionSet({ 'blocklist-enabled': false }); return; }
+    this.blocklistBody = buildBlocklistP2P(ranges);
+    const port = await this.ensureBlocklistServer();
+    await this.rpc.sessionSet({ 'blocklist-url': `http://127.0.0.1:${port}/${this.blocklistToken}`, 'blocklist-enabled': true });
+    const res = await this.rpc.blocklistUpdate();
+    log.info('IP blocklist applied to daemon', { rules: res['blocklist-size'], ranges: ranges.length });
+  }
+
+  private ensureBlocklistServer(): Promise<number> {
+    const existing = this.blocklistServer;
+    if (existing) return Promise.resolve((existing.address() as { port: number }).port);
+    return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        // Loopback-only + unguessable path; content is public IP ranges anyway.
+        if (req.socket.remoteAddress && !/^(::1|::ffff:127\.|127\.)/.test(req.socket.remoteAddress)) { res.writeHead(403); res.end(); return; }
+        if ((req.url || '').endsWith(this.blocklistToken)) { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end(this.blocklistBody); }
+        else { res.writeHead(404); res.end(); }
+      });
+      server.on('error', reject);
+      server.listen(0, '127.0.0.1', () => { this.blocklistServer = server; resolve((server.address() as { port: number }).port); });
+    });
+  }
+
+  // ── Swarm map ─────────────────────────────────────────────────────────────
+  async getSwarmGeo(): Promise<SwarmGeo> {
+    await this.whenReady();
+    this.ensureGeoInit();
+    const torrents = await this.rpc!.torrentGet(['hashString', 'peers']);
+    return aggregateSwarmGeo(torrents.map((t) => t.peers ?? []), (ip) => this.lookupCountry(ip));
+  }
+
+  private ensureGeoInit(): void {
+    if (this.geoReady) return;
+    try { ip3country.init(); this.geoReady = true; }
+    catch (e) { log.warn('Country geo DB init failed (swarm map degraded)', { error: String(e) }); }
+  }
+
+  /** transmission peer.address is a bare IP (no port). null = IPv6/private/unknown. */
+  private lookupCountry(ip: string): string | null {
+    if (!this.geoReady || !ip || isPrivateOrReservedIPv4(ip)) return null;
+    try { const cc = ip3country.lookupStr(ip); return cc && /^[A-Za-z]{2}$/.test(cc) ? cc.toUpperCase() : null; }
+    catch { return null; }
+  }
+
+  // ── Tracker CRUD (torrent-set trackerList RMW; 4.0+ replaces trackerAdd/Remove) ──
+  async addTracker(id: string, url: string): Promise<void> {
+    await this.whenReady();
+    const d = this.getRecord(id);
+    const normalized = normalizeTrackerUrl(url);
+    const custom = new Set(d.customTrackers ?? []); custom.add(normalized);
+    const removed = new Set(d.removedTrackers ?? []); removed.delete(normalized);
+    d.customTrackers = [...custom]; d.removedTrackers = [...removed];
+    await db.updateDownloadFields(id, { customTrackers: d.customTrackers, removedTrackers: d.removedTrackers });
+    const hash = this.idToHash.get(id);
+    if (hash) await this.applyTrackerListEdit(hash, { add: [normalized] });
+    log.info('Tracker added', { id, url: normalized });
+  }
+
+  async removeTracker(id: string, url: string): Promise<void> {
+    await this.whenReady();
+    const d = this.getRecord(id);
+    const normalized = stripTrackerSlash(url); // no protocol validation — metadata trackers can be removed too
+    const custom = new Set(d.customTrackers ?? []); custom.delete(normalized);
+    const removed = new Set(d.removedTrackers ?? []); removed.add(normalized);
+    d.customTrackers = [...custom]; d.removedTrackers = [...removed];
+    await db.updateDownloadFields(id, { customTrackers: d.customTrackers, removedTrackers: d.removedTrackers });
+    const hash = this.idToHash.get(id);
+    if (hash) await this.applyTrackerListEdit(hash, { remove: [normalized] });
+    log.info('Tracker removed', { id, url: normalized });
+  }
+
+  private async applyTrackerListEdit(hash: string, opts: { add?: string[]; remove?: string[] }): Promise<void> {
+    const [t] = await this.rpc!.torrentGet(['trackerList'], hash);
+    await this.rpc!.torrentSet(hash, { trackerList: editTrackerList(t?.trackerList, opts) });
+  }
+
+  // ── Seed from existing folder ────────────────────────────────────────────────
+  /**
+   * Seed a folder/file the creator just turned into a .torrent. transmission has
+   * no "seed this disk path" — instead we add the .torrent with download-dir set
+   * so `download-dir/<name>` lands on the existing data, then verify (hashes the
+   * files → 100%) and start (→ seeding) without downloading a byte.
+   */
+  async addSeed(params: { sourcePaths: string[]; name?: string; announceList?: string[][]; pieceLength?: number; torrentFilePath?: string }): Promise<Download> {
+    await this.whenReady();
+    if (!params.torrentFilePath || !fs.existsSync(params.torrentFilePath)) {
+      throw new TorrentError('Seed torrent file missing', 'FILE_NOT_FOUND');
+    }
+    const downloadDir = path.dirname(params.sourcePaths[0]);
+    const buf = fs.readFileSync(params.torrentFilePath);
+    const res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir, paused: true });
+    const hash = res.hashString.toLowerCase();
+    if (res.duplicate) throw new TorrentError('This torrent is already in your downloads', 'DUPLICATE', this.hashToId.get(hash));
+
+    const stored = this.copyTorrentIntoAppData(params.torrentFilePath);
+    const download = await db.createDownload({
+      name: params.name || res.name,
+      sourceType: 'torrent_file',
+      sourceUri: params.sourcePaths[0],
+      torrentFilePath: stored,
+      savePath: downloadDir,
+      status: 'seeding',
+      seedPaths: params.sourcePaths,
+    });
+    download.infoHash = hash;
+    download.status = 'seeding';
+    await db.updateDownloadField(download.id, 'infoHash', hash);
+    this.records.set(download.id, download);
+    this.link(download.id, hash);
+    // verify existing data → start-now → seeding (add PAUSED first so it doesn't
+    // announce/try to download before the recheck runs).
+    await this.rpc!.torrentVerify(hash);
+    await this.rpc!.torrentStartNow(hash);
+    void this.warmMetaCache(download.id);
+    log.info('Seed added', { id: download.id, hash, name: download.name });
+    return download;
+  }
+
+  // ── In-app streaming ─────────────────────────────────────────────────────────
+  async getStreamUrl(id: string, fileIndex: number, opts?: { transcode?: boolean }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }> {
+    await this.whenReady();
+    const d = this.getRecord(id);
+    const hash = await this.ensureInDaemon(d);
+    // ensureInDaemon re-adds a non-live record PAUSED — a stream needs it running
+    // or the head never downloads.
+    await this.rpc!.torrentStartNow(hash).catch(() => undefined);
+    if (d.status === 'paused' || d.status === 'queued') await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading');
+    if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id); // warm resolver + head math
+    const info = this.getCastFileInfo(id, fileIndex);
+    if (!info) throw new TorrentError('Invalid file index', 'INVALID_INPUT', id);
+    await this.prioritizeStreamHead(hash, id, fileIndex);
+
+    const port = await this.ensureMediaServer();
+    const q = `k=${this.streamToken}&t=${Date.now()}`;
+    const wantTranscode = opts?.transcode === true || !info.direct;
+    const mode = wantTranscode && this.ffmpegPath ? 'transcode' : 'direct';
+    return {
+      url: `http://127.0.0.1:${port}/${mode}/${encodeURIComponent(id)}/${fileIndex}?${q}`,
+      name: info.name,
+      kind: info.kind,
+      transcoded: mode === 'transcode',
+    };
+  }
+
+  async stopStream(id: string, _fileIndex?: number): Promise<void> {
+    await this.whenReady();
+    const d = this.records.get(id);
+    const streamed = this.streamHeads.get(id);
+    this.streamHeads.delete(id);
+    const hash = this.idToHash.get(id);
+    if (!d || !hash || !streamed) return;
+    // Revert to the user's intent: restore sequential mode AND the sequential
+    // start offset (a stream steers it to the file's first piece — leaving it
+    // there permanently corrupts a later whole-torrent sequential download), and
+    // restore each streamed file to its PERSISTED priority (not a blanket
+    // 'normal', which would silently erase a user-set high/low), re-deselecting
+    // any file that shouldn't download.
+    const args: Record<string, unknown> = {
+      sequential_download: d.sequentialDownload === true,
+      sequential_download_from_piece: 0,
+    };
+    const unwanted: number[] = [], high: number[] = [], low: number[] = [], normal: number[] = [];
+    for (const idx of streamed) {
+      if (!this.fileShouldDownload(d, idx)) { unwanted.push(idx); continue; }
+      const p = d.filePriorities?.[idx];
+      (p === 'high' ? high : p === 'low' ? low : normal).push(idx);
+    }
+    if (unwanted.length) args['files-unwanted'] = unwanted;
+    if (high.length) args['priority-high'] = high;
+    if (low.length) args['priority-low'] = low;
+    if (normal.length) args['priority-normal'] = normal;
+    await this.rpc!.torrentSet(hash, args).catch((e) => log.warn('stopStream revert failed', { id, error: String(e) }));
+  }
+
+  private async prioritizeStreamHead(hash: string, id: string, fileIndex: number): Promise<void> {
+    await this.rpc!.torrentSet(hash, { 'files-wanted': [fileIndex], 'priority-high': [fileIndex], sequential_download: true });
+    // Steer the sequential start to the file's first piece (0 for a single/first
+    // file) so a file inside a MULTI-file torrent streams head-first. ALWAYS set
+    // it (incl. 0) so a prior stream's offset can't linger; stopStream resets to
+    // 0. Separate call: an unsupported field on an older daemon must not fail the
+    // essential priority set above.
+    let begin = 0;
+    try {
+      const [t] = await this.rpc!.torrentGet(['pieceSize', 'files'], hash);
+      const pieceSize = t?.pieceSize ?? 0;
+      if (pieceSize > 0) begin = fileBeginPiece((t?.files ?? []).map((f) => f.length), fileIndex, pieceSize);
+    } catch { /* keep begin = 0 */ }
+    await this.rpc!.torrentSet(hash, { sequential_download_from_piece: begin }).catch(() => undefined);
+    let set = this.streamHeads.get(id);
+    if (!set) { set = new Set(); this.streamHeads.set(id, set); }
+    set.add(fileIndex);
+  }
+
+  private ensureMediaServer(): Promise<number> {
+    if (!this.mediaServer) {
+      this.mediaServer = new NativeMediaServer(
+        (id, idx) => {
+          const info = this.getCastFileInfo(id, idx);
+          return info ? { diskPath: info.diskPath, length: info.length, name: info.name, kind: info.kind } : null;
+        },
+        () => this.ffmpegPath,
+        (id, idx) => this.fileBytesCompleted(id, idx),
+        this.streamToken,
+      );
+    }
+    return this.mediaServer.ensure();
+  }
+
+  /** Contiguous downloaded bytes of a file (from the live daemon — files are sparse). */
+  private async fileBytesCompleted(id: string, fileIndex: number): Promise<number> {
+    const hash = this.idToHash.get(id);
+    if (!hash || !this.rpc) return 0;
+    const [t] = await this.rpc.torrentGet(['files'], hash);
+    return t?.files?.[fileIndex]?.bytesCompleted ?? 0;
+  }
+
+  private fileShouldDownload(d: Download, fileIndex: number): boolean {
+    if (d.filePriorities?.[fileIndex] === 'skip') return false;
+    if (d.selectedFiles && d.selectedFiles.length > 0) return d.selectedFiles.includes(fileIndex);
+    return true;
+  }
+
+  // ── Subtitles (disk + ffmpeg — engine-agnostic, ported from the webtorrent manager) ──
+  async getSubtitleTracks(id: string, fileIndex: number): Promise<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>> {
+    await this.whenReady();
+    if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id).catch(() => undefined);
+    const info = this.getCastFileInfo(id, fileIndex);
+    if (!info) return [];
+    const tracks: Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }> = [];
+    try {
+      const streams = await this.probeSubtitleStreams(info.diskPath);
+      streams.forEach((s, i) => {
+        tracks.push({ key: `embedded:${s.sIndex}`, label: s.lang ? `${s.lang.toUpperCase()} (embedded)` : `Embedded #${i + 1}`, lang: s.lang, source: 'embedded' });
+      });
+    } catch { /* ignore */ }
+    try {
+      const dir = path.dirname(info.diskPath);
+      for (const f of fs.readdirSync(dir)) {
+        if (!/\.(srt|ass|ssa|vtt|sub)$/i.test(f)) continue;
+        tracks.push({ key: `external:${f}`, label: f, source: 'external' });
+      }
+    } catch { /* ignore */ }
+    return tracks;
+  }
+
+  async getSubtitleVtt(id: string, fileIndex: number, key: string): Promise<string> {
+    await this.whenReady();
+    if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id).catch(() => undefined);
+    const info = this.getCastFileInfo(id, fileIndex);
+    if (!info) throw new TorrentError('File not found', 'NOT_FOUND', id);
+    if (key.startsWith('embedded:')) {
+      const sIndex = Number(key.slice('embedded:'.length));
+      return this.ffmpegCapture(['-i', info.diskPath, '-map', `0:s:${sIndex}`, '-f', 'webvtt', 'pipe:1']);
+    }
+    if (key.startsWith('external:')) {
+      const name = key.slice('external:'.length);
+      const full = path.join(path.dirname(info.diskPath), name);
+      if (!fs.existsSync(full)) throw new Error('Subtitle file not found');
+      if (/\.vtt$/i.test(full)) return fs.readFileSync(full, 'utf8');
+      return this.ffmpegCapture(['-i', full, '-f', 'webvtt', 'pipe:1']);
+    }
+    throw new Error('Unknown subtitle track');
+  }
+
+  private ffmpegCapture(args: string[]): Promise<string> {
+    if (!this.ffmpegPath) return Promise.reject(new Error('ffmpeg unavailable'));
+    return new Promise((resolve, reject) => {
+      const proc = spawn(this.ffmpegPath as string, args, { windowsHide: true });
+      const out: Buffer[] = [];
+      proc.stdout.on('data', (d: Buffer) => out.push(d));
+      proc.stderr.on('data', () => { /* discard */ });
+      proc.on('error', reject);
+      proc.on('close', () => resolve(Buffer.concat(out).toString('utf8')));
+    });
+  }
+
+  /** Parse `ffmpeg -i` stderr for embedded TEXT subtitle streams (skip image subs). */
+  private probeSubtitleStreams(file: string): Promise<Array<{ sIndex: number; lang?: string; codec: string }>> {
+    if (!this.ffmpegPath) return Promise.resolve([]);
+    return new Promise((resolve) => {
+      const proc = spawn(this.ffmpegPath as string, ['-i', file], { windowsHide: true });
+      let err = '';
+      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.on('error', () => resolve([]));
+      proc.on('close', () => {
+        const out: Array<{ sIndex: number; lang?: string; codec: string }> = [];
+        let sIndex = 0;
+        const re = /Stream #\d+:\d+(?:\(([a-zA-Z]+)\))?: Subtitle: (\w+)/g;
+        let m: RegExpExecArray | null;
+        const textCodecs = new Set(['subrip', 'ass', 'ssa', 'mov_text', 'webvtt', 'text', 'srt']);
+        while ((m = re.exec(err)) !== null) {
+          const codec = m[2].toLowerCase();
+          if (textCodecs.has(codec)) out.push({ sIndex, lang: m[1], codec });
+          sIndex++; // count all subtitle streams so -map 0:s:<n> stays aligned
+        }
+        resolve(out);
+      });
+    });
+  }
+
+  // ── Network health (no adaptive throttle in the native engine — benign shape) ──
+  getNetworkHealth(): NetworkHealth {
+    return {
+      adaptive: { active: false, latencyMs: null, baselineMs: null, capKbps: -1, congested: false },
+      uploadBps: this.lastStats.reduce((a, s) => a + s.upSpeedBps, 0),
+    };
+  }
 
   // ── Events ──────────────────────────────────────────────────────────────────
   onStats(cb: (s: DownloadStats[]) => void): () => void { this.statsCbs.add(cb); return () => this.statsCbs.delete(cb); }
