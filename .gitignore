@@ -40,6 +40,7 @@ yarn-error.log*
 pnpm-debug.log*
 
 # ── Caches & coverage ────────────────────────────────────────
+__pycache__/
 .cache/
 .eslintcache
 coverage/
@@ -71,3 +72,8 @@ rel-payload.json
 
 # ── Local website mockup (kept out of the repo) ─────────────
 website/
+
+# ── Vendored native engine binaries (restore: node scripts/fetch-transmission.mjs)
+vendor/transmission/win32-x64/
+# Engine-spike scratch area (daemon config/downloads during spike runs)
+.spike/
