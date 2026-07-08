@@ -4,8 +4,8 @@
 
 import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence } from './layout';
-import { DownloadStats, Download } from '../shared/types';
+import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence, OnlinePerson } from './layout';
+import { DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
 // their own chunks so the initial bundle is smaller and the app (and the startup
 // splash) reaches interactive sooner.
@@ -37,6 +37,11 @@ const AppContent: React.FC = () => {
   const [roomPresence, setRoomPresence] = useState<RoomPresence | null>(null);
   // roomId → timestamp of the last watch-together sync with playing=true
   const lastPlayingSync = useRef<Map<string, number>>(new Map());
+  // Rooms context for the sidebar's rooms pillar
+  const [roomSummaries, setRoomSummaries] = useState<RoomSummary[]>([]);
+  const [onlinePeople, setOnlinePeople] = useState<OnlinePerson[]>([]);
+  // Last full RoomState per room (pushed via onRoomUpdate) — member-level truth
+  const roomStates = useRef<Map<string, RoomState>>(new Map());
 
   // Apply theme on mount
   useEffect(() => {
@@ -145,6 +150,7 @@ const AppContent: React.FC = () => {
       try {
         const rooms = await window.api.rooms.list();
         if (cancelled) return;
+        setRoomSummaries(rooms);
         const now = Date.now();
         let best: RoomPresence | null = null;
         let bestScore = 0;
@@ -160,9 +166,27 @@ const AppContent: React.FC = () => {
         setRoomPresence(best);
       } catch { /* rooms subsystem unavailable — keep the bar clean */ }
     };
+    // Friends online across all rooms (member-level data only arrives in
+    // onRoomUpdate pushes — the summary has just a count). Deduped by member.
+    const rebuildPeople = () => {
+      const seen = new Set<string>();
+      const out: OnlinePerson[] = [];
+      for (const s of roomStates.current.values()) {
+        for (const m of s.members) {
+          if (!m.online || m.isSelf || seen.has(m.memberId)) continue;
+          seen.add(m.memberId);
+          out.push({ memberId: m.memberId, name: m.name, avatarSeed: m.avatarSeed, roomName: s.name });
+        }
+      }
+      setOnlinePeople(out.slice(0, 6));
+    };
     void compute();
     const interval = setInterval(compute, 10_000);
-    const offUpdate = window.api.onRoomUpdate(() => { void compute(); });
+    const offUpdate = window.api.onRoomUpdate((state) => {
+      roomStates.current.set(state.roomId, state);
+      rebuildPeople();
+      void compute();
+    });
     const offSync = window.api.onRoomSync((msg) => {
       if (msg.playing) lastPlayingSync.current.set(msg.roomId, Date.now());
       void compute();
@@ -288,6 +312,8 @@ const AppContent: React.FC = () => {
           onFilterChange={setFilterMode}
           downloadCounts={downloadCounts}
           activeDownloads={activeDownloads}
+          rooms={roomSummaries}
+          onlinePeople={onlinePeople}
         />
 
         <main className="main-content">

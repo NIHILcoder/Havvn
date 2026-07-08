@@ -1,21 +1,27 @@
 /**
- * Sidebar Component
- * 
- * Main navigation sidebar with expandable Downloads submenu for filters.
+ * Sidebar Component — two-pillar navigation.
+ *
+ * The product has two hearts, and the rail says so: a Downloads | Rooms pillar
+ * switch sits right under the brand, and the middle of the rail is CONTEXTUAL
+ * to the active pillar — status filters for transfers, the room list + who's
+ * online for rooms. Everything else (Search / RSS / Create / Swarm / Settings)
+ * lives as utility icons in the footer, still one click (and hotkey) away.
  */
 
 import React, { useState, useEffect } from 'react';
-import { Icon, IconName, LogoMark, Wordmark } from '../components';
+import { Icon, IconName, LogoMark, Wordmark, Identicon } from '../components';
 import { useTranslation } from '../utils/i18nContext';
+import type { RoomSummary } from '../../shared/types';
 
 export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss' | 'rooms' | 'swarm';
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
-interface NavItem {
-  id: PageId;
-  label: string;
-  icon: IconName;
-  hasSubmenu?: boolean;
+/** A friend currently online in one of your rooms (fed from room pushes). */
+export interface OnlinePerson {
+  memberId: string;
+  name: string;
+  avatarSeed: string;
+  roomName: string;
 }
 
 interface FilterItem {
@@ -23,6 +29,12 @@ interface FilterItem {
   label: string;
   icon: IconName;
   colorClass?: string;
+}
+
+interface UtilItem {
+  id: PageId;
+  label: string;
+  icon: IconName;
 }
 
 interface DownloadCounts {
@@ -40,6 +52,8 @@ interface SidebarProps {
   onFilterChange: (filter: FilterMode) => void;
   downloadCounts: DownloadCounts;
   activeDownloads?: number;
+  rooms?: RoomSummary[];
+  onlinePeople?: OnlinePerson[];
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -49,23 +63,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onFilterChange,
   downloadCounts,
   activeDownloads = 0,
+  rooms = [],
+  onlinePeople = [],
 }) => {
   const { t } = useTranslation();
-  const [isDownloadsExpanded, setIsDownloadsExpanded] = useState(currentPage === 'downloads');
   const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
     window.api.getAppVersion().then(setAppVersion).catch(() => {});
   }, []);
 
-  const navItems: NavItem[] = [
-    { id: 'downloads', label: t('nav.downloads'), icon: 'download', hasSubmenu: true },
-    { id: 'search', label: 'Search', icon: 'search' },
-    { id: 'rss', label: 'RSS Feeds', icon: 'rss' },
-    { id: 'rooms', label: t('nav.rooms'), icon: 'users' },
-    { id: 'swarm', label: t('nav.swarm'), icon: 'globe' },
-    { id: 'settings', label: t('nav.settings'), icon: 'settings' },
-  ];
+  // The pillar is DERIVED, not stored: the rooms page is the rooms pillar,
+  // everything else (downloads + utilities) shows the transfers context.
+  const pillar: 'transfers' | 'rooms' = currentPage === 'rooms' ? 'rooms' : 'transfers';
 
   const filterItems: FilterItem[] = [
     { id: 'all', label: t('filter.all'), icon: 'list' },
@@ -75,18 +85,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'error', label: t('filter.error'), icon: 'alert-triangle', colorClass: 'error' },
   ];
 
-  const handleNavClick = (item: NavItem) => {
-    if (item.id === 'downloads') {
-      setIsDownloadsExpanded(!isDownloadsExpanded);
-      onNavigate('downloads');
-    } else {
-      onNavigate(item.id);
-    }
-  };
+  const utilItems: UtilItem[] = [
+    { id: 'search', label: 'Search', icon: 'search' },
+    { id: 'rss', label: 'RSS', icon: 'rss' },
+    { id: 'create-torrent', label: t('nav.create'), icon: 'file-plus' },
+    { id: 'swarm', label: t('nav.swarm'), icon: 'globe' },
+    { id: 'settings', label: t('nav.settings'), icon: 'settings' },
+  ];
 
-  const getFilterCount = (filter: FilterMode): number => {
-    return downloadCounts[filter] || 0;
-  };
+  const totalOnline = onlinePeople.length;
 
   return (
     <aside className="sidebar">
@@ -98,74 +105,110 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <span className="sidebar-title"><Wordmark /></span>
       </div>
 
-      {/* Navigation */}
-      <nav className="sidebar-nav">
-        <div className="nav-section">
-          <div className="nav-section-title">{t('nav.menu')}</div>
-          {navItems.map((item) => (
-            <React.Fragment key={item.id}>
-              <button
-                className={`nav-item ${currentPage === item.id ? 'active' : ''} ${item.hasSubmenu ? 'has-submenu' : ''}`}
-                onClick={() => handleNavClick(item)}
-              >
-                <span className="nav-item-icon">
-                  <Icon name={item.icon} size={18} />
-                </span>
-                <span>{item.label}</span>
-                {item.id === 'downloads' && activeDownloads > 0 && (
-                  <span className="nav-item-badge">{activeDownloads}</span>
-                )}
-                {item.hasSubmenu && (
-                  <span className={`nav-item-chevron ${isDownloadsExpanded ? 'expanded' : ''}`}>
-                    <Icon name="chevron-down" size={14} />
-                  </span>
-                )}
-              </button>
+      {/* Pillar switch */}
+      <div className="pillar-switch" role="tablist" aria-label="Main sections">
+        <button
+          className={`pillar-btn ${pillar === 'transfers' ? 'on' : ''}`}
+          role="tab"
+          aria-selected={pillar === 'transfers'}
+          onClick={() => onNavigate('downloads')}
+        >
+          <Icon name="download" size={18} />
+          <span className="pillar-label">{t('nav.downloads')}</span>
+          {activeDownloads > 0 && <span className="pillar-count">{activeDownloads}</span>}
+        </button>
+        <button
+          className={`pillar-btn ${pillar === 'rooms' ? 'on' : ''}`}
+          role="tab"
+          aria-selected={pillar === 'rooms'}
+          onClick={() => onNavigate('rooms')}
+        >
+          <Icon name="users" size={18} />
+          <span className="pillar-label">{t('nav.rooms')}</span>
+          {totalOnline > 0 && <span className="pillar-count">{totalOnline}</span>}
+        </button>
+      </div>
 
-              {/* Downloads Submenu */}
-              {item.id === 'downloads' && currentPage === 'downloads' && (
-                <div className={`nav-submenu ${isDownloadsExpanded ? 'expanded' : ''}`}>
-                  {filterItems.map((filter) => (
-                    <button
-                      key={filter.id}
-                      className={`nav-subitem ${filterMode === filter.id ? 'active' : ''} ${filter.colorClass || ''}`}
-                      onClick={() => onFilterChange(filter.id)}
-                    >
-                      <span className="nav-subitem-icon">
-                        <Icon name={filter.icon} size={14} />
-                      </span>
-                      <span>{filter.label}</span>
-                      <span className={`nav-subitem-badge ${filter.colorClass || ''}`}>
-                        {getFilterCount(filter.id)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </React.Fragment>
-          ))}
-        </div>
+      {/* Contextual middle */}
+      <nav className="sidebar-nav">
+        {pillar === 'transfers' ? (
+          <div className="nav-section">
+            <div className="nav-section-title">{t('nav.menu')}</div>
+            {filterItems.map((filter) => (
+              <button
+                key={filter.id}
+                className={`nav-subitem ${currentPage === 'downloads' && filterMode === filter.id ? 'active' : ''} ${filter.colorClass || ''}`}
+                onClick={() => { onNavigate('downloads'); onFilterChange(filter.id); }}
+              >
+                <span className="nav-subitem-icon">
+                  <Icon name={filter.icon} size={14} />
+                </span>
+                <span>{filter.label}</span>
+                <span className={`nav-subitem-badge ${filter.colorClass || ''}`}>
+                  {downloadCounts[filter.id] || 0}
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="nav-section">
+            <div className="nav-section-title">{t('rooms.title')}</div>
+            {rooms.length === 0 ? (
+              <div className="rooms-ctx-empty">
+                <p>{t('rooms.emptyDesc')}</p>
+              </div>
+            ) : (
+              rooms.map((room) => (
+                <button key={room.roomId} className="room-nav-item" onClick={() => onNavigate('rooms')}>
+                  <span className="room-nav-ic" aria-hidden="true">
+                    {room.name.trim().slice(0, 2).toUpperCase() || '?'}
+                  </span>
+                  <span className="room-nav-text">
+                    <span className="room-nav-name">{room.name}</span>
+                    <span className="room-nav-sub">
+                      {room.onlineCount > 1
+                        ? `${room.onlineCount - 1} online · ${room.fileCount} files`
+                        : `${room.memberCount} members · ${room.fileCount} files`}
+                    </span>
+                  </span>
+                  {room.onlineCount > 1 && <span className="room-nav-live" />}
+                </button>
+              ))
+            )}
+
+            {onlinePeople.length > 0 && (
+              <>
+                <div className="nav-section-title online-now-title">Online now</div>
+                {onlinePeople.map((p) => (
+                  <button key={p.memberId} className="room-nav-item person" onClick={() => onNavigate('rooms')}>
+                    <Identicon seed={p.avatarSeed} size={26} online />
+                    <span className="room-nav-text">
+                      <span className="room-nav-name">{p.name}</span>
+                      <span className="room-nav-sub">{p.roomName}</span>
+                    </span>
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </nav>
 
-      {/* Footer with Create Torrent */}
+      {/* Footer: utilities + version */}
       <div className="sidebar-footer">
-        {/* Create Torrent Action */}
-        <div className="sidebar-actions">
-          <button 
-            className={`sidebar-action-btn create-torrent-btn ${currentPage === 'create-torrent' ? 'active' : ''}`}
-            onClick={() => onNavigate('create-torrent')}
-            title="Create Torrent"
-          >
-            <span className="sidebar-action-icon">
-              <Icon name="file-plus" size={20} />
-            </span>
-            <span className="sidebar-action-text">{t('nav.create')}</span>
-            <span className="sidebar-action-arrow">
-              <Icon name="arrow-right" size={14} />
-            </span>
-          </button>
+        <div className="sidebar-utils" role="navigation" aria-label="Utilities">
+          {utilItems.map((util) => (
+            <button
+              key={util.id}
+              className={`sidebar-util-btn ${currentPage === util.id ? 'active' : ''}`}
+              onClick={() => onNavigate(util.id)}
+              title={util.label}
+              aria-label={util.label}
+            >
+              <Icon name={util.icon} size={17} />
+            </button>
+          ))}
         </div>
-        
         <div className="sidebar-version">
           Havvn{appVersion ? ` v${appVersion}` : ''}
         </div>
