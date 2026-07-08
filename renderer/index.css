@@ -16,7 +16,7 @@
   justify-content: center;
   width: 100vw;
   height: 100vh;
-  background: var(--background-color, #f5f5f5);
+  background: var(--color-bg-primary, #141519);
   color: var(--text-primary, #333);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 16px;

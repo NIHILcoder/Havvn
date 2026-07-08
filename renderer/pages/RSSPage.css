@@ -177,8 +177,8 @@
 .feed-view-btn.active,
 .feed-view-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
 .feed-edit-btn:hover { color: var(--color-text-primary); }
-.feed-toggle-btn.on { color: #22c55e; border-color: #22c55e; }
-.feed-delete-btn:hover { color: #ef4444; border-color: #ef4444; }
+.feed-toggle-btn.on { color: var(--color-success); border-color: var(--color-success); }
+.feed-delete-btn:hover { color: var(--color-error); border-color: var(--color-error); }
 
 /* Items filter */
 .items-filter-row {
@@ -312,7 +312,7 @@
 }
 
 .item-row.downloaded {
-  background: rgba(34, 197, 94, 0.04);
+  background: rgba(var(--color-success-rgb), 0.04);
 }
 
 .item-main {
@@ -348,7 +348,7 @@
   align-items: center;
   gap: 0.2rem;
   font-size: 0.73rem;
-  color: #22c55e;
+  color: var(--color-success);
 }
 
 .item-actions {
@@ -356,7 +356,7 @@
 }
 
 .check-done {
-  color: #22c55e;
+  color: var(--color-success);
   display: flex;
 }
 

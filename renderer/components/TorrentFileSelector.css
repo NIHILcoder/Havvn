@@ -115,8 +115,8 @@
   gap: var(--space-5);
   padding: var(--space-4);
   background: linear-gradient(135deg, 
-    rgba(88, 166, 255, 0.08) 0%, 
-    rgba(88, 166, 255, 0.03) 100%);
+    rgba(var(--color-accent-rgb), 0.08) 0%, 
+    rgba(var(--color-accent-rgb), 0.03) 100%);
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
@@ -162,7 +162,7 @@
 
 .file-selector-controls .search-box:focus-within {
   border-color: var(--color-accent-primary);
-  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
+  box-shadow: 0 0 0 3px rgba(var(--color-accent-rgb), 0.1);
 }
 
 .file-selector-controls .search-box input {
@@ -292,13 +292,13 @@
   background: var(--color-bg-hover);
   border-color: var(--color-accent-primary);
   transform: translateX(4px);
-  box-shadow: 0 2px 8px rgba(88, 166, 255, 0.15);
+  box-shadow: 0 2px 8px rgba(var(--color-accent-rgb), 0.15);
 }
 
 .file-item.selected {
   background: linear-gradient(135deg, 
-    rgba(88, 166, 255, 0.15) 0%, 
-    rgba(88, 166, 255, 0.08) 100%);
+    rgba(var(--color-accent-rgb), 0.15) 0%, 
+    rgba(var(--color-accent-rgb), 0.08) 100%);
   border-color: var(--color-accent-primary);
 }
 

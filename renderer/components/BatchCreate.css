@@ -121,17 +121,17 @@
 }
 
 [data-theme="light"] .stat-card.success {
-  background: rgba(22, 163, 74, 0.08);
-  border-color: rgba(22, 163, 74, 0.25);
+  background: rgba(var(--color-success-rgb), 0.08);
+  border-color: rgba(var(--color-success-rgb), 0.25);
 }
 
 [data-theme="light"] .stat-card.success svg {
-  color: #16a34a;
+  color: var(--color-success);
 }
 
 .stat-card.error {
   background: var(--color-error-bg);
-  border-color: rgba(245, 101, 101, 0.25);
+  border-color: rgba(var(--color-error-rgb), 0.25);
 }
 
 .stat-card.error svg {
@@ -248,12 +248,12 @@
 }
 
 [data-theme="light"] .batch-item.completed {
-  border-color: rgba(22, 163, 74, 0.25);
-  background: rgba(22, 163, 74, 0.06);
+  border-color: rgba(var(--color-success-rgb), 0.25);
+  background: rgba(var(--color-success-rgb), 0.06);
 }
 
 .batch-item.failed {
-  border-color: rgba(245, 101, 101, 0.25);
+  border-color: rgba(var(--color-error-rgb), 0.25);
   background: var(--color-error-bg);
 }
 
@@ -289,7 +289,7 @@
 }
 
 [data-theme="light"] .batch-item.completed .item-icon {
-  background: #16a34a;
+  background: var(--color-success);
   color: #ffffff;
 }
 
@@ -374,7 +374,7 @@
 }
 
 [data-theme="light"] .item-success {
-  color: #16a34a;
+  color: var(--color-success);
 }
 
 /* Remove button */
@@ -395,7 +395,7 @@
 
 .item-remove:hover {
   background: var(--color-error-bg);
-  border-color: rgba(245, 101, 101, 0.2);
+  border-color: rgba(var(--color-error-rgb), 0.2);
   color: var(--color-error);
 }
 

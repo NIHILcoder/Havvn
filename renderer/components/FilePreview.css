@@ -38,7 +38,7 @@
 }
 
 [data-theme="light"] .file-preview-modal {
-  background: #FAFAFA;
+  background: var(--color-bg-elevated);
   border-color: rgba(0, 0, 0, 0.10);
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14), 0 8px 24px rgba(0, 0, 0, 0.08);
 }
@@ -146,9 +146,9 @@
 }
 
 [data-theme="light"] .fp-chip--done {
-  color: #16a34a;
-  background: rgba(22, 163, 74, 0.08);
-  border-color: rgba(22, 163, 74, 0.2);
+  color: var(--color-success);
+  background: rgba(var(--color-success-rgb), 0.08);
+  border-color: rgba(var(--color-success-rgb), 0.2);
 }
 
 /* Close button */
@@ -263,7 +263,7 @@
 }
 
 [data-theme="light"] .fp-item:hover {
-  background: #F5F5F7;
+  background: var(--color-bg-secondary);
   border-color: rgba(0, 0, 0, 0.14);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
@@ -273,8 +273,8 @@
 }
 
 [data-theme="light"] .fp-item--done {
-  border-color: rgba(22, 163, 74, 0.18);
-  background: rgba(22, 163, 74, 0.03);
+  border-color: rgba(var(--color-success-rgb), 0.18);
+  background: rgba(var(--color-success-rgb), 0.03);
 }
 
 /* ──────────────────────────── Item icon column ──────────────────── */
@@ -394,7 +394,7 @@
 
 .fp-item-progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, rgba(255,255,255,0.7) 0%, rgba(255,255,255,1) 100%);
+  background: var(--color-status-downloading);
   border-radius: 99px;
   transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
@@ -402,24 +402,16 @@
   min-width: 0;
 }
 
-[data-theme="light"] .fp-item-progress-fill {
-  background: linear-gradient(90deg, #555 0%, #111 100%);
-}
-
 .fp-item-progress-fill::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.25) 50%, transparent 100%);
   animation: fp-shim 2s infinite;
 }
 
 .fp-item-progress-fill--done {
-  background: linear-gradient(90deg, rgba(180,180,180,0.7) 0%, rgba(255,255,255,0.9) 100%);
-}
-
-[data-theme="light"] .fp-item-progress-fill--done {
-  background: linear-gradient(90deg, #22c55e 0%, #16a34a 100%);
+  background: var(--color-status-seeding);
 }
 
 /* Row 4: meta */
@@ -454,7 +446,7 @@
 }
 
 [data-theme="light"] .fp-item-status--done {
-  color: #16a34a;
+  color: var(--color-success);
 }
 
 /* ──────────────────────────── States ─────────────────────────── */
@@ -500,7 +492,7 @@
 
 .fp-state-icon--error {
   background: var(--color-error-bg);
-  border-color: rgba(245, 101, 101, 0.2);
+  border-color: rgba(var(--color-error-rgb), 0.2);
   color: var(--color-error);
 }
 

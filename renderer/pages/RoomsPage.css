@@ -116,7 +116,7 @@
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
-.room-list-presence.live { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+.room-list-presence.live { background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); }
 
 /* ── Detail ─────────────────────────────────────────────────────────────── */
 .room-detail { overflow-y: auto; min-height: 0; }
@@ -135,17 +135,17 @@
 .room-conn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
 .room-conn .dot { width: 8px; height: 8px; border-radius: 50%; }
 /* online: peers present (green) */
-.room-conn.online { color: #22c55e; }
-.room-conn.online .dot { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
+.room-conn.online { color: var(--color-success); }
+.room-conn.online .dot { background: var(--color-success); box-shadow: 0 0 8px rgba(var(--color-success-rgb), 0.6); }
 /* alone: connected but no other members online yet (amber, steady) */
-.room-conn.alone { color: #f59e0b; }
-.room-conn.alone .dot { background: #f59e0b; box-shadow: 0 0 8px rgba(245, 158, 11, 0.5); }
+.room-conn.alone { color: var(--color-warning); }
+.room-conn.alone .dot { background: var(--color-warning); box-shadow: 0 0 8px rgba(var(--color-warning-rgb), 0.5); }
 /* connecting: tracker not yet announced (grey, pulsing) */
 .room-conn.connecting { color: var(--color-text-tertiary); }
 .room-conn.connecting .dot { background: var(--color-text-tertiary); animation: room-pulse 1.4s ease-in-out infinite; }
 /* removed: we were kicked (red) */
-.room-conn.removed { color: #ef4444; }
-.room-conn.removed .dot { background: #ef4444; }
+.room-conn.removed { color: var(--color-error); }
+.room-conn.removed .dot { background: var(--color-error); }
 
 @keyframes room-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
@@ -227,7 +227,7 @@
   transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
 }
 .room-member:hover .room-member-kick { opacity: 1; }
-.room-member-kick:hover { color: var(--color-status-error, #ef4444); background: var(--color-bg-hover); }
+.room-member-kick:hover { color: var(--color-status-error, var(--color-error)); background: var(--color-bg-hover); }
 
 /* E2E create toggle */
 .rooms-e2e-toggle {
@@ -399,7 +399,7 @@
 
 .room-file-status { flex-shrink: 0; display: flex; align-items: center; justify-content: center; min-width: 40px; }
 .room-status { display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.room-status.seeding { color: #22c55e; }
+.room-status.seeding { color: var(--color-success); }
 .room-status.downloading { color: var(--color-text-primary); }
 .room-status.queued { color: var(--color-text-tertiary); }
 
@@ -415,7 +415,7 @@
   border: 2px solid var(--color-bg-primary);
   box-sizing: border-box;
 }
-.identicon-status.online { background: #22c55e; }
+.identicon-status.online { background: var(--color-success); }
 .identicon-status.offline { background: var(--color-text-disabled); }
 
 /* ── Modal ──────────────────────────────────────────────────────────────── */
@@ -601,7 +601,7 @@
   font-size: 12px; font-weight: 600; cursor: pointer;
 }
 .room-player-sync.on {
-  background: #22c55e; border-color: #22c55e; color: #04210f;
+  background: var(--color-success); border-color: var(--color-success); color: #04210f;
 }
 .room-player-close {
   width: 30px; height: 30px; display: grid; place-items: center;
@@ -634,7 +634,7 @@
 .room-player-msg { padding: 12px; font-size: 13px; color: #9a9aa2; text-align: center; }
 .room-player-msg.err { color: #f87171; }
 .room-player-controller {
-  padding: 8px 12px; font-size: 12px; color: #22c55e;
+  padding: 8px 12px; font-size: 12px; color: var(--color-success);
   border-top: 1px solid var(--color-border-default, #23232a);
   display: flex; align-items: center; gap: 6px;
 }
@@ -666,8 +666,8 @@
   width: 9px; height: 9px; border-radius: 50%;
   border: 2px solid #0a0a0b;
 }
-.room-watcher.playing .room-watcher-dot { background: #22c55e; }
-.room-watcher.paused .room-watcher-dot { background: #f59e0b; }
+.room-watcher.playing .room-watcher-dot { background: var(--color-success); }
+.room-watcher.paused .room-watcher-dot { background: var(--color-warning); }
 .room-player-alone { font-size: 12px; color: var(--color-text-tertiary, #6b6b73); }
 
 /* "You were removed from this room" banner */
@@ -677,9 +677,9 @@
   gap: 10px;
   padding: 12px 14px;
   border-radius: var(--radius-md, 8px);
-  background: rgba(239, 68, 68, 0.12);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #ef4444;
+  background: rgba(var(--color-error-rgb), 0.12);
+  border: 1px solid rgba(var(--color-error-rgb), 0.3);
+  color: var(--color-error);
   font-size: 13px;
   font-weight: 500;
 }

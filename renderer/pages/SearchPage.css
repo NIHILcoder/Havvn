@@ -116,10 +116,10 @@
   align-items: center;
   gap: 0.5rem;
   padding: 0.75rem 1rem;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(var(--color-error-rgb), 0.1);
+  border: 1px solid rgba(var(--color-error-rgb), 0.3);
   border-radius: var(--radius-md);
-  color: #ef4444;
+  color: var(--color-error);
   font-size: 0.9rem;
 }
 
@@ -207,7 +207,7 @@
 }
 
 .results-row.added {
-  background: rgba(34, 197, 94, 0.05);
+  background: rgba(var(--color-success-rgb), 0.05);
 }
 
 .results-td, .results-th {
@@ -231,13 +231,13 @@
 }
 
 .seeds {
-  color: #22c55e;
+  color: var(--color-success);
   font-weight: 600;
   font-size: 0.85rem;
 }
 
 .leechers {
-  color: #ef4444;
+  color: var(--color-error);
   font-size: 0.85rem;
 }
 
@@ -263,7 +263,7 @@
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  color: #22c55e;
+  color: var(--color-success);
   font-size: 0.8rem;
   font-weight: 600;
 }
@@ -360,10 +360,10 @@
   letter-spacing: 0.05em;
 }
 
-.provider-type-badge.jackett { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.provider-type-badge.torznab { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
-.provider-type-badge.custom { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
-.provider-type-badge.archive { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+.provider-type-badge.jackett { background: rgba(var(--color-accent-rgb), 0.15); color: var(--color-accent-primary); }
+.provider-type-badge.torznab { background: rgba(var(--color-accent-rgb), 0.15); color: var(--color-info); }
+.provider-type-badge.custom { background: rgba(var(--color-success-rgb), 0.15); color: var(--color-success); }
+.provider-type-badge.archive { background: rgba(var(--color-warning-rgb), 0.15); color: var(--color-warning); }
 .provider-type-badge.script { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
 
 /* Python status line in the add-provider form (script type) */
@@ -376,8 +376,8 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
 }
-.python-status.ok { background: rgba(34, 197, 94, 0.1); color: #22c55e; border-color: rgba(34, 197, 94, 0.3); }
-.python-status.missing { background: rgba(245, 158, 11, 0.1); color: #f59e0b; border-color: rgba(245, 158, 11, 0.3); }
+.python-status.ok { background: rgba(var(--color-success-rgb), 0.1); color: var(--color-success); border-color: rgba(var(--color-success-rgb), 0.3); }
+.python-status.missing { background: rgba(var(--color-warning-rgb), 0.1); color: var(--color-warning); border-color: rgba(var(--color-warning-rgb), 0.3); }
 .python-status .python-recheck {
   margin-left: auto;
   background: none;
@@ -401,8 +401,8 @@
   width: 100%;
 }
 
-.test-result.success { background: rgba(34, 197, 94, 0.1); color: #22c55e; }
-.test-result.error { background: rgba(239, 68, 68, 0.1); color: #ef4444; }
+.test-result.success { background: rgba(var(--color-success-rgb), 0.1); color: var(--color-success); }
+.test-result.error { background: rgba(var(--color-error-rgb), 0.1); color: var(--color-error); }
 
 .provider-actions {
   display: flex;

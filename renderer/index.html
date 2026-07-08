@@ -8,14 +8,14 @@
   <title>Havvn</title>
   <style>
     /* Startup splash — inlined so it paints in the very first frame, before the
-       app bundle parses. Pure black-and-white to match the app's theme. The
-       dismiss logic lives in the bundle (renderer/utils/splash.ts), NOT an inline
-       <script>, because the production CSP (script-src 'self') blocks inline JS. */
+       app bundle parses. Ember: graphite ground, ember mark. The dismiss logic
+       lives in the bundle (renderer/utils/splash.ts), NOT an inline <script>,
+       because the production CSP (script-src 'self') blocks inline JS. */
     #th-splash {
       position: fixed; inset: 0; z-index: 99999;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px;
-      background: #000;
-      color: #fff;
+      background: #141519;
+      color: #ECEBE6;
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       transition: opacity .5s ease;
     }
@@ -23,43 +23,40 @@
 
     .th-stage { position: relative; width: 180px; height: 180px; display: grid; place-items: center; }
 
-    /* Soft drifting glow behind everything */
+    /* Soft drifting ember glow behind everything */
     .th-glow {
       position: absolute; width: 240px; height: 240px; border-radius: 50%;
-      background: radial-gradient(circle, rgba(255,255,255,.18) 0%, transparent 62%);
+      background: radial-gradient(circle, rgba(242,145,63,.16) 0%, transparent 62%);
       filter: blur(8px);
       animation: th-drift 9s ease-in-out infinite alternate;
     }
 
-    /* Expanding "sonar" rings — peers radiating outward (echoes the About hero) */
+    /* Expanding "sonar" rings — peers radiating outward from the haven */
     .th-sonar {
-      position: absolute; width: 84px; height: 84px; border-radius: 24px;
-      border: 1.5px solid rgba(255,255,255,.55);
+      position: absolute; width: 84px; height: 84px; border-radius: 50%;
+      border: 1.5px solid rgba(242,145,63,.45);
       opacity: 0;
       animation: th-sonar 2.8s cubic-bezier(.22,1,.36,1) infinite;
     }
     .th-sonar.s2 { animation-delay: .95s; }
     .th-sonar.s3 { animation-delay: 1.9s; }
 
-    /* White logo tile with a black glyph, gently floating + breathing */
+    /* The bare Double-V mark, gently floating */
     .th-tile {
       position: relative; z-index: 1;
-      width: 72px; height: 72px; border-radius: 20px;
+      width: 72px; height: 72px;
       display: grid; place-items: center;
-      background: linear-gradient(145deg, #ffffff 0%, #c9c9cf 100%);
-      box-shadow: 0 12px 40px rgba(255,255,255,.14), inset 0 1px 0 rgba(255,255,255,.6);
       animation: th-float 4.5s ease-in-out infinite;
     }
-    .th-tile svg { width: 30px; height: 30px; stroke: #000; stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; }
-    .th-tile .th-arrow { animation: th-arrow 1.8s ease-in-out infinite; }
+    .th-tile svg { width: 56px; height: 56px; stroke: #F2913F; stroke-width: 2.3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    .th-tile .th-node { fill: #E0673A; stroke: none; }
 
     .th-word {
       font-size: 18px; font-weight: 600; letter-spacing: .4px;
       opacity: 0; transform: translateY(8px);
       animation: th-rise .7s cubic-bezier(.22,1,.36,1) .15s forwards;
     }
-    .th-word b { font-weight: 800; }
-    .th-word .dim { color: #8C8C8F; }
+    .th-word b { font-weight: 600; color: #F2913F; }
 
     @keyframes th-sonar {
       0%   { opacity: .5;  transform: scale(.7); }
@@ -70,10 +67,6 @@
       0%, 100% { transform: translateY(0) scale(1); }
       50%      { transform: translateY(-7px) scale(1.03); }
     }
-    @keyframes th-arrow {
-      0%, 100% { transform: translateY(0); opacity: 1; }
-      50%      { transform: translateY(2px); opacity: .55; }
-    }
     @keyframes th-drift {
       from { transform: translate(-16px, -10px) scale(1); }
       to   { transform: translate(16px, 12px) scale(1.12); }
@@ -81,7 +74,7 @@
     @keyframes th-rise { to { opacity: 1; transform: translateY(0); } }
 
     @media (prefers-reduced-motion: reduce) {
-      .th-glow, .th-sonar, .th-tile, .th-tile .th-arrow { animation: none; }
+      .th-glow, .th-sonar, .th-tile { animation: none; }
       .th-sonar { opacity: .18; }
       .th-sonar.s2, .th-sonar.s3 { display: none; }
       .th-word { animation: none; opacity: 1; transform: none; }
@@ -98,16 +91,13 @@
       <span class="th-sonar s2"></span>
       <span class="th-sonar s3"></span>
       <span class="th-tile">
-        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <g class="th-arrow">
-            <path d="M7 10l5 5 5-5"/>
-            <path d="M12 15V3"/>
-          </g>
+        <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+          <path d="M4 9 L10.5 21 L16 12 L21.5 21 L28 9"/>
+          <circle class="th-node" cx="16" cy="9.4" r="2.3"/>
         </svg>
       </span>
     </div>
-    <div class="th-word">Torrent<b>Hunt</b></div>
+    <div class="th-word">Ha<b>vv</b>n</div>
   </div>
 </body>
 </html>

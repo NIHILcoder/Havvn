@@ -5,6 +5,8 @@
 export { Icon } from './Icon';
 export type { IconName } from './Icon';
 
+export { LogoMark, Wordmark } from './Logo';
+
 export { Button } from './Button';
 export { Input } from './Input';
 export { Select } from './Select';

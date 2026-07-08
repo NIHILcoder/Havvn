@@ -40,13 +40,13 @@
 }
 
 .speed-dot.download {
-    background: #4ade80;
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+    background: var(--color-status-download);
+    box-shadow: 0 0 6px rgba(var(--color-accent-rgb), 0.5);
 }
 
 .speed-dot.upload {
-    background: #fbbf24;
-    box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
+    background: var(--color-status-upload);
+    box-shadow: 0 0 6px rgba(var(--color-success-rgb), 0.5);
 }
 
 .speed-label {
@@ -62,11 +62,11 @@
 }
 
 .speed-stat.download .speed-value {
-    color: #4ade80;
+    color: var(--color-status-download);
 }
 
 .speed-stat.upload .speed-value {
-    color: #fbbf24;
+    color: var(--color-status-upload);
 }
 
 .speed-graph-legend-inline {
@@ -112,11 +112,11 @@
 }
 
 .speed-graph-tooltip .tooltip-row.download {
-    color: #4ade80;
+    color: var(--color-status-download);
 }
 
 .speed-graph-tooltip .tooltip-row.upload {
-    color: #fbbf24;
+    color: var(--color-status-upload);
 }
 
 .speed-graph-tooltip .tooltip-label {
@@ -141,9 +141,9 @@
 }
 
 .legend-item.download .legend-dot {
-    background: #4ade80;
+    background: var(--color-status-download);
 }
 
 .legend-item.upload .legend-dot {
-    background: #fbbf24;
+    background: var(--color-status-upload);
 }

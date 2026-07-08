@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Button, Icon, AppStatistics } from '../../components';
+import { Button, Icon, AppStatistics, LogoMark, Wordmark } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 
 interface AboutStats {
@@ -50,10 +50,10 @@ export const AboutSection: React.FC<AboutSectionProps> = ({
           <div className="about-hero-glow" />
           <div className="about-logo">
             <div className="about-logo-ring" />
-            <div className="about-logo-tile"><Icon name="download" size={30} /></div>
+            <div className="about-logo-tile"><LogoMark size={34} mono /></div>
           </div>
           <div className="about-hero-text">
-            <h2 className="about-app-name">Havvn</h2>
+            <h2 className="about-app-name"><Wordmark /></h2>
             <div className="about-badges">
               <span className="about-pill about-pill--ver">v{appVersion || '—'}</span>
               {/(alpha|beta|rc)/i.test(appVersion) && (

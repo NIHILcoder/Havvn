@@ -59,7 +59,7 @@
 }
 
 .theme-preview-window.dark .theme-preview-header {
-  background: #0B0B0C;
+  background: #17181d;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -68,7 +68,7 @@
 }
 
 .theme-preview-window.dark .theme-preview-sidebar {
-  background: #0B0B0C;
+  background: #17181d;
   border-right: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -89,7 +89,7 @@
 }
 
 .theme-preview-window.dark .theme-preview-card {
-  background: #141416;
+  background: #1B1D22;
   border: 1px solid rgba(255, 255, 255, 0.10);
 }
 
@@ -99,7 +99,7 @@
 
 /* Light Theme Preview */
 .theme-preview-window.light {
-  background: #FBFBFC;
+  background: #F6F4F0;
   color: #000000;
 }
 
@@ -113,7 +113,7 @@
 }
 
 .theme-preview-window.light .theme-preview-sidebar {
-  background: #F1F1F3;
+  background: #EEEBE5;
   border-right: 1px solid rgba(0, 0, 0, 0.08);
 }
 
@@ -126,7 +126,7 @@
 }
 
 .theme-preview-window.light .theme-preview-content {
-  background: #FBFBFC;
+  background: #F6F4F0;
 }
 
 .theme-preview-window.light .theme-preview-bar {
@@ -144,11 +144,11 @@
 
 /* System Theme Preview - Shows split dark/light */
 .theme-preview-window.system {
-  background: linear-gradient(90deg, #0a0a0a 0%, #0a0a0a 50%, #f9f9f9 50%, #f9f9f9 100%);
+  background: linear-gradient(90deg, #141519 0%, #141519 50%, #F6F4F0 50%, #F6F4F0 100%);
 }
 
 .theme-preview-window.system .theme-preview-header {
-  background: linear-gradient(90deg, #121212 0%, #121212 50%, #ffffff 50%, #ffffff 100%);
+  background: linear-gradient(90deg, #141519 0%, #141519 50%, #ffffff 50%, #ffffff 100%);
   border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 }
 
@@ -165,7 +165,7 @@
 }
 
 .theme-preview-window.system .theme-preview-sidebar {
-  background: linear-gradient(90deg, #1a1a1a 0%, #1a1a1a 50%, #f3f3f3 50%, #f3f3f3 100%);
+  background: linear-gradient(90deg, #141519 0%, #141519 50%, #EEEBE5 50%, #EEEBE5 100%);
 }
 
 .theme-preview-window.system .theme-preview-nav {
@@ -177,7 +177,7 @@
 }
 
 .theme-preview-window.system .theme-preview-card {
-  background: linear-gradient(90deg, #121212 0%, #121212 50%, #ffffff 50%, #ffffff 100%);
+  background: linear-gradient(90deg, #141519 0%, #141519 50%, #ffffff 50%, #ffffff 100%);
   border: 1px solid rgba(128, 128, 128, 0.15);
 }
 

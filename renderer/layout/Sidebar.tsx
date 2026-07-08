@@ -5,7 +5,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Icon, IconName } from '../components';
+import { Icon, IconName, LogoMark, Wordmark } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 
 export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss' | 'rooms' | 'swarm';
@@ -93,17 +93,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Header */}
       <div className="sidebar-header">
         <div className="sidebar-logo" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            {/* Static tray */}
-            <path className="logo-tray" d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-            {/* Animated download arrow (gently bobs down) */}
-            <g className="logo-arrow">
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </g>
-          </svg>
+          <LogoMark size={24} />
         </div>
-        <span className="sidebar-title">Havvn</span>
+        <span className="sidebar-title"><Wordmark /></span>
       </div>
 
       {/* Navigation */}

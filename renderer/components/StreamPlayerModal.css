@@ -360,7 +360,7 @@
 .player-cast-tab.active { background: var(--color-accent); color: var(--color-bg-primary); }
 .player-cast-tab:not(.active):hover { color: var(--color-text-primary); }
 .player-cast-loading, .player-cast-error { display: flex; align-items: center; gap: 0.5rem; font-size: 0.78rem; color: var(--color-text-secondary); padding: 0.5rem 0; }
-.player-cast-error { color: #f87171; }
+.player-cast-error { color: var(--color-error); }
 .player-cast-qr { padding: 0.5rem; background: #fff; border-radius: var(--radius-md); }
 .player-cast-desc { font-size: 0.74rem; color: var(--color-text-secondary); text-align: center; }
 .player-cast-url {
@@ -421,5 +421,5 @@
   transition: border-color var(--transition-fast, 150ms), color var(--transition-fast, 150ms);
 }
 .player-cast-tv-btn:hover { border-color: var(--color-border-hover); }
-.player-cast-tv-btn.stop { color: #f87171; }
-.player-cast-tv-btn.stop:hover { border-color: #f87171; }
+.player-cast-tv-btn.stop { color: var(--color-error); }
+.player-cast-tv-btn.stop:hover { border-color: var(--color-error); }

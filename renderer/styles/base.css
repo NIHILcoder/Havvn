@@ -79,7 +79,7 @@ code, pre {
 
 /* === Selection === */
 ::selection {
-  background-color: rgba(59, 130, 246, 0.3);
+  background-color: rgba(var(--color-accent-rgb), 0.3);
   color: var(--color-text-primary);
 }
 
@@ -210,6 +210,6 @@ svg {
 }
 
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
-  50% { box-shadow: 0 0 0 8px rgba(59, 130, 246, 0.15); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--color-accent-rgb), 0); }
+  50% { box-shadow: 0 0 0 8px rgba(var(--color-accent-rgb), 0.15); }
 }

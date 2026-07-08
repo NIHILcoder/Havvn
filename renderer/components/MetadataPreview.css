@@ -251,9 +251,9 @@
 }
 
 .item-value.badge.private {
-  background: rgba(245, 101, 101, 0.12);
+  background: rgba(var(--color-error-rgb), 0.12);
   color: var(--color-error);
-  border-color: rgba(245, 101, 101, 0.22);
+  border-color: rgba(var(--color-error-rgb), 0.22);
 }
 
 .item-value.badge.public {
@@ -471,18 +471,18 @@
   content: '';
   position: absolute;
   inset: 1.5px;
-  background: #111113;
+  background: var(--color-bg-primary);
   border-radius: calc(var(--radius-md) - 1px);
   z-index: -1;
   transition: background var(--transition-fast);
 }
 
 [data-theme="light"] .preview-footer .btn-primary::after {
-  background: #111113;
+  background: var(--color-bg-primary);
 }
 
 .preview-footer .btn-primary:hover::after {
-  background: #1a1a1e;
+  background: var(--color-bg-elevated);
 }
 
 .preview-footer .btn-primary:hover {

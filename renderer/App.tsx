@@ -2,9 +2,9 @@
  * Havvn Main App Component
  */
 
-import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Sidebar, StatusBar, PageId, FilterMode } from './layout';
+import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence } from './layout';
 import { DownloadStats, Download } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
 // their own chunks so the initial bundle is smaller and the app (and the startup
@@ -33,6 +33,10 @@ const AppContent: React.FC = () => {
   const [vpnAlert, setVpnAlert] = useState<{ paused: number; publicIP?: string } | null>(null);
   // Disk-space guard warning banner
   const [diskAlert, setDiskAlert] = useState<{ paused: number; freeBytes: number; thresholdBytes: number } | null>(null);
+  // The most-alive room right now — feeds the status-bar presence bridge
+  const [roomPresence, setRoomPresence] = useState<RoomPresence | null>(null);
+  // roomId → timestamp of the last watch-together sync with playing=true
+  const lastPlayingSync = useRef<Map<string, number>>(new Map());
 
   // Apply theme on mount
   useEffect(() => {
@@ -129,6 +133,41 @@ const AppContent: React.FC = () => {
     const offLow = window.api.onDiskLow((info) => setDiskAlert(info));
     const offRecovered = window.api.onDiskRecovered(() => setDiskAlert(null));
     return () => { offLow(); offRecovered(); };
+  }, []);
+
+  // Room presence for the status-bar bridge: pick the most-alive room —
+  // "watching together" (a playing sync in the last 90s) beats plain online
+  // count, and your own membership doesn't count as presence. Recomputed on a
+  // slow poll plus every room push, so it stays fresh without busy-polling.
+  useEffect(() => {
+    let cancelled = false;
+    const compute = async () => {
+      try {
+        const rooms = await window.api.rooms.list();
+        if (cancelled) return;
+        const now = Date.now();
+        let best: RoomPresence | null = null;
+        let bestScore = 0;
+        for (const r of rooms) {
+          const othersOnline = Math.max(0, r.onlineCount - 1);
+          const watching = (lastPlayingSync.current.get(r.roomId) ?? 0) > now - 90_000;
+          const score = (watching ? 1000 : 0) + othersOnline;
+          if (score > bestScore) {
+            bestScore = score;
+            best = { roomId: r.roomId, name: r.name, othersOnline, watching };
+          }
+        }
+        setRoomPresence(best);
+      } catch { /* rooms subsystem unavailable — keep the bar clean */ }
+    };
+    void compute();
+    const interval = setInterval(compute, 10_000);
+    const offUpdate = window.api.onRoomUpdate(() => { void compute(); });
+    const offSync = window.api.onRoomSync((msg) => {
+      if (msg.playing) lastPlayingSync.current.set(msg.roomId, Date.now());
+      void compute();
+    });
+    return () => { cancelled = true; clearInterval(interval); offUpdate(); offSync(); };
   }, []);
 
   // Global navigation shortcuts (fixed, layout-independent via event.code)
@@ -289,6 +328,8 @@ const AppContent: React.FC = () => {
             totalDownSpeed={totalDownSpeed}
             totalUpSpeed={totalUpSpeed}
             connectedPeers={totalPeers}
+            roomPresence={roomPresence}
+            onJoinRoom={() => setCurrentPage('rooms')}
           />
         </main>
       </div>

@@ -35,74 +35,26 @@
   transform: none;
 }
 
-/* Primary Button — Animated B&W Border */
+/* Primary Button — flat Ember: solid accent fill, dark ink, no ring/glow.
+   (The dark theme puts near-black text on ember; the light theme overrides
+   .btn-primary color to white in variables.css against the deeper ember.) */
 .btn-primary {
-  background: #141416;
-  color: #FFFFFF;
+  background: var(--color-accent-primary);
+  color: var(--color-bg-primary);
   border: none;
   position: relative;
-  overflow: hidden;
   z-index: 1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   transition: background var(--transition-fast), box-shadow var(--transition-fast), transform var(--transition-fast);
 }
 
-/* Animated border: one continuous gradient ring confined to the border by a
-   mask, so the strip is whole on every side and corner (no breaks). The conic
-   gradient is symmetric at the 0deg/360deg wrap (equal alpha) to avoid a seam;
-   a single bright segment peaks at 180deg and glides around as --btn-angle spins. */
-.btn-primary::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(
-    from var(--btn-angle),
-    rgba(255, 255, 255, 0.14) 0deg,
-    rgba(255, 255, 255, 0.14) 70deg,
-    rgba(255, 255, 255, 0.55) 140deg,
-    rgba(255, 255, 255, 1) 180deg,
-    rgba(255, 255, 255, 0.55) 220deg,
-    rgba(255, 255, 255, 0.14) 290deg,
-    rgba(255, 255, 255, 0.14) 360deg
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-          mask-composite: exclude;
-  animation: btnBorderSpin 6s linear infinite;
-  pointer-events: none;
-  z-index: -1;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .btn-primary::before { animation: none; }
-}
-
 .btn-primary:hover:not(:disabled) {
-  background: #1C1C1F;
-  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.12);
+  background: var(--color-accent-primary-hover);
+  box-shadow: var(--shadow-sm);
   transform: translateY(-1px);
 }
 
 .btn-primary:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
-}
-
-/* Registering the custom property lets the keyframe interpolate the angle
-   smoothly (otherwise it would jump 0->360 instead of rotating). */
-@property --btn-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes btnBorderSpin {
-  to {
-    --btn-angle: 360deg;
-  }
 }
 
 /* Secondary Button */
@@ -137,7 +89,7 @@
 }
 
 .btn-danger:hover:not(:disabled) {
-  box-shadow: 0 4px 16px rgba(239, 68, 68, 0.3);
+  box-shadow: 0 4px 16px rgba(var(--color-error-rgb), 0.3);
   transform: translateY(-1px);
 }
 
@@ -348,27 +300,27 @@
 }
 
 .status-badge-downloading {
-  background: rgba(59, 130, 246, 0.12);
+  background: rgba(var(--color-accent-rgb), 0.12);
   color: var(--color-status-downloading);
 }
 
 .status-badge-downloading::before {
   background: var(--color-status-downloading);
-  box-shadow: 0 0 6px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 0 6px rgba(var(--color-accent-rgb), 0.4);
 }
 
 .status-badge-completed, .status-badge-seeding {
-  background: rgba(16, 185, 129, 0.12);
+  background: rgba(var(--color-success-rgb), 0.12);
   color: var(--color-status-completed);
 }
 
 .status-badge-completed::before, .status-badge-seeding::before {
   background: var(--color-status-completed);
-  box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
+  box-shadow: 0 0 6px rgba(var(--color-success-rgb), 0.4);
 }
 
 .status-badge-paused {
-  background: rgba(245, 158, 11, 0.12);
+  background: rgba(var(--color-warning-rgb), 0.12);
   color: var(--color-status-paused);
 }
 
@@ -377,13 +329,13 @@
 }
 
 .status-badge-error {
-  background: rgba(239, 68, 68, 0.12);
+  background: rgba(var(--color-error-rgb), 0.12);
   color: var(--color-status-error);
 }
 
 .status-badge-error::before {
   background: var(--color-status-error);
-  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+  box-shadow: 0 0 6px rgba(var(--color-error-rgb), 0.4);
 }
 
 .status-badge-queued {
@@ -428,25 +380,25 @@
 .alert-success {
   background: var(--color-success-bg);
   color: var(--color-success);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(var(--color-success-rgb), 0.2);
 }
 
 .alert-error {
   background: var(--color-error-bg);
   color: var(--color-error);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: 1px solid rgba(var(--color-error-rgb), 0.2);
 }
 
 .alert-warning {
   background: var(--color-warning-bg);
   color: var(--color-warning);
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  border: 1px solid rgba(var(--color-warning-rgb), 0.2);
 }
 
 .alert-info {
   background: var(--color-info-bg);
   color: var(--color-info);
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(var(--color-accent-rgb), 0.2);
 }
 
 .alert-close {
@@ -739,7 +691,7 @@
   font-size: var(--font-size-xs);
   color: var(--color-text-tertiary);
   background: var(--color-info-bg);
-  border: 1px solid rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(var(--color-accent-rgb), 0.15);
   border-radius: var(--radius-md);
   margin-top: var(--space-3);
 }
