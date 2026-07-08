@@ -3241,6 +3241,7 @@ export class TorrentManager {
   getSwarmGeo(): SwarmGeo {
     this.ensureGeoInit();
     const byCountry = new Map<string, { count: number; downBps: number; upBps: number; seeds: number }>();
+    const transport = { total: 0, utp: 0, tcp: 0, webrtc: 0, encrypted: 0 };
     let totalConns = 0;
     let resolved = 0;
     let torrents = 0;
@@ -3251,6 +3252,13 @@ export class TorrentManager {
       if (peers.length > 0) torrents++;
       for (const p of peers) {
         totalConns++;
+        // Transport mix — WebTorrent does no MSE, so only webrtc (DTLS) counts
+        // as encrypted; 'web-seed'/'other' stay outside the classified total.
+        switch (p.connType) {
+          case 'utp-in': case 'utp-out': transport.total++; transport.utp++; break;
+          case 'tcp-in': case 'tcp-out': transport.total++; transport.tcp++; break;
+          case 'webrtc': transport.total++; transport.webrtc++; transport.encrypted++; break;
+        }
         const cc = this.lookupCountry(p.address);
         if (!cc) continue;
         resolved++;
@@ -3266,7 +3274,8 @@ export class TorrentManager {
     const points: SwarmGeoPoint[] = [];
     for (const [country, e] of byCountry) points.push({ country, ...e });
     points.sort((a, b) => b.count - a.count);
-    return { points, totalConns, resolved, torrents };
+    // The client holds a DHT instance only when it was enabled at creation.
+    return { points, totalConns, resolved, torrents, transport, dht: !!(this.client as any)?.dht };
   }
 
   /** Lazily initialize the offline country DB (CPU-ish, one-time). */

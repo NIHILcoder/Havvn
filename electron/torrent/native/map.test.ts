@@ -169,9 +169,9 @@ describe('aggregateSwarmGeo', () => {
   it('aggregates by country with a stubbed lookup; counts seeds at progress≈1', () => {
     const lookup = (ip: string): string | null => (ip.startsWith('9.') ? null : ip.startsWith('1.') ? 'US' : 'DE');
     const geo = aggregateSwarmGeo([
-      [peer({ address: '1.1.1.1', rateToClient: 100, rateToPeer: 10, progress: 1 }),
+      [peer({ address: '1.1.1.1', rateToClient: 100, rateToPeer: 10, progress: 1, isUTP: true, isEncrypted: true }),
        peer({ address: '2.2.2.2', rateToClient: 50, rateToPeer: 5, progress: 0.5 })],
-      [peer({ address: '1.9.9.9', rateToClient: 20, rateToPeer: 2, progress: 1 }),
+      [peer({ address: '1.9.9.9', rateToClient: 20, rateToPeer: 2, progress: 1, isEncrypted: true }),
        peer({ address: '9.9.9.9', progress: 1 })], // 9.* unresolved
     ], lookup);
     expect(geo.totalConns).toBe(4);
@@ -181,9 +181,14 @@ describe('aggregateSwarmGeo', () => {
     expect(us).toMatchObject({ count: 2, downBps: 120, upBps: 12, seeds: 2 });
     expect(geo.points.find((p) => p.country === 'DE')).toMatchObject({ count: 1, seeds: 0 });
     expect(geo.points[0].count).toBeGreaterThanOrEqual(geo.points[geo.points.length - 1].count); // sorted desc
+    // Transport counts EVERY connection, resolved or not.
+    expect(geo.transport).toEqual({ total: 4, utp: 1, tcp: 3, webrtc: 0, encrypted: 2 });
   });
   it('returns the zeroed shape for no peers', () => {
-    expect(aggregateSwarmGeo([[], []], () => 'US')).toEqual({ points: [], totalConns: 0, resolved: 0, torrents: 0 });
+    expect(aggregateSwarmGeo([[], []], () => 'US')).toEqual({
+      points: [], totalConns: 0, resolved: 0, torrents: 0,
+      transport: { total: 0, utp: 0, tcp: 0, webrtc: 0, encrypted: 0 },
+    });
   });
 });
 

@@ -387,44 +387,73 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // FILES to the room engine (it seeds single files only — directories are
   // walked; E2E rooms encrypt each file individually).
   const ROOM_SHARE_MAX_FILES = 25;
-  ipcMain.handle('rooms:shareDownload', wrapHandler('rooms:shareDownload',
-    async (_event, roomId: string, downloadId: string) => {
-      const download = await db.getDownloadById(String(downloadId || ''));
-      // Removed downloads are tombstoned (status 'removed') until next boot.
-      if (!download || download.status === 'removed') throw new Error('Download not found');
-      const complete = download.progress >= 1 || ['completed', 'seeding'].includes(download.status);
-      if (!complete) throw new Error('This download is not complete yet');
+  // The picker lists more than the share cap so the user can choose which 25.
+  const ROOM_SHARE_LIST_MAX = 400;
 
-      const collect = (root: string): string[] => {
-        // lstat: treat a symlinked root like nested entries (don't follow).
-        const st = fsSync.lstatSync(root, { throwIfNoEntry: false });
-        if (st?.isFile()) return [root];
-        if (!st?.isDirectory()) return [];
-        const out: string[] = [];
-        const walk = (dir: string): void => {
-          for (const entry of fsSync.readdirSync(dir, { withFileTypes: true })) {
-            if (out.length > ROOM_SHARE_MAX_FILES) return;
-            const p = path.join(dir, entry.name);
-            if (entry.isDirectory()) walk(p);
-            else if (entry.isFile()) out.push(p);
-          }
-        };
-        walk(root);
-        return out.sort();
+  /** The download's shareable files on disk (capped walk), or throws. */
+  const collectShareableFiles = async (downloadId: string): Promise<string[]> => {
+    const download = await db.getDownloadById(String(downloadId || ''));
+    // Removed downloads are tombstoned (status 'removed') until next boot.
+    if (!download || download.status === 'removed') throw new Error('Download not found');
+    const complete = download.progress >= 1 || ['completed', 'seeding'].includes(download.status);
+    if (!complete) throw new Error('This download is not complete yet');
+
+    const collect = (root: string): string[] => {
+      // lstat: treat a symlinked root like nested entries (don't follow).
+      const st = fsSync.lstatSync(root, { throwIfNoEntry: false });
+      if (st?.isFile()) return [root];
+      if (!st?.isDirectory()) return [];
+      const out: string[] = [];
+      const walk = (dir: string): void => {
+        for (const entry of fsSync.readdirSync(dir, { withFileTypes: true })) {
+          if (out.length > ROOM_SHARE_LIST_MAX) return;
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) walk(p);
+          else if (entry.isFile()) out.push(p);
+        }
       };
+      walk(root);
+      return out.sort();
+    };
 
-      // Created "start seeding" records are authoritative about their source
-      // paths (same order as share:start) — the record's name may be a custom
-      // torrent name that doesn't exist under savePath.
-      let files = (download.seedPaths ?? []).flatMap(collect);
-      if (!files.length) {
-        // Peer-supplied torrent names are not trusted as path fragments.
-        const safeName = safeBaseName(download.name) || download.name;
-        files = collect(downloadContentPath(download.savePath, safeName));
+    // Created "start seeding" records are authoritative about their source
+    // paths (same order as share:start) — the record's name may be a custom
+    // torrent name that doesn't exist under savePath.
+    let files = (download.seedPaths ?? []).flatMap(collect);
+    if (!files.length) {
+      // Peer-supplied torrent names are not trusted as path fragments.
+      const safeName = safeBaseName(download.name) || download.name;
+      files = collect(downloadContentPath(download.savePath, safeName));
+    }
+    if (!files.length) throw new Error('Files not found on disk');
+    return files;
+  };
+
+  // The share dialogs' file-pick stage: what CAN go to a room from this download.
+  ipcMain.handle('rooms:listShareableFiles', wrapHandler('rooms:listShareableFiles',
+    async (_event, downloadId: string) => {
+      const all = await collectShareableFiles(downloadId);
+      const truncated = all.length > ROOM_SHARE_LIST_MAX;
+      const files = (truncated ? all.slice(0, ROOM_SHARE_LIST_MAX) : all).map((p) => {
+        let size = 0;
+        try { size = fsSync.statSync(p).size; } catch { /* shown as 0 */ }
+        return { path: p, name: path.basename(p), size };
+      });
+      return { files, truncated, maxShare: ROOM_SHARE_MAX_FILES };
+    }
+  ));
+
+  ipcMain.handle('rooms:shareDownload', wrapHandler('rooms:shareDownload',
+    async (_event, roomId: string, downloadId: string, selectedPaths?: string[]) => {
+      let files = await collectShareableFiles(downloadId);
+      if (Array.isArray(selectedPaths) && selectedPaths.length > 0) {
+        // The renderer picks FROM the collected list — raw paths are not trusted.
+        const allowed = new Set(files);
+        files = selectedPaths.filter((p) => allowed.has(p));
+        if (!files.length) throw new Error('Selected files not found on disk');
       }
-      if (!files.length) throw new Error('Files not found on disk');
       if (files.length > ROOM_SHARE_MAX_FILES) {
-        throw new Error(`Too many files to share at once (over ${ROOM_SHARE_MAX_FILES}) — add specific files from disk instead`);
+        throw new Error(`Too many files to share at once (over ${ROOM_SHARE_MAX_FILES}) — pick specific files`);
       }
       return roomManager.addFiles(roomId, files);
     }

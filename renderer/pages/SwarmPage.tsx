@@ -235,6 +235,31 @@ export const SwarmPage: React.FC = () => {
             </div>
           )}
 
+          {geo && (geo.dht !== undefined || (geo.transport && geo.transport.total > 0)) && (
+            <div className="swarm-barlist">
+              <div className="swarm-list-head">{t('swarm.transport')}</div>
+              <div className="swarm-trans">
+                {geo.transport && geo.transport.total > 0 && (() => {
+                  const tr = geo.transport;
+                  const pct = (n: number): number => Math.round((n / tr.total) * 100);
+                  return (
+                    <>
+                      {tr.utp > 0 && <span className="swarm-pill"><b>{pct(tr.utp)}%</b> µTP</span>}
+                      {tr.tcp > 0 && <span className="swarm-pill"><b>{pct(tr.tcp)}%</b> TCP</span>}
+                      {tr.webrtc > 0 && <span className="swarm-pill"><b>{pct(tr.webrtc)}%</b> WebRTC</span>}
+                      <span className="swarm-pill"><b>{pct(tr.encrypted)}%</b> {t('swarm.encrypted')}</span>
+                    </>
+                  );
+                })()}
+                {geo.dht !== undefined && (
+                  <span className={`swarm-pill ${geo.dht ? '' : 'off'}`}>
+                    <b>DHT</b> {geo.dht ? t('swarm.on') : t('swarm.off')}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="swarm-note">
             <Icon name="lock" size={12} />
             <span>

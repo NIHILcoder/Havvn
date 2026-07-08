@@ -467,12 +467,23 @@ export interface SwarmGeoPoint {
   seeds: number;     // of `count`, how many are complete (seeders)
 }
 
+/** Transport mix of the connections behind a SwarmGeo snapshot. */
+export interface SwarmTransport {
+  total: number;     // connections with a known transport
+  utp: number;
+  tcp: number;
+  webrtc: number;    // webtorrent engine only
+  encrypted: number; // protocol-encrypted connections (webrtc counts — DTLS)
+}
+
 // Live snapshot for the swarm world map (polled by the renderer).
 export interface SwarmGeo {
   points: SwarmGeoPoint[];
   totalConns: number; // total peer-connections considered (incl. unresolved/IPv6)
   resolved: number;   // connections resolved to a country
   torrents: number;   // active torrents contributing peers
+  transport?: SwarmTransport;
+  dht?: boolean;      // whether peer discovery via DHT is enabled
 }
 
 // Live network-health snapshot for the adaptive-throttle indicator.
@@ -906,7 +917,8 @@ export interface IpcApi {
     get: (roomId: string) => Promise<RoomState | null>;
     addFiles: (roomId: string, paths: string[]) => Promise<RoomState>;
     pickAndAddFiles: (roomId: string) => Promise<RoomState | null>;
-    shareDownload: (roomId: string, downloadId: string) => Promise<RoomState>;
+    shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[]) => Promise<RoomState>;
+    listShareableFiles: (downloadId: string) => Promise<{ files: Array<{ path: string; name: string; size: number }>; truncated: boolean; maxShare: number }>;
     openFolder: (roomId: string) => Promise<void>;
     openFile: (roomId: string, fileId: string) => Promise<void>;
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; direct: boolean; kind: string; name: string }>;

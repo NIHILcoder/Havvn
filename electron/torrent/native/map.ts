@@ -4,7 +4,7 @@
  */
 
 import path from 'node:path';
-import type { Download, DownloadStats, DownloadStatus, TorrentFile, TorrentInfo, PeerInfo, TrackerInfo, FilePriority, SwarmGeo, SwarmGeoPoint } from '../../../shared/types';
+import type { Download, DownloadStats, DownloadStatus, TorrentFile, TorrentInfo, PeerInfo, TrackerInfo, FilePriority, SwarmGeo, SwarmGeoPoint, SwarmTransport } from '../../../shared/types';
 import { TrStatus, TrTorrent, TrPeer } from './transmission-rpc';
 import { numToIp } from '../../../shared/ip-range';
 import { TorrentError } from '../errors';
@@ -160,6 +160,7 @@ export function mapTrackers(t: TrTorrent): TrackerInfo[] {
  */
 export function aggregateSwarmGeo(peerLists: TrPeer[][], lookupCountry: (ip: string) => string | null): SwarmGeo {
   const byCountry = new Map<string, { count: number; downBps: number; upBps: number; seeds: number }>();
+  const transport: SwarmTransport = { total: 0, utp: 0, tcp: 0, webrtc: 0, encrypted: 0 };
   let totalConns = 0;
   let resolved = 0;
   let torrents = 0;
@@ -167,6 +168,10 @@ export function aggregateSwarmGeo(peerLists: TrPeer[][], lookupCountry: (ip: str
     if (peers.length > 0) torrents++;
     for (const p of peers) {
       totalConns++;
+      // Transport is known for every daemon connection, resolved or not.
+      transport.total++;
+      if (p.isUTP) transport.utp++; else transport.tcp++;
+      if (p.isEncrypted) transport.encrypted++;
       const cc = lookupCountry(p.address);
       if (!cc) continue;
       resolved++;
@@ -181,7 +186,7 @@ export function aggregateSwarmGeo(peerLists: TrPeer[][], lookupCountry: (ip: str
   const points: SwarmGeoPoint[] = [];
   for (const [country, e] of byCountry) points.push({ country, ...e });
   points.sort((a, b) => b.count - a.count);
-  return { points, totalConns, resolved, torrents };
+  return { points, totalConns, resolved, torrents, transport };
 }
 
 // ── Trackers (torrent-set trackerList is the 4.0+ replacement for trackerAdd/Remove) ──

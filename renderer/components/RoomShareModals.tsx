@@ -42,6 +42,82 @@ const useModalFocus = (): React.RefObject<HTMLDivElement> => {
   return ref;
 };
 
+// ── File-pick stage (multi-file downloads) ───────────────────────────────────
+interface ShareableFile { path: string; name: string; size: number }
+interface ShareableList { files: ShareableFile[]; truncated: boolean; maxShare: number }
+
+/** Checkbox list of a download's shareable files, capped at `maxShare` picks. */
+const FilePickStage: React.FC<{
+  list: ShareableList;
+  busy: boolean;
+  onBack: () => void;
+  onShare: (paths: string[]) => void;
+}> = ({ list, busy, onBack, onShare }) => {
+  const { t } = useTranslation();
+  const { files, truncated, maxShare } = list;
+  // Everything pre-selected when it fits the cap; a blank slate otherwise.
+  const [picked, setPicked] = useState<Set<string>>(
+    () => new Set(files.length <= maxShare ? files.map((f) => f.path) : []),
+  );
+  const toggle = (p: string) => setPicked((prev) => {
+    const next = new Set(prev);
+    if (next.has(p)) next.delete(p); else next.add(p);
+    return next;
+  });
+  const selectedSize = files.reduce((sum, f) => (picked.has(f.path) ? sum + f.size : sum), 0);
+  const over = picked.size > maxShare;
+
+  return (
+    <>
+      <p className="rsm-desc">{t('share.files.pick')}</p>
+      <div className="rsm-files-tools">
+        <button
+          className="rsm-tool"
+          disabled={busy || files.length > maxShare}
+          onClick={() => setPicked(new Set(files.map((f) => f.path)))}
+        >{t('share.files.all')}</button>
+        <button className="rsm-tool" disabled={busy} onClick={() => setPicked(new Set())}>
+          {t('share.files.none')}
+        </button>
+        {truncated && <span className="rsm-files-note">{t('share.files.truncated')}</span>}
+      </div>
+      <div className="rsm-list rsm-files">
+        {files.map((f) => (
+          <label key={f.path} className="rsm-frow" title={f.path}>
+            <input
+              type="checkbox"
+              checked={picked.has(f.path)}
+              disabled={busy}
+              onChange={() => toggle(f.path)}
+            />
+            <span className="rsm-frow-name">{f.name}</span>
+            <span className="rsm-frow-size">{f.size > 0 ? formatBytes(f.size) : ''}</span>
+          </label>
+        ))}
+      </div>
+      <div className="rsm-files-foot">
+        <span className={`rsm-files-count ${over ? 'over' : ''}`}>
+          {picked.size} {t('share.files.selected')}
+          {selectedSize > 0 && ` · ${formatBytes(selectedSize)}`}
+          {over && ` — ${t('share.files.overLimit')} ${maxShare}`}
+        </span>
+        <div className="rsm-actions-row">
+          <Button variant="ghost" size="sm" disabled={busy} onClick={onBack}>{t('share.files.back')}</Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy || picked.size === 0 || over}
+            loading={busy}
+            onClick={() => onShare(files.filter((f) => picked.has(f.path)).map((f) => f.path))}
+          >
+            {t('downloads.share')}
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+};
+
 // ── Share a download into a room ─────────────────────────────────────────────
 interface ShareToRoomModalProps {
   downloadId: string;
@@ -63,6 +139,10 @@ export const ShareToRoomModal: React.FC<ShareToRoomModalProps> = ({
   const { t } = useTranslation();
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null);
   const [busyRoomId, setBusyRoomId] = useState<string | null>(null);
+  // What the download can share — drives the file-pick stage for multi-file
+  // downloads. 'error' falls back to a direct share (the backend reports why).
+  const [fileList, setFileList] = useState<ShareableList | 'error' | null>(null);
+  const [pickFor, setPickFor] = useState<RoomSummary | null>(null);
   useEscape(useCallback(() => { if (!busyRoomId) onClose(); }, [busyRoomId, onClose]));
   const dialogRef = useModalFocus();
 
@@ -70,17 +150,27 @@ export const ShareToRoomModal: React.FC<ShareToRoomModalProps> = ({
     window.api.rooms.list().then(setRooms).catch(() => setRooms([]));
   }, []);
 
-  const share = async (room: RoomSummary) => {
+  useEffect(() => {
+    if (!canShare) return;
+    window.api.rooms.listShareableFiles(downloadId).then(setFileList).catch(() => setFileList('error'));
+  }, [downloadId, canShare]);
+
+  const share = async (room: RoomSummary, selectedPaths?: string[]) => {
     if (busyRoomId || !canShare) return;
     setBusyRoomId(room.roomId);
     try {
-      await window.api.rooms.shareDownload(room.roomId, downloadId);
+      await window.api.rooms.shareDownload(room.roomId, downloadId, selectedPaths);
       toast.success(`${t('share.toRoom.success')} ${room.name}`);
       onClose();
     } catch (e) {
       toast.error(cleanError(e));
       setBusyRoomId(null);
     }
+  };
+
+  const handleRoomClick = (room: RoomSummary) => {
+    if (fileList && fileList !== 'error' && fileList.files.length > 1) setPickFor(room);
+    else void share(room);
   };
 
   return (
@@ -112,7 +202,14 @@ export const ShareToRoomModal: React.FC<ShareToRoomModalProps> = ({
           </div>
         )}
 
-        {rooms === null ? (
+        {pickFor && fileList && fileList !== 'error' ? (
+          <FilePickStage
+            list={fileList}
+            busy={!!busyRoomId}
+            onBack={() => setPickFor(null)}
+            onShare={(paths) => void share(pickFor, paths)}
+          />
+        ) : rooms === null || (canShare && fileList === null) ? (
           <div className="rsm-empty">{t('common.loading')}</div>
         ) : rooms.length === 0 ? (
           <div className="rsm-empty">{t('share.toRoom.empty')}</div>
@@ -125,7 +222,7 @@ export const ShareToRoomModal: React.FC<ShareToRoomModalProps> = ({
                   key={room.roomId}
                   className="rsm-item"
                   disabled={!canShare || !!busyRoomId}
-                  onClick={() => share(room)}
+                  onClick={() => handleRoomClick(room)}
                 >
                   <RoomTile name={room.name} />
                   <span className="rsm-text">
@@ -151,7 +248,7 @@ export const ShareToRoomModal: React.FC<ShareToRoomModalProps> = ({
           </>
         )}
 
-        {onShareLink && (
+        {onShareLink && !pickFor && (
           <div className="rsm-actions">
             <Button variant="ghost" size="sm" disabled={!!busyRoomId} icon={<Icon name="link" size={13} />} onClick={onShareLink}>
               {t('share.toRoom.linkInstead')}
@@ -175,6 +272,8 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
   const { t } = useTranslation();
   const [downloads, setDownloads] = useState<Download[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Multi-file download chosen → its file-pick stage.
+  const [pick, setPick] = useState<{ download: Download; list: ShareableList } | null>(null);
   useEscape(useCallback(() => { if (!busyId) onClose(); }, [busyId, onClose]));
   const dialogRef = useModalFocus();
 
@@ -188,11 +287,10 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
       .catch(() => setDownloads([]));
   }, []);
 
-  const share = async (download: Download) => {
-    if (busyId) return;
+  const share = async (download: Download, selectedPaths?: string[]) => {
     setBusyId(download.id);
     try {
-      const state = await window.api.rooms.shareDownload(roomId, download.id);
+      const state = await window.api.rooms.shareDownload(roomId, download.id, selectedPaths);
       toast.success(`${t('share.toRoom.success')} ${state.name}`);
       onShared(state);
       onClose();
@@ -200,6 +298,23 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
       toast.error(cleanError(e));
       setBusyId(null);
     }
+  };
+
+  const handleDownloadClick = async (download: Download) => {
+    if (busyId) return;
+    setBusyId(download.id);
+    try {
+      const list = await window.api.rooms.listShareableFiles(download.id);
+      if (list.files.length > 1) {
+        setPick({ download, list });
+        setBusyId(null);
+        return;
+      }
+    } catch {
+      // Fall through — the share itself will surface the real error.
+    }
+    setBusyId(null);
+    await share(download);
   };
 
   return (
@@ -223,7 +338,17 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
           ><Icon name="x" size={16} /></button>
         </div>
 
-        {downloads === null ? (
+        {pick ? (
+          <>
+            <div className="rsm-file" title={pick.download.name}>{pick.download.name}</div>
+            <FilePickStage
+              list={pick.list}
+              busy={!!busyId}
+              onBack={() => setPick(null)}
+              onShare={(paths) => void share(pick.download, paths)}
+            />
+          </>
+        ) : downloads === null ? (
           <div className="rsm-empty">{t('common.loading')}</div>
         ) : downloads.length === 0 ? (
           <div className="rsm-empty">{t('rooms.fromTransfers.empty')}</div>
@@ -236,7 +361,7 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
                   key={d.id}
                   className="rsm-item"
                   disabled={!!busyId}
-                  onClick={() => share(d)}
+                  onClick={() => void handleDownloadClick(d)}
                 >
                   <span className="rsm-tile" aria-hidden="true"><Icon name="file" size={15} /></span>
                   <span className="rsm-text">

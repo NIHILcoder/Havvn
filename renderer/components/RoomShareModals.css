@@ -202,3 +202,99 @@
   display: flex;
   justify-content: flex-end;
 }
+
+/* ── File-pick stage ─────────────────────────────────────────────────────── */
+.rsm-files-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rsm-tool {
+  font-size: var(--font-size-xs);
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-default);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.rsm-tool:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-strong);
+}
+
+.rsm-tool:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.rsm-files-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-warning);
+}
+
+.rsm-files {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  max-height: 300px;
+}
+
+.rsm-frow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.rsm-frow:last-child { border-bottom: 0; }
+.rsm-frow:hover { background: var(--color-bg-hover); }
+
+.rsm-frow input {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  accent-color: var(--color-accent-primary);
+  cursor: pointer;
+}
+
+.rsm-frow-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--color-text-primary);
+}
+
+.rsm-frow-size {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rsm-files-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.rsm-files-count {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.rsm-files-count.over { color: var(--color-error); }
+
+.rsm-actions-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}

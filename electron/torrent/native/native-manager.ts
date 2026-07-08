@@ -676,7 +676,9 @@ export class NativeTorrentManager {
     await this.whenReady();
     this.ensureGeoInit();
     const torrents = await this.rpc!.torrentGet(['hashString', 'peers']);
-    return aggregateSwarmGeo(torrents.map((t) => t.peers ?? []), (ip) => this.lookupCountry(ip));
+    const geo = aggregateSwarmGeo(torrents.map((t) => t.peers ?? []), (ip) => this.lookupCountry(ip));
+    geo.dht = this.settings.enableDHT !== false;
+    return geo;
   }
 
   private ensureGeoInit(): void {
