@@ -1,0 +1,129 @@
+/* PlayerControls — the Ember scrub row (concept .scrub): flat panel under the
+   stage, mono timecodes, ember track with a playhead dot. */
+
+.pc {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.pc-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.pc-btn:hover {
+  color: var(--color-accent-primary);
+  background: var(--color-bg-hover);
+}
+
+.pc-play {
+  border: 1px solid var(--color-border-strong);
+}
+
+.pc-time {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.pc-duration {
+  color: var(--color-text-tertiary);
+}
+
+/* Scrubber: buffered ghost under the ember fill, playhead dot at its edge */
+.pc-bar {
+  position: relative;
+  flex: 1;
+  min-width: 60px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-border-default);
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* A taller invisible hit area so the 5px track is easy to grab */
+.pc-bar::before {
+  content: "";
+  position: absolute;
+  inset: -8px 0;
+}
+
+.pc-buffer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-strong);
+  pointer-events: none;
+}
+
+.pc-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-primary);
+  pointer-events: none;
+}
+
+.pc-fill::after {
+  content: "";
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--color-accent-primary);
+  transition: transform var(--transition-fast);
+}
+
+.pc-bar:hover .pc-fill::after {
+  transform: translateY(-50%) scale(1.2);
+}
+
+/* Non-seekable (live transcode): a quiet full-width fill, no dot, no pointer */
+.pc-bar-static {
+  cursor: default;
+}
+
+.pc-bar-static .pc-fill {
+  opacity: 0.25;
+}
+
+.pc-bar-static .pc-fill::after {
+  display: none;
+}
+
+.pc-vol {
+  width: 72px;
+  flex-shrink: 0;
+  accent-color: var(--color-accent-primary);
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .pc-vol { display: none; }
+  .pc-duration { display: none; }
+}

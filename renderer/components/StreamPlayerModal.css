@@ -122,12 +122,42 @@
     #000;
 }
 
+/* Video + the Ember control bar as one fullscreen-able unit */
+.player-stage {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+
+.player-stage:fullscreen {
+  background: #000;
+  justify-content: center;
+}
+
+.player-stage:fullscreen .player-video {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+  object-fit: contain;
+}
+
 .player-video {
   width: 100%;
   max-height: 70vh;
   background: #000;
   outline: none;
   display: block;
+  cursor: pointer;
+}
+
+/* Audio: the bar becomes a standalone bordered row under the artwork */
+.player-audio .pc {
+  width: 100%;
+  box-sizing: border-box;
+  border-top: none;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
 }
 
 .player-audio {

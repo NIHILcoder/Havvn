@@ -98,7 +98,11 @@ export type IconName =
   | 'link'
   | 'rss'
   | 'send'
-  | 'more-horizontal';
+  | 'more-horizontal'
+  | 'volume-2'
+  | 'volume-x'
+  | 'maximize'
+  | 'minimize';
 
 interface IconProps {
   name: IconName;
@@ -199,6 +203,10 @@ const paths: Record<IconName, string> = {
   'rss': 'M4 11a9 9 0 0 1 9 9 M4 4a16 16 0 0 1 16 16 M5 19a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
   'send': 'M22 2L11 13 M22 2l-7 20-4-9-9-4 20-7z',
   'more-horizontal': 'M5 12h.01 M12 12h.01 M19 12h.01',
+  'volume-2': 'M11 5L6 9H2v6h4l5 4V5z M15.54 8.46a5 5 0 0 1 0 7.07 M19.07 4.93a10 10 0 0 1 0 14.14',
+  'volume-x': 'M11 5L6 9H2v6h4l5 4V5z M23 9l-6 6 M17 9l6 6',
+  'maximize': 'M8 3H5a2 2 0 0 0-2 2v3 M21 8V5a2 2 0 0 0-2-2h-3 M3 16v3a2 2 0 0 0 2 2h3 M16 21h3a2 2 0 0 0 2-2v-3',
+  'minimize': 'M8 3v3a2 2 0 0 1-2 2H3 M21 8h-3a2 2 0 0 1-2-2V3 M3 16h3a2 2 0 0 1 2 2v3 M16 21v-3a2 2 0 0 1 2-2h3',
 };
 
 export const Icon: React.FC<IconProps> = ({

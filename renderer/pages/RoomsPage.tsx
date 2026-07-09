@@ -11,7 +11,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile } from '../../shared/types';
-import { Button, Icon, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle } from '../components';
+import { Button, Icon, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls } from '../components';
 import { avatarCandidates } from '../components/Identicon';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
@@ -840,6 +840,10 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
+  // The Ember control bar drives the same element; main wraps stage + bar for fullscreen.
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [mediaEl, setMediaEl] = useState<HTMLVideoElement | null>(null);
+  useEffect(() => { setMediaEl(videoRef.current); }, []);
   const applyingRemote = useRef(false); // suppress echo while applying a remote action
   const togetherRef = useRef(false);
   const [together, setTogether] = useState(false);
@@ -992,15 +996,22 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
           <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
         <div className="room-player-body">
-          <div className="room-player-main">
+          <div className="room-player-main" ref={mainRef}>
             <div className="room-player-stage">
-              <video ref={videoRef} className="room-player-video" controls autoPlay playsInline />
+              <video
+                ref={videoRef}
+                className="room-player-video"
+                autoPlay
+                playsInline
+                onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
+              />
               <div className="room-player-reactions" aria-hidden="true">
                 {reactions.map((r) => (
                   <span key={r.id} className="room-reaction" style={{ left: `${r.x}%` }}>{r.emoji}</span>
                 ))}
               </div>
             </div>
+            <PlayerControls media={mediaEl} fullscreenTarget={mainRef} />
             <div className="room-player-reactbar">
               {['😂', '❤️', '🔥', '😮', '👏', '🎉', '😢', '💀'].map((e) => (
                 <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>

@@ -45,6 +45,7 @@ export type { SettingsCategory } from './SettingsSidebar';
 export { PrivacySettings } from './PrivacySettings';
 export { TorrentControlModal } from './TorrentControlModal';
 export { StreamPlayerModal } from './StreamPlayerModal';
+export { PlayerControls } from './PlayerControls';
 export { ShareLinkModal } from './ShareLinkModal';
 export { ShareToRoomModal, TransferPickerModal } from './RoomShareModals';
 export { Identicon } from './Identicon';

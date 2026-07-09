@@ -7,9 +7,10 @@
  * playback that fails on an unsupported codec falls back to transcoding too.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from './Icon';
 import { QRCode } from './QRCode';
+import { PlayerControls } from './PlayerControls';
 import { useTranslation } from '../utils/i18nContext';
 import { classifyMediaKind, MediaKind } from '../../shared/media';
 import './StreamPlayerModal.css';
@@ -66,6 +67,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [subOpen, setSubOpen] = useState(false);
   const [subActiveKey, setSubActiveKey] = useState<string | null>(null);
   const [subUrl, setSubUrl] = useState<string | null>(null);
+  // Custom Ember controls: the media element remounts per stream URL, so it is
+  // captured via a callback ref; the stage wrapper is the fullscreen target.
+  const [mediaEl, setMediaEl] = useState<HTMLVideoElement | HTMLAudioElement | null>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
 
   // Load the streamable files in this torrent once.
   useEffect(() => {
@@ -301,23 +306,34 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
         <div className="player-audio">
           <div className="player-audio-art"><Icon name="music" size={48} /></div>
           <div className="player-audio-name">{activeFile?.name}</div>
-          <audio src={streamUrl} controls autoPlay onError={handleMediaError} />
+          <audio
+            key={streamUrl}
+            ref={(el) => setMediaEl(el)}
+            src={streamUrl}
+            autoPlay
+            onError={handleMediaError}
+          />
+          <PlayerControls media={mediaEl} seekable={!transcoded} />
         </div>
       );
     }
     return (
-      <video
-        key={streamUrl}
-        src={streamUrl}
-        controls
-        autoPlay
-        className="player-video"
-        onError={handleMediaError}
-      >
-        {subUrl && <track kind="subtitles" src={subUrl} srcLang="und" label="Subtitles" default />}
-      </video>
+      <div className="player-stage" ref={stageRef}>
+        <video
+          key={streamUrl}
+          ref={(el) => setMediaEl(el)}
+          src={streamUrl}
+          autoPlay
+          className="player-video"
+          onClick={() => { if (mediaEl) { if (mediaEl.paused) void mediaEl.play().catch(() => {}); else mediaEl.pause(); } }}
+          onError={handleMediaError}
+        >
+          {subUrl && <track kind="subtitles" src={subUrl} srcLang="und" label="Subtitles" default />}
+        </video>
+        <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded} />
+      </div>
     );
-  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl]);
+  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl]);
 
   return (
     <div className="player-overlay" onClick={onClose}>
