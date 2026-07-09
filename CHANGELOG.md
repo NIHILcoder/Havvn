@@ -1,8 +1,60 @@
 # Changelog
 
-All notable changes to TorrentHunt are documented here.
+All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
+
+## [2.8.0] - 2026-07-09
+
+The big one: **TorrentHunt is now Havvn**, the download engine was rebuilt, the whole
+interface was redesigned around two pillars, and rooms grew into a place you actually
+*use together* — watch and listen in sync, end-to-end encrypted for real this time.
+
+### Rebrand
+- **TorrentHunt → Havvn.** New name, new Double-V logomark, new "Ember" look (warm accents
+  on a graphite ground). Your existing profile, downloads and rooms migrate automatically;
+  the update feed still reaches installs from the old name.
+
+### Engine
+- **New default torrent engine.** Transfers now run on a bundled native **Transmission**
+  daemon instead of WebTorrent, with WebTorrent kept as a selectable fallback (Settings →
+  Engine). Rooms and share links still use WebRTC/WebTorrent. Feature parity across the
+  board: streaming, subtitles, the swarm map, tracker editing, seed-from-folder, the IP
+  blocklist, and magnet metadata preview all work on the native engine.
+
+### Added
+- **Watch & listen together.** Open a shared room file in the in-app theater and turn on
+  **"together"** — play/pause/seek stay in sync across the room and late joiners snap to the
+  current position.
+- **Music mode for rooms.** Audio files get a dedicated stage: album art pulled from the
+  track's **ID3 tags**, a live **WebAudio spectrum**, a shared queue that auto-advances, an
+  **Ember player** bar (scrubber, volume, fullscreen, keyboard controls) replacing the bare
+  Chromium one, and floating emoji reactions.
+- **End-to-end encrypted rooms that actually transfer.** Files are encrypted on disk before
+  seeding and decrypted after download — **ciphertext only on the wire**. The content key
+  travels in an **owner-signed config (Ed25519)** so a member who only holds the invite code
+  can't plant, forge, tamper with, or replay one, and the invite code marks the room
+  encrypted so a joiner never seeds plaintext by mistake.
+- **Per-room download & speed controls.** Auto-download every shared file or pull them
+  manually per file, plus per-room upload/download speed limits.
+- **Two-pillar navigation.** A **Transfers | Rooms** switch splits downloading from
+  shared-listening, bridged by a persistent status strip (live speed/peers and who's
+  listening now), with **Share to room** / **Bring a file from Transfers** cross-links.
+
+### Fixed
+- **E2E rooms now work at all.** The encrypted-file seeder used a filename the torrent store
+  couldn't read back, so an E2E share connected but moved zero bytes — fixed, along with an
+  E2E-flag flap over gossip and same-named files clobbering each other's ciphertext.
+- **Deleting then re-sharing a file brings it back.** Room tombstones are timestamped, so an
+  explicit re-share wins over an earlier deletion (a stale copy no longer resurrects it).
+- **Room activity credits the right person.** Gossiped file additions kept the sharer's
+  name instead of showing "added by ?".
+- **Custom-named seeds work on the native engine** (the on-disk name is mapped correctly).
+
+### Security
+- Room E2E config is authenticated end to end (owner-signed, topic-bound, re-verified on
+  restart and rekey) — the invite code alone can no longer be used to poison another
+  member's content key.
 
 ## [2.7.0] - 2026-07-05
 

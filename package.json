@@ -1,6 +1,6 @@
 {
   "name": "havvn",
-  "version": "2.7.0",
+  "version": "2.8.0",
   "description": "A modern, privacy-focused BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
@@ -85,7 +85,7 @@
       {
         "provider": "github",
         "owner": "NIHILcoder",
-        "repo": "TorrentHunt",
+        "repo": "Havvn",
         "releaseType": "prerelease"
       }
     ],

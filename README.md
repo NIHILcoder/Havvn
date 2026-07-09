@@ -1,7 +1,7 @@
 # Havvn
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Version](https://img.shields.io/badge/Version-2.7.0--beta-orange)
+![Version](https://img.shields.io/badge/Version-2.8.0--beta-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 
@@ -36,7 +36,7 @@ and the app costs nothing to operate.** Built with Electron, React and WebTorren
 ## Download
 
 Grab the latest Windows installer from the
-**[Releases page](https://github.com/NIHILcoder/TorrentHunt/releases/latest)**.
+**[Releases page](https://github.com/NIHILcoder/Havvn/releases/latest)**.
 
 ### Verify your download
 
@@ -59,7 +59,7 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - Add torrents via **.torrent file, magnet link, or drag & drop** — local files *and*
   remote `.torrent` URLs are supported
 - Pause / resume / remove (with optional file deletion), retry failed downloads
-- **Per-file selection & priority**, sequential download, per-torrent speed limits
+- **Per-file selection & priority**, sequential download, global speed limit
 - **Seed ratio / seed time limits**, tracker add/remove per torrent
 - Categories, search/filter/sort, list & detailed views
 - Open the OS "open with" dialog when you double-click a `.torrent` — no silent adds
@@ -97,6 +97,19 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   everyone's files auto-distribute peer-to-peer into a shared folder. No cloud: members
   find each other over WebRTC and converge a file manifest, live presence, and
   **end-to-end encrypted chat** over **AES-256-GCM** channels keyed from the code
+- **End-to-end encrypted rooms** — opt in at creation and the swarm carries **ciphertext
+  only**: files are encrypted on your disk before seeding and decrypted after download,
+  never plaintext on the wire. The room's content key is **distributed in an
+  owner-signed config (Ed25519)** so a member who merely holds the invite code can't
+  plant or forge one, and the invite code itself marks the room encrypted so a joiner
+  never seeds plaintext by mistake
+- **Watch & listen together** — open a shared file in the in-app theater and flip on
+  **"together"**: playback stays in sync across the room (play/pause/seek follow, and
+  late joiners catch up to the current position). Music files get a dedicated mode — an
+  album-art disc from the track's **ID3 tags**, a live **WebAudio spectrum**, a shared
+  queue that auto-advances, and floating emoji reactions
+- **Per-room controls** — auto-download every shared file or pull them **manually** per
+  file, and set per-room **upload / download speed limits**
 - **Tamper-proof chat** — every message is **signed (Ed25519)** and bound to a member
   identity, so even someone who has the invite code can't post under another member's
   name; the local chat history is **encrypted at rest**
@@ -119,7 +132,11 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **Background mode** — closing the window minimizes to the **system tray** so torrents
   keep running; uses your `icon.ico`
 - Run at login, close/minimize-to-tray, native completion notifications
-- **Themes** (dark / light / system) with a clean monochrome design
+- **Two-pillar layout** — a **Transfers | Rooms** switch keeps downloading and
+  shared-listening as distinct spaces, bridged by a persistent status strip that surfaces
+  live speed/peers and who's listening right now
+- **Themes** (dark / light / system) with a clean **Ember** design (warm accents on a
+  graphite ground) and a Double-V logomark
 - **Customizable hotkeys**
 - **Localization** — English & Russian
 - Settings export / import
@@ -150,7 +167,7 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 | UI           | React 18, TypeScript, Framer Motion, Recharts |
 | State        | Zustand                                      |
 | Desktop      | Electron 42, Node.js                          |
-| Torrents     | WebTorrent                                    |
+| Torrents     | Transmission (bundled native engine) with a WebTorrent fallback; WebTorrent + WebRTC for rooms & share links |
 | Persistence  | electron-store (local JSON)                   |
 | Build        | webpack (renderer), tsc (main), electron-builder |
 

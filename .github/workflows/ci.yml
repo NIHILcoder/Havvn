@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [TorrentHunt1.2, feature/new-design]
+    branches: [main]
   pull_request:
 
 jobs:
