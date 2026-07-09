@@ -42,10 +42,26 @@ function pick<T>(arr: T[]): T {
   return arr[b % arr.length];
 }
 
-/** Generate a fresh, speakable invite code, e.g. "swift-amber-otter-comet-4821". */
-export function generateRoomCode(): string {
+// End-to-end encrypted rooms carry an extra "-e2e" segment in their invite code,
+// so a joiner knows the room is E2E BEFORE any peer says hello — otherwise a
+// member joining an empty/hostile swarm could share a file in plaintext. The
+// suffix is part of the KDF input like the rest of the code (tampering with it
+// just derives the wrong key). Codes from older builds never end in "-e2e", so
+// they safely parse as "not E2E".
+const E2E_SUFFIX = '-e2e';
+
+/** Generate a fresh, speakable invite code, e.g. "swift-amber-otter-comet-4821"
+ *  ("…-4821-e2e" for an end-to-end encrypted room). */
+export function generateRoomCode(e2e = false): string {
   const n = crypto.randomInt(1000, 10000); // 4 digits, no leading zero
-  return [pick(ADJECTIVES), pick(ADJECTIVES), pick(NOUNS), pick(NOUNS), n].join('-');
+  const base = [pick(ADJECTIVES), pick(ADJECTIVES), pick(NOUNS), pick(NOUNS), n].join('-');
+  return e2e ? base + E2E_SUFFIX : base;
+}
+
+/** True when the invite code marks its room end-to-end encrypted. Old-format
+ *  codes carry no marker and return false (their E2E-ness is learned via gossip). */
+export function codeIsE2E(code: string): boolean {
+  return normalizeCode(code).endsWith(E2E_SUFFIX);
 }
 
 /** Normalize so trivial copy/paste differences still resolve to the same room. */

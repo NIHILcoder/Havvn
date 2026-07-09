@@ -1,19 +1,30 @@
 /**
- * Integration test for E2E flag/secret adoption over gossip.
+ * Integration tests for how a room learns its E2E config (flag + content secret).
  *
- * A fresh joiner doesn't know the room is E2E yet, so its first HELLO carries
- * e2e:false — adoption must be strictly monotonic (upgrade-only) or the owner's
- * room gets flipped out of E2E by the very peer it invited (and a file shared
- * in that window would hit the swarm as plaintext). The content secret is
- * adopt-once: first learned wins; a conflicting one is never obeyed.
+ * Same harness as room-autofetch.test.ts: REAL room-engine instances with the
+ * Electron/WebTorrent/tracker boundaries mocked, wired together in memory. A
+ * "hostile member" is a raw FakePeer the test drives directly — it holds the
+ * room code (so its gossip decrypts fine) but sends whatever frames we craft.
  *
- * Same harness as room-revive.test.ts: REAL room-engine instances with the
- * Electron/WebTorrent/tracker boundaries mocked, wired with in-memory peers.
+ * What must hold:
+ *   • the invite code's "-e2e" marker tells a joiner the room is E2E before any
+ *     peer speaks, so it refuses to seed plaintext into an empty/hostile swarm;
+ *   • the secret is adopted only from the OWNER's Ed25519-signed config in
+ *     new-format rooms — a hostile member can't plant one, forge one, tamper
+ *     with one, or replay one across topics;
+ *   • members re-serve the signed blob, so joiners converge with the owner offline;
+ *   • legacy rooms (old codes, unsigned config) still work: monotonic flag,
+ *     adopt-once secret — and the owner's signed config RECOVERS a member that
+ *     a hostile peer got to first;
+ *   • kick/rekey keeps the marker and re-signs the config for the new topic.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
+import { deriveKey, topicHash, encrypt, generateRoomCode, codeIsE2E } from './room-crypto';
+import { generateRoomSecret } from './room-e2e';
 
 type Sent = { channel: string; payload: any };
 type EngineCtx = {
@@ -25,6 +36,8 @@ const H = vi.hoisted(() => ({
   trackers: [] as any[],   // FakeTracker instances in creation order
 }));
 
+// WebTorrent stand-in: infoHash is the sha1 of the file content, so the fileId
+// is deterministic from content. add() never completes (not needed here).
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
   const { createHash } = await import('node:crypto');
@@ -68,6 +81,8 @@ vi.mock('webtorrent', async () => {
   return { default: FakeWebTorrent };
 });
 
+// Rendezvous tracker stand-in: never touches the network; the test injects
+// wires by emitting 'peer' on the captured instance.
 vi.mock('bittorrent-tracker', () => {
   class FakeTracker {
     handlers: Record<string, any[]> = {};
@@ -99,7 +114,7 @@ class FakePeer {
   }
 }
 
-function connect(a: { tracker?: any }, b: { tracker?: any }): [FakePeer, FakePeer] {
+function connect(a: { tracker: any }, b: { tracker: any }): [FakePeer, FakePeer] {
   const pA = new FakePeer(); const pB = new FakePeer();
   pA.other = pB; pB.other = pA;
   a.tracker.emitPeer(pA);
@@ -113,7 +128,7 @@ const flush = async (rounds = 25): Promise<void> => {
 
 type Engine = EngineCtx & { tracker?: any };
 
-let reqSeq = 2000;
+let reqSeq = 5000;
 async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise<T> {
   const reqId = ++reqSeq;
   inst.listeners['room-cmd'](null, { reqId, ...msg });
@@ -127,6 +142,7 @@ async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise
   return res.data as T;
 }
 
+/** Boot a fresh room-engine module instance (a simulated separate install). */
 async function makeEngine(): Promise<Engine> {
   const ctx: Engine = { listeners: {}, sent: [] };
   vi.resetModules();
@@ -140,70 +156,279 @@ async function makeEngine(): Promise<Engine> {
   return ctx;
 }
 
-const ROOM_ID = 'room-e2e-adopt-1';
-const CODE = 'ember-vault-signal-harbor';
-const SECRET = 'a'.repeat(64);        // the owner's real content key (32-byte hex)
-const WRONG_SECRET = 'b'.repeat(64);  // a conflicting key from a confused/hostile peer
+/** A real Ed25519 identity in the PEM shapes the engine expects. */
+function makeKeys(): { pub: string; priv: string } {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  return {
+    pub: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+    priv: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+  };
+}
 
-function joinPayload(memberId: string, folder: string, e2e: boolean, secret: string) {
+function joinPayload(o: { roomId: string; code: string; memberId: string; folder: string;
+  ownerId?: string; e2e?: boolean; secret?: string; e2eCfg?: any; keys?: { pub: string; priv: string } }) {
   return {
     type: 'join',
     payload: {
-      roomId: ROOM_ID, name: 'E2E room', code: CODE, folder,
-      self: { memberId, name: memberId, avatarSeed: memberId, pub: '', priv: '' },
+      roomId: o.roomId, name: 'E2E adopt test', code: o.code, folder: o.folder,
+      self: { memberId: o.memberId, name: o.memberId, avatarSeed: o.memberId, pub: o.keys?.pub ?? '', priv: o.keys?.priv ?? '' },
       useTurn: false, turnServers: [],
-      tombstones: {}, manifest: [], ownerId: 'A', mutes: [], history: [], chat: [],
-      identities: {}, e2e, secret, cacheDir: path.join(folder, 'cache'),
+      tombstones: {}, manifest: [], ownerId: o.ownerId ?? '', mutes: [], history: [], chat: [],
+      identities: {}, e2e: o.e2e ?? false, secret: o.secret ?? '', e2eCfg: o.e2eCfg ?? null,
+      cacheDir: path.join(o.folder, 'enc'),
     },
   };
 }
 
+/** Attach a test-controlled raw peer to an engine (a member gone hostile:
+ *  it holds the code, but the test decides every frame it sends). */
+function hostilePeer(inst: Engine): FakePeer {
+  const pEngine = new FakePeer(); const pTest = new FakePeer();
+  pEngine.other = pTest; pTest.other = pEngine;
+  inst.tracker.emitPeer(pEngine);
+  return pTest;
+}
+
+/** An encrypted HELLO frame as a (possibly lying) member would send it. */
+function helloFrame(code: string, over: Record<string, unknown>): string {
+  return encrypt(deriveKey(code), {
+    t: 'hello', memberId: 'MAL', name: 'Mallory', avatarSeed: 'mal',
+    have: [], files: [], tombs: [], roomName: '', ownerId: '', e2e: false, secret: '',
+    ...over,
+  });
+}
+
+/** All E2E persistence calls (room-e2e IPC) an engine has made, oldest first. */
+const e2ePersists = (inst: Engine) => inst.sent.filter((s) => s.channel === 'room-e2e').map((s) => s.payload);
+
+/** Verify a persisted cfg blob exactly like a peer would. */
+function cfgVerifies(cfg: any, topic: string, ownerPub: string): boolean {
+  const canon = Buffer.from(JSON.stringify(['th-room-e2e:v1', topic, cfg.ownerId, cfg.e2e, cfg.secret]), 'utf8');
+  return crypto.verify(null, canon, crypto.createPublicKey(ownerPub), Buffer.from(cfg.sig, 'base64'));
+}
+
 let dir: string;
+let sourceFile: string;
+let roomSeq = 0;
+const newFolder = () => path.join(dir, 'install-' + ++roomSeq);
+
 beforeAll(() => {
   (globalThis as any).window = globalThis; // engine reads window.* for native WebRTC
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-e2e-adopt-'));
-  for (const d of ['a', 'b', 'c']) fs.mkdirSync(path.join(dir, d));
+  sourceFile = path.join(dir, 'episode.mkv');
+  fs.writeFileSync(sourceFile, 'e2e adopt test content -> deterministic fileId');
 });
 afterAll(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 
-describe('E2E adoption is monotonic: joiners upgrade, owners never downgrade', () => {
-  let A: Engine; let B: Engine;
-
-  it("a fresh joiner's e2e:false HELLO does not strip the owner's E2E flag", async () => {
-    A = await makeEngine();
-    B = await makeEngine();
-    await cmd(A, joinPayload('A', path.join(dir, 'a'), true, SECRET));
-    await cmd(B, joinPayload('B', path.join(dir, 'b'), false, ''));
-    A.tracker = H.trackers[0]; B.tracker = H.trackers[1];
-    connect(A, B);
-    await flush();
-
-    const stateA = await cmd(A, joinPayload('A', path.join(dir, 'a'), true, SECRET));
-    expect(stateA.e2e).toBe(true);
-    // The owner never re-learned its own config (the pre-fix engine flipped to
-    // false here and persisted the downgrade via 'room-e2e').
-    expect(A.sent.filter((s) => s.channel === 'room-e2e')).toHaveLength(0);
+describe('invite code E2E marker', () => {
+  it('generateRoomCode marks E2E rooms and codeIsE2E parses it', () => {
+    const plain = generateRoomCode();
+    const sealed = generateRoomCode(true);
+    expect(codeIsE2E(plain)).toBe(false);
+    expect(sealed.endsWith('-e2e')).toBe(true);
+    expect(codeIsE2E(sealed)).toBe(true);
+    // Survives the copy/paste normalization joiners go through.
+    expect(codeIsE2E(' Swift-Amber-Otter-Comet-4821-E2E ')).toBe(true);
+    // Old-format codes (or hand-typed ones) never read as E2E.
+    expect(codeIsE2E('swift-amber-otter-comet-4821')).toBe(false);
   });
 
-  it('the joiner upgrades to e2e and adopts the secret from the HELLO', async () => {
-    const stateB = await cmd(B, joinPayload('B', path.join(dir, 'b'), false, ''));
-    expect(stateB.e2e).toBe(true);
-    const learned = B.sent.filter((s) => s.channel === 'room-e2e');
-    expect(learned).toHaveLength(1);
-    expect(learned[0].payload).toMatchObject({ e2e: true, secret: SECRET });
+  it('a joiner refuses to seed plaintext into an E2E room it has no secret for yet', async () => {
+    const code = generateRoomCode(true);
+    const J = await makeEngine();
+    // The manager passes e2e:false for a bare code-join — the CODE alone must flip it.
+    await cmd(J, joinPayload({ roomId: 'r-guard', code, memberId: 'member-J', folder: newFolder() }));
+    const state = await cmd(J, { type: 'snapshot', roomId: 'r-guard' });
+    expect(state.e2e).toBe(true); // learned from the code, no peer needed
+    await expect(cmd(J, { type: 'addFiles', roomId: 'r-guard', paths: [sourceFile] }))
+      .rejects.toThrow(/encryption key/i);
+    const after = await cmd(J, { type: 'snapshot', roomId: 'r-guard' });
+    expect(after.files).toHaveLength(0); // nothing was shared, plaintext or otherwise
   });
+});
 
-  it('a conflicting secret is never adopted (first learned wins)', async () => {
-    const C = await makeEngine();
-    await cmd(C, joinPayload('C', path.join(dir, 'c'), true, WRONG_SECRET));
-    C.tracker = H.trackers[2];
-    connect(A, C);
+describe('owner-signed E2E config', () => {
+  const S = generateRoomSecret();      // the room's real content secret
+  const W = generateRoomSecret();      // what a hostile member tries to plant
+  const ownerKeys = makeKeys();
+
+  it('a joiner adopts the owner-signed flag+secret and persists the blob', async () => {
+    const code = generateRoomCode(true);
+    const roomId = 'r-adopt';
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
     await flush();
 
-    // Neither side re-persisted E2E config: A kept SECRET, C kept its own.
-    expect(A.sent.filter((s) => s.channel === 'room-e2e')).toHaveLength(0);
-    expect(C.sent.filter((s) => s.channel === 'room-e2e')).toHaveLength(0);
-    const stateA = await cmd(A, joinPayload('A', path.join(dir, 'a'), true, SECRET));
-    expect(stateA.e2e).toBe(true);
+    const persisted = e2ePersists(J).at(-1);
+    expect(persisted?.e2e).toBe(true);
+    expect(persisted?.secret).toBe(S);
+    expect(persisted?.cfg?.ownerId).toBe('owner-O');
+    expect(cfgVerifies(persisted.cfg, topicHash(code), ownerKeys.pub)).toBe(true);
+    const state = await cmd(J, { type: 'snapshot', roomId });
+    expect(state.ownerId).toBe('owner-O');
+
+    // With the secret in hand the joiner can share — encrypted, not plaintext.
+    const shared = await cmd(J, { type: 'addFiles', roomId, paths: [sourceFile] });
+    expect(shared.files).toHaveLength(1);
+    expect(shared.files[0].enc).toBe(true);
+  });
+
+  it('a hostile member cannot plant a secret in a signed-format room; the owner still gets through', async () => {
+    const code = generateRoomCode(true);
+    const roomId = 'r-plant';
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+
+    // Mallory races the owner: unsigned secret + a bald ownership claim.
+    const mal = hostilePeer(J);
+    mal.send(helloFrame(code, { e2e: true, secret: W, ownerId: 'MAL' }));
+    await flush();
+    expect(e2ePersists(J)).toHaveLength(0); // nothing adopted, nothing persisted
+
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    await flush();
+
+    const persisted = e2ePersists(J).at(-1);
+    expect(persisted?.secret).toBe(S);
+    // The signed config also corrects Mallory's unsigned ownership claim.
+    const state = await cmd(J, { type: 'snapshot', roomId });
+    expect(state.ownerId).toBe('owner-O');
+  });
+
+  it('rejects a forged config (attacker key) and a tampered one (owner sig, altered secret)', async () => {
+    const code = generateRoomCode(true);
+    const roomId = 'r-forge';
+    const topic = topicHash(code);
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    await flush();
+    const before = e2ePersists(J).length;
+    const realCfg = e2ePersists(J).at(-1)!.cfg;
+
+    // Forged: attacker signs with their OWN key but claims the owner's id.
+    const att = makeKeys();
+    const forgedCanon = Buffer.from(JSON.stringify(['th-room-e2e:v1', topic, 'owner-O', true, W]), 'utf8');
+    const forged = {
+      ownerId: 'owner-O', e2e: true, secret: W, pub: att.pub,
+      sig: crypto.sign(null, forgedCanon, crypto.createPrivateKey(att.priv)).toString('base64'),
+    };
+    // Tampered: the owner's genuine signature over a swapped secret.
+    const tampered = { ...realCfg, secret: W };
+    const mal = hostilePeer(J);
+    mal.send(helloFrame(code, { cfg: forged }));
+    mal.send(helloFrame(code, { cfg: tampered }));
+    await flush();
+
+    expect(e2ePersists(J)).toHaveLength(before); // nothing new was adopted
+    expect(e2ePersists(J).at(-1)?.secret).toBe(S);
+  });
+
+  it('members re-serve the signed config, so a joiner converges with the owner offline', async () => {
+    const code = generateRoomCode(true);
+    const roomId = 'r-relay';
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    const J1 = await makeEngine();
+    await cmd(J1, joinPayload({ roomId, code, memberId: 'member-J1', folder: newFolder() }));
+    J1.tracker = H.trackers[H.trackers.length - 1];
+    const [pO] = connect(O, J1);
+    await flush();
+    expect(e2ePersists(J1).at(-1)?.secret).toBe(S);
+
+    // Owner drops off; a fresh joiner reaches only J1.
+    pO.destroy();
+    const J2 = await makeEngine();
+    await cmd(J2, joinPayload({ roomId, code, memberId: 'member-J2', folder: newFolder() }));
+    J2.tracker = H.trackers[H.trackers.length - 1];
+    connect(J1, J2);
+    await flush();
+
+    const persisted = e2ePersists(J2).at(-1);
+    expect(persisted?.secret).toBe(S);
+    expect(cfgVerifies(persisted.cfg, topicHash(code), ownerKeys.pub)).toBe(true);
+  });
+
+  it('legacy rooms: monotonic flag + adopt-once secret, and the owner-signed config recovers a planted one', async () => {
+    const code = generateRoomCode(); // old format — no marker, unsigned gossip allowed
+    const roomId = 'r-legacy';
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+
+    // Mallory reaches the joiner first: the legacy path adopts once (old-owner
+    // compatibility) — this is the denial-of-decryption plant.
+    const mal = hostilePeer(J);
+    mal.send(helloFrame(code, { e2e: true, secret: W, ownerId: 'MAL' }));
+    await flush();
+    expect(e2ePersists(J).at(-1)?.secret).toBe(W);
+
+    // A second conflicting unsigned secret is logged, never obeyed…
+    mal.send(helloFrame(code, { e2e: true, secret: generateRoomSecret() }));
+    // …and an unsigned "downgrade to plaintext" is ignored outright.
+    mal.send(helloFrame(code, { e2e: false }));
+    await flush();
+    expect(e2ePersists(J).at(-1)?.secret).toBe(W);
+    expect((await cmd(J, { type: 'snapshot', roomId })).e2e).toBe(true);
+
+    // The real owner appears: its SIGNED config overrides the plant (recovery).
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    await flush();
+
+    const persisted = e2ePersists(J).at(-1);
+    expect(persisted?.secret).toBe(S);
+    expect(persisted?.cfg?.ownerId).toBe('owner-O');
+    expect((await cmd(J, { type: 'snapshot', roomId })).ownerId).toBe('owner-O');
+  });
+
+  it('kick/rekey keeps the E2E marker and re-signs the config for the new topic', async () => {
+    const code = generateRoomCode(true);
+    const roomId = 'r-rekey';
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: 'owner-O', ownerId: 'owner-O', e2e: true, secret: S, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+    const M = await makeEngine();
+    await cmd(M, joinPayload({ roomId, code, memberId: 'member-M', folder: newFolder() }));
+    M.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    connect(O, M);
+    await flush();
+    expect(e2ePersists(J).at(-1)?.secret).toBe(S);
+
+    await cmd(O, { type: 'kick', roomId, memberId: 'member-M' });
+    await new Promise((r) => setTimeout(r, 400)); // kickMember defers the rekey 300ms
+    await flush();
+
+    const rekey = J.sent.filter((s) => s.channel === 'room-rekey').map((s) => s.payload).at(-1);
+    expect(rekey?.code).toBeTruthy();
+    expect(rekey.code).not.toBe(code);
+    expect(codeIsE2E(rekey.code)).toBe(true); // the replacement code keeps the marker
+
+    // The survivor ends up holding a config re-signed over the NEW topic,
+    // with the same secret (content access survives the rotation).
+    const persisted = e2ePersists(J).at(-1);
+    expect(persisted?.secret).toBe(S);
+    expect(persisted?.cfg).toBeTruthy();
+    expect(cfgVerifies(persisted.cfg, topicHash(rekey.code), ownerKeys.pub)).toBe(true);
   });
 });

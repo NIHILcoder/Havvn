@@ -25,7 +25,7 @@ import { ipcRenderer } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import WebTorrent from 'webtorrent';
-import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode } from './room-crypto';
+import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
 import { RoomFile, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
 import { safeBaseName } from '../../shared/path-safety';
@@ -78,7 +78,10 @@ type Msg =
   // `tombs` lists deleted fileIds (legacy shape, kept so older peers converge);
   // `tombsAt` adds each deletion's timestamp so a LATER explicit re-share wins
   // (revive) while anything older stays dead.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string }
+  // `cfg` is the room owner's SIGNED E2E config (see E2ECfg) — the authenticated
+  // way to learn the flag+secret; the bare e2e/secret fields remain for rooms
+  // whose owner runs an older build that doesn't sign.
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg }
   | { t: 'add'; file: RoomFile }
   | { t: 'have'; memberId: string; fileId: string }
   | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string }
@@ -107,6 +110,16 @@ type Msg =
 
 interface Wire { id: number; peer: any; memberId?: string; }
 
+/**
+ * The room's E2E config as a self-contained, owner-signed claim: `sig` is an
+ * Ed25519 signature by `pub` (the OWNER's identity key) over the topic, ownerId,
+ * flag and secret — so no other keyholder can mint or alter one, and a blob from
+ * another room/topic never verifies here. Members store the blob and re-serve it
+ * in their HELLOs, so a joiner can authenticate the secret even while the owner
+ * is offline. Binding to the CURRENT topic means the owner re-signs on rekey.
+ */
+interface E2ECfg { ownerId: string; e2e: boolean; secret: string; pub: string; sig: string; }
+
 interface Room {
   roomId: string;
   name: string;
@@ -122,6 +135,8 @@ interface Room {
   ownerId: string;                       // memberId of the owner ('' until learned)
   e2e: boolean;                          // end-to-end encryption (ciphertext on the wire)
   secret: string;                        // E2E content key (32-byte hex; '' until learned)
+  e2eCfg: E2ECfg | null;                 // owner-signed E2E config we hold + re-serve to joiners
+  e2eSigned: boolean;                    // e2e/secret/owner were established by a VERIFIED owner signature
   cacheDir: string;                      // where ciphertext copies live (outside the room folder)
   wires: Map<number, Wire>;
   members: Map<string, RoomMember>;      // by memberId (excludes self)
@@ -299,28 +314,116 @@ function helloMsg(room: Room): Msg {
     ownerId: room.ownerId, // so joiners learn who the owner is
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
     secret: room.secret,
+    ...(room.e2eCfg ? { cfg: room.e2eCfg } : {}), // owner-signed config, re-served for joiners
   };
 }
 
-/** Learn the room's E2E mode + content secret from a peer (HELLO). The secret is
- *  separate from the rotating gossip key, so it survives kicks.
+// ── E2E config authenticity (Ed25519, same identity keys as chat) ────────────
+// Holding the room code lets ANY member speak on the gossip channel, so the
+// E2E flag+secret must not be trusted just because they arrived in a HELLO: a
+// hostile member could otherwise plant a wrong secret on a fresh joiner (who
+// would persist it and never decrypt anything). The owner therefore SIGNS the
+// config; members verify before adopting, bind the owner's key TOFU like chat,
+// and re-serve the signed blob so it propagates without the owner online.
+
+/** Stable bytes the owner signs / members verify for an E2E config. The topic
+ *  scopes it to this room's current key epoch (no cross-room/pre-rekey replay);
+ *  the leading tag keeps it disjoint from chat's canonical form. */
+function e2eCanonical(topic: string, cfg: { ownerId: string; e2e: boolean; secret: string }): Buffer {
+  return Buffer.from(JSON.stringify(['th-room-e2e:v1', topic, cfg.ownerId, cfg.e2e, cfg.secret]), 'utf8');
+}
+
+/** Owner only: mint the signed E2E config for the room's CURRENT topic. */
+function signE2ECfg(room: Room): E2ECfg | null {
+  const body = { ownerId: room.self.memberId, e2e: room.e2e, secret: room.secret };
+  try {
+    const sig = crypto.sign(null, e2eCanonical(room.topic, body), crypto.createPrivateKey(room.self.priv)).toString('base64');
+    return { ...body, pub: room.self.pub, sig };
+  } catch (e) { log('e2e cfg sign failed: ' + String(e)); return null; }
+}
+
+/**
+ * Verify an incoming signed E2E config: the signature must be valid over this
+ * room's CURRENT topic, and the signing key must match the identity already
+ * bound to the claimed ownerId (binding it on first sight, exactly like chat).
+ * A verified config is the strongest E2E claim we have — but the first-sight
+ * binding is still TOFU: a hostile member who reaches a fresh joiner before
+ * anyone else can pose as the owner outright. What it removes is the ability
+ * to tamper with the REAL owner's config or replay one across rooms/epochs.
+ */
+function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
+  if (!cfg || typeof cfg !== 'object') return false;
+  if (!cfg.ownerId || !cfg.pub || !cfg.sig || typeof cfg.e2e !== 'boolean' || typeof cfg.secret !== 'string') return false;
+  // If a signed config already established the owner, only that same owner counts.
+  if (room.e2eSigned && room.ownerId && cfg.ownerId !== room.ownerId) {
+    log('e2e cfg from a different claimed owner — dropped'); return false;
+  }
+  const bound = room.identities.get(cfg.ownerId);
+  if (bound && bound !== cfg.pub) { log('e2e cfg owner key mismatch for ' + cfg.ownerId + ' — dropped'); return false; }
+  let ok = false;
+  try { ok = crypto.verify(null, e2eCanonical(room.topic, cfg), crypto.createPublicKey(cfg.pub), Buffer.from(cfg.sig, 'base64')); }
+  catch (e) { log('e2e cfg verify error: ' + String(e)); return false; }
+  if (!ok) { log('e2e cfg bad signature — dropped'); return false; }
+  if (!bound) { room.identities.set(cfg.ownerId, cfg.pub); try { ipcRenderer.send('room-identity-add', { roomId: room.roomId, memberId: cfg.ownerId, pub: cfg.pub }); } catch { /* ignore */ } }
+  return true;
+}
+
+/** Persist the current E2E view (flag, secret, signed blob) via the main process. */
+function persistE2E(room: Room): void {
+  try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret, cfg: room.e2eCfg }); } catch { /* ignore */ }
+}
+
+/**
+ * Learn the room's E2E mode + content secret from a peer's HELLO. The secret is
+ * separate from the rotating gossip key, so it survives kicks.
  *
- *  E2E is decided at creation and never changes, but a fresh joiner doesn't know
- *  it yet and HELLOs with e2e:false — so adoption is strictly MONOTONIC: a room
- *  can be upgraded to e2e by a peer who knows, never downgraded. (Adopting false
- *  used to let a joiner's first HELLO flip the owner's room out of E2E — any file
- *  shared in that window would have hit the swarm as plaintext.) The secret is
- *  adopt-once for the same reason: first learned wins, later mismatches are noise
- *  from a confused or hostile peer and are logged, not obeyed. */
-function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string): void {
+ * Trust rules (the code alone makes every member a valid gossip speaker, so the
+ * config needs its own authenticity):
+ *   • A VERIFIED owner-signed `cfg` is authoritative: it sets flag+secret, may
+ *     correct an unsigned owner claim, and OVERRIDES a secret that was adopted
+ *     unsigned — the recovery path for a member a hostile peer got to first.
+ *   • Unsigned e2e/secret are the legacy fallback (owner on an older build):
+ *     the flag is monotonic (false→true only; a "downgrade to plaintext" is
+ *     ignored) and the secret adopts once — a conflicting later value is logged,
+ *     never obeyed. Rooms whose invite code carries the -e2e marker never accept
+ *     unsigned values at all: their owner provably signs.
+ *   • Once a verified config established the state, unsigned input is ignored.
+ * Any change is persisted (room-e2e IPC → db) and may unblock queued ciphertext.
+ */
+function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg): void {
   let changed = false;
-  if (e2e === true && !room.e2e) { room.e2e = true; changed = true; }
-  if (secret && !room.secret) { room.secret = secret; changed = true; }
-  else if (secret && room.secret && secret !== room.secret) log('peer sent a conflicting E2E secret — keeping ours');
+  if (cfg && verifyE2ECfg(room, cfg)) {
+    // The signed claim also proves ownership — adopt/correct an ownerId that was
+    // never backed by a signature (a bare HELLO field is just a claim).
+    if (room.ownerId !== cfg.ownerId && (!room.ownerId || !room.e2eSigned)) {
+      room.ownerId = cfg.ownerId;
+      try { ipcRenderer.send('room-owner', { roomId: room.roomId, ownerId: cfg.ownerId }); } catch { /* ignore */ }
+      changed = true;
+    }
+    if (cfg.e2e && !room.e2e) { room.e2e = true; changed = true; }
+    if (cfg.secret && cfg.secret !== room.secret) {
+      if (room.secret) log('e2e secret corrected by owner-signed config');
+      room.secret = cfg.secret;
+      changed = true;
+    }
+    if (!room.e2eSigned || room.e2eCfg?.sig !== cfg.sig) { room.e2eCfg = cfg; room.e2eSigned = true; changed = true; }
+  } else if (!room.e2eSigned) {
+    if (codeIsE2E(room.code)) {
+      // New-format room: the owner always signs, so an unsigned secret can only
+      // be a plant — refuse it outright (no first-claimant race to win).
+      if (secret && secret !== room.secret) log('unsigned e2e secret in a signed room — ignored');
+    } else {
+      if (e2e === true && !room.e2e) { room.e2e = true; changed = true; }
+      else if (e2e === false && room.e2e) log('unsigned e2e downgrade — ignored');
+      if (secret && !room.secret) { room.secret = secret; changed = true; }
+      else if (secret && secret !== room.secret) log('conflicting unsigned e2e secret — ignored');
+    }
+  }
   if (changed) {
-    try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret }); } catch { /* ignore */ }
-    // A just-learned secret may unblock ciphertext we already downloaded.
+    persistE2E(room);
+    // A just-learned (or corrected) secret may unblock ciphertext we already hold.
     if (room.secret) void decryptPending(room);
+    pushState(room);
   }
 }
 
@@ -500,6 +603,12 @@ function clampGossip(msg: any): void {
   if ('emoji' in msg) msg.emoji = clampStr(msg.emoji, 16);
   if ('pub' in msg) msg.pub = clampStr(msg.pub, MAX_STR * 2);
   if ('sig' in msg) msg.sig = clampStr(msg.sig, MAX_STR);
+  if ('cfg' in msg) {
+    const c = msg.cfg;
+    msg.cfg = (c && typeof c === 'object' && !Array.isArray(c))
+      ? { ownerId: clampStr(c.ownerId, MAX_STR), e2e: c.e2e === true, secret: clampStr(c.secret, MAX_SECRET), pub: clampStr(c.pub, MAX_STR * 2), sig: clampStr(c.sig, MAX_STR) }
+      : undefined;
+  }
   if (Array.isArray(msg.have)) msg.have = msg.have.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
   if (Array.isArray(msg.tombs)) msg.tombs = msg.tombs.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
   if ('tombsAt' in msg) {
@@ -558,7 +667,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       m.have = Array.from(new Set(msg.have || []));
       maybeAdoptRoomName(room, msg.roomName);
       maybeAdoptOwner(room, msg.ownerId);
-      maybeAdoptE2E(room, msg.e2e, msg.secret);
+      maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
       // Apply peer deletions first so their HELLO file list can't re-add them.
       // A tombstone without a timestamp came from an older build that can't
@@ -731,7 +840,7 @@ function mergeFile(room: Room, file: RoomFile): void {
   if (!room.files.has(file.fileId)) {
     room.files.set(file.fileId, file);
     persistManifest(room, file); // localPath filled in once the download lands
-    logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: file.addedByName || '?', fileName: file.name });
+    logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: file.addedByName || room.members.get(file.addedBy)?.name || '?', fileName: file.name });
     // Manual mode: list the file but don't fetch — the user pulls it with an
     // explicit fetchFile. (Our OWN shares go through mergeFileLocal instead.)
     if (room.autoFetch) ensureLocal(room, file);
@@ -1027,6 +1136,14 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   room.key = deriveKey(newCode);
   room.topic = topicHash(newCode);
   try { ipcRenderer.send('room-rekey', { roomId: room.roomId, code: newCode }); } catch { /* ignore */ }
+  // The signed E2E config binds the topic, which just rotated: the owner mints a
+  // fresh one (broadcast in the re-greet below); members drop the now-stale blob
+  // and pick the owner's new one from its HELLO. Flag/secret themselves persist
+  // (that's the point of the secret being separate from the code).
+  if (room.e2e) {
+    room.e2eCfg = room.ownerId === room.self.memberId ? signE2ECfg(room) : null;
+    persistE2E(room);
+  }
   restartTracker(room);
   const ownerName = room.ownerId === room.self.memberId
     ? (room.self.name || 'You')
@@ -1065,7 +1182,9 @@ function kickMember(room: Room, memberId: string): void {
   }
   // 2. Rotate the room away from them. Deferred briefly so the notice flushes on
   //    the data channel before applyLocalRekey tears that wire down.
-  const newCode = generateRoomCode();
+  //    An E2E room's replacement code keeps the -e2e marker (joiners of the new
+  //    code must still know not to seed plaintext).
+  const newCode = generateRoomCode(room.e2e);
   const oldKey = room.key;
   const rekey: Msg = { t: 'rekey', newCode, kickedId: memberId, kickedName, by: room.self.memberId };
   setTimeout(() => {
@@ -1077,7 +1196,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
   let room = rooms.get(p.roomId);
   if (room) return buildState(room);
 
@@ -1100,8 +1219,12 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     started: false,
     self: p.self,
     ownerId: p.ownerId || '',
-    e2e: p.e2e || false,
+    // The invite code is the E2E source of truth for new-format rooms: even if
+    // the persisted flag is missing/stale, a "-e2e" code must never run plaintext.
+    e2e: p.e2e || codeIsE2E(p.code),
     secret: p.secret || '',
+    e2eCfg: null,
+    e2eSigned: false,
     cacheDir: p.cacheDir || '',
     wires: new Map(),
     members: new Map(),
@@ -1123,6 +1246,18 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     lastSnapshot: 0,
   };
   rooms.set(p.roomId, room);
+
+  // E2E authenticity: the owner mints the signed config fresh (it holds the
+  // private key, so no persistence is needed); everyone else restores the
+  // owner's persisted blob — re-verified, since the topic may have rotated or
+  // the store been tampered with — and re-serves it to joiners.
+  if (room.e2e && room.secret && room.ownerId === room.self.memberId) {
+    room.e2eCfg = signE2ECfg(room);
+    room.e2eSigned = !!room.e2eCfg;
+  } else if (p.e2eCfg && verifyE2ECfg(room, p.e2eCfg)) {
+    room.e2eCfg = p.e2eCfg;
+    room.e2eSigned = true;
+  }
 
   // The owner logs the room's creation once (its history starts empty).
   if (room.ownerId && room.ownerId === room.self.memberId && room.history.length === 0) {

@@ -17,7 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
 import * as db from '../db/store';
 import { RoomState, RoomSummary, RoomProfile } from '../../shared/types';
-import { generateRoomCode, normalizeCode } from './room-crypto';
+import { generateRoomCode, normalizeCode, codeIsE2E } from './room-crypto';
 import { generateRoomSecret } from './room-e2e';
 
 const log = logger.child('RoomManager');
@@ -126,14 +126,16 @@ export class RoomManager {
       } catch { /* ignore */ }
     });
     // A joiner learned the room's E2E mode + content secret from a peer — persist
-    // them so encrypted files keep decrypting after restart.
-    ipcMain.on('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string }) => {
+    // them (with the owner-signed config blob, so it can be re-verified and
+    // re-served after restart) so encrypted files keep decrypting.
+    ipcMain.on('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string; cfg?: db.PersistedRoom['e2eCfg'] }) => {
       try {
         if (!payload?.roomId) return;
         const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
-        if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret)) {
-          db.savePersistedRoom({ ...r, e2e: payload.e2e, secret: payload.secret });
-          log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e });
+        const cfg = payload.cfg || undefined;
+        if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret || r.e2eCfg?.sig !== cfg?.sig)) {
+          db.savePersistedRoom({ ...r, e2e: payload.e2e, secret: payload.secret, e2eCfg: cfg });
+          log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e, signed: !!cfg });
         }
       } catch { /* ignore */ }
     });
@@ -212,7 +214,7 @@ export class RoomManager {
     return path.join(app.getPath('userData'), 'room-enc', roomId);
   }
 
-  private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string) {
+  private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string, e2eCfg?: db.PersistedRoom['e2eCfg']) {
     const profile = db.getRoomProfile();
     const identity = db.getRoomIdentity();
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
@@ -239,6 +241,7 @@ export class RoomManager {
         identities: db.getRoomIdentities(roomId),
         e2e: e2e ?? false,
         secret: secret ?? '',
+        e2eCfg: e2eCfg ?? null,
         cacheDir: this.encCacheDir(roomId),
         // Per-room preferences (absent → auto-download on, no speed limits).
         autoFetch: persisted?.autoFetch !== false,
@@ -263,7 +266,7 @@ export class RoomManager {
 
   async createRoom(name: string, e2e = false): Promise<RoomState> {
     const roomId = uuidv4();
-    const code = generateRoomCode();
+    const code = generateRoomCode(e2e); // E2E rooms carry the marker in the code itself
     const folder = path.join(await this.roomsBase(), slugify(name) + '-' + roomId.slice(0, 6));
     fs.mkdirSync(folder, { recursive: true });
     const createdAt = Date.now();
@@ -290,8 +293,11 @@ export class RoomManager {
     const folder = path.join(await this.roomsBase(), slugify(code) + '-' + roomId.slice(0, 6));
     fs.mkdirSync(folder, { recursive: true });
     const createdAt = Date.now();
-    db.savePersistedRoom({ roomId, name, code, folder, createdAt });
-    const { type, payload } = await this.joinPayload(roomId, name, code, folder);
+    // A "-e2e" code tells us the room is end-to-end encrypted before any peer
+    // does — so the engine refuses to seed plaintext even into an empty swarm.
+    const e2e = codeIsE2E(code);
+    db.savePersistedRoom({ roomId, name, code, folder, createdAt, e2e });
+    const { type, payload } = await this.joinPayload(roomId, name, code, folder, undefined, e2e);
     const state = await this.call<RoomState>(type, { payload });
     state.createdAt = createdAt;
     this.cache.set(roomId, state);
@@ -299,7 +305,7 @@ export class RoomManager {
   }
 
   private async reactivate(r: db.PersistedRoom): Promise<RoomState> {
-    const { type, payload } = await this.joinPayload(r.roomId, r.name, r.code, r.folder, r.ownerId, r.e2e, r.secret);
+    const { type, payload } = await this.joinPayload(r.roomId, r.name, r.code, r.folder, r.ownerId, r.e2e, r.secret, r.e2eCfg);
     const state = await this.call<RoomState>(type, { payload });
     state.createdAt = r.createdAt;
     this.cache.set(r.roomId, state);
