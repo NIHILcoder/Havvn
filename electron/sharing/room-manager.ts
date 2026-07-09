@@ -239,6 +239,8 @@ export class RoomManager {
         e2e: e2e ?? false,
         secret: secret ?? '',
         cacheDir: this.encCacheDir(roomId),
+        // Per-room auto-download preference (absent = true).
+        autoFetch: db.getPersistedRooms().find((r) => r.roomId === roomId)?.autoFetch !== false,
       },
     };
   }
@@ -411,6 +413,21 @@ export class RoomManager {
       this.win.webContents.send('room-cmd', { type: 'mute', reqId: ++this.reqSeq, roomId, memberId, muted });
     }
     return { ok: true };
+  }
+
+  /** Auto-download files peers share into this room (persisted per room).
+   *  Turning it back on also pulls everything left unfetched. */
+  async setAutoFetch(roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> {
+    db.setRoomAutoFetch(roomId, autoFetch);
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'setAutoFetch', reqId: ++this.reqSeq, roomId, autoFetch });
+    }
+    return { ok: true };
+  }
+
+  /** Manual mode: explicitly download one shared file. Returns the fresh state. */
+  async fetchFile(roomId: string, fileId: string): Promise<RoomState> {
+    return this.call<RoomState>('fetchFile', { roomId, fileId }, 8000);
   }
 
   /** Watch-together: broadcast a local playback action to the room's peers. */

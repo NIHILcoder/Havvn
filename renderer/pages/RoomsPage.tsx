@@ -11,7 +11,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile } from '../../shared/types';
-import { Button, Icon, EmptyState, Identicon, QRCode, TransferPickerModal } from '../components';
+import { Button, Icon, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle } from '../components';
 import { avatarCandidates } from '../components/Identicon';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
@@ -190,6 +190,14 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     finally { setBusy(false); }
   };
 
+  // Per-room auto-download toggle — optimistic flip; the engine's state push
+  // (onRoomUpdate) is the source of truth right after.
+  const handleToggleAutoFetch = async (roomId: string, autoFetch: boolean) => {
+    setRoom((prev) => (prev && prev.roomId === roomId ? { ...prev, autoFetch } : prev));
+    try { await window.api.rooms.setAutoFetch(roomId, autoFetch); }
+    catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
+  };
+
   const openProfile = () => {
     if (!profile) return;
     setProfileName(profile.name);
@@ -263,6 +271,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
                 onLeave={() => handleLeave(room.roomId)}
                 onCopyCode={() => copy(room.code, t('rooms.codeCopied'))}
                 onWatch={(file) => setWatch({ file })}
+                onToggleAutoFetch={(v) => handleToggleAutoFetch(room.roomId, v)}
                 onShared={(state) => {
                   // The share can outlive a room switch — only apply the state
                   // if that room is still the one on screen (same guard as the
@@ -423,10 +432,12 @@ interface DetailProps {
   onWatch: (file: RoomFile) => void;
   /** A transfer was shared into this room — apply the returned state. */
   onShared: (state: RoomState) => void;
+  /** Flip the room's auto-download preference. */
+  onToggleAutoFetch: (autoFetch: boolean) => void;
   busy: boolean;
 }
 
-const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onInvite, onLeave, onCopyCode, onWatch, onShared, busy }) => {
+const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onInvite, onLeave, onCopyCode, onWatch, onShared, onToggleAutoFetch, busy }) => {
   const { t } = useTranslation();
   // "Bring a file from Transfers" — pick a finished download to share here
   const [pickTransfer, setPickTransfer] = useState(false);
@@ -478,7 +489,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
         <div className="room-col-main">
           {/* Files */}
           <div className="room-section">
-            <div className="room-section-title">{t('rooms.sharedFiles')} · {room.files.length}</div>
+            <div className="room-section-title-row">
+              <div className="room-section-title">{t('rooms.sharedFiles')} · {room.files.length}</div>
+              <div className="room-autofetch" title={t('rooms.autoFetchHint')}>
+                <Toggle size="small" checked={room.autoFetch} onChange={onToggleAutoFetch} label={t('rooms.autoFetch')} />
+              </div>
+            </div>
 
             {room.files.length === 0 ? (
               <div className="room-files-empty">{t('rooms.noFiles')}</div>
@@ -674,6 +690,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
   const downloading = tr && tr.status === 'downloading';
   const haveLocally = tr?.haveLocally;
   const canWatch = haveLocally && isPlayable(file.name);
+  // Manual mode: the file is listed but nothing has fetched it yet.
+  const awaitingFetch = !room.autoFetch && !haveLocally && !downloading;
 
   return (
     <div className="room-file">
@@ -719,6 +737,18 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           <Icon name="external-link" size={14} /> {t('rooms.openFile')}
         </button>
       )}
+      {awaitingFetch && (
+        <button
+          className="room-file-open room-file-fetch"
+          onClick={() => {
+            window.api.rooms.fetchFile(room.roomId, file.fileId)
+              .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+          }}
+          title={t('rooms.fetchHint')}
+        >
+          <Icon name="download" size={14} /> {t('rooms.fetch')}
+        </button>
+      )}
       <button
         className="room-file-del"
         onClick={() => {
@@ -734,6 +764,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           <span className="room-status seeding" title={t('rooms.haveLocal')}><Icon name="check-circle" size={16} /></span>
         ) : downloading ? (
           <span className="room-status downloading">{Math.round((tr.progress || 0) * 100)}%</span>
+        ) : awaitingFetch ? (
+          <span className="room-status queued" title={t('rooms.notFetched')}>—</span>
         ) : (
           <span className="room-status queued" title={t('rooms.queued')}><Icon name="download" size={16} /></span>
         )}

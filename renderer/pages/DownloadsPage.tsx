@@ -286,7 +286,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       // Delete - Remove selected downloads
       if (e.key === 'Delete' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
-        if (confirm(`Remove ${selectedIds.size} download(s)?`)) {
+        if (confirm(`${t('downloads.confirmRemoveMany')} (${selectedIds.size})`)) {
           const idsToRemove = Array.from(selectedIds);
           Promise.all(idsToRemove.map(id => window.api.removeDownload(id, false)))
             .then(() => {
@@ -1017,7 +1017,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 size="sm"
                 icon={<Icon name="trash" size={14} />}
                 onClick={async () => {
-                  if (confirm(`Remove ${selectedIds.size} download(s)?`)) {
+                  if (confirm(`${t('downloads.confirmRemoveMany')} (${selectedIds.size})`)) {
                     const promises = Array.from(selectedIds).map(id => window.api.removeDownload(id, false).catch(err => console.error(err)));
                     await Promise.all(promises);
                     await loadDownloads();
@@ -1160,7 +1160,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           y={contextMenu.y}
           items={[
             {
-              label: 'Watch / Listen',
+              label: t('downloads.watchListen'),
               icon: 'play',
               onClick: () => {
                 setStreamModalId(contextMenu.downloadId);
@@ -1176,7 +1176,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: 'Share link…',
+              label: t('downloads.shareLink'),
               icon: 'share-2',
               onClick: () => {
                 setShareModalId(contextMenu.downloadId);
@@ -1184,7 +1184,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: 'Advanced Controls...',
+              label: t('downloads.advancedControls'),
               icon: 'settings',
               onClick: () => {
                 setControlModalId(contextMenu.downloadId);
@@ -1197,7 +1197,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               divider: true,
             },
             {
-              label: 'Pause',
+              label: t('downloads.pause'),
               icon: 'pause',
               // Only enabled when the current state can actually pause — otherwise
               // clicking threw a red "Cannot pause in <state> state" error toast.
@@ -1208,7 +1208,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: 'Resume',
+              label: t('downloads.resume'),
               icon: 'play',
               disabled: !canResume(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {
@@ -1225,7 +1225,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: 'Open Folder',
+              label: t('downloads.openFolder'),
               icon: 'folder',
               onClick: () => {
                 const download = downloads.find(d => d.id === contextMenu.downloadId);
@@ -1236,7 +1236,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: 'Force recheck',
+              label: t('downloads.forceRecheck'),
               icon: 'refresh-cw',
               onClick: () => {
                 handleRecheck(contextMenu.downloadId);

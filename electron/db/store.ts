@@ -96,6 +96,7 @@ export interface PersistedRoom {
   ownerId?: string;  // memberId of the room owner (creator); learned via gossip for joiners
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
+  autoFetch?: boolean; // auto-download files peers share (absent = true, the historical behavior)
 }
 
 const defaultCategories: Category[] = [
@@ -1277,6 +1278,15 @@ export function savePersistedRoom(room: PersistedRoom): void {
 export function deletePersistedRoom(roomId: string): void {
   const rooms = roomsStore.get('rooms') ?? {};
   delete rooms[roomId];
+  roomsStore.set('rooms', rooms);
+}
+
+/** Per-room auto-download preference (absent = true, the historical behavior). */
+export function setRoomAutoFetch(roomId: string, autoFetch: boolean): void {
+  const rooms = roomsStore.get('rooms') ?? {};
+  const room = rooms[roomId];
+  if (!room) return;
+  rooms[roomId] = { ...room, autoFetch };
   roomsStore.set('rooms', rooms);
 }
 

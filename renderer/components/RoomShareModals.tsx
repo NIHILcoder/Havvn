@@ -31,13 +31,32 @@ const useEscape = (onClose: () => void): void => {
   }, [onClose]);
 };
 
-/** Move focus into the dialog on open; hand it back where it was on close. */
+/** Move focus into the dialog on open, trap Tab inside it while it's up, and
+ *  hand focus back where it was on close. */
 const useModalFocus = (): React.RefObject<HTMLDivElement> => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
-    ref.current?.focus();
-    return () => { prev?.focus?.(); };
+    const dialog = ref.current;
+    dialog?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || !dialog) return;
+      const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      )).filter((el) => el.offsetParent !== null); // skip display:none
+      if (focusables.length === 0) { e.preventDefault(); return; }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (active && !dialog.contains(active)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && (active === first || active === dialog)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      prev?.focus?.();
+    };
   }, []);
   return ref;
 };

@@ -485,6 +485,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, fileId: string) => roomManager.removeFile(roomId, fileId)
   ));
 
+  ipcMain.handle('rooms:setAutoFetch', wrapHandler('rooms:setAutoFetch',
+    async (_event, roomId: string, autoFetch: boolean) => roomManager.setAutoFetch(roomId, !!autoFetch)
+  ));
+
+  ipcMain.handle('rooms:fetchFile', wrapHandler('rooms:fetchFile',
+    async (_event, roomId: string, fileId: string) => roomManager.fetchFile(roomId, fileId)
+  ));
+
   ipcMain.handle('rooms:setMuted', wrapHandler('rooms:setMuted',
     async (_event, roomId: string, memberId: string, muted: boolean) => roomManager.setMuted(roomId, memberId, !!muted)
   ));

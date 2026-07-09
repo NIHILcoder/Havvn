@@ -553,6 +553,10 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:removeFile', roomId, fileId),
     setMuted: (roomId: string, memberId: string, muted: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setMuted', roomId, memberId, muted),
+    setAutoFetch: (roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:setAutoFetch', roomId, autoFetch),
+    fetchFile: (roomId: string, fileId: string): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:fetchFile', roomId, fileId),
     kick: (roomId: string, memberId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:kick', roomId, memberId),
     sendChat: (roomId: string, text: string): Promise<{ ok: boolean }> =>

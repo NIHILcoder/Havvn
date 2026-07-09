@@ -128,6 +128,24 @@
   color: var(--color-text-tertiary);
 }
 
+.room-section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* Auto-download toggle in the files card header */
+.room-autofetch {
+  display: flex;
+  align-items: center;
+}
+
+.room-autofetch .toggle-label {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
 /* ── Members (compact rows, concept .mrow) ─────────────────────────────── */
 .room-members {
   display: flex;

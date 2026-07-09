@@ -42,9 +42,9 @@ describe('Sidebar two-pillar navigation', () => {
     );
     expect(html).toMatch(/pillar-btn on[^>]*>.*?nav\.rooms/s);
     expect(html).toContain('Movie Night');
-    expect(html).toContain('2 online');            // onlineCount-1 (self excluded)
-    expect(html).toContain('room-nav-live');       // live dot only for r1
-    expect(html).toContain('12 members');          // quiet room shows members
+    expect(html).toContain('2 rooms.rail.online');      // onlineCount-1 (self excluded)
+    expect(html).toContain('room-nav-live');            // live dot only for r1
+    expect(html).toContain('12 rooms.rail.members');    // quiet room shows members
     expect(html).not.toContain('filter.downloading');
   });
 
@@ -60,7 +60,7 @@ describe('Sidebar two-pillar navigation', () => {
         onlinePeople={[{ memberId: 'm1', name: 'Mara', avatarSeed: 'm1', roomName: 'Movie Night' }]}
       />,
     );
-    expect(withPeople).toContain('Online now');
+    expect(withPeople).toContain('rooms.rail.onlineNow');
     expect(withPeople).toContain('Mara');
   });
 

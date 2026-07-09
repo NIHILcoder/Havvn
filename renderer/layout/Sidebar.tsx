@@ -93,7 +93,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const utilItems: UtilItem[] = [
-    { id: 'search', label: 'Search', icon: 'search' },
+    { id: 'search', label: t('nav.search'), icon: 'search' },
     { id: 'rss', label: 'RSS', icon: 'rss' },
     { id: 'create-torrent', label: t('nav.create'), icon: 'file-plus' },
     { id: 'swarm', label: t('nav.swarm'), icon: 'globe' },
@@ -178,8 +178,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <span className="room-nav-name">{room.name}</span>
                     <span className="room-nav-sub">
                       {room.onlineCount > 1
-                        ? `${room.onlineCount - 1} online · ${room.fileCount} files`
-                        : `${room.memberCount} members · ${room.fileCount} files`}
+                        ? `${room.onlineCount - 1} ${t('rooms.rail.online')} · ${room.fileCount} ${t('rooms.rail.files')}`
+                        : `${room.memberCount} ${t('rooms.rail.members')} · ${room.fileCount} ${t('rooms.rail.files')}`}
                     </span>
                   </span>
                   {room.onlineCount > 1 && <span className="room-nav-live" />}
@@ -189,7 +189,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
             {onlinePeople.length > 0 && (
               <>
-                <div className="nav-section-title online-now-title">Online now</div>
+                <div className="nav-section-title online-now-title">{t('rooms.rail.onlineNow')}</div>
                 {onlinePeople.map((p) => (
                   <button
                     key={p.memberId}

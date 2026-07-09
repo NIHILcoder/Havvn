@@ -128,6 +128,7 @@ interface Room {
   files: Map<string, RoomFile>;          // by fileId
   transfers: Map<string, RoomTransfer>;  // by fileId
   tombstones: Map<string, number>;       // deleted fileId → deletedAt; only a newer re-share revives it
+  autoFetch: boolean;                    // auto-download peers' files; false = wait for an explicit fetchFile
   mutes: Set<string>;                    // locally-muted memberIds (per install)
   history: RoomEvent[];                  // activity log, newest last (capped)
   chat: RoomChatMessage[];               // chat messages, newest last (capped)
@@ -206,6 +207,7 @@ function buildState(room: Room): RoomState {
     chat: room.chat.slice(-100),
     connected: room.started,
     peerCount: onlinePeers,
+    autoFetch: room.autoFetch,
     kicked: room.kicked,
     ...(room.kicked ? { kickedBy: room.kickedBy } : {}),
   };
@@ -691,7 +693,9 @@ function mergeFile(room: Room, file: RoomFile): void {
     room.files.set(file.fileId, file);
     persistManifest(room, file); // localPath filled in once the download lands
     logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: file.addedByName || '?', fileName: file.name });
-    ensureLocal(room, file);
+    // Manual mode: list the file but don't fetch — the user pulls it with an
+    // explicit fetchFile. (Our OWN shares go through mergeFileLocal instead.)
+    if (room.autoFetch) ensureLocal(room, file);
   }
 }
 
@@ -855,7 +859,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
       if (room.secret && !havePlain) void decryptOne(room, file, pf.cipherPath);
       return;
     }
-    ensureLocal(room, file); // no cached ciphertext — re-download it
+    if (room.autoFetch) ensureLocal(room, file); // no cached ciphertext — re-download it
     return;
   }
 
@@ -865,7 +869,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
     catch (e) { log('manifest reseed failed: ' + String(e)); }
     return;
   }
-  ensureLocal(room, file); // not at the known path — seed-from-folder or re-download
+  if (room.autoFetch) ensureLocal(room, file); // not at the known path — seed-from-folder or re-download
 }
 
 function wireTorrentStats(room: Room, torrent: any): void {
@@ -995,7 +999,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; cacheDir?: string }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; cacheDir?: string; autoFetch?: boolean }): RoomState {
   let room = rooms.get(p.roomId);
   if (room) return buildState(room);
 
@@ -1026,6 +1030,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     files: new Map(),
     transfers: new Map(),
     tombstones: new Map(Object.entries(p.tombstones || {})),
+    autoFetch: p.autoFetch !== false, // absent = true (historical behavior)
     mutes: new Set(p.mutes || []),
     history: (p.history || []).slice(-200),
     chat: (p.chat || []).slice(-200),
@@ -1256,6 +1261,29 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     }
     else if (type === 'chat') { sendChat(msg.roomId, String((msg.payload || {}).text || '')); data = { ok: true }; }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
+    else if (type === 'setAutoFetch') {
+      const r = rooms.get(msg.roomId);
+      if (r) {
+        r.autoFetch = msg.autoFetch !== false;
+        // Turning auto back ON pulls everything that was left unfetched.
+        if (r.autoFetch) {
+          for (const f of r.files.values()) {
+            if (!r.transfers.get(f.fileId)?.haveLocally) ensureLocal(r, f);
+          }
+        }
+        pushState(r, true);
+      }
+      data = { ok: true };
+    }
+    else if (type === 'fetchFile') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      const f = r.files.get(String(msg.fileId || ''));
+      if (!f) throw new Error('File not found in this room');
+      ensureLocal(r, f);
+      pushState(r, true);
+      data = buildState(r);
+    }
     else throw new Error('Unknown room command: ' + type);
     ipcRenderer.send('room-res', { reqId, ok: true, data });
   } catch (e: any) {

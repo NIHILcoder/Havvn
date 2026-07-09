@@ -176,6 +176,7 @@ export interface RoomState {
   chat: RoomChatMessage[];  // recent chat messages, newest last
   connected: boolean;    // tracker rendezvous connected
   peerCount: number;     // live gossip peers right now
+  autoFetch: boolean;    // auto-download files peers share; false = fetch manually per file
   kicked?: boolean;      // the owner removed us from this room (session-only)
   kickedBy?: string;     // display name of who removed us
 }
@@ -925,6 +926,8 @@ export interface IpcApi {
     broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<{ ok: boolean }>;
+    setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<{ ok: boolean }>;
+    fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
     kick: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
     sendChat: (roomId: string, text: string) => Promise<{ ok: boolean }>;
   };
