@@ -7,7 +7,7 @@
  * live "who has what" view of the shared manifest.
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile } from '../../shared/types';
@@ -834,6 +834,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // the cast server's /direct (seekable); others go through hls.js against the
 // on-the-fly HLS transcode. "Watch together" keeps playback in sync across the
 // room by broadcasting play/pause/seek over the encrypted gossip channel.
+// Audio gets the music mode: a visualizer stage, the room's audio files as a
+// queue with auto-advance, and track changes broadcast so everyone advances.
 interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
 
 const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; onClose: () => void }> = ({ room, roomId, file, self, onClose }) => {
@@ -855,6 +857,86 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const reactSeq = useRef(0);
   togetherRef.current = together;
 
+  // The track on stage — starts at the file that opened the player; the music
+  // queue and remote 'track' commands switch it without remounting the player.
+  const [current, setCurrent] = useState<RoomFile>(file);
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const roomRef = useRef(room);
+  roomRef.current = room;
+  const isAudio = classifyMediaKind(current.name) === 'audio';
+  // The queue: every locally-available audio file of the room, in room order.
+  const playlist = useMemo(
+    () => room.files.filter((f) => classifyMediaKind(f.name) === 'audio' && room.transfers[f.fileId]?.haveLocally),
+    [room.files, room.transfers],
+  );
+  // Late-joiner catch-up gets one shot per track (see the sync handler).
+  const caughtUp = useRef(false);
+  useEffect(() => { caughtUp.current = false; }, [current.fileId]);
+
+  const playTrack = useCallback((f: RoomFile, broadcastIt: boolean) => {
+    setCurrent(f);
+    if (broadcastIt) {
+      window.api.rooms.broadcastSync(roomId, { fileId: f.fileId, action: 'track', position: 0, playing: true }).catch(() => {});
+    }
+  }, [roomId]);
+
+  // Music queue: when a track ends, move on (and take the room along in sync).
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onEnded = () => {
+      if (classifyMediaKind(currentRef.current.name) !== 'audio') return;
+      const idx = playlist.findIndex((f) => f.fileId === currentRef.current.fileId);
+      const next = idx >= 0 ? playlist[idx + 1] : undefined;
+      if (next) playTrack(next, togetherRef.current);
+    };
+    v.addEventListener('ended', onEnded);
+    return () => v.removeEventListener('ended', onEnded);
+  }, [playlist, playTrack]);
+
+  // Visualizer: bars driven by playback time (they freeze on pause because the
+  // clock stops). Decorative, not spectral — WebAudio taps on a non-CORS source
+  // would silence the audio. Reduced motion pins the clock to zero.
+  const vizRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    if (!isAudio) return;
+    const canvas = vizRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const css = getComputedStyle(document.documentElement);
+    const accent = css.getPropertyValue('--color-accent-primary').trim() || '#f2913f';
+    const olive = css.getPropertyValue('--color-accent-secondary').trim() || '#adb87c';
+    let raf = 0;
+    const draw = () => {
+      const box = canvas.parentElement?.getBoundingClientRect();
+      if (box && (canvas.width !== Math.floor(box.width) || canvas.height !== Math.floor(box.height))) {
+        canvas.width = Math.floor(box.width);
+        canvas.height = Math.floor(box.height);
+      }
+      const W = canvas.width, H = canvas.height;
+      ctx.clearRect(0, 0, W, H);
+      const time = reduce ? 0 : (videoRef.current?.currentTime ?? 0);
+      const n = Math.max(24, Math.floor(W / 26));
+      const bw = W / n;
+      for (let i = 0; i < n; i++) {
+        const ph = Math.sin(i * 12.9898) * 43758.5453;
+        const seed = ph - Math.floor(ph);
+        const wave = 0.2 + 0.8 * Math.abs(Math.sin(time * (1.1 + seed * 2.2) + seed * 6.28));
+        const h = Math.max(3, wave * H * 0.55);
+        ctx.fillStyle = i % 7 === 3 ? olive : accent;
+        ctx.globalAlpha = 0.2 + wave * 0.6;
+        ctx.fillRect(i * bw + bw * 0.28, (H - h) / 2, bw * 0.44, h);
+      }
+      ctx.globalAlpha = 1;
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [isAudio]);
+
   // Float an emoji reaction up over the video, then drop it after the animation.
   const spawnReaction = useCallback((emoji: string) => {
     const id = ++reactSeq.current;
@@ -867,18 +949,18 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const react = useCallback((emoji: string) => {
     spawnReaction(emoji);
     const v = videoRef.current;
-    window.api.rooms.broadcastSync(roomId, { fileId: file.fileId, action: 'react', position: v ? v.currentTime : 0, emoji }).catch(() => {});
-  }, [spawnReaction, roomId, file.fileId]);
+    window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action: 'react', position: v ? v.currentTime : 0, emoji }).catch(() => {});
+  }, [spawnReaction, roomId, current.fileId]);
 
   // ── Cinema presence: announce we're watching, heartbeat, and leave ────────
   const presence = useCallback((action: 'join' | 'leave' | 'beat') => {
     const v = videoRef.current;
     window.api.rooms.broadcastSync(roomId, {
-      fileId: file.fileId, action,
+      fileId: current.fileId, action,
       position: v ? v.currentTime : 0,
       playing: v ? !v.paused : false,
     }).catch(() => {});
-  }, [roomId, file.fileId]);
+  }, [roomId, current.fileId]);
 
   useEffect(() => {
     // Seed self into the watcher list right away.
@@ -901,10 +983,12 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     return () => { presence('leave'); clearInterval(beat); clearInterval(selfTick); clearInterval(prune); };
   }, [presence, self.memberId, self.name, self.avatarSeed]);
 
-  // Load the media (direct or HLS).
+  // Load the media (direct or HLS) — re-runs on every track switch.
   useEffect(() => {
     let alive = true;
-    window.api.rooms.watchFile(roomId, file.fileId).then((info) => {
+    setLoading(true);
+    setError(null);
+    window.api.rooms.watchFile(roomId, current.fileId).then((info) => {
       if (!alive) return;
       const v = videoRef.current;
       if (!v) return;
@@ -926,7 +1010,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       alive = false;
       if (hlsRef.current) { try { hlsRef.current.destroy(); } catch { /* ignore */ } hlsRef.current = null; }
     };
-  }, [roomId, file.fileId, t]);
+  }, [roomId, current.fileId, t]);
 
   // Broadcast local play/pause/seek to peers when "together" is on.
   useEffect(() => {
@@ -934,7 +1018,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     if (!v) return;
     const send = (action: string) => {
       if (!togetherRef.current || applyingRemote.current) return;
-      window.api.rooms.broadcastSync(roomId, { fileId: file.fileId, action, position: v.currentTime, rate: v.playbackRate }).catch(() => {});
+      window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action, position: v.currentTime, rate: v.playbackRate }).catch(() => {});
     };
     const onPlay = () => send('play');
     const onPause = () => send('pause');
@@ -943,17 +1027,44 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     v.addEventListener('pause', onPause);
     v.addEventListener('seeked', onSeeked);
     return () => { v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); v.removeEventListener('seeked', onSeeked); };
-  }, [roomId, file.fileId]);
+  }, [roomId, current.fileId]);
 
   // Track who's watching (presence) + apply remote sync when "together" is on.
   useEffect(() => {
     const off = window.api.onRoomSync((msg) => {
-      if (msg.roomId !== roomId || msg.fileId !== file.fileId) return;
+      if (msg.roomId !== roomId) return;
+      // Track change (music queue) crosses the per-file scoping on purpose:
+      // someone advanced the queue — follow them onto the new track.
+      if (msg.action === 'track') {
+        if (!togetherRef.current || msg.fileId === currentRef.current.fileId) return;
+        const f = roomRef.current.files.find((x) => x.fileId === msg.fileId);
+        if (f) { setController(msg.name); setCurrent(f); }
+        return;
+      }
+      if (msg.fileId !== currentRef.current.fileId) return;
       // Presence: every message means that member is in the session right now.
       if (msg.action === 'leave') {
         setWatchers((w) => { const n = { ...w }; delete n[msg.memberId]; return n; });
       } else {
         setWatchers((w) => ({ ...w, [msg.memberId]: { memberId: msg.memberId, name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, playing: !!msg.playing, lastSeen: Date.now() } }));
+      }
+      // Late-joiner catch-up: one shot per track — a fresh session (we're still
+      // in the first seconds) snaps onto a peer already playing deep, then the
+      // regular sync commands take over.
+      if ((msg.action === 'beat' || msg.action === 'join') && msg.playing && togetherRef.current && !caughtUp.current) {
+        const v = videoRef.current;
+        if (v) {
+          if (v.currentTime < 5 && msg.position > 8) {
+            caughtUp.current = true;
+            const expectedPos = msg.position + Math.max(0, (Date.now() - msg.at) / 1000);
+            applyingRemote.current = true;
+            try { v.currentTime = expectedPos; void v.play().catch(() => {}); }
+            finally { setTimeout(() => { applyingRemote.current = false; }, 250); }
+            setController(msg.name);
+          } else if (v.currentTime >= 5) {
+            caughtUp.current = true; // we're established — never yank us later
+          }
+        }
       }
       // Reactions float for everyone, in or out of sync.
       if (msg.action === 'react') { if (msg.emoji) spawnReaction(msg.emoji); return; }
@@ -980,8 +1091,14 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     const next = !together;
     setTogether(next);
     const v = videoRef.current;
+    // A fresh session that just enabled sync catches up from the next beat
+    // instead of asserting its own (near-zero) position on the room.
+    if (next && v && v.currentTime < 5) {
+      caughtUp.current = false;
+      return;
+    }
     if (next && v) {
-      window.api.rooms.broadcastSync(roomId, { fileId: file.fileId, action: v.paused ? 'pause' : 'play', position: v.currentTime, rate: v.playbackRate }).catch(() => {});
+      window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action: v.paused ? 'pause' : 'play', position: v.currentTime, rate: v.playbackRate }).catch(() => {});
     }
   };
 
@@ -989,7 +1106,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     <div className="room-player-backdrop" onClick={onClose}>
       <div className="room-player" onClick={(e) => e.stopPropagation()}>
         <div className="room-player-top">
-          <span className="room-player-name" title={file.name}>{file.name}</span>
+          <span className="room-player-name" title={current.name}>{current.name}</span>
           <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
             <Icon name="users" size={14} /> {together ? t('rooms.together.on') : t('rooms.together.off')}
           </button>
@@ -1000,11 +1117,29 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
             <div className="room-player-stage">
               <video
                 ref={videoRef}
-                className="room-player-video"
+                className={`room-player-video ${isAudio ? 'room-player-video-hidden' : ''}`}
                 autoPlay
                 playsInline
                 onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
               />
+              {isAudio && (
+                <div
+                  className="room-audio-stage"
+                  onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
+                >
+                  <canvas ref={vizRef} className="room-audio-viz" aria-hidden="true" />
+                  <div className="room-audio-meta">
+                    <span className="room-audio-disc"><Icon name="music" size={20} /></span>
+                    <div className="room-audio-titles">
+                      <div className="room-audio-name" title={current.name}>{current.name}</div>
+                      <div className="room-audio-sub">
+                        {formatBytes(current.size)}
+                        {playlist.length > 1 && ` · ${Math.max(1, playlist.findIndex((f) => f.fileId === current.fileId) + 1)}/${playlist.length}`}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="room-player-reactions" aria-hidden="true">
                 {reactions.map((r) => (
                   <span key={r.id} className="room-reaction" style={{ left: `${r.x}%` }}>{r.emoji}</span>
@@ -1017,6 +1152,22 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                 <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>
               ))}
             </div>
+            {isAudio && playlist.length > 1 && (
+              <div className="room-player-queue">
+                <div className="room-queue-head"><Icon name="music" size={12} /> {t('rooms.queue')} · {playlist.length}</div>
+                {playlist.map((f, i) => (
+                  <button
+                    key={f.fileId}
+                    className={`room-queue-row ${f.fileId === current.fileId ? 'on' : ''}`}
+                    onClick={() => playTrack(f, togetherRef.current)}
+                  >
+                    <span className="room-queue-idx">{f.fileId === current.fileId ? '♪' : i + 1}</span>
+                    <span className="room-queue-name">{f.name}</span>
+                    <span className="room-queue-size">{formatBytes(f.size)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
             {loading && !error && <div className="room-player-msg">{t('common.loading')}</div>}
             {error && <div className="room-player-msg err">{error}</div>}
             {together && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}
@@ -1024,7 +1175,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
 
           <aside className="room-player-side">
             <div className="room-player-watchers">
-              <span className="room-player-watchers-label"><Icon name="users" size={13} /> {t('rooms.watching')}</span>
+              <span className="room-player-watchers-label"><Icon name="users" size={13} /> {isAudio ? t('rooms.listening') : t('rooms.watching')}</span>
               <div className="room-player-avatars">
                 {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
                   <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ' (you)' : ''} — ${w.playing ? '▶' : '❚❚'}`}>

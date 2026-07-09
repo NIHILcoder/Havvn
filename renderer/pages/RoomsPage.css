@@ -647,7 +647,137 @@
 }
 .room-player-close:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
 .room-player-stage { position: relative; }
-.room-player-video { width: 100%; max-height: 72vh; background: #000; outline: none; display: block; }
+.room-player-video { width: 100%; max-height: 72vh; background: #000; outline: none; display: block; cursor: pointer; }
+/* Music mode: the element keeps playing, the visualizer stage takes the screen */
+.room-player-video-hidden { display: none; }
+
+.room-audio-stage {
+  position: relative;
+  height: 300px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  background: var(--color-bg-primary);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.room-audio-viz {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.room-audio-meta {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: linear-gradient(transparent, color-mix(in srgb, var(--color-bg-primary) 82%, transparent));
+}
+
+.room-audio-disc {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-bg);
+  color: var(--color-accent-primary);
+}
+
+.room-audio-titles { min-width: 0; }
+
+.room-audio-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-audio-sub {
+  margin-top: 2px;
+  font-family: var(--font-family-mono);
+  font-size: 11.5px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The queue: flat hairline rows, the playing track speaks ember */
+.room-player-queue {
+  border-top: 1px solid var(--color-border-subtle);
+  padding: var(--space-2) var(--space-3);
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.room-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.room-queue-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.room-queue-row:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+.room-queue-row.on {
+  color: var(--color-accent-primary);
+  background: var(--color-accent-bg);
+}
+
+.room-queue-idx {
+  width: 18px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.room-queue-row.on .room-queue-idx { color: var(--color-accent-primary); }
+
+.room-queue-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-queue-size {
+  flex-shrink: 0;
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Floating emoji reactions over the video */
 .room-player-reactions { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }

@@ -82,6 +82,8 @@
   "rooms.fetch": "Download",
   "rooms.fetchHint": "Download this file from the room",
   "rooms.notFetched": "Not downloaded — click Download to fetch it",
+  "rooms.queue": "Queue",
+  "rooms.listening": "Listening now",
   "rooms.limits": "Room speed",
   "rooms.limitsHint": "This room's transfer ceilings on this device (KB/s). Blank or 0 = unlimited.",
   "rooms.kbps": "KB/s",
