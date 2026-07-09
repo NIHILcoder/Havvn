@@ -72,8 +72,13 @@ export class RoomManager {
       }
     });
     // A peer deleted a file — persist the tombstone so it stays gone after restart.
-    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string }) => {
-      try { if (payload?.roomId && payload?.fileId) db.addRoomTombstone(payload.roomId, payload.fileId); } catch { /* ignore */ }
+    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string; at?: number }) => {
+      try { if (payload?.roomId && payload?.fileId) db.addRoomTombstone(payload.roomId, payload.fileId, Number(payload.at) || Date.now()); } catch { /* ignore */ }
+    });
+    // A file was explicitly re-shared after deletion — lift the persisted
+    // tombstone so the revive survives restart.
+    ipcMain.on('room-tomb-del', (_e, payload: { roomId: string; fileId: string }) => {
+      try { if (payload?.roomId && payload?.fileId) db.removeRoomTombstone(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
     // A file entered/changed in a room's manifest — persist it so the room shows
     // and re-seeds it immediately on the next launch, before peers reconnect.
@@ -386,9 +391,10 @@ export class RoomManager {
 
   /** Remove a shared file from the room for everyone (persists a tombstone). */
   async removeFile(roomId: string, fileId: string): Promise<{ ok: boolean }> {
-    db.addRoomTombstone(roomId, fileId);
+    const at = Date.now(); // one timestamp for the persisted tombstone AND the gossip 'del'
+    db.addRoomTombstone(roomId, fileId, at);
     if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'removeFile', reqId: ++this.reqSeq, roomId, fileId });
+      this.win.webContents.send('room-cmd', { type: 'removeFile', reqId: ++this.reqSeq, roomId, fileId, at });
     }
     return { ok: true };
   }

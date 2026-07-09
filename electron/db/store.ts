@@ -64,7 +64,7 @@ interface SearchSchema {
 interface RoomsSchema {
   rooms: Record<string, PersistedRoom>;      // Friend swarms / private rooms (Phase 3)
   roomProfile: RoomProfile | null;           // This install's identity in rooms
-  roomTombstones: Record<string, string[]>;  // roomId → deleted fileIds (stop resurrection)
+  roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
   roomManifests: Record<string, PersistedRoomFile[]>; // roomId → known files (resume on restart)
   roomHistory: Record<string, RoomEvent[]>;  // roomId → activity log (capped)
   roomMutes: Record<string, string[]>;       // roomId → locally-muted memberIds
@@ -295,16 +295,63 @@ function migrateUtpDefaultOn(): void {
 migrateUtpDefaultOn();
 
 // === Room tombstones (deleted shared files — keep them from reappearing) ===
+//
+// Each tombstone carries the deletion time so removals and re-shares resolve
+// last-writer-wins: a file whose addedAt is newer than the tombstone is a
+// deliberate revive and comes back; anything older stays dead.
 
-export function getRoomTombstones(roomId: string): string[] {
-  return (roomsStore.get('roomTombstones') ?? {})[roomId] ?? [];
+/**
+ * One-time upgrade of the persisted tombstone shape: plain fileId arrays →
+ * (fileId → deletedAt) maps. Legacy entries are stamped with the migration time
+ * so they keep suppressing what they already deleted, while any explicit
+ * re-share made afterwards beats them.
+ */
+function migrateTombstoneTimestamps(): void {
+  const all = roomsStore.get('roomTombstones') as unknown as Record<string, unknown> | undefined;
+  if (!all) return;
+  let changed = false;
+  const now = Date.now();
+  const out: Record<string, Record<string, number>> = {};
+  for (const [roomId, v] of Object.entries(all)) {
+    if (Array.isArray(v)) {
+      changed = true;
+      const map: Record<string, number> = {};
+      for (const id of v) if (typeof id === 'string') map[id] = now;
+      out[roomId] = map;
+    } else if (v && typeof v === 'object') {
+      out[roomId] = v as Record<string, number>;
+    }
+  }
+  if (changed) roomsStore.set('roomTombstones', out);
 }
 
-export function addRoomTombstone(roomId: string, fileId: string): void {
+migrateTombstoneTimestamps();
+
+export function getRoomTombstones(roomId: string): Record<string, number> {
+  return (roomsStore.get('roomTombstones') ?? {})[roomId] ?? {};
+}
+
+export function addRoomTombstone(roomId: string, fileId: string, at: number = Date.now()): void {
   const all = roomsStore.get('roomTombstones') ?? {};
-  const set = new Set(all[roomId] ?? []);
-  set.add(fileId);
-  all[roomId] = Array.from(set).slice(-500); // cap
+  const map = { ...(all[roomId] ?? {}) };
+  map[fileId] = Math.max(at, map[fileId] ?? 0); // a newer deletion always wins
+  const entries = Object.entries(map);
+  if (entries.length > 500) { // cap: evict the oldest deletions first
+    entries.sort((a, b) => a[1] - b[1]);
+    entries.splice(0, entries.length - 500);
+  }
+  all[roomId] = Object.fromEntries(entries);
+  roomsStore.set('roomTombstones', all);
+}
+
+/** Lift one tombstone (the user explicitly re-shared the file into the room). */
+export function removeRoomTombstone(roomId: string, fileId: string): void {
+  const all = roomsStore.get('roomTombstones') ?? {};
+  const map = all[roomId];
+  if (!map || !(fileId in map)) return;
+  const rest = { ...map };
+  delete rest[fileId];
+  all[roomId] = rest;
   roomsStore.set('roomTombstones', all);
 }
 

@@ -31,8 +31,7 @@ import { RoomFile, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomE
 import { safeBaseName } from '../../shared/path-safety';
 import crypto from 'crypto';
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const TrackerClient = require('bittorrent-tracker') as any;
+import TrackerClient from 'bittorrent-tracker';
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 
@@ -76,12 +75,16 @@ function log(msg: string): void { try { ipcRenderer.send('room-log', msg); } cat
 
 // ── Gossip message shapes (post-decrypt) ───────────────────────────────────
 type Msg =
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; roomName: string; ownerId: string; e2e: boolean; secret: string }
+  // `tombs` lists deleted fileIds (legacy shape, kept so older peers converge);
+  // `tombsAt` adds each deletion's timestamp so a LATER explicit re-share wins
+  // (revive) while anything older stays dead.
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string }
   | { t: 'add'; file: RoomFile }
   | { t: 'have'; memberId: string; fileId: string }
   | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string }
-  // Remove a shared file from the room (everyone drops it; tombstone prevents resurrection).
-  | { t: 'del'; fileId: string; memberId: string }
+  // Remove a shared file from the room (everyone drops it; the timestamped
+  // tombstone prevents resurrection until an explicitly newer re-share).
+  | { t: 'del'; fileId: string; memberId: string; at?: number }
   // Owner kicked a member: rotate the room to a new code. Sent encrypted with the
   // OLD key to everyone EXCEPT the kicked member, who never learns the new code.
   | { t: 'rekey'; newCode: string; kickedId: string; kickedName: string; by: string }
@@ -124,7 +127,7 @@ interface Room {
   members: Map<string, RoomMember>;      // by memberId (excludes self)
   files: Map<string, RoomFile>;          // by fileId
   transfers: Map<string, RoomTransfer>;  // by fileId
-  tombstones: Set<string>;               // deleted fileIds — never re-add them
+  tombstones: Map<string, number>;       // deleted fileId → deletedAt; only a newer re-share revives it
   mutes: Set<string>;                    // locally-muted memberIds (per install)
   history: RoomEvent[];                  // activity log, newest last (capped)
   chat: RoomChatMessage[];               // chat messages, newest last (capped)
@@ -268,7 +271,8 @@ function helloMsg(room: Room): Msg {
     avatarSeed: room.self.avatarSeed,
     have: buildState(room).members[0].have,
     files: Array.from(room.files.values()),
-    tombs: Array.from(room.tombstones), // share deletions so peers converge
+    tombs: Array.from(room.tombstones.keys()), // share deletions so peers converge
+    tombsAt: Object.fromEntries(room.tombstones), // timestamps let a newer re-share revive
     roomName: room.name, // so a joiner (who only knows the code) learns the name
     ownerId: room.ownerId, // so joiners learn who the owner is
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
@@ -463,6 +467,16 @@ function clampGossip(msg: any): void {
   if ('sig' in msg) msg.sig = clampStr(msg.sig, MAX_STR);
   if (Array.isArray(msg.have)) msg.have = msg.have.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
   if (Array.isArray(msg.tombs)) msg.tombs = msg.tombs.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
+  if ('tombsAt' in msg) {
+    const out: Record<string, number> = {};
+    if (msg.tombsAt && typeof msg.tombsAt === 'object' && !Array.isArray(msg.tombsAt)) {
+      for (const [k, v] of Object.entries(msg.tombsAt).slice(0, MAX_ARRAY)) {
+        const at = Number(v);
+        if (Number.isFinite(at)) out[clampStr(k, MAX_STR)] = at;
+      }
+    }
+    msg.tombsAt = out;
+  }
   if (Array.isArray(msg.files)) msg.files = msg.files.slice(0, MAX_ARRAY).map(clampFile).filter(Boolean);
   if ('file' in msg) msg.file = clampFile(msg.file);
 }
@@ -512,7 +526,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       maybeAdoptE2E(room, msg.e2e, msg.secret);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
       // Apply peer deletions first so their HELLO file list can't re-add them.
-      for (const id of msg.tombs || []) applyTombstone(room, id);
+      // A tombstone without a timestamp came from an older build that can't
+      // express revives — treat it as fresh so its deletion still sticks.
+      for (const id of msg.tombs || []) applyTombstone(room, id, msg.tombsAt?.[id] ?? Date.now());
       for (const f of msg.files || []) mergeFile(room, f);
       pushState(room);
       break;
@@ -543,8 +559,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     case 'del': {
       if (room.mutes.has(msg.memberId)) break; // ignore deletes from a muted member
       const actor = room.members.get(msg.memberId);
-      applyTombstone(room, msg.fileId, { id: msg.memberId, name: actor?.name || '?' });
-      try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId: msg.fileId }); } catch { /* ignore */ }
+      const at = Number(msg.at) || Date.now(); // older builds don't stamp deletions
+      applyTombstone(room, msg.fileId, at, { id: msg.memberId, name: actor?.name || '?' });
+      try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId: msg.fileId, at }); } catch { /* ignore */ }
       pushState(room, true);
       break;
     }
@@ -604,13 +621,30 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
   }
 }
 
+/** True when a tombstone still outranks this file (deletion is as new or newer
+ *  than the add). Ties go to the deletion. */
+function isTombstonedAt(room: Room, fileId: string, addedAt: number): boolean {
+  const tombAt = room.tombstones.get(fileId);
+  return tombAt !== undefined && addedAt <= tombAt;
+}
+
+/** Lift a tombstone here and in the persisted store (the file was revived). */
+function clearTombstone(room: Room, fileId: string): void {
+  if (!room.tombstones.delete(fileId)) return;
+  try { ipcRenderer.send('room-tomb-del', { roomId: room.roomId, fileId }); } catch { /* ignore */ }
+}
+
 /**
- * Drop a file from this room and never accept it again. Removes it from the
- * manifest/transfers, stops the torrent, and deletes the on-disk copy only when
- * it lives inside the room folder (never the original a member shared from).
+ * Drop a file from this room and keep it out until an explicitly newer re-share.
+ * Removes it from the manifest/transfers, stops the torrent, and deletes the
+ * on-disk copy only when it lives inside the room folder (never the original a
+ * member shared from). `at` is the deletion time: if the local copy was added
+ * AFTER it (someone revived the file), the stale tombstone is ignored outright.
  */
-function applyTombstone(room: Room, fileId: string, by?: { id: string; name: string }): void {
-  room.tombstones.add(fileId);
+function applyTombstone(room: Room, fileId: string, at: number, by?: { id: string; name: string }): void {
+  const current = room.files.get(fileId);
+  if (current && current.addedAt > at) return; // revived later — the newer add wins
+  room.tombstones.set(fileId, Math.max(at, room.tombstones.get(fileId) ?? 0));
   // Drop it from the persisted manifest too so it isn't re-seeded next launch.
   try { ipcRenderer.send('room-manifest-del', { roomId: room.roomId, fileId }); } catch { /* ignore */ }
   const existed = room.files.get(fileId);
@@ -648,8 +682,11 @@ function attachWire(room: Room, peer: any): void {
 // ── File manifest + transfers ────────────────────────────────────────────────
 function mergeFile(room: Room, file: RoomFile): void {
   if (!file || !file.fileId) return;
-  if (room.tombstones.has(file.fileId)) return; // deleted — don't let a peer resurrect it
+  if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't let a stale copy resurrect it
   if (room.mutes.has(file.addedBy)) return;     // muted member — ignore their shares locally
+  // An add newer than our tombstone means a member explicitly re-shared the
+  // file after its deletion — lift the tombstone and let it back in.
+  clearTombstone(room, file.fileId);
   if (!room.files.has(file.fileId)) {
     room.files.set(file.fileId, file);
     persistManifest(room, file); // localPath filled in once the download lands
@@ -725,7 +762,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
 /** Make sure a manifest file exists locally — seed it if already on disk,
  *  otherwise download it into the room folder over the WebTorrent swarm. */
 function ensureLocal(room: Room, file: RoomFile): void {
-  if (room.tombstones.has(file.fileId)) return; // deleted — don't fetch it again
+  if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't fetch it again
   const c = ensureClient(room.iceServers);
   if (c.get(file.infoHash)) return; // already adding/seeding
 
@@ -795,7 +832,7 @@ function ensureLocal(room: Room, file: RoomFile): void {
  * normal seed-from-folder / download path.
  */
 function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
-  if (room.tombstones.has(pf.fileId)) return;
+  if (isTombstonedAt(room, pf.fileId, pf.addedAt)) return;
   if (room.files.has(pf.fileId)) return;
   const file: RoomFile = {
     fileId: pf.fileId, name: pf.name, size: pf.size, infoHash: pf.infoHash,
@@ -958,7 +995,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: string[]; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; cacheDir?: string }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; identities?: Record<string, string>; e2e?: boolean; secret?: string; cacheDir?: string }): RoomState {
   let room = rooms.get(p.roomId);
   if (room) return buildState(room);
 
@@ -988,7 +1025,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     members: new Map(),
     files: new Map(),
     transfers: new Map(),
-    tombstones: new Set(p.tombstones || []),
+    tombstones: new Map(Object.entries(p.tombstones || {})),
     mutes: new Set(p.mutes || []),
     history: (p.history || []).slice(-200),
     chat: (p.chat || []).slice(-200),
@@ -1044,7 +1081,10 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
   return buildState(room);
 }
 
-/** A locally-seeded file: register in manifest + announce to peers. */
+/** A locally-seeded file: register in manifest + announce to peers.
+ *  ANY tombstone blocks this path, regardless of timestamps: the startup folder
+ *  scan feeds it, and a deleted file still sitting on disk must not silently
+ *  revive itself. Only the explicit addFiles path lifts a tombstone. */
 function mergeFileLocal(room: Room, file: RoomFile, localPath?: string): void {
   if (room.tombstones.has(file.fileId)) return;
   if (!room.files.has(file.fileId)) {
@@ -1068,8 +1108,14 @@ async function addFiles(roomId: string, paths: string[]): Promise<RoomState> {
   for (const p of paths) {
     try {
       const file = await seedLocal(room, p);
-      if (room.tombstones.has(file.fileId)) {
-        throw new Error('This file was removed from the room earlier — peers would keep rejecting it');
+      // Re-sharing previously deleted content is an explicit revive: lift the
+      // tombstone and stamp the add strictly after the deletion, so the 'add'
+      // we broadcast (and our HELLOs) beat every peer's stored tombstone —
+      // including peers currently offline, once they reconnect.
+      const tombAt = room.tombstones.get(file.fileId);
+      if (tombAt !== undefined) {
+        file.addedAt = Math.max(file.addedAt, tombAt + 1);
+        clearTombstone(room, file.fileId);
       }
       mergeFileLocal(room, file, p);
       // Already present (same content shared before) counts as success too.
@@ -1170,8 +1216,11 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'removeFile') {
       const r = rooms.get(msg.roomId);
       if (r) {
-        applyTombstone(r, msg.fileId, { id: r.self.memberId, name: r.self.name || 'You' });
-        broadcast(r, { t: 'del', fileId: msg.fileId, memberId: r.self.memberId });
+        // Reuse the manager's timestamp so the persisted tombstone and the
+        // gossiped one agree on when the deletion happened.
+        const at = Number(msg.at) || Date.now();
+        applyTombstone(r, msg.fileId, at, { id: r.self.memberId, name: r.self.name || 'You' });
+        broadcast(r, { t: 'del', fileId: msg.fileId, memberId: r.self.memberId, at });
         pushState(r, true);
       }
       data = { ok: true };
