@@ -895,9 +895,39 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     return () => v.removeEventListener('ended', onEnded);
   }, [playlist, playTrack]);
 
-  // Visualizer: bars driven by playback time (they freeze on pause because the
-  // clock stops). Decorative, not spectral — WebAudio taps on a non-CORS source
-  // would silence the audio. Reduced motion pins the clock to zero.
+  // WebAudio tap for the real spectrum. Created ONCE per media element (the
+  // browser allows a single MediaElementSource per element) and kept connected
+  // for its whole life — later tracks (and even video) route through the same
+  // graph, so the ctx is resumed on every 'play'. Needs the cast server's CORS
+  // headers + crossOrigin on the element, or the tap would output silence.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const tapTriedRef = useRef(false);
+  useEffect(() => {
+    if (!isAudio || !mediaEl || tapTriedRef.current) return;
+    tapTriedRef.current = true;
+    try {
+      const ctx = new AudioContext();
+      const src = ctx.createMediaElementSource(mediaEl);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.75;
+      src.connect(analyser);
+      analyser.connect(ctx.destination);
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+      const resume = () => { void ctx.resume().catch(() => {}); };
+      mediaEl.addEventListener('play', resume);
+      resume();
+    } catch {
+      analyserRef.current = null; // decorative bars take over below
+    }
+  }, [isAudio, mediaEl]);
+  useEffect(() => () => { try { void audioCtxRef.current?.close(); } catch { /* ignore */ } }, []);
+
+  // Visualizer: the real spectrum when the tap works; if the analyser stays
+  // silent while audio is playing (tainted source, odd codec path), it falls
+  // back to time-driven bars that freeze on pause. Reduced motion pins them.
   const vizRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     if (!isAudio) return;
@@ -910,6 +940,9 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     const accent = css.getPropertyValue('--color-accent-primary').trim() || '#f2913f';
     const olive = css.getPropertyValue('--color-accent-secondary').trim() || '#adb87c';
     let raf = 0;
+    const bins = new Uint8Array(analyserRef.current?.frequencyBinCount ?? 0);
+    let useSpectrum = !!analyserRef.current && !reduce;
+    let silentFrames = 0;
     const draw = () => {
       const box = canvas.parentElement?.getBoundingClientRect();
       if (box && (canvas.width !== Math.floor(box.width) || canvas.height !== Math.floor(box.height))) {
@@ -918,13 +951,33 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       }
       const W = canvas.width, H = canvas.height;
       ctx.clearRect(0, 0, W, H);
-      const time = reduce ? 0 : (videoRef.current?.currentTime ?? 0);
+      const playing = !!videoRef.current && !videoRef.current.paused;
       const n = Math.max(24, Math.floor(W / 26));
       const bw = W / n;
+
+      let spectrumLevel = 0;
+      if (useSpectrum && analyserRef.current) {
+        analyserRef.current.getByteFrequencyData(bins);
+        for (let b = 0; b < bins.length; b += 4) spectrumLevel += bins[b];
+        // Playing but dead silent for ~1.5s ⇒ the tap isn't seeing data.
+        if (playing && spectrumLevel === 0) { if (++silentFrames > 90) useSpectrum = false; }
+        else silentFrames = 0;
+      }
+      (window as any).__vizDebug = { mode: useSpectrum ? 'spectrum' : 'wave', level: spectrumLevel };
+
+      const time = reduce ? 0 : (videoRef.current?.currentTime ?? 0);
+      // Music energy lives in the lower bins — spread the bars over ~70% of them.
+      const usable = Math.max(1, Math.floor(bins.length * 0.7));
       for (let i = 0; i < n; i++) {
-        const ph = Math.sin(i * 12.9898) * 43758.5453;
-        const seed = ph - Math.floor(ph);
-        const wave = 0.2 + 0.8 * Math.abs(Math.sin(time * (1.1 + seed * 2.2) + seed * 6.28));
+        let wave: number;
+        if (useSpectrum) {
+          const b = Math.min(usable - 1, Math.floor(Math.pow(i / n, 1.3) * usable));
+          wave = 0.06 + 0.94 * (bins[b] / 255);
+        } else {
+          const ph = Math.sin(i * 12.9898) * 43758.5453;
+          const seed = ph - Math.floor(ph);
+          wave = 0.2 + 0.8 * Math.abs(Math.sin(time * (1.1 + seed * 2.2) + seed * 6.28));
+        }
         const h = Math.max(3, wave * H * 0.55);
         ctx.fillStyle = i % 7 === 3 ? olive : accent;
         ctx.globalAlpha = 0.2 + wave * 0.6;
@@ -935,7 +988,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [isAudio]);
+  }, [isAudio, mediaEl]);
 
   // Float an emoji reaction up over the video, then drop it after the animation.
   const spawnReaction = useCallback((emoji: string) => {
@@ -1120,6 +1173,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                 className={`room-player-video ${isAudio ? 'room-player-video-hidden' : ''}`}
                 autoPlay
                 playsInline
+                crossOrigin="anonymous"
                 onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
               />
               {isAudio && (

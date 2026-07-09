@@ -207,6 +207,17 @@ export class CastServer {
     try {
       const url = new URL(req.url || '', 'http://cast');
       if (url.searchParams.get('k') !== this.token) { res.writeHead(403); res.end('forbidden'); return; }
+      // Token-valid callers may read these bytes from any origin: the in-app
+      // player taps audio through WebAudio (a crossOrigin media load) and
+      // hls.js XHRs segments from the file:// renderer — both are CORS-blocked
+      // without this. Anyone WITHOUT the token got the 403 above and no ACAO,
+      // so foreign pages still can't read a thing.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Allow-Headers': 'Range' });
+        res.end();
+        return;
+      }
       const parts = url.pathname.split('/').filter(Boolean);
       // /play/<id>/<idx> | /direct/<id>/<idx> | /hls/<id>/<idx>/master.m3u8
       //   | /hls/<id>/<idx>/<variant>/index.m3u8 | /hls/<id>/<idx>/<variant>/seg-<n>.ts
