@@ -57,8 +57,16 @@ export function customTurnToIce(url?: string, username?: string, credential?: st
 // they never carry file bytes or any plaintext. We announce to all of them and
 // bittorrent-tracker tolerates any that are down, so multiple independent
 // operators give resilience without any of them being load-bearing.
-export const RENDEZVOUS_TRACKERS: string[] = [
-  'wss://tracker.openwebtorrent.com',
-  'wss://tracker.webtorrent.dev',
-  'wss://tracker.files.fm:7073/announce',
-];
+//
+// HAVVN_ROOM_TRACKERS (comma-separated URLs, e.g. ws://127.0.0.1:8009) replaces
+// the whole set — a dev/test affordance in the TH_INSTANCE spirit: two local
+// instances can rendezvous against a local bittorrent-tracker with no public
+// infrastructure in the loop.
+const TRACKER_OVERRIDE = (typeof process !== 'undefined' && process.env.HAVVN_ROOM_TRACKERS || '').trim();
+export const RENDEZVOUS_TRACKERS: string[] = TRACKER_OVERRIDE
+  ? TRACKER_OVERRIDE.split(',').map((s) => s.trim()).filter(Boolean)
+  : [
+    'wss://tracker.openwebtorrent.com',
+    'wss://tracker.webtorrent.dev',
+    'wss://tracker.files.fm:7073/announce',
+  ];

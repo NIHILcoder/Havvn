@@ -149,6 +149,10 @@ interface Room {
 const clients = new Map<string, any>();  // roomId → WebTorrent client
 const rooms = new Map<string, Room>();
 let wireSeq = 0;
+// Debug handles for the hidden window's console/CDP — rooms and clients are
+// module-scoped and otherwise unreachable when diagnosing a live install.
+(globalThis as any).__rooms = rooms;
+(globalThis as any).__clients = clients;
 
 /** Room KB/s (0 = unlimited) → webtorrent limit (bytes/s, -1 = unlimited). */
 function kbpsToLimit(kbps: number): number {
@@ -299,11 +303,20 @@ function helloMsg(room: Room): Msg {
 }
 
 /** Learn the room's E2E mode + content secret from a peer (HELLO). The secret is
- *  separate from the rotating gossip key, so it survives kicks. */
+ *  separate from the rotating gossip key, so it survives kicks.
+ *
+ *  E2E is decided at creation and never changes, but a fresh joiner doesn't know
+ *  it yet and HELLOs with e2e:false — so adoption is strictly MONOTONIC: a room
+ *  can be upgraded to e2e by a peer who knows, never downgraded. (Adopting false
+ *  used to let a joiner's first HELLO flip the owner's room out of E2E — any file
+ *  shared in that window would have hit the swarm as plaintext.) The secret is
+ *  adopt-once for the same reason: first learned wins, later mismatches are noise
+ *  from a confused or hostile peer and are logged, not obeyed. */
 function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string): void {
   let changed = false;
-  if (typeof e2e === 'boolean' && e2e !== room.e2e) { room.e2e = e2e; changed = true; }
-  if (secret && secret !== room.secret) { room.secret = secret; changed = true; }
+  if (e2e === true && !room.e2e) { room.e2e = true; changed = true; }
+  if (secret && !room.secret) { room.secret = secret; changed = true; }
+  else if (secret && room.secret && secret !== room.secret) log('peer sent a conflicting E2E secret — keeping ours');
   if (changed) {
     try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret }); } catch { /* ignore */ }
     // A just-learned secret may unblock ciphertext we already downloaded.
@@ -463,8 +476,12 @@ function clampFile(f: any): RoomFile | null {
     fileId,
     name,
     size: Number.isFinite(f.size) ? f.size : 0,
+    // fileId IS the infoHash by construction; clamping used to drop this field,
+    // which voided every c.get(file.infoHash) re-entry guard for remote files.
+    infoHash: fileId,
     magnetURI,
     addedBy: clampStr(f.addedBy, MAX_STR),
+    addedByName: clampStr(f.addedByName, MAX_STR),
     addedAt: Number.isFinite(f.addedAt) ? f.addedAt : Date.now(),
     ...(f.enc ? { enc: true } : {}),
   } as RoomFile;
@@ -680,10 +697,15 @@ function applyTombstone(room: Room, fileId: string, at: number, by?: { id: strin
       fs.unlinkSync(lp);
     }
   } catch (e) { log('tombstone unlink failed: ' + String(e)); }
-  // E2E: also drop the ciphertext copy we kept for seeding.
+  // E2E: also drop the ciphertext copy we kept for seeding. Each share's cipher
+  // lives in its own directory under the cache — sweep the empty dir with it.
   try {
     const cp = tr?.cipherPath;
     if (cp && fs.existsSync(cp)) fs.unlinkSync(cp);
+    if (cp && room.cacheDir) {
+      const d = path.dirname(cp);
+      if (path.resolve(d).startsWith(path.resolve(room.cacheDir) + path.sep)) fs.rmdirSync(d); // throws if non-empty — fine
+    }
   } catch (e) { log('tombstone cipher unlink failed: ' + String(e)); }
 }
 
@@ -769,8 +791,17 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
 
     if (room.e2e) {
       if (!room.secret) { reject(new Error('Room encryption key not available yet')); return; }
-      try { fs.mkdirSync(room.cacheDir, { recursive: true }); } catch { /* ignore */ }
-      const cipherPath = path.join(room.cacheDir, `${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${name}.enc`);
+      // The cipher's on-disk basename MUST equal the torrent name: webtorrent
+      // resolves a seed's read-back store from the METADATA name, so a name
+      // override over a differently-named file yields a seed that hashes fine
+      // but errors 'Not opened' on every piece read — a seeder that serves
+      // nothing. (Same bug class as the native engine's custom-name seed.)
+      // Uniqueness therefore lives in the DIRECTORY: encryption is IV-fresh per
+      // share, so a same-named re-share writing to a fixed path would truncate
+      // the ciphertext backing the still-registered previous seed.
+      const cipherDir = path.join(room.cacheDir, `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`);
+      try { fs.mkdirSync(cipherDir, { recursive: true }); } catch { /* ignore */ }
+      const cipherPath = path.join(cipherDir, `${name}.enc`);
       encryptFile(filePath, cipherPath, room.secret)
         .then(() => doSeed(cipherPath, `${name}.enc`, cipherPath))
         .catch((e) => reject(e instanceof Error ? e : new Error(String(e))));
@@ -790,10 +821,17 @@ function ensureLocal(room: Room, file: RoomFile): void {
   // E2E: the swarm carries ciphertext. Download it into the cache (never the
   // room folder), then decrypt the plaintext into the folder for watch/open.
   if (room.e2e) {
-    try { fs.mkdirSync(room.cacheDir, { recursive: true }); } catch { /* ignore */ }
     const plain = path.join(room.folder, file.name);
     const cipherName = `${file.name}.enc`;
-    const cachedCipher = path.join(room.cacheDir, cipherName);
+    // The cache slot is keyed by fileId, NOT display name: two same-named files
+    // are different ciphertexts, and a name-keyed slot would adopt (or truncate)
+    // the wrong one. fileId is the cipher torrent's infoHash, so a hit at this
+    // path is the right bytes by construction. Non-hex ids (hostile gossip)
+    // fall back to their hash so they can't traverse out of the cache dir.
+    const idDir = /^[0-9a-f]{40}$/i.test(file.fileId) ? file.fileId : crypto.createHash('sha1').update(file.fileId).digest('hex');
+    const cipherDir = path.join(room.cacheDir, idDir);
+    const cachedCipher = path.join(cipherDir, cipherName);
+    try { fs.mkdirSync(cipherDir, { recursive: true }); } catch { /* ignore */ }
     if (fs.existsSync(cachedCipher)) {
       // Already have the ciphertext — re-seed it and (re)derive the plaintext.
       const havePlain = fs.existsSync(plain);
@@ -805,10 +843,10 @@ function ensureLocal(room: Room, file: RoomFile): void {
     }
     setTransfer(room, file.fileId, { status: 'downloading', progress: 0, cipherPath: cachedCipher });
     try {
-      c.add(file.magnetURI, { path: room.cacheDir, announce: ROOM_TRACKERS } as any, (torrent: any) => {
+      c.add(file.magnetURI, { path: cipherDir, announce: ROOM_TRACKERS } as any, (torrent: any) => {
         wireTorrentStats(room, torrent);
         torrent.on('done', () => {
-          const landedCipher = path.join(room.cacheDir, safeBaseName(torrent.name) || cipherName);
+          const landedCipher = path.join(cipherDir, safeBaseName(torrent.name) || cipherName);
           setTransfer(room, file.fileId, { progress: 1, downSpeed: 0, cipherPath: landedCipher });
           if (room.secret) void decryptOne(room, file, landedCipher);
           else { persistManifest(room, file, undefined, landedCipher); log('e2e: ciphertext ready, awaiting room key for ' + file.name); pushState(room, true); }
@@ -869,11 +907,30 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
   if (room.e2e) {
     const plain = path.join(room.folder, file.name);
     if (pf.cipherPath && fs.existsSync(pf.cipherPath)) {
+      const cipherName = `${file.name}.enc`;
+      let cipherPath = pf.cipherPath;
+      // Legacy cache entries (<ts>_<rand>_<name>.enc) predate the disk-name ==
+      // torrent-name rule; seeding one under the canonical name would recreate
+      // the unreadable-store seeder this layout exists to prevent. Move the file
+      // into the modern per-share directory — same bytes + same torrent name →
+      // same infoHash, so the manifest fileId still holds.
+      if (path.basename(cipherPath) !== cipherName) {
+        try {
+          const idDir = /^[0-9a-f]{40}$/i.test(file.fileId) ? file.fileId : crypto.createHash('sha1').update(file.fileId).digest('hex');
+          const dir = path.join(room.cacheDir, idDir);
+          fs.mkdirSync(dir, { recursive: true });
+          const dst = path.join(dir, cipherName);
+          fs.renameSync(cipherPath, dst);
+          cipherPath = dst;
+          persistManifest(room, file, pf.localPath, dst);
+          log('e2e cipher migrated to per-share layout: ' + file.name);
+        } catch (e) { log('e2e cipher migrate failed: ' + String(e)); }
+      }
       const havePlain = fs.existsSync(plain);
-      setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath: pf.cipherPath });
-      try { c.seed(pf.cipherPath, { announce: ROOM_TRACKERS, name: `${file.name}.enc` } as any, (t: any) => wireTorrentStats(room, t)); }
+      setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath });
+      try { c.seed(cipherPath, { announce: ROOM_TRACKERS, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
       catch (e) { log('e2e manifest reseed failed: ' + String(e)); }
-      if (room.secret && !havePlain) void decryptOne(room, file, pf.cipherPath);
+      if (room.secret && !havePlain) void decryptOne(room, file, cipherPath);
       return;
     }
     if (room.autoFetch) ensureLocal(room, file); // no cached ciphertext — re-download it
@@ -905,7 +962,11 @@ function wireTorrentStats(room: Room, torrent: any): void {
   torrent.on('download', update);
   torrent.on('upload', update);
   torrent.on('wire', update);
-  torrent.on('error', () => setTransfer(room, fileId, { status: 'error' }));
+  torrent.on('error', (e: any) => { setTransfer(room, fileId, { status: 'error' }); log(`torrent ${fileId.slice(0, 8)} error: ${e?.message || e}`); });
+  // Surface swarm distress that otherwise dies silently — piece-verification
+  // failures arrive as 'warning' and look like an endless 0%-download without this.
+  torrent.on('warning', (e: any) => log(`torrent ${fileId.slice(0, 8)} warning: ${e?.message || e}`));
+  torrent.once('metadata', () => log(`torrent ${fileId.slice(0, 8)} metadata: length=${torrent.length} pieces=${torrent.pieces?.length}`));
   update();
 }
 

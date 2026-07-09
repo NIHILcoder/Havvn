@@ -196,6 +196,13 @@ describe('room tombstones: delete stays deleted, explicit re-share revives', () 
 
     const stateB = await cmd(B, joinPayload('B', path.join(dir, 'b')));
     expect(stateB.files.map((f: any) => f.fileId)).toEqual([fileId]);
+    // The gossiped entry keeps its provenance: clampFile used to drop
+    // addedByName (history showed "added by ?") and infoHash (voiding the
+    // c.get() re-entry guard for every remote file).
+    expect(stateB.files[0].addedByName).toBe('A');
+    expect(stateB.files[0].infoHash).toBe(fileId);
+    const added = stateB.history.find((e: any) => e.type === 'file-added');
+    expect(added?.actorName).toBe('A');
   });
 
   it('removeFile tombstones it on both sides', async () => {
