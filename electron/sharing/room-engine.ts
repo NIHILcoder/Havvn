@@ -100,7 +100,7 @@ type Msg =
   | { t: 'bye'; memberId: string }
   // Watch-together: relayed verbatim to peers; the renderers keep playback in sync
   // and show who's in the session ('join'/'leave'/'beat' presence).
-  | { t: 'sync'; fileId: string; action: 'play' | 'pause' | 'seek' | 'state' | 'join' | 'leave' | 'beat' | 'react'; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed: string; playing: boolean; emoji?: string }
+  | { t: 'sync'; fileId: string; action: 'play' | 'pause' | 'seek' | 'state' | 'join' | 'leave' | 'beat' | 'react'; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed: string; playing: boolean; together?: boolean; emoji?: string }
   // A chat message. Carries its own id (dedupes re-delivery across multiple wires)
   // and the sender's identity so peers can render it without a member lookup.
   // `pub` is the sender's Ed25519 public key (PEM) and `sig` an Ed25519 signature
@@ -745,7 +745,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
         ipcRenderer.send('room-sync', {
           roomId: room.roomId, fileId: msg.fileId, action: msg.action,
           position: msg.position, rate: msg.rate, at: msg.at,
-          memberId: msg.memberId, name: msg.name, avatarSeed: msg.avatarSeed, playing: msg.playing, emoji: msg.emoji,
+          memberId: msg.memberId, name: msg.name, avatarSeed: msg.avatarSeed, playing: msg.playing, together: msg.together, emoji: msg.emoji,
         });
       } catch { /* ignore */ }
       break;
@@ -1467,7 +1467,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         t: 'sync', fileId: String(p.fileId || ''), action: p.action || 'state',
         position: Number(p.position) || 0, rate: Number(p.rate) || 1, at: Date.now(),
         memberId: r.self.memberId, name: r.self.name || 'You',
-        avatarSeed: r.self.avatarSeed, playing: !!p.playing, emoji: String(p.emoji || '').slice(0, 16),
+        avatarSeed: r.self.avatarSeed, playing: !!p.playing, together: !!p.together, emoji: String(p.emoji || '').slice(0, 16),
       });
       data = { ok: true };
     }

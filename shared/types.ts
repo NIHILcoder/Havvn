@@ -915,7 +915,7 @@ export interface IpcApi {
     setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed'>>) => Promise<RoomProfile>;
     create: (name: string, e2e?: boolean) => Promise<RoomState>;
     join: (code: string) => Promise<RoomState>;
-    leave: (roomId: string) => Promise<{ ok: boolean }>;
+    leave: (roomId: string, deleteFiles?: boolean) => Promise<{ ok: boolean }>;
     list: () => Promise<RoomSummary[]>;
     get: (roomId: string) => Promise<RoomState | null>;
     addFiles: (roomId: string, paths: string[]) => Promise<RoomState>;
@@ -925,7 +925,7 @@ export interface IpcApi {
     openFolder: (roomId: string) => Promise<void>;
     openFile: (roomId: string, fileId: string) => Promise<void>;
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }>;
-    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
+    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<{ ok: boolean }>;
     setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<{ ok: boolean }>;
@@ -935,7 +935,7 @@ export interface IpcApi {
     sendChat: (roomId: string, text: string) => Promise<{ ok: boolean }>;
   };
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
-  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; emoji?: string }) => void) => () => void;
+  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void) => () => void;
 
   // IP Blocklist
   blocklist: {

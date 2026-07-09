@@ -503,6 +503,45 @@
 
 .rooms-modal-actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 
+/* Modal header with a close affordance (activity modal) */
+.rooms-modal-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.rooms-modal-head h3 { display: flex; align-items: center; gap: var(--space-2); }
+.rooms-modal-head h3 svg { color: var(--color-accent-primary); }
+.rooms-modal-x {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; flex-shrink: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: transparent; color: var(--color-text-tertiary);
+  cursor: pointer; transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+.rooms-modal-x:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); background: var(--color-bg-hover); }
+
+.rooms-modal-activity { width: 520px; }
+.room-history-modal { max-height: min(56vh, 460px); overflow-y: auto; }
+
+/* Leave-room dialog: two stacked option cards (keep files / delete files) */
+.rooms-leave { display: flex; flex-direction: column; gap: var(--space-2); }
+.rooms-leave-opt {
+  display: flex; align-items: flex-start; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.rooms-leave-opt:hover { border-color: var(--color-border-strong); background: var(--color-bg-hover); }
+.rooms-leave-opt:disabled { opacity: 0.55; cursor: default; }
+.rooms-leave-opt.danger:hover { border-color: var(--color-error); }
+.rooms-leave-ico { display: flex; align-items: center; justify-content: center; margin-top: 1px; color: var(--color-accent-primary); flex-shrink: 0; }
+.rooms-leave-opt.danger .rooms-leave-ico { color: var(--color-error); }
+.rooms-leave-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rooms-leave-txt strong { font-weight: 600; font-size: 14px; }
+.rooms-leave-txt em { font-style: normal; font-size: 12px; color: var(--color-text-tertiary); line-height: 1.4; }
+
 .rooms-profile-edit { display: flex; align-items: center; gap: var(--space-4); }
 .rooms-profile-edit .rooms-input { flex: 1; }
 

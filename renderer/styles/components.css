@@ -443,6 +443,15 @@
   line-height: var(--line-height-relaxed);
 }
 
+.empty-state-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: var(--space-5);
+}
+
 /* === Toast === */
 .toast {
   display: flex;

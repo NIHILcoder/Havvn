@@ -356,7 +356,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:leave', wrapHandler('rooms:leave',
-    async (_event, roomId: string) => roomManager.leaveRoom(roomId)
+    async (_event, roomId: string, deleteFiles?: boolean) => roomManager.leaveRoom(roomId, deleteFiles)
   ));
 
   ipcMain.handle('rooms:list', wrapHandler('rooms:list',

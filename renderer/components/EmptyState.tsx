@@ -6,14 +6,19 @@ import React from 'react';
 import Icon, { IconName } from './Icon';
 import Button from './Button';
 
+interface EmptyStateAction {
+  label: string;
+  onClick: () => void;
+  icon?: IconName;
+}
+
 interface EmptyStateProps {
   icon?: IconName;
   title: string;
   description?: string;
-  action?: {
-    label: string;
-    onClick: () => void;
-  };
+  action?: EmptyStateAction;
+  /** Optional second (ghost) action shown next to the primary one. */
+  secondaryAction?: EmptyStateAction;
   className?: string;
 }
 
@@ -22,6 +27,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   title,
   description,
   action,
+  secondaryAction,
   className = '',
 }) => {
   return (
@@ -33,10 +39,19 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
       {description && (
         <p className="empty-state-description">{description}</p>
       )}
-      {action && (
-        <Button variant="primary" onClick={action.onClick}>
-          {action.label}
-        </Button>
+      {(action || secondaryAction) && (
+        <div className="empty-state-actions">
+          {action && (
+            <Button variant="primary" onClick={action.onClick} icon={action.icon ? <Icon name={action.icon} size={16} /> : undefined}>
+              {action.label}
+            </Button>
+          )}
+          {secondaryAction && (
+            <Button variant="ghost" onClick={secondaryAction.onClick} icon={secondaryAction.icon ? <Icon name={secondaryAction.icon} size={16} /> : undefined}>
+              {secondaryAction.label}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );

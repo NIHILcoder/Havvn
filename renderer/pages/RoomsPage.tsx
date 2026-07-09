@@ -66,7 +66,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const [watch, setWatch] = useState<{ file: RoomFile } | null>(null);
 
   // Lightweight inline dialogs
-  const [dialog, setDialog] = useState<null | 'create' | 'join' | 'profile' | 'invite'>(null);
+  const [dialog, setDialog] = useState<null | 'create' | 'join' | 'profile' | 'invite' | 'leave'>(null);
+  // Room queued for the leave dialog (which offers keep-files vs delete-files).
+  const [leaveTarget, setLeaveTarget] = useState<string | null>(null);
   const [createName, setCreateName] = useState('');
   const [createE2E, setCreateE2E] = useState(false);
   const [joinCode, setJoinCode] = useState('');
@@ -170,16 +172,35 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     finally { setBusy(false); }
   };
 
-  const handleLeave = async (roomId: string) => {
-    if (!window.confirm(t('rooms.leaveConfirm'))) return;
+  // Open the leave dialog (which chooses keep-files vs delete-files); if the
+  // player is open on this room, close it first so it can't outlive the room.
+  const requestLeave = (roomId: string) => {
+    setLeaveTarget(roomId);
+    setDialog('leave');
+  };
+
+  const doLeave = async (deleteFiles: boolean) => {
+    const roomId = leaveTarget;
+    if (!roomId) return;
+    setDialog(null);
+    setWatch(null); // don't leave the player open on a room we're leaving
     setBusy(true);
     try {
-      await window.api.rooms.leave(roomId);
+      await window.api.rooms.leave(roomId, deleteFiles);
       await refreshList();
       setSelectedId((prev) => (prev === roomId ? null : prev));
+      toast.success(deleteFiles ? t('rooms.leaveDelete') : t('rooms.leave'));
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setLeaveTarget(null); }
   };
+
+  // Escape closes the open inline dialog (create/join/profile/invite/leave).
+  useEffect(() => {
+    if (!dialog) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) setDialog(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dialog, busy]);
 
   const handleAddFiles = async (roomId: string) => {
     setBusy(true);
@@ -261,7 +282,8 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           icon="users"
           title={t('rooms.emptyTitle')}
           description={t('rooms.emptyDesc')}
-          action={{ label: t('rooms.create'), onClick: () => { setCreateName(''); setDialog('create'); } }}
+          action={{ label: t('rooms.create'), icon: 'plus', onClick: () => { setCreateName(''); setDialog('create'); } }}
+          secondaryAction={{ label: t('rooms.join'), icon: 'link', onClick: () => { setJoinCode(''); setDialog('join'); } }}
         />
       ) : (
         <div className="rooms-body">
@@ -275,7 +297,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
                 onAddFiles={() => handleAddFiles(room.roomId)}
                 onOpenFolder={() => window.api.rooms.openFolder(room.roomId)}
                 onInvite={() => setDialog('invite')}
-                onLeave={() => handleLeave(room.roomId)}
+                onLeave={() => requestLeave(room.roomId)}
                 onCopyCode={() => copy(room.code, t('rooms.codeCopied'))}
                 onWatch={(file) => setWatch({ file })}
                 onToggleAutoFetch={(v) => handleToggleAutoFetch(room.roomId, v)}
@@ -343,6 +365,26 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
                 <div className="rooms-modal-actions">
                   <Button variant="ghost" onClick={() => setDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
                   <Button variant="primary" onClick={handleJoin} loading={busy} disabled={!joinCode.trim()}>{t('rooms.join')}</Button>
+                </div>
+              </>
+            )}
+
+            {dialog === 'leave' && (
+              <>
+                <h3>{t('rooms.leaveTitle')}</h3>
+                <p className="rooms-modal-desc">{t('rooms.leaveDesc')}</p>
+                <div className="rooms-leave">
+                  <button type="button" className="rooms-leave-opt" onClick={() => doLeave(false)} disabled={busy}>
+                    <span className="rooms-leave-ico"><Icon name="check" size={16} /></span>
+                    <span className="rooms-leave-txt"><strong>{t('rooms.leaveKeep')}</strong></span>
+                  </button>
+                  <button type="button" className="rooms-leave-opt danger" onClick={() => doLeave(true)} disabled={busy}>
+                    <span className="rooms-leave-ico"><Icon name="trash" size={16} /></span>
+                    <span className="rooms-leave-txt"><strong>{t('rooms.leaveDelete')}</strong><em>{t('rooms.leaveDeleteHint')}</em></span>
+                  </button>
+                </div>
+                <div className="rooms-modal-actions">
+                  <Button variant="ghost" onClick={() => setDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
                 </div>
               </>
             )}
@@ -451,6 +493,15 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
   const { t } = useTranslation();
   // "Bring a file from Transfers" — pick a finished download to share here
   const [pickTransfer, setPickTransfer] = useState(false);
+  // Activity log lives in its own modal now (opened from the title bar) so it
+  // doesn't crowd the files column.
+  const [showActivity, setShowActivity] = useState(false);
+  useEffect(() => {
+    if (!showActivity) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowActivity(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showActivity]);
   // Speed-limit drafts: commit on blur/Enter; re-seed only on room switch so
   // live state pushes don't stomp typing. 0/empty = unlimited.
   const [upDraft, setUpDraft] = useState(String(room.upKbps || ''));
@@ -495,6 +546,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
           <Button variant="ghost" size="sm" onClick={onCopyCode} icon={<Icon name="copy" size={14} />}>{t('rooms.code')}</Button>
           <Button variant="ghost" size="sm" onClick={onInvite} icon={<Icon name="share-2" size={14} />}>{t('rooms.invite')}</Button>
           <Button variant="ghost" size="sm" onClick={onOpenFolder} icon={<Icon name="folder-open" size={14} />}>{t('rooms.folder')}</Button>
+          <Button variant="ghost" size="sm" onClick={() => setShowActivity(true)} icon={<Icon name="activity" size={14} />}>{t('rooms.history')}</Button>
           <Button variant="danger" size="sm" onClick={onLeave} disabled={busy} icon={<Icon name="x" size={14} />}>{t('rooms.leave')}</Button>
         </div>
       </div>
@@ -585,24 +637,6 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
               </div>
             </div>
           </div>
-
-          {/* Activity */}
-          <div className="room-section">
-            <div className="room-section-title">{t('rooms.history')}</div>
-            {room.history.length === 0 ? (
-              <div className="room-files-empty">{t('rooms.historyEmpty')}</div>
-            ) : (
-              <div className="room-history">
-                {room.history.slice().reverse().slice(0, 30).map((ev) => (
-                  <div key={ev.id} className="room-history-item">
-                    <span className="room-history-actor">{ev.actorName}</span>
-                    <span className="room-history-text">{eventText(t, ev)}</span>
-                    <span className="room-history-time">{shortTime(ev.at)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
 
         <div className="room-col-side">
@@ -667,6 +701,30 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onOpenFolder, onI
           onClose={() => setPickTransfer(false)}
           onShared={onShared}
         />
+      )}
+
+      {showActivity && (
+        <div className="rooms-modal-backdrop" onClick={() => setShowActivity(false)}>
+          <div className="rooms-modal rooms-modal-activity" onClick={(e) => e.stopPropagation()}>
+            <div className="rooms-modal-head">
+              <h3><Icon name="activity" size={16} /> {t('rooms.history')}</h3>
+              <button className="rooms-modal-x" onClick={() => setShowActivity(false)} title={t('common.close')}><Icon name="x" size={16} /></button>
+            </div>
+            {room.history.length === 0 ? (
+              <div className="room-files-empty">{t('rooms.historyEmpty')}</div>
+            ) : (
+              <div className="room-history room-history-modal">
+                {room.history.slice().reverse().map((ev) => (
+                  <div key={ev.id} className="room-history-item">
+                    <span className="room-history-actor">{ev.actorName}</span>
+                    <span className="room-history-text">{eventText(t, ev)}</span>
+                    <span className="room-history-time">{shortTime(ev.at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -845,11 +903,25 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   // The Ember control bar drives the same element; main wraps stage + bar for fullscreen.
   const mainRef = useRef<HTMLDivElement>(null);
   const [mediaEl, setMediaEl] = useState<HTMLVideoElement | null>(null);
-  useEffect(() => { setMediaEl(videoRef.current); }, []);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (v) {
+      // Start at a comfortable middle volume instead of full blast; remember
+      // the last level the user set so it sticks across tracks and sessions.
+      const saved = Number(localStorage.getItem('havvn.roomVolume'));
+      v.volume = Number.isFinite(saved) && saved > 0 && saved <= 1 ? saved : 0.6;
+      const onVol = () => { try { if (v.volume > 0) localStorage.setItem('havvn.roomVolume', String(v.volume)); } catch { /* ignore */ } };
+      v.addEventListener('volumechange', onVol);
+      setMediaEl(v);
+      return () => v.removeEventListener('volumechange', onVol);
+    }
+    setMediaEl(null);
+  }, []);
   const applyingRemote = useRef(false); // suppress echo while applying a remote action
   const togetherRef = useRef(false);
   const [together, setTogether] = useState(false);
-  const [controller, setController] = useState<string | null>(null);
+  const [controller, setController] = useState<string | null>(null); // name we're synced to (display only)
+  const watchersRef = useRef<Record<string, Watcher>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   // Embedded cover art of the current track (null → note icon). Speculative
@@ -859,6 +931,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const [reactions, setReactions] = useState<{ id: number; emoji: string; x: number }[]>([]);
   const reactSeq = useRef(0);
   togetherRef.current = together;
+  watchersRef.current = watchers;
 
   // The track on stage — starts at the file that opened the player; the music
   // queue and remote 'track' commands switch it without remounting the player.
@@ -873,9 +946,28 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     () => room.files.filter((f) => classifyMediaKind(f.name) === 'audio' && room.transfers[f.fileId]?.haveLocally),
     [room.files, room.transfers],
   );
-  // Late-joiner catch-up gets one shot per track (see the sync handler).
-  const caughtUp = useRef(false);
-  useEffect(() => { caughtUp.current = false; }, [current.fileId]);
+  // Remember the current track's slot in the queue. When the track is removed
+  // its findIndex goes to -1, so this ref keeps the PRE-removal index — the slot
+  // the next track shifts into — for the tombstone handler below.
+  const curIdxRef = useRef(0);
+  useEffect(() => {
+    const i = playlist.findIndex((f) => f.fileId === currentRef.current.fileId);
+    if (i >= 0) curIdxRef.current = i;
+  }, [playlist]);
+
+  // The track on stage was removed (by us or a peer) — don't leave a ghost
+  // playing a file that no longer exists. Notify, then: for AUDIO, advance to the
+  // next queued track (broadcast so together peers follow onto the same one);
+  // for a video (or when nothing's left to play) just close the player.
+  useEffect(() => {
+    if (room.files.some((f) => f.fileId === currentRef.current.fileId)) return;
+    toast(t('rooms.fileGone'), { icon: '🗑️' });
+    const isAudioNow = classifyMediaKind(currentRef.current.name) === 'audio';
+    const next = isAudioNow && playlist.length ? playlist[Math.min(curIdxRef.current, playlist.length - 1)] : undefined;
+    if (next) playTrack(next, togetherRef.current);
+    else onClose();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.files]);
 
   const playTrack = useCallback((f: RoomFile, broadcastIt: boolean) => {
     setCurrent(f);
@@ -1015,6 +1107,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       fileId: current.fileId, action,
       position: v ? v.currentTime : 0,
       playing: v ? !v.paused : false,
+      together: togetherRef.current, // so peers only follow beats from members who are in sync
     }).catch(() => {});
   }, [roomId, current.fileId]);
 
@@ -1076,7 +1169,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     if (!v) return;
     const send = (action: string) => {
       if (!togetherRef.current || applyingRemote.current) return;
-      window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action, position: v.currentTime, rate: v.playbackRate }).catch(() => {});
+      window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action, position: v.currentTime, rate: v.playbackRate, together: true }).catch(() => {});
     };
     const onPlay = () => send('play');
     const onPause = () => send('pause');
@@ -1106,21 +1199,25 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       } else {
         setWatchers((w) => ({ ...w, [msg.memberId]: { memberId: msg.memberId, name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, playing: !!msg.playing, lastSeen: Date.now() } }));
       }
-      // Late-joiner catch-up: one shot per track — a fresh session (we're still
-      // in the first seconds) snaps onto a peer already playing deep, then the
-      // regular sync commands take over.
-      if ((msg.action === 'beat' || msg.action === 'join') && msg.playing && togetherRef.current && !caughtUp.current) {
+      // Continuous soft-sync — forward-only catch-up. On a heartbeat from a peer
+      // who ALSO has sync on and is playing AHEAD of us, we jump forward to them.
+      // We never pull anyone BACKWARD on a mere beat, so there is no leader to
+      // elect, lose or fight over: the room simply converges forward onto whoever
+      // is furthest along, and a fresh joiner can't yank an established listener
+      // back to zero. Deliberate play/pause/seek still propagate via the action
+      // handler below. A peer freshly paused near the start counts as a joiner and
+      // starts playing to catch up; a deliberate pause deep in the track does not.
+      if ((msg.action === 'beat' || msg.action === 'join') && togetherRef.current
+          && msg.together && msg.playing && msg.memberId !== self.memberId) {
         const v = videoRef.current;
-        if (v) {
-          if (v.currentTime < 5 && msg.position > 8) {
-            caughtUp.current = true;
-            const expectedPos = msg.position + Math.max(0, (Date.now() - msg.at) / 1000);
-            applyingRemote.current = true;
-            try { v.currentTime = expectedPos; void v.play().catch(() => {}); }
-            finally { setTimeout(() => { applyingRemote.current = false; }, 250); }
+        if (v && !applyingRemote.current) {
+          const ahead = msg.position + Math.max(0, (Date.now() - msg.at) / 1000);
+          const joiner = v.paused && v.currentTime < 5; // just opened, not a deliberate pause
+          if (ahead - v.currentTime > 1.8 && (!v.paused || joiner)) {
             setController(msg.name);
-          } else if (v.currentTime >= 5) {
-            caughtUp.current = true; // we're established — never yank us later
+            applyingRemote.current = true;
+            try { v.currentTime = ahead; if (v.paused) void v.play().catch(() => {}); }
+            finally { setTimeout(() => { applyingRemote.current = false; }, 250); }
           }
         }
       }
@@ -1134,13 +1231,18 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       setController(msg.name);
       const expected = msg.position + (msg.action === 'play' ? Math.max(0, (Date.now() - msg.at) / 1000) : 0);
       applyingRemote.current = true;
+      // Clear the echo guard when the media actually settles (a transcode/HLS
+      // seek can take far longer than a fixed timer — the late 'seeked' would
+      // otherwise re-broadcast and yank the room to our stale position). Fixed
+      // timeout stays as a floor/fallback.
+      const done = () => { applyingRemote.current = false; };
+      const guard = setTimeout(done, 250);
+      const settle = () => { clearTimeout(guard); done(); };
       try {
         if (msg.action === 'pause') { v.pause(); if (Math.abs(v.currentTime - msg.position) > 0.5) v.currentTime = msg.position; }
-        else if (msg.action === 'seek') { v.currentTime = msg.position; }
+        else if (msg.action === 'seek') { v.addEventListener('seeked', settle, { once: true }); v.currentTime = msg.position; }
         else if (msg.action === 'play') { if (Math.abs(v.currentTime - expected) > 1.5) v.currentTime = expected; v.play().catch(() => {}); }
-      } finally {
-        setTimeout(() => { applyingRemote.current = false; }, 250);
-      }
+      } catch { /* ignore */ }
     });
     return off;
   }, [roomId, file.fileId, spawnReaction]);
@@ -1148,16 +1250,12 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const toggleTogether = () => {
     const next = !together;
     setTogether(next);
-    const v = videoRef.current;
-    // A fresh session that just enabled sync catches up from the next beat
-    // instead of asserting its own (near-zero) position on the room.
-    if (next && v && v.currentTime < 5) {
-      caughtUp.current = false;
-      return;
-    }
-    if (next && v) {
-      window.api.rooms.broadcastSync(roomId, { fileId: current.fileId, action: v.paused ? 'pause' : 'play', position: v.currentTime, rate: v.playbackRate }).catch(() => {});
-    }
+    togetherRef.current = next; // live immediately so the beat below carries the right flag
+    // Announce right away so the room converges without waiting for the next 5s
+    // heartbeat: peers behind us catch up to our position, and incoming beats
+    // pull us forward if we're the one behind. Forward-only — enabling sync
+    // never yanks anyone backward.
+    if (next) presence('beat');
   };
 
   return (

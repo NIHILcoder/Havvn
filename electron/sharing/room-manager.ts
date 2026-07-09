@@ -312,7 +312,14 @@ export class RoomManager {
     return state;
   }
 
-  async leaveRoom(roomId: string): Promise<{ ok: boolean }> {
+  /**
+   * Leave a room. By default the downloaded files stay on disk; pass
+   * `deleteFiles` to also remove the room's download folder (files a member
+   * shared from their ORIGINAL location outside the folder are untouched).
+   */
+  async leaveRoom(roomId: string, deleteFiles = false): Promise<{ ok: boolean }> {
+    // Resolve the folder BEFORE the db entry is deleted below.
+    const folder = deleteFiles ? this.folderOf(roomId) : null;
     try { await this.call('leave', { roomId }, 8000); } catch { /* engine may be down */ }
     db.deletePersistedRoom(roomId);
     db.clearRoomTombstones(roomId);
@@ -322,6 +329,13 @@ export class RoomManager {
     db.clearRoomChats(roomId);
     db.clearRoomIdentities(roomId);
     try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
+    // The engine's 'leave' above destroys the room's WebTorrent client, so the
+    // file handles should be released by now; best-effort delete (a Windows AV
+    // lock can still hold one, in which case the folder simply stays).
+    if (folder) {
+      try { fs.rmSync(folder, { recursive: true, force: true }); }
+      catch (e) { log.warn('leaveRoom: could not delete room folder', { roomId, err: String(e) }); }
+    }
     this.cache.delete(roomId);
     return { ok: true };
   }
