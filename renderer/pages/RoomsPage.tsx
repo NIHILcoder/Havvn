@@ -852,6 +852,9 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const [controller, setController] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Embedded cover art of the current track (null → note icon). Speculative
+  // URL from watchFile; a 404 lands in the img onError which clears it.
+  const [cover, setCover] = useState<string | null>(null);
   const [watchers, setWatchers] = useState<Record<string, Watcher>>({});
   const [reactions, setReactions] = useState<{ id: number; emoji: string; x: number }[]>([]);
   const reactSeq = useRef(0);
@@ -1041,8 +1044,10 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     let alive = true;
     setLoading(true);
     setError(null);
+    setCover(null); // don't wear the previous track's art while loading
     window.api.rooms.watchFile(roomId, current.fileId).then((info) => {
       if (!alive) return;
+      setCover(info.coverUrl || null);
       const v = videoRef.current;
       if (!v) return;
       if (info.direct) {
@@ -1181,9 +1186,16 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                   className="room-audio-stage"
                   onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
                 >
+                  {cover && <div className="room-audio-backdrop" style={{ backgroundImage: `url("${cover}")` }} aria-hidden="true" />}
                   <canvas ref={vizRef} className="room-audio-viz" aria-hidden="true" />
                   <div className="room-audio-meta">
-                    <span className="room-audio-disc"><Icon name="music" size={20} /></span>
+                    <span className="room-audio-disc">
+                      {cover ? (
+                        <img className="room-audio-cover" src={cover} alt="" onError={() => setCover(null)} />
+                      ) : (
+                        <Icon name="music" size={20} />
+                      )}
+                    </span>
                     <div className="room-audio-titles">
                       <div className="room-audio-name" title={current.name}>{current.name}</div>
                       <div className="room-audio-sub">

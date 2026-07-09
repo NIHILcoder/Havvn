@@ -29,10 +29,14 @@ import crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
+import { getHostEnv } from './host/env';
 
 const log = logger.child('CastServer');
 
 const SEG = 6; // HLS segment length, seconds
+// Sanity ceiling for extracted cover art: a hostile APIC frame can legally be
+// ~256 MB, and serveCover buffers the image in memory. Real covers are <1 MB.
+const MAX_COVER_BYTES = 4 * 1024 * 1024;
 
 interface Variant {
   id: string; height: number; vMax: string; vBuf: string; aBr: string; bandwidth: number; w: number; h: number;
@@ -61,6 +65,12 @@ export class CastServer {
   // manager so they don't need to be a managed torrent.
   private diskPublished = new Map<string, FileInfo>(); // `${id}/0` → info
   private durations = new Map<string, number>(); // diskPath → seconds
+  // sha1(diskPath|size|mtime) → cached cover image path (null = probed, no
+  // embedded art). Keyed by content identity, not path: a still-downloading or
+  // re-tagged file gets a fresh probe once it changes instead of pinning the
+  // first result. The promise memoizes in-flight extractions so parallel
+  // requests spawn one ffmpeg.
+  private covers = new Map<string, Promise<string | null>>();
   private active = new Map<ChildProcess, string>(); // transcode proc → owning download id
   private hlsLib: Buffer | null = null;          // cached hls.min.js
   private resolveFile: Resolver;
@@ -158,7 +168,7 @@ export class CastServer {
    * locally (the server still binds 0.0.0.0, so 127.0.0.1 works). Reuses the
    * same direct/HLS/transcode machinery as torrent casting.
    */
-  async publishDiskFile(absPath: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; direct: boolean; kind: 'video' | 'audio' | 'other'; name: string }> {
+  async publishDiskFile(absPath: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: 'video' | 'audio' | 'other'; name: string }> {
     const stat = fs.statSync(absPath); // throws ENOENT if missing
     const name = path.basename(absPath);
     const kind = classifyMediaKind(name);
@@ -176,6 +186,10 @@ export class CastServer {
       directUrl: `${base}/direct${p}${k}`,
       hlsUrl: `${base}/hls${p}/master.m3u8${k}`,
       playerUrl: `${base}/play${p}${k}`,
+      // Speculative: the player shows it if the track has embedded art (404 → its
+      // fallback). Probing here would put an ffmpeg spawn on the play-start path.
+      // &v= busts the browser cache when the file changes at the same path.
+      coverUrl: kind === 'audio' && this.getFfmpeg() ? `${base}/cover${p}${k}&v=${Math.round(stat.mtimeMs)}` : undefined,
       direct, kind, name,
     };
   }
@@ -235,6 +249,7 @@ export class CastServer {
       if (route === 'play') return void this.servePlayer(res, info, id, fileIndex);
       if (route === 'direct') return this.serveDirect(req, res, info);
       if (route === 'stream') return this.serveProgressive(req, res, info, id); // single-pass MP4 fallback
+      if (route === 'cover') return void this.serveCover(res, info);
       if (route === 'hls') {
         if (parts[3] === 'master.m3u8') return void this.serveMaster(res, id, fileIndex);
         const variant = parts[3];
@@ -467,6 +482,82 @@ export class CastServer {
     proc.on('close', () => this.active.delete(proc));
     res.on('close', done);
     req.on('close', done);
+  }
+
+  // ── Embedded cover art ───────────────────────────────────────────────────────
+  /**
+   * Serve the track's embedded cover (ID3 APIC / attached_pic). 404 when the
+   * file has none — the in-app player falls back to its icon on img error.
+   */
+  private async serveCover(res: http.ServerResponse, info: FileInfo): Promise<void> {
+    if (info.kind !== 'audio') { res.writeHead(404); res.end(); return; }
+    let buf: Buffer | null = null;
+    try {
+      const img = await this.extractCover(info.diskPath);
+      if (img && fs.statSync(img).size <= MAX_COVER_BYTES) buf = fs.readFileSync(img);
+    } catch { /* fall through to 404 */ }
+    if (!buf || buf.length === 0) { res.writeHead(404); res.end('no cover'); return; }
+    // attached_pic is jpeg or png in the wild — sniff the bytes, don't trust names.
+    const type = buf[0] === 0xff && buf[1] === 0xd8 ? 'image/jpeg'
+      : buf[0] === 0x89 && buf[1] === 0x50 ? 'image/png'
+      : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'max-age=86400' });
+    res.end(buf);
+  }
+
+  /**
+   * Extract the embedded art once per file *content* into a persistent disk
+   * cache (<userData>/cover-cache/<sha1(diskPath|size|mtime)>.img). Resolves
+   * null when the track has no art (ffmpeg exits non-zero — that miss is
+   * memoized for the session, but only under the current content identity, so
+   * a probe against a half-downloaded file self-heals once the file finishes).
+   */
+  private extractCover(diskPath: string): Promise<string | null> {
+    let st: fs.Stats;
+    try { st = fs.statSync(diskPath); } catch { return Promise.resolve(null); }
+    const mtime = Math.round(st.mtimeMs);
+    const key = crypto.createHash('sha1').update(`${diskPath}|${st.size}|${mtime}`).digest('hex');
+    const memo = this.covers.get(key);
+    if (memo) return memo;
+    const p = (async (): Promise<string | null> => {
+      const ffmpeg = this.getFfmpeg();
+      if (!ffmpeg) return null;
+      const dir = path.join(getHostEnv().userDataDir, 'cover-cache');
+      const out = path.join(dir, key + '.img');
+      if (fs.existsSync(out)) return out;
+      fs.mkdirSync(dir, { recursive: true });
+      // attached_pic is a one-frame "video" stream — copy it out untouched.
+      // -fs stops a hostile multi-hundred-MB APIC before it ever hits disk.
+      const tmp = `${out}.${process.pid}.part`;
+      const ok = await new Promise<boolean>((resolve) => {
+        const proc = spawn(ffmpeg, ['-y', '-i', diskPath, '-map', '0:v:0', '-frames:v', '1', '-c:v', 'copy', '-fs', String(MAX_COVER_BYTES), '-f', 'image2', tmp], { windowsHide: true });
+        proc.stderr.on('data', () => { /* discard */ });
+        proc.on('error', () => resolve(false));
+        proc.on('close', (code) => resolve(code === 0));
+      });
+      const size = ok && fs.existsSync(tmp) ? fs.statSync(tmp).size : 0;
+      if (size === 0 || size >= MAX_COVER_BYTES) { // -fs truncates at the cap — an at-cap file is torn, not art
+        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+        return null;
+      }
+      // The file mutated while ffmpeg read it (still downloading): the frame may
+      // be torn, and its identity key is already stale — drop it and let the
+      // next request re-probe under the new identity.
+      const now = fs.statSync(diskPath);
+      if (now.size !== st.size || Math.round(now.mtimeMs) !== mtime) {
+        try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+        this.covers.delete(key);
+        return null;
+      }
+      fs.renameSync(tmp, out);
+      return out;
+    })();
+    // Memoize misses (most tracks simply have no art) but never errors: a
+    // transient FS failure (e.g. AV briefly locking the file on Windows) should
+    // retry on the next request instead of replaying the rejection all session.
+    const guarded = p.catch(() => { this.covers.delete(key); return null; });
+    this.covers.set(key, guarded);
+    return guarded;
   }
 
   /** Probe duration (seconds) by parsing ffmpeg's stderr — ffprobe isn't bundled. */

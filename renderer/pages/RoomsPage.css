@@ -662,6 +662,17 @@
   overflow: hidden;
 }
 
+/* The track's embedded art, washed out behind the spectrum */
+.room-audio-backdrop {
+  position: absolute;
+  inset: -48px; /* bleed past the edges so the blur doesn't fade at the borders */
+  background-size: cover;
+  background-position: center;
+  filter: blur(40px) saturate(1.15);
+  opacity: 0.25;
+  pointer-events: none;
+}
+
 .room-audio-viz {
   position: absolute;
   inset: 0;
@@ -687,6 +698,14 @@
   border-radius: var(--radius-md);
   background: var(--color-accent-bg);
   color: var(--color-accent-primary);
+  overflow: hidden;
+}
+
+.room-audio-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .room-audio-titles { min-width: 0; }

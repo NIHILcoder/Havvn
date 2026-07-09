@@ -378,7 +378,7 @@ export class RoomManager {
    * Resolve a downloaded room file on disk and publish it on the cast server,
    * returning ready media URLs for the in-app player.
    */
-  async watchFile(roomId: string, fileId: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; direct: boolean; kind: string; name: string }> {
+  async watchFile(roomId: string, fileId: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }> {
     const state = this.cache.get(roomId);
     const file = state?.files.find((f) => f.fileId === fileId);
     const folder = this.folderOf(roomId);
