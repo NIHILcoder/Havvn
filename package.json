@@ -143,6 +143,7 @@
       }
     ],
     "nsis": {
+      "artifactName": "Havvn-Setup-${version}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": true,

@@ -18,10 +18,11 @@ import fs from 'fs';
 // seed from a path — while WebRTC comes from the window below.
 import WebTorrent from 'webtorrent';
 
-// Still the pre-rebrand GitHub Pages URL ON PURPOSE: renaming the repo would
-// kill every previously shared link (Pages URLs don't redirect). Revisit only
-// with a deliberate repo migration that keeps the old path serving.
-const RECEIVER_BASE = 'https://nihilcoder.github.io/TorrentHunt/share/';
+// GitHub Pages receiver path. The repo was renamed TorrentHunt → Havvn, so Pages
+// now serves at /Havvn/ and NEW links must use it. Links shared under the old
+// /TorrentHunt/ path stop resolving once the rename lands (Pages project paths
+// don't auto-redirect) — an accepted one-time cost of the rebrand.
+const RECEIVER_BASE = 'https://nihilcoder.github.io/Havvn/share/';
 
 // ICE servers + rendezvous trackers come from the shared module (see
 // ice-servers.ts). This preload runs with sandbox:false, so require() works.

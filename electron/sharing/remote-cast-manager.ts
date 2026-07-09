@@ -15,8 +15,8 @@ import { getTorrentManager } from '../torrent';
 
 const log = logger.child('RemoteCast');
 
-// Pre-rebrand GitHub Pages URL kept on purpose — see share-seeder.ts RECEIVER_BASE.
-const RECEIVER_BASE = 'https://nihilcoder.github.io/TorrentHunt/watch/';
+// Post-rebrand GitHub Pages URL (repo renamed to Havvn) — see share-seeder.ts RECEIVER_BASE.
+const RECEIVER_BASE = 'https://nihilcoder.github.io/Havvn/watch/';
 import { customTurnToIce } from './ice-servers';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
