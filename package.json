@@ -121,8 +121,15 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
         }
       ],
+      "artifactName": "Havvn-${version}-win-portable.${ext}",
       "icon": "build/icon.ico",
       "requestedExecutionLevel": "asInvoker"
     },
@@ -154,7 +161,15 @@
       "include": "build/installer.nsh",
       "runAfterFinish": true,
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerLanguages": [
+        "en_US",
+        "ru_RU"
+      ],
+      "multiLanguageInstaller": true
     }
   },
   "author": "",
