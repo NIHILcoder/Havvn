@@ -1,0 +1,93 @@
+<!doctype html><html><head><meta charset="utf-8"><style>body{background:#333;margin:0;padding:20px;display:flex;flex-wrap:wrap;gap:20px}canvas{border:1px solid #666;max-width:45%;height:auto;background:
+repeating-conic-gradient(#444 0 25%,#3a3a3a 0 50%) 0 0/20px 20px}</style></head><body>
+<canvas id="mark" width="1024" height="1024"></canvas>
+<canvas id="lockup" width="1600" height="512"></canvas>
+<canvas id="cover" width="1280" height="640"></canvas>
+<script>
+const EMBER='#F2913F', EMBER2='#E0673A', TEXT='#ECEBE6', BG='#141519', BG2='#17181d', MUTED='#98958D';
+
+// The brand Double-V: path M4 9 L10.5 21 L16 12 L21.5 21 L28 9 + node (16,9.4) r2.3
+// Design box 32x32 (mark spans x4..28, y9..21).
+function drawMark(ctx, cx, cy, scale, stroke = EMBER, node = EMBER2) {
+  const P = [[4,9],[10.5,21],[16,12],[21.5,21],[28,9]].map(([x,y]) => [cx+(x-16)*scale, cy+(y-15)*scale]);
+  ctx.lineWidth = 2.3*scale;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = stroke;
+  ctx.beginPath();
+  ctx.moveTo(P[0][0], P[0][1]);
+  for (let i=1;i<P.length;i++) ctx.lineTo(P[i][0], P[i][1]);
+  ctx.stroke();
+  ctx.fillStyle = node;
+  ctx.beginPath();
+  ctx.arc(cx+(16-16)*scale, cy+(9.4-15)*scale, 2.3*scale, 0, Math.PI*2);
+  ctx.fill();
+}
+
+function drawWordmark(ctx, x, y, px) {
+  // "Havvn" with the double-v picked out in ember; baseline at y, left edge x.
+  ctx.font = `700 ${px}px Inter, "Segoe UI", system-ui, sans-serif`;
+  ctx.textBaseline = 'alphabetic';
+  const parts = [['Ha', TEXT], ['vv', EMBER], ['n', TEXT]];
+  let cur = x;
+  for (const [s, c] of parts) {
+    ctx.fillStyle = c;
+    ctx.fillText(s, cur, y);
+    cur += ctx.measureText(s).width;
+  }
+  return cur - x; // total width
+}
+
+// 1) Mark only, transparent, 1024x1024
+{
+  const ctx = document.getElementById('mark').getContext('2d');
+  drawMark(ctx, 512, 512, 30);
+}
+
+// 2) Horizontal lockup (mark + wordmark), transparent, 1600x512
+{
+  const ctx = document.getElementById('lockup').getContext('2d');
+  const S = 13;
+  drawMark(ctx, 230, 256, S);
+  // measure to position: wordmark to the right of the mark
+  ctx.font = '700 240px Inter, "Segoe UI", system-ui, sans-serif';
+  drawWordmark(ctx, 440, 256 + 88, 240);
+}
+
+// 3) Repo cover / social preview 1280x640 — graphite, centered lockup + tagline
+{
+  const c = document.getElementById('cover');
+  const ctx = c.getContext('2d');
+  // graphite ground with a faint vertical lift (matches the installer sidebar)
+  const g = ctx.createLinearGradient(0, 0, 0, 640);
+  g.addColorStop(0, BG2); g.addColorStop(1, BG);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1280, 640);
+
+  // centered composition: mark above, wordmark, tagline, ember baseline
+  drawMark(ctx, 640, 210, 7.4);
+  ctx.font = '700 118px Inter, "Segoe UI", system-ui, sans-serif';
+  const w = (() => { // measure full wordmark to center it
+    let tw = 0;
+    for (const s of ['Ha','vv','n']) tw += ctx.measureText(s).width;
+    return tw;
+  })();
+  drawWordmark(ctx, (1280 - w) / 2, 395, 118);
+
+  ctx.font = '400 30px Inter, "Segoe UI", system-ui, sans-serif';
+  ctx.fillStyle = MUTED;
+  ctx.textAlign = 'center';
+  ctx.fillText('A modern, privacy-focused BitTorrent client', 640, 465);
+  ctx.textAlign = 'left';
+
+  // ember baseline accent
+  ctx.fillStyle = EMBER;
+  ctx.fillRect(560, 520, 160, 4);
+}
+
+window.__pngs = () => ({
+  mark: document.getElementById('mark').toDataURL('image/png'),
+  lockup: document.getElementById('lockup').toDataURL('image/png'),
+  cover: document.getElementById('cover').toDataURL('image/png'),
+});
+</script></body></html>
