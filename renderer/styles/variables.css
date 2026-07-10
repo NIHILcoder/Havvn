@@ -168,6 +168,9 @@
   --sidebar-width: 260px;
   --sidebar-collapsed-width: 64px;
   --header-height: 56px;
+  /* Shared top-bar height: the sidebar brand header and every page header use
+     this so their bottom hairlines meet at the divider (one continuous line). */
+  --topbar-height: 80px;
   --footer-height: 36px;
   --settings-content-max-width: 840px;
 

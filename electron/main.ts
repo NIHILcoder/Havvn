@@ -1,7 +1,7 @@
 // MUST be first: sets an isolated userData dir for `TH_INSTANCE` test copies
 // before electron-store / the logger read the path at module load.
 import { isSecondaryInstance } from './app-instance';
-import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog } from 'electron';
 import path from 'path';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
@@ -59,6 +59,7 @@ ipcMain.on('app:rendererReady', () => {
 ipcMain.on('app:setLanguage', (_event, lang) => {
   setMainLanguage(lang);
   refreshTrayLanguage?.();
+  Menu.setApplicationMenu(buildAppMenu());
 });
 
 // === Single Instance Lock ===
@@ -124,6 +125,77 @@ function showTrayHintOnce(): void {
   } catch {
     // Notifications are best-effort — never block hiding to tray
   }
+}
+
+// === Application menu (native File/Edit/View/Window bar) ===
+// A trimmed, fully-localized replacement for Electron's default menu. Built from
+// t(), so it re-localizes live when the renderer changes language (see the
+// 'app:setLanguage' handler). Quit routes through isQuitting so close-to-tray
+// doesn't swallow it (mirrors the tray's Quit).
+function buildAppMenu(): Menu {
+  const showAbout = (): void => {
+    const opts: Electron.MessageBoxOptions = {
+      type: 'info',
+      title: t('menu.about'),
+      message: 'Havvn',
+      detail: t('menu.version', { v: app.getVersion() }),
+      buttons: [t('common.ok')],
+    };
+    if (mainWindow && !mainWindow.isDestroyed()) dialog.showMessageBox(mainWindow, opts);
+    else dialog.showMessageBox(opts);
+  };
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: t('menu.file'),
+      submenu: [
+        {
+          label: t('menu.quit'),
+          accelerator: process.platform === 'darwin' ? 'Cmd+Q' : 'Ctrl+Q',
+          click: () => { isQuitting = true; app.quit(); },
+        },
+      ],
+    },
+    {
+      label: t('menu.edit'),
+      submenu: [
+        { role: 'undo', label: t('menu.undo') },
+        { role: 'redo', label: t('menu.redo') },
+        { type: 'separator' },
+        { role: 'cut', label: t('menu.cut') },
+        { role: 'copy', label: t('menu.copy') },
+        { role: 'paste', label: t('menu.paste') },
+        { role: 'selectAll', label: t('menu.selectAll') },
+      ],
+    },
+    {
+      label: t('menu.view'),
+      submenu: [
+        { role: 'reload', label: t('menu.reload') },
+        { role: 'toggleDevTools', label: t('menu.toggleDevTools') },
+        { type: 'separator' },
+        { role: 'resetZoom', label: t('menu.resetZoom') },
+        { role: 'zoomIn', label: t('menu.zoomIn') },
+        { role: 'zoomOut', label: t('menu.zoomOut') },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: t('menu.fullscreen') },
+      ],
+    },
+    {
+      label: t('menu.window'),
+      submenu: [
+        { role: 'minimize', label: t('menu.minimize') },
+        { role: 'close', label: t('menu.close') },
+      ],
+    },
+    {
+      label: t('menu.help'),
+      submenu: [
+        { label: t('menu.about'), click: showAbout },
+      ],
+    },
+  ];
+  return Menu.buildFromTemplate(template);
 }
 
 // === Tray Icon ===
@@ -499,6 +571,9 @@ async function initializeApp(): Promise<void> {
   // Load the persisted UI language so the tray/menu built below is already in
   // the right language, before the renderer loads and re-announces it.
   initMainI18n();
+
+  // Replace Electron's default File/Edit/View/Window menu with our localized one.
+  Menu.setApplicationMenu(buildAppMenu());
 
   // Create the tray and the window FIRST. Restoring torrents re-verifies
   // their on-disk data (sha1 over potentially many GB) and used to run before

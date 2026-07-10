@@ -28,12 +28,16 @@
   overflow: hidden;
 }
 
-/* Sidebar Header */
+/* Sidebar Header — fixed to --topbar-height so its bottom hairline lines up
+   with every page header's hairline across the divider. */
 .sidebar-header {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-5) var(--space-5);
+  height: var(--topbar-height);
+  box-sizing: border-box;
+  flex-shrink: 0;
+  padding: 0 var(--space-5);
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
@@ -43,8 +47,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
   transition: transform var(--transition-normal);
   cursor: pointer;
@@ -55,7 +59,7 @@
 }
 
 .sidebar-title {
-  font-size: var(--font-size-lg);
+  font-size: 22px;
   font-weight: var(--font-weight-bold);
   color: var(--color-text-primary);
   letter-spacing: -0.02em;
@@ -386,7 +390,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-4) var(--space-6);
+  height: var(--topbar-height);
+  box-sizing: border-box;
+  padding: 0 var(--space-6);
   border-bottom: 1px solid var(--color-border-subtle);
   background-color: var(--color-bg-primary);
   flex-shrink: 0;
@@ -413,6 +419,10 @@
 /* Responsive */
 @media (max-width: 900px) {
   .page-header {
+    /* Header wraps to two rows here — let it grow instead of clipping. */
+    height: auto;
+    min-height: var(--topbar-height);
+    padding: var(--space-3) var(--space-6);
     flex-wrap: wrap;
     gap: var(--space-3);
   }

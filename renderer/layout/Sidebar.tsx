@@ -107,7 +107,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Header */}
       <div className="sidebar-header">
         <div className="sidebar-logo" aria-hidden="true">
-          <LogoMark size={24} />
+          <LogoMark size={32} />
         </div>
         <span className="sidebar-title"><Wordmark /></span>
       </div>

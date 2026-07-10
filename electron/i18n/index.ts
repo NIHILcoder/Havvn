@@ -12,9 +12,14 @@
  * The renderer mirrors it here over the 'app:setLanguage' IPC channel and into
  * the config store, so the first tray/menu build right after launch is already
  * in the correct language — before the renderer window has even loaded.
+ *
+ * NOTE: db/store is required LAZILY inside init/setMainLanguage (never at the top
+ * level). Those run only in the main process; `t()` needs no store. This keeps
+ * `import { t } from '../i18n'` side-effect-free, so pulling it in transitively
+ * (e.g. utils → vpn-detector → i18n from the torrent-host utilityProcess) does
+ * NOT drag in db/store, whose module-load calls app.getPath() and would crash a
+ * process that has no Electron `app` (the host is a utilityProcess).
  */
-import { getUiLanguage, setUiLanguage } from '../db/store';
-
 export type MainLang = 'en' | 'ru';
 
 type Dict = Record<string, string>;
@@ -66,6 +71,30 @@ const en: Dict = {
   // Search-provider test (main → renderer, shown as test result)
   'search.providerNotFound': 'Provider not found',
   'search.providerWorking': 'Provider is working correctly',
+
+  // Application menu (the native File/Edit/View/Window bar)
+  'menu.file': 'File',
+  'menu.edit': 'Edit',
+  'menu.view': 'View',
+  'menu.window': 'Window',
+  'menu.help': 'Help',
+  'menu.quit': 'Quit',
+  'menu.undo': 'Undo',
+  'menu.redo': 'Redo',
+  'menu.cut': 'Cut',
+  'menu.copy': 'Copy',
+  'menu.paste': 'Paste',
+  'menu.selectAll': 'Select All',
+  'menu.reload': 'Reload',
+  'menu.toggleDevTools': 'Toggle Developer Tools',
+  'menu.resetZoom': 'Actual Size',
+  'menu.zoomIn': 'Zoom In',
+  'menu.zoomOut': 'Zoom Out',
+  'menu.fullscreen': 'Toggle Full Screen',
+  'menu.minimize': 'Minimize',
+  'menu.close': 'Close',
+  'menu.about': 'About Havvn',
+  'menu.version': 'Version {v}',
 };
 
 const ru: Dict = {
@@ -115,6 +144,30 @@ const ru: Dict = {
   // Search-provider test (main → renderer, shown as test result)
   'search.providerNotFound': 'Провайдер не найден',
   'search.providerWorking': 'Провайдер работает корректно',
+
+  // Application menu (the native File/Edit/View/Window bar)
+  'menu.file': 'Файл',
+  'menu.edit': 'Правка',
+  'menu.view': 'Вид',
+  'menu.window': 'Окно',
+  'menu.help': 'Справка',
+  'menu.quit': 'Выход',
+  'menu.undo': 'Отменить',
+  'menu.redo': 'Повторить',
+  'menu.cut': 'Вырезать',
+  'menu.copy': 'Копировать',
+  'menu.paste': 'Вставить',
+  'menu.selectAll': 'Выделить всё',
+  'menu.reload': 'Перезагрузить',
+  'menu.toggleDevTools': 'Инструменты разработчика',
+  'menu.resetZoom': 'Реальный размер',
+  'menu.zoomIn': 'Увеличить',
+  'menu.zoomOut': 'Уменьшить',
+  'menu.fullscreen': 'Во весь экран',
+  'menu.minimize': 'Свернуть',
+  'menu.close': 'Закрыть',
+  'menu.about': 'О программе Havvn',
+  'menu.version': 'Версия {v}',
 };
 
 const dicts: Record<MainLang, Dict> = { en, ru };
@@ -126,6 +179,7 @@ let current: MainLang = 'en';
 /** Read the persisted UI language once at startup (before the tray is built). */
 export function initMainI18n(): void {
   try {
+    const { getUiLanguage } = require('../db/store') as typeof import('../db/store');
     current = getUiLanguage();
   } catch {
     current = 'en';
@@ -137,6 +191,7 @@ export function setMainLanguage(lang: unknown): void {
   if (lang !== 'en' && lang !== 'ru') return;
   current = lang;
   try {
+    const { setUiLanguage } = require('../db/store') as typeof import('../db/store');
     setUiLanguage(lang);
   } catch {
     /* best-effort — the in-memory value still updates */
