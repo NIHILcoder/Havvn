@@ -5,61 +5,101 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Havvn — Receive a file</title>
 <style>
+  /* Ember design system — values mirrored from renderer/styles/variables.css
+     (dark/graphite theme) so this standalone page matches the desktop app. */
   :root {
-    --bg: #0a0a0b; --panel: #141416; --border: #26262a;
-    --text: #f4f4f5; --muted: #9a9aa2; --accent: #ffffff; --accent-fg: #0a0a0b;
-    --green: #22c55e;
+    --bg: #141519; --panel: #17181d; --elevated: #1B1D22; --row: #1B1D22;
+    --border: rgba(236,235,230,0.10); --border-subtle: rgba(236,235,230,0.05); --border-strong: rgba(236,235,230,0.18);
+    --text: #ECEBE6; --text-2: #B9B6AE; --muted: #98958D;
+    --accent: #F2913F; --accent-hover: #E0673A; --accent-fg: #141519; --accent-bg: rgba(242,145,63,0.12);
+    --olive: #ADB87C; --olive-bg: rgba(173,184,124,0.14); --danger: #E2664A;
+    --r-sm: 5px; --r-md: 7px; --r-lg: 10px; --r-xl: 14px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--font); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
     display: flex; align-items: center; justify-content: center; padding: 24px;
   }
   .card {
-    width: min(640px, 100%); background: var(--panel); border: 1px solid var(--border);
-    border-radius: 16px; overflow: hidden;
+    width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--r-xl); overflow: hidden;
+    box-shadow: 0 1px 0 rgba(236,235,230,0.03) inset, 0 24px 60px -30px rgba(0,0,0,0.7);
   }
-  .head { display: flex; align-items: center; gap: 10px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
-  .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-fg);
-    display: flex; align-items: center; justify-content: center; font-weight: 800; }
-  .head h1 { font-size: 15px; margin: 0; font-weight: 650; }
-  .head p { margin: 1px 0 0; font-size: 12px; color: var(--muted); }
-  .body { padding: 20px; }
-  .status { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); margin-bottom: 14px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
-  .dot.live { background: var(--green); animation: pulse 1.6s infinite; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(34,197,94,.5)} 70%{box-shadow:0 0 0 7px rgba(34,197,94,0)} 100%{box-shadow:0 0 0 0 rgba(34,197,94,0)} }
-  .bar { height: 6px; background: #000; border-radius: 99px; overflow: hidden; margin-bottom: 6px; }
-  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
-  .meta { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 16px; font-variant-numeric: tabular-nums; }
-  .files { display: flex; flex-direction: column; gap: 8px; }
-  .file { display: flex; align-items: center; gap: 12px; padding: 11px 13px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
-  .file .name { flex: 1; min-width: 0; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .file .size { font-size: 12px; color: var(--muted); flex: none; }
-  .btn { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg);
-    border-radius: 8px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer; flex: none; text-decoration: none; }
+
+  /* Header — bare ember Double-V mark + wordmark, matching the app sidebar. */
+  .head { display: flex; align-items: center; gap: 13px; padding: 18px 22px; border-bottom: 1px solid var(--border-subtle); }
+  .head svg { display: block; flex: none; }
+  .head h1 { font-size: 15.5px; margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+  .head h1 b { color: var(--accent); font-weight: 700; }
+  .head p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+  .body { padding: 20px 22px 22px; }
+
+  /* Overall status + progress */
+  .status { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-2); margin-bottom: 14px; font-weight: 500; }
+  .status.error { color: var(--danger); }
+  .status.ok { color: var(--olive); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: var(--accent); animation: pulse 1.6s infinite; }
+  .dot.done { background: var(--olive); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(242,145,63,.5)} 70%{box-shadow:0 0 0 7px rgba(242,145,63,0)} 100%{box-shadow:0 0 0 0 rgba(242,145,63,0)} }
+  .bar { height: 5px; background: var(--elevated); border-radius: 99px; overflow: hidden; margin-bottom: 7px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); border-radius: 99px; transition: width .3s ease, background .3s ease; }
+  .bar.done > div { background: var(--olive); }
+  .meta { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 18px; font-variant-numeric: tabular-nums; }
+
+  /* File rows — flat, hairline, ember on hover. */
+  .files { display: flex; flex-direction: column; gap: 7px; }
+  .file {
+    display: flex; align-items: center; gap: 12px; padding: 11px 13px;
+    background: var(--row); border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .file:hover { border-color: var(--border); }
+  .file.complete { border-color: rgba(173,184,124,0.28); }
+  .fdot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; opacity: .8; }
+  .file.complete .fdot { background: var(--olive); opacity: 1; }
+  .file .name { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file .size { font-size: 12px; color: var(--muted); flex: none; font-variant-numeric: tabular-nums; }
+  .actions { display: flex; align-items: center; gap: 8px; flex: none; }
+  /* Per-file progress shown until the file finishes; then the Download button appears. */
+  .pf { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+
+  .btn {
+    border: 1px solid var(--accent); background: var(--accent); color: var(--accent-fg);
+    border-radius: var(--r-md); padding: 7px 13px; font-family: var(--font); font-size: 12.5px;
+    font-weight: 600; cursor: pointer; flex: none; text-decoration: none; line-height: 1;
+    transition: background .15s ease, border-color .15s ease, opacity .15s ease;
+  }
+  .btn:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
   .btn.ghost { background: transparent; color: var(--text); border-color: var(--border); }
+  .btn.ghost:hover { background: var(--accent-bg); border-color: var(--border-strong); }
   .btn[disabled] { opacity: .5; cursor: default; }
-  .hint { margin-top: 16px; font-size: 12px; color: var(--muted); line-height: 1.5; }
-  .error { color: #f87171; }
+
+  .hint { margin-top: 18px; font-size: 12px; color: var(--muted); line-height: 1.55; }
+  .hint.error { color: var(--danger); }
   #media { margin-top: 14px; }
-  #media video, #media audio { width: 100%; border-radius: 10px; background: #000; outline: none; }
-  a { color: var(--text); }
+  #media video, #media audio { width: 100%; border-radius: var(--r-lg); background: #000; outline: none; }
+  a { color: var(--accent); }
 </style>
 </head>
 <body>
   <div class="card">
     <div class="head">
-      <div class="logo">H</div>
+      <svg width="34" height="34" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M4 9 L10.5 21 L16 12 L21.5 21 L28 9" stroke="#F2913F" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="16" cy="9.4" r="2.3" fill="#E0673A"/>
+      </svg>
       <div>
-        <h1>Havvn — Receive a file</h1>
+        <h1>Ha<b>vv</b>n — Receive a file</h1>
         <p>Peer-to-peer in your browser. No install, no cloud.</p>
       </div>
     </div>
     <div class="body">
       <div class="status"><span class="dot" id="dot"></span><span id="status">Connecting…</span></div>
-      <div class="bar"><div id="prog"></div></div>
+      <div class="bar" id="barwrap"><div id="prog"></div></div>
       <div class="meta">
         <span id="pct">0%</span>
         <span id="speed">0 KB/s</span>
@@ -85,9 +125,10 @@
     }
     function setStatus(text, live) {
       $('status').textContent = text;
+      $('status').className = 'status' + (live ? '' : '');
       $('dot').className = 'dot' + (live ? ' live' : '');
     }
-    function fail(msg) { setStatus(msg, false); $('status').className = 'error'; }
+    function fail(msg) { setStatus(msg, false); $('status').className = 'status error'; }
     var DEFAULT_HINT = $('hint') ? $('hint').textContent : '';
     function setNote(text, err) {
       var h = $('hint'); if (!h) return;
@@ -149,18 +190,42 @@
     // path for those is the sender's "Watch on another device" on the same Wi-Fi.
     var MEDIA_RX = /\.(mp4|m4v|webm|ogv|ogg|mov|mkv|avi|wmv|flv|mpg|mpeg|ts|m2ts|3gp|mp3|m4a|aac|wav|flac|opus|wma)$/i;
     var rendered = false;
+    var rows = []; // { file, row, pf, dl, done }
+
+    // Per-file: show a live percentage while receiving, then swap it for the
+    // Download button once the file is fully in the browser (the whole point —
+    // getBlobURL can only save a complete file).
+    function fileProgress(f) {
+      if (typeof f.progress === 'number') return f.progress;
+      return f.length ? (f.downloaded || 0) / f.length : 0;
+    }
+    function updateRow(rec) {
+      if (rec.done) return;
+      var p = fileProgress(rec.file);
+      if (p >= 1 || (rec.file.length && rec.file.downloaded >= rec.file.length)) {
+        rec.done = true;
+        rec.pf.style.display = 'none';
+        rec.dl.style.display = '';
+        rec.row.className = 'file complete';
+      } else {
+        rec.pf.textContent = Math.round(p * 100) + '%';
+      }
+    }
+    function updateAllRows() { for (var i = 0; i < rows.length; i++) updateRow(rows[i]); }
 
     client.add(magnet, function (torrent) {
-      setStatus('Connected — downloading', true);
+      setStatus('Connected — receiving', true);
 
       function renderFiles() {
         if (rendered) return; rendered = true;
         var wrap = $('files'); wrap.innerHTML = '';
         torrent.files.forEach(function (file) {
           var row = document.createElement('div'); row.className = 'file';
+          var fdot = document.createElement('span'); fdot.className = 'fdot';
           var name = document.createElement('div'); name.className = 'name'; name.textContent = file.name; name.title = file.name;
           var size = document.createElement('div'); size.className = 'size'; size.textContent = fmt(file.length);
-          row.appendChild(name); row.appendChild(size);
+          var actions = document.createElement('div'); actions.className = 'actions';
+          row.appendChild(fdot); row.appendChild(name); row.appendChild(size); row.appendChild(actions);
 
           if (MEDIA_RX.test(file.name)) {
             var play = document.createElement('button'); play.className = 'btn ghost'; play.textContent = 'Preview';
@@ -176,21 +241,29 @@
                 }
               });
             };
-            row.appendChild(play);
+            actions.appendChild(play);
           }
 
-          var dl = document.createElement('button'); dl.className = 'btn'; dl.textContent = 'Download';
+          // Live per-file percent (hidden once complete).
+          var pf = document.createElement('span'); pf.className = 'pf'; pf.textContent = '0%';
+          actions.appendChild(pf);
+
+          // Download appears only when the file has finished (hidden until then).
+          var dl = document.createElement('button'); dl.className = 'btn'; dl.textContent = 'Download'; dl.style.display = 'none';
           dl.onclick = function () {
-            dl.disabled = true; dl.textContent = 'Preparing…';
+            dl.disabled = true; dl.textContent = 'Saving…';
             file.getBlobURL(function (err, url) {
               if (err) { dl.disabled = false; dl.textContent = 'Download'; return; }
               var a = document.createElement('a'); a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
               dl.disabled = false; dl.textContent = 'Download';
             });
           };
-          row.appendChild(dl);
+          actions.appendChild(dl);
+
           wrap.appendChild(row);
+          rows.push({ file: file, row: row, pf: pf, dl: dl, done: false });
         });
+        updateAllRows(); // a small/complete file may already be ready
       }
 
       if (torrent.files && torrent.files.length) renderFiles();
@@ -202,14 +275,22 @@
         $('pct').textContent = pct + '%';
         $('speed').textContent = fmt(torrent.downloadSpeed) + '/s';
         $('peers').textContent = torrent.numPeers + ' peer' + (torrent.numPeers === 1 ? '' : 's');
+        updateAllRows();
       });
 
       torrent.on('done', function () {
         setStatus('Download complete', false);
+        $('status').className = 'status ok';
+        $('dot').className = 'dot done';
+        $('barwrap').className = 'bar done';
         $('prog').style.width = '100%'; $('pct').textContent = '100%'; $('speed').textContent = '0 KB/s';
+        updateAllRows();
       });
 
-      torrent.on('wire', function () { $('peers').textContent = torrent.numPeers + ' peers'; });
+      torrent.on('wire', function () { $('peers').textContent = torrent.numPeers + ' peer' + (torrent.numPeers === 1 ? '' : 's'); });
+
+      // Backstop: some builds don't fire 'download' for the last chunk of a file.
+      setInterval(updateAllRows, 800);
     });
 
     // If no peers after a while, nudge the user.
