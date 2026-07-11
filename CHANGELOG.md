@@ -4,6 +4,43 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.9.1] - 2026-07-11
+
+A polish release on top of 2.9.0: the VPN warning finally lives inside the app,
+the tray got live speeds, rooms got quality-of-life upgrades, and the brand mark
+was unified.
+
+### Added
+- **Live tray.** The tray tooltip and menu header now show current download/upload
+  speeds and the number of active downloads, plus a new "Open downloads folder" item.
+- **Rooms: drag & drop.** Drop files onto an open room to share them (with an ember
+  drop overlay); a client-side file filter appears for rooms with many files; quiet
+  presence toasts ("… is online", "… is sharing") with dedupe and no join spam.
+- **Animated brand mark.** The sidebar Double-V draws itself in on launch and re-draws
+  on hover; the lockup is centered. Fully disabled by the "reduce animations" preference.
+
+### Changed
+- **The startup VPN warning is now an in-app dialog** in the app's own style instead
+  of a native message box.
+- **About statistics** rebuilt as flat stat tiles matching the settings system.
+- **Notifications moved to the bottom-right corner** — they no longer cover the
+  page-header buttons on Downloads and Rooms.
+- **The brand mark lost its orange node dot everywhere** (app, splash, web pages,
+  installer artwork, repository assets) — it had never made it into the app icon, so
+  the mark read inconsistently across surfaces.
+- Settings: more breathing room between nav tabs and around custom blocks inside cards.
+
+### Fixed
+- **"Don't show again" on the VPN warning never worked** — the old native dialog
+  ignored the button entirely. It persists now, and only via an explicit click:
+  closing the dialog with Escape doesn't silence a security warning forever.
+- **The Privacy "VPN Detection" toggle now actually gates the startup check** — the
+  warning used to fire even with the toggle off; a dead, unreachable
+  privacy:showVPNWarning IPC channel was removed.
+- **Room chat no longer sinks below the fold on long sessions** — the members+chat
+  column is pinned while the main column scrolls, members scroll internally, and the
+  composer stays on screen.
+
 ## [2.9.0] - 2026-07-10
 
 Havvn now speaks Russian everywhere — including the tray, native dialogs and the
