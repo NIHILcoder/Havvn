@@ -4,6 +4,50 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.10.0] - 2026-07-12
+
+Rooms come alive — a chat-first layout with typing indicators, file reactions
+and member progress — and the player now remembers where you stopped. Under the
+hood: a critical fix for upgrades from the TorrentHunt era, and releases are now
+built by CI.
+
+### Added
+- **Chat-first rooms.** The room page is a true two-pane layout: files and
+  activity scroll on the left while a full-height chat owns the right column —
+  the composer never leaves the screen. Members collapse into an avatar strip
+  in the chat header; click it for the full list (mute/kick intact).
+- **Typing indicators.** "… is typing" appears above the composer, gossiped
+  peer-to-peer with rate limiting — nothing is stored.
+- **File reactions.** React to shared files with 🔥 👍 ❤️ 😂 — counters live on
+  the file rows, your own reaction is highlighted, and late joiners receive the
+  current picture. Hostile/unknown emoji are rejected at the protocol level.
+- **Member progress.** File rows show who already has the file (overlapping
+  avatars) and an ember progress ring around members currently downloading it.
+- **Room identity export / import** (Settings → Sharing): save your signing
+  key, profile and joined-rooms list to a file and restore them after a
+  reinstall — losing the install no longer means losing your rooms.
+- **The player remembers your position.** Reopen an unfinished film and it
+  resumes with a quiet "Resuming from 1:23:45"; a film watched to the end
+  starts fresh. Keyed by torrent hash, so it survives remove and re-add.
+- **Update channel** (Settings → System): stable or beta — stable users can
+  now opt into prereleases, and beta installs are no longer pinned to them.
+
+### Fixed
+- **Upgrades from TorrentHunt lost the profile.** The legacy profile migration
+  (downloads list, room identity keys, settings) had never actually run due to
+  an initialization-order bug — it failed silently on every launch. It now
+  runs, verified against a real legacy profile.
+- Room chat no longer sinks below the window on long sessions; holder avatars
+  align with the reactions; the avatar ring is no longer clipped by the
+  members panel or the chip edge.
+
+### Internal
+- Releases are built by CI: pushing a version tag type-checks, runs the full
+  test suite, builds the installer and portable zip, and opens a draft release
+  with notes from this changelog. The CI pipeline now fails on test failures.
+- Dev mode actually loads the dev server now (NODE_ENV was never set), and
+  DevTools no longer auto-open.
+
 ## [2.9.1] - 2026-07-11
 
 A polish release on top of 2.9.0: the VPN warning finally lives inside the app,
