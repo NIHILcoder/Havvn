@@ -27,7 +27,8 @@ import path from 'path';
 import WebTorrent from 'webtorrent';
 import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
-import { RoomFile, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
+import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
+import { mergeFolderUpsert, applyFolderDelete, applyAssignment } from '../../shared/room-folders';
 import { safeBaseName } from '../../shared/path-safety';
 import crypto from 'crypto';
 
@@ -64,7 +65,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -91,8 +92,15 @@ type Msg =
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>> }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number> }
   | { t: 'add'; file: RoomFile }
+  // A folder/section was created, renamed/recolored (upsert) or deleted (del).
+  // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
+  // showing the flat list. Files carry their folderId; reassignment is 'assign'.
+  | { t: 'folder'; op: 'upsert' | 'del'; id: string; name?: string; icon?: string; color?: string; at: number }
+  // A file moved between folders (or to Uncategorized when folderId is ''). LWW
+  // by `at`; kept separate from 'add' because mergeFile is add-only.
+  | { t: 'assign'; fileId: string; folderId: string; at: number; memberId: string }
   | { t: 'have'; memberId: string; fileId: string }
   | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string }
   // Remove a shared file from the room (everyone drops it; the timestamped
@@ -159,6 +167,8 @@ interface Room {
   wires: Map<number, Wire>;
   members: Map<string, RoomMember>;      // by memberId (excludes self)
   files: Map<string, RoomFile>;          // by fileId
+  folders: Map<string, RoomFolder>;      // by folderId — optional sections overlay (LWW)
+  folderTombstones: Map<string, number>; // deleted folderId → deletedAt; a newer upsert revives it
   transfers: Map<string, RoomTransfer>;  // by fileId
   tombstones: Map<string, number>;       // deleted fileId → deletedAt; only a newer re-share revives it
   autoFetch: boolean;                    // auto-download peers' files; false = wait for an explicit fetchFile
@@ -381,6 +391,9 @@ function buildState(room: Room): RoomState {
     e2e: room.e2e,
     members,
     files: Array.from(room.files.values()).sort((a, b) => a.addedAt - b.addedAt),
+    // Folders sorted by name (natural) for a stable order that doesn't jump when
+    // one is renamed/recolored; the renderer groups files under them.
+    folders: Array.from(room.folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })),
     transfers,
     history: room.history.slice(-100),
     chat: room.chat.slice(-100),
@@ -465,7 +478,19 @@ function helloMsg(room: Room): Msg {
     secret: room.secret,
     ...(room.e2eCfg ? { cfg: room.e2eCfg } : {}), // owner-signed config, re-served for joiners
     ...(room.fileReacts.size ? { fileReacts: reactsToRecord(room) } : {}), // late joiners union this in
+    ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
+    ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
   };
+}
+
+/** Persist a folder create/edit to main so it (and the grouping) survives restart. */
+function persistFolder(room: Room, folder: RoomFolder): void {
+  try { ipcRenderer.send('room-folder-upsert', { roomId: room.roomId, folder }); } catch { /* ignore */ }
+}
+
+/** Persist a folder deletion (tombstone + drop from the set). */
+function persistFolderDelete(room: Room, id: string, at: number): void {
+  try { ipcRenderer.send('room-folder-del', { roomId: room.roomId, id, at }); } catch { /* ignore */ }
 }
 
 // ── E2E config authenticity (Ed25519, same identity keys as chat) ────────────
@@ -737,7 +762,20 @@ function clampFile(f: any): RoomFile | null {
     addedByName: clampStr(f.addedByName, MAX_STR),
     addedAt: Number.isFinite(f.addedAt) ? f.addedAt : Date.now(),
     ...(f.enc ? { enc: true } : {}),
+    // Folder assignment MUST be copied explicitly or it is silently stripped on
+    // receive — the same trap the enc/infoHash fields document above.
+    ...(typeof f.folderId === 'string' && f.folderId ? { folderId: clampStr(f.folderId, MAX_STR) } : {}),
+    ...(Number.isFinite(f.folderAt) ? { folderAt: f.folderAt } : {}),
   } as RoomFile;
+}
+
+/** Coerce a peer-supplied folder entry to a sane shape, or null if unusable. */
+function clampFolder(f: any): RoomFolder | null {
+  if (!f || typeof f !== 'object') return null;
+  const id = clampStr(f.id, MAX_STR);
+  const at = Number(f.at);
+  if (!id || !Number.isFinite(at)) return null;
+  return { id, name: clampStr(f.name, MAX_STR), icon: clampStr(f.icon, 64), color: clampStr(f.color, 64), at };
 }
 
 /** Bound a decoded gossip message's strings/arrays in place (anti-DoS). */
@@ -773,6 +811,23 @@ function clampGossip(msg: any): void {
   }
   if (Array.isArray(msg.files)) msg.files = msg.files.slice(0, MAX_ARRAY).map(clampFile).filter(Boolean);
   if ('file' in msg) msg.file = clampFile(msg.file);
+  // Folder gossip fields (folder/assign messages + folders/folderTombs in hello).
+  if ('id' in msg) msg.id = clampStr(msg.id, MAX_STR);
+  if ('op' in msg) msg.op = msg.op === 'del' ? 'del' : 'upsert';
+  if ('icon' in msg) msg.icon = clampStr(msg.icon, 64);
+  if ('color' in msg) msg.color = clampStr(msg.color, 64);
+  if ('folderId' in msg) msg.folderId = clampStr(msg.folderId, MAX_STR);
+  if (Array.isArray(msg.folders)) msg.folders = msg.folders.slice(0, MAX_ARRAY).map(clampFolder).filter(Boolean);
+  if ('folderTombs' in msg) {
+    const out: Record<string, number> = {};
+    if (msg.folderTombs && typeof msg.folderTombs === 'object' && !Array.isArray(msg.folderTombs)) {
+      for (const [k, v] of Object.entries(msg.folderTombs).slice(0, MAX_ARRAY)) {
+        const at = Number(v);
+        if (Number.isFinite(at)) out[clampStr(k, MAX_STR)] = at;
+      }
+    }
+    msg.folderTombs = out;
+  }
   if ('pct' in msg) {
     const p = Math.round(Number(msg.pct));
     msg.pct = Number.isFinite(p) ? Math.min(100, Math.max(0, p)) : 0;
@@ -830,6 +885,14 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // express revives — treat it as fresh so its deletion still sticks.
       for (const id of msg.tombs || []) applyTombstone(room, id, msg.tombsAt?.[id] ?? Date.now());
       for (const f of msg.files || []) mergeFile(room, f);
+      // Folder overlay convergence: apply the peer's deletions first (so a stale
+      // folder in their list can't override our newer delete), then their upserts.
+      for (const [id, at] of Object.entries(msg.folderTombs || {})) {
+        if (applyFolderDelete(room.folders, room.folderTombstones, id, Number(at) || 0)) persistFolderDelete(room, id, Number(at) || 0);
+      }
+      for (const f of msg.folders || []) {
+        if (mergeFolderUpsert(room.folders, room.folderTombstones, f)) persistFolder(room, f);
+      }
       // Union the peer's reaction view into ours (late-join convergence).
       if (mergeReacts(room, msg.fileReacts)) persistReacts(room);
       pushState(room);
@@ -850,6 +913,30 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (!msg.file) break; // clampGossip rejected a malformed file entry
       mergeFile(room, msg.file);
       pushState(room);
+      break;
+    }
+    case 'folder': {
+      if (msg.op === 'del') {
+        if (applyFolderDelete(room.folders, room.folderTombstones, msg.id, Number(msg.at) || 0)) {
+          persistFolderDelete(room, msg.id, Number(msg.at) || 0);
+          pushState(room);
+        }
+      } else {
+        const folder: RoomFolder = { id: msg.id, name: msg.name || 'Folder', icon: msg.icon || 'folder', color: msg.color || '', at: Number(msg.at) || 0 };
+        if (mergeFolderUpsert(room.folders, room.folderTombstones, folder)) {
+          persistFolder(room, folder);
+          pushState(room);
+        }
+      }
+      break;
+    }
+    case 'assign': {
+      const file = room.files.get(msg.fileId);
+      if (file && applyAssignment(file, msg.folderId, Number(msg.at) || 0)) {
+        const tr = room.transfers.get(msg.fileId);
+        persistManifest(room, file, tr?.localPath, tr?.cipherPath); // re-persist the whole file with its new folderId
+        pushState(room);
+      }
       break;
     }
     case 'have': {
@@ -1204,6 +1291,9 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
     fileId: pf.fileId, name: pf.name, size: pf.size, infoHash: pf.infoHash,
     magnetURI: pf.magnetURI, addedBy: pf.addedBy, addedByName: pf.addedByName, addedAt: pf.addedAt,
     ...(pf.enc ? { enc: true } : {}),
+    // Preserve the folder assignment across restart (same field-list trap as clampFile).
+    ...(pf.folderId ? { folderId: pf.folderId } : {}),
+    ...(Number.isFinite(pf.folderAt) ? { folderAt: pf.folderAt } : {}),
   };
   room.files.set(file.fileId, file);
   const c = ensureClient(room);
@@ -1398,7 +1488,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
   let room = rooms.get(p.roomId);
   if (room) return buildState(room);
 
@@ -1431,6 +1521,8 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     wires: new Map(),
     members: new Map(),
     files: new Map(),
+    folders: new Map((p.folders || []).map((f: RoomFolder) => [f.id, f])),
+    folderTombstones: new Map(Object.entries(p.folderTombs || {}).map(([k, v]) => [k, Number(v) || 0])),
     transfers: new Map(),
     tombstones: new Map(Object.entries(p.tombstones || {})),
     autoFetch: p.autoFetch !== false, // absent = true (historical behavior)
@@ -1559,6 +1651,72 @@ async function addFiles(roomId: string, paths: string[]): Promise<RoomState> {
   return buildState(room);
 }
 
+// ── Folders / sections (local commands) ───────────────────────────────────────
+function createFolder(roomId: string, name: string, icon: string, color: string): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  const folder: RoomFolder = {
+    id: crypto.randomBytes(8).toString('hex'),
+    name: String(name || '').trim().slice(0, 200) || 'Folder',
+    icon: String(icon || 'folder').slice(0, 64),
+    color: String(color || '').slice(0, 64),
+    at: Date.now(),
+  };
+  room.folders.set(folder.id, folder);
+  persistFolder(room, folder);
+  broadcast(room, { t: 'folder', op: 'upsert', id: folder.id, name: folder.name, icon: folder.icon, color: folder.color, at: folder.at });
+  pushState(room, true);
+  return buildState(room);
+}
+
+function updateFolder(roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  const cur = room.folders.get(folderId);
+  if (!cur) return buildState(room);
+  const next: RoomFolder = {
+    ...cur,
+    ...(typeof patch?.name === 'string' ? { name: patch.name.trim().slice(0, 200) || cur.name } : {}),
+    ...(typeof patch?.icon === 'string' ? { icon: patch.icon.slice(0, 64) } : {}),
+    ...(typeof patch?.color === 'string' ? { color: patch.color.slice(0, 64) } : {}),
+    at: Date.now(),
+  };
+  room.folders.set(folderId, next);
+  persistFolder(room, next);
+  broadcast(room, { t: 'folder', op: 'upsert', id: next.id, name: next.name, icon: next.icon, color: next.color, at: next.at });
+  pushState(room, true);
+  return buildState(room);
+}
+
+function deleteFolder(roomId: string, folderId: string): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  const at = Date.now();
+  // Files keep their (now-dangling) folderId → they render Uncategorized via
+  // groupFilesByFolder. No per-file reassignment gossip needed.
+  if (applyFolderDelete(room.folders, room.folderTombstones, folderId, at)) {
+    persistFolderDelete(room, folderId, at);
+    broadcast(room, { t: 'folder', op: 'del', id: folderId, at });
+    pushState(room, true);
+  }
+  return buildState(room);
+}
+
+function assignFile(roomId: string, fileId: string, folderId: string | null): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  const file = room.files.get(fileId);
+  if (!file) return buildState(room);
+  const at = Date.now();
+  if (applyAssignment(file, folderId, at)) {
+    const tr = room.transfers.get(fileId);
+    persistManifest(room, file, tr?.localPath, tr?.cipherPath);
+    broadcast(room, { t: 'assign', fileId, folderId: folderId || '', at, memberId: room.self.memberId });
+    pushState(room, true);
+  }
+  return buildState(room);
+}
+
 function leaveRoom(roomId: string): void {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -1634,6 +1792,10 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     let data: any;
     if (type === 'join') data = startRoom(msg.payload);
     else if (type === 'addFiles') data = await addFiles(msg.roomId, msg.paths);
+    else if (type === 'createFolder') data = createFolder(msg.roomId, msg.name, msg.icon, msg.color);
+    else if (type === 'updateFolder') data = updateFolder(msg.roomId, msg.folderId, msg.patch || {});
+    else if (type === 'deleteFolder') data = deleteFolder(msg.roomId, msg.folderId);
+    else if (type === 'assignFile') data = assignFile(msg.roomId, msg.fileId, msg.folderId ?? null);
     else if (type === 'leave') { leaveRoom(msg.roomId); data = { ok: true }; }
     else if (type === 'profile') { updateProfile(msg.payload || {}); data = { ok: true }; }
     else if (type === 'releaseFile') { releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }

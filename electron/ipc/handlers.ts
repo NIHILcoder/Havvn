@@ -491,6 +491,22 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, fileId: string) => roomManager.removeFile(roomId, fileId)
   ));
 
+  ipcMain.handle('rooms:createFolder', wrapHandler('rooms:createFolder',
+    async (_event, roomId: string, name: string, icon: string, color: string) => roomManager.createFolder(roomId, name, icon, color)
+  ));
+
+  ipcMain.handle('rooms:updateFolder', wrapHandler('rooms:updateFolder',
+    async (_event, roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }) => roomManager.updateFolder(roomId, folderId, patch || {})
+  ));
+
+  ipcMain.handle('rooms:deleteFolder', wrapHandler('rooms:deleteFolder',
+    async (_event, roomId: string, folderId: string) => roomManager.deleteFolder(roomId, folderId)
+  ));
+
+  ipcMain.handle('rooms:assignFile', wrapHandler('rooms:assignFile',
+    async (_event, roomId: string, fileId: string, folderId: string | null) => roomManager.assignFile(roomId, fileId, folderId ?? null)
+  ));
+
   ipcMain.handle('rooms:setAutoFetch', wrapHandler('rooms:setAutoFetch',
     async (_event, roomId: string, autoFetch: boolean) => roomManager.setAutoFetch(roomId, !!autoFetch)
   ));

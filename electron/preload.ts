@@ -619,6 +619,14 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:broadcastSync', roomId, payload),
     removeFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:removeFile', roomId, fileId),
+    createFolder: (roomId: string, name: string, icon: string, color: string): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color),
+    updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:updateFolder', roomId, folderId, patch),
+    deleteFolder: (roomId: string, folderId: string): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:deleteFolder', roomId, folderId),
+    assignFile: (roomId: string, fileId: string, folderId: string | null): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:assignFile', roomId, fileId, folderId),
     setMuted: (roomId: string, memberId: string, muted: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setMuted', roomId, memberId, muted),
     setAutoFetch: (roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> =>

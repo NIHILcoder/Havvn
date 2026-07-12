@@ -19,7 +19,7 @@
  */
 
 import Store from 'electron-store';
-import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
+import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
@@ -68,6 +68,8 @@ interface RoomsSchema {
   roomProfile: RoomProfile | null;           // This install's identity in rooms
   roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
   roomManifests: Record<string, PersistedRoomFile[]>; // roomId → known files (resume on restart)
+  roomFolders: Record<string, PersistedRoomFolder[]>; // roomId → folders/sections (resume on restart)
+  roomFolderTombstones: Record<string, Record<string, number>>; // roomId → (deleted folderId → deletedAt ms)
   roomHistory: Record<string, RoomEvent[]>;  // roomId → activity log (capped)
   roomMutes: Record<string, string[]>;       // roomId → locally-muted memberIds
   roomChats: Record<string, RoomChatMessage[]>; // roomId → chat log (capped, text encrypted at rest)
@@ -244,7 +246,7 @@ const searchStore = new Store<SearchSchema>({
 
 const roomsStore = new Store<RoomsSchema>({
   name: 'rooms',
-  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomManifests: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
 });
 
 const reputationStore = new Store<ReputationSchema>({
@@ -402,6 +404,51 @@ export function clearRoomManifest(roomId: string): void {
   const all = roomsStore.get('roomManifests') ?? {};
   delete all[roomId];
   roomsStore.set('roomManifests', all);
+}
+
+// === Room folders (sections — resume a room's folder set on restart) ===
+
+export function getRoomFolders(roomId: string): PersistedRoomFolder[] {
+  return (roomsStore.get('roomFolders') ?? {})[roomId] ?? [];
+}
+
+/** Add or update one folder in a room's persisted set (keyed by id). */
+export function upsertRoomFolder(roomId: string, folder: PersistedRoomFolder): void {
+  if (!folder?.id) return;
+  const all = roomsStore.get('roomFolders') ?? {};
+  const list = (all[roomId] ?? []).filter((f) => f.id !== folder.id);
+  list.push(folder);
+  all[roomId] = list.slice(-500); // cap
+  roomsStore.set('roomFolders', all);
+}
+
+export function removeRoomFolder(roomId: string, folderId: string): void {
+  const all = roomsStore.get('roomFolders') ?? {};
+  if (!all[roomId]) return;
+  all[roomId] = all[roomId].filter((f) => f.id !== folderId);
+  roomsStore.set('roomFolders', all);
+}
+
+export function getRoomFolderTombstones(roomId: string): Record<string, number> {
+  return (roomsStore.get('roomFolderTombstones') ?? {})[roomId] ?? {};
+}
+
+export function addRoomFolderTombstone(roomId: string, folderId: string, at: number = Date.now()): void {
+  const all = roomsStore.get('roomFolderTombstones') ?? {};
+  const map = { ...(all[roomId] ?? {}) };
+  map[folderId] = Math.max(at, map[folderId] ?? 0); // a newer deletion always wins
+  const entries = Object.entries(map);
+  if (entries.length > 500) { entries.sort((a, b) => a[1] - b[1]); entries.splice(0, entries.length - 500); }
+  all[roomId] = Object.fromEntries(entries);
+  roomsStore.set('roomFolderTombstones', all);
+}
+
+export function clearRoomFolders(roomId: string): void {
+  for (const key of ['roomFolders', 'roomFolderTombstones'] as const) {
+    const all = roomsStore.get(key) ?? {};
+    delete (all as Record<string, unknown>)[roomId];
+    roomsStore.set(key, all as never);
+  }
 }
 
 // === Room activity history (locally-observed event log) ===

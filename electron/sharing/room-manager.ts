@@ -97,6 +97,20 @@ export class RoomManager {
     ipcMain.on('room-manifest-del', (_e, payload: { roomId: string; fileId: string }) => {
       try { if (payload?.roomId && payload?.fileId) db.removeRoomManifestFile(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
+    // A folder was created/edited (ours or a peer's) — persist so it (and the
+    // file grouping) survives restart, before peers reconnect.
+    ipcMain.on('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types').PersistedRoomFolder }) => {
+      try { if (payload?.roomId && payload?.folder?.id) db.upsertRoomFolder(payload.roomId, payload.folder); } catch { /* ignore */ }
+    });
+    // A folder was deleted — persist the tombstone and drop it from the set.
+    ipcMain.on('room-folder-del', (_e, payload: { roomId: string; id: string; at?: number }) => {
+      try {
+        if (payload?.roomId && payload?.id) {
+          db.addRoomFolderTombstone(payload.roomId, payload.id, Number(payload.at) || Date.now());
+          db.removeRoomFolder(payload.roomId, payload.id);
+        }
+      } catch { /* ignore */ }
+    });
     // A new activity-log event was observed — persist it (capped) so the room's
     // history survives restart.
     ipcMain.on('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types').RoomEvent }) => {
@@ -248,6 +262,8 @@ export class RoomManager {
         turnServers,
         tombstones: db.getRoomTombstones(roomId),
         manifest: db.getRoomManifest(roomId),
+        folders: db.getRoomFolders(roomId),
+        folderTombs: db.getRoomFolderTombstones(roomId),
         ownerId: ownerId ?? '',
         mutes: db.getRoomMutes(roomId),
         history: db.getRoomHistory(roomId),
@@ -339,6 +355,7 @@ export class RoomManager {
     db.deletePersistedRoom(roomId);
     db.clearRoomTombstones(roomId);
     db.clearRoomManifest(roomId);
+    db.clearRoomFolders(roomId);
     db.clearRoomHistory(roomId);
     db.clearRoomMutes(roomId);
     db.clearRoomChats(roomId);
@@ -428,6 +445,31 @@ export class RoomManager {
     // The cast server runs in the torrent host; publish the room file there.
     const { getTorrentManager } = await import('../torrent');
     return getTorrentManager().castPublishDiskFile(abs);
+  }
+
+  // ── Folders / sections ──────────────────────────────────────────────────────
+  /** Route a folder command through a live engine (reactivating the room if idle). */
+  private async folderCmd(roomId: string, type: string, extra: Record<string, unknown>): Promise<RoomState> {
+    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    if (!persisted) throw new Error('Room not found');
+    if (!this.cache.has(roomId)) await this.reactivate(persisted);
+    const state = await this.call<RoomState>(type, { roomId, ...extra });
+    state.createdAt = persisted.createdAt;
+    this.cache.set(roomId, state);
+    return state;
+  }
+
+  createFolder(roomId: string, name: string, icon: string, color: string): Promise<RoomState> {
+    return this.folderCmd(roomId, 'createFolder', { name, icon, color });
+  }
+  updateFolder(roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }): Promise<RoomState> {
+    return this.folderCmd(roomId, 'updateFolder', { folderId, patch });
+  }
+  deleteFolder(roomId: string, folderId: string): Promise<RoomState> {
+    return this.folderCmd(roomId, 'deleteFolder', { folderId });
+  }
+  assignFile(roomId: string, fileId: string, folderId: string | null): Promise<RoomState> {
+    return this.folderCmd(roomId, 'assignFile', { fileId, folderId });
   }
 
   /** Remove a shared file from the room for everyone (persists a tombstone). */

@@ -1012,6 +1012,11 @@ export interface IpcApi {
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }>;
     broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
+    // Folders/sections (any member may manage; convergence is last-writer-wins)
+    createFolder: (roomId: string, name: string, icon: string, color: string) => Promise<RoomState>;
+    updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }) => Promise<RoomState>;
+    deleteFolder: (roomId: string, folderId: string) => Promise<RoomState>;
+    assignFile: (roomId: string, fileId: string, folderId: string | null) => Promise<RoomState>;
     setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<{ ok: boolean }>;
     setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<{ ok: boolean }>;
     fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
