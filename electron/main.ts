@@ -216,20 +216,35 @@ function formatTraySpeed(bps: number): string {
 
 // Sum the per-torrent stats into the three numbers the tray shows. getStats()
 // is synchronous (a cached snapshot in the manager proxy), so this is cheap.
-function readTrayStats(): { down: number; up: number; active: number } {
+function readTrayStats(): { down: number; up: number; active: number; avgProgress: number } {
   try {
     const stats = getTorrentManager().getStats();
     let down = 0;
     let up = 0;
     let active = 0;
+    let progressSum = 0;
     for (const s of stats) {
       down += s.downSpeedBps || 0;
       up += s.upSpeedBps || 0;
-      if (s.status === 'downloading') active++;
+      if (s.status === 'downloading') {
+        active++;
+        progressSum += s.progress || 0;
+      }
     }
-    return { down, up, active };
+    return { down, up, active, avgProgress: active > 0 ? progressSum / active : 0 };
   } catch {
-    return { down: 0, up: 0, active: 0 };
+    return { down: 0, up: 0, active: 0, avgProgress: 0 };
+  }
+}
+
+// Mirrors download progress onto the taskbar button (Windows) / dock (macOS):
+// average progress across actively downloading torrents, cleared when idle.
+function updateTaskbarProgress(stats: { active: number; avgProgress: number }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (stats.active > 0) {
+    mainWindow.setProgressBar(Math.min(1, Math.max(0, stats.avgProgress)), { mode: 'normal' });
+  } else {
+    mainWindow.setProgressBar(-1);
   }
 }
 
@@ -257,12 +272,14 @@ function createTray(): void {
   const updateTrayTooltip = (): void => {
     if (!tray || tray.isDestroyed()) return;
     const base = mainWindow?.isVisible() ? t('tray.tooltip') : t('tray.tooltip.running');
-    const { down, up } = readTrayStats();
+    const stats = readTrayStats();
+    const { down, up } = stats;
     tray.setToolTip(
       down > 0 || up > 0
         ? `${base}\n↓ ${formatTraySpeed(down)} · ↑ ${formatTraySpeed(up)}`
         : base
     );
+    updateTaskbarProgress(stats);
   };
 
   trayStatsInterval = setInterval(updateTrayTooltip, 3000);
@@ -1015,6 +1032,10 @@ async function cleanup(): Promise<void> {
   if (trayStatsInterval) {
     clearInterval(trayStatsInterval);
     trayStatsInterval = null;
+  }
+  // Clear the taskbar progress overlay so it doesn't linger after quit
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setProgressBar(-1);
   }
   if (tray) {
     tray.destroy();
