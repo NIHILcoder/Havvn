@@ -4,6 +4,58 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.11.0] - 2026-07-12
+
+Privacy takes the spotlight: the native engine can be hard-bound to your VPN
+so traffic physically cannot leak, magnets add themselves from the clipboard,
+the app can shut the computer down when the queue finishes, and the player
+learned series, audio tracks, playback speed and picture-in-picture. Also
+shipping: the desktop polish built right after 2.10 (taskbar progress, the
+hotkeys editor and first-run onboarding).
+
+### Added
+- **Bind engine to VPN** (Settings → Privacy, native engine only): the
+  download engine's peer sockets are bound to the VPN adapter's address, so
+  if the VPN drops they die at the OS level the same instant — stronger than
+  the kill-switch, which reacts after detection. No VPN at start means a
+  fail-closed loopback bind with a clear warning; when the VPN address
+  changes, the engine restarts and re-binds automatically (IPv6 is pinned
+  shut while the feature is on). Applies on restart, like the engine picker.
+- **Magnet links from the clipboard** (Settings → Downloads, off by default):
+  copy a magnet anywhere and Havvn comes to the front with the add dialog —
+  the same flow as double-clicking a .torrent file; nothing is added without
+  confirmation. Only a hash of the last clipboard text is kept in memory, and
+  a magnet already sitting in the clipboard never fires on enable or startup.
+- **When downloads finish…** (Downloads toolbar and the tray menu): a
+  one-shot sleep / shut down / quit action that fires once every download
+  reaches a terminal state. Guard auto-pauses block it, new downloads during
+  the countdown re-arm it, execution is preceded by a cancellable countdown
+  (shutdown uses the OS 60-second timer), and the choice never survives a
+  restart — the machine can't power off by surprise.
+- **Serial mode in the player**: a playlist with episodes in natural order
+  (season folders respected, duplicate names disambiguated), a Next-episode
+  button, and auto-advance when an episode ends — each episode keeps its own
+  resume position.
+- **Audio track selection** for multi-audio releases: pick a language and the
+  stream restarts with that track via on-the-fly conversion; the menu appears
+  only when the file actually has a choice, and the pick carries across
+  episodes.
+- **Playback speed and picture-in-picture** in the player controls: presets
+  from 0.5× to 2× that survive episode changes, and a PiP window that follows
+  you across episodes where the platform allows. In watch-together rooms the
+  playback speed now syncs to everyone.
+- **Download progress on the taskbar icon**, a working **hotkeys editor**,
+  and **first-run onboarding** — the post-2.10 desktop pack.
+
+### Fixed
+- A crash-respawned torrent engine silently lost the IP blocklist; it is now
+  re-applied on every engine start.
+
+### Internal
+- The VPN-bind decision logic, the completion-action state machine, and the
+  ffmpeg audio-stream probe are pure, unit-tested modules (suite: 148 → 186
+  tests).
+
 ## [2.10.0] - 2026-07-12
 
 Rooms come alive — a chat-first layout with typing indicators, file reactions
