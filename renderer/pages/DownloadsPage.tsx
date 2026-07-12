@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Download, DownloadStats } from '../../shared/types';
+import { CompletionAction, Download, DownloadStats } from '../../shared/types';
 import { canPause, canResume } from '../../shared/state-machine';
 import {
   Button,
@@ -129,6 +129,11 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   } | null>(null);
   const [isAddingTorrent, setIsAddingTorrent] = useState(false);
 
+  // On-completion action (one-shot; main owns the state, this mirrors it)
+  const [onDoneAction, setOnDoneAction] = useState<CompletionAction>('none');
+  const [onDoneAvailable, setOnDoneAvailable] = useState<CompletionAction[]>(['none', 'quit']);
+  const [showOnDoneMenu, setShowOnDoneMenu] = useState(false);
+
   // Toast helper
   const addToast = useCallback((message: string, variant: 'success' | 'error' | 'warning' | 'info' = 'info', duration = 5000) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
@@ -218,6 +223,37 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   useEffect(() => {
     loadDownloads();
   }, []);
+
+  // Mirror the one-shot completion action (tray can change it too)
+  useEffect(() => {
+    void window.api.getCompletionAction().then((s) => {
+      setOnDoneAction(s.action);
+      setOnDoneAvailable(s.available);
+    }).catch(() => { /* older main without the handler */ });
+    const off = window.api.onCompletionActionChanged((a) => setOnDoneAction(a));
+    return () => off();
+  }, []);
+
+  const onDoneLabel = useCallback((a: CompletionAction): string => {
+    switch (a) {
+      case 'sleep': return t('downloads.onDone.sleep');
+      case 'shutdown': return t('downloads.onDone.shutdown');
+      case 'quit': return t('downloads.onDone.quit');
+      default: return t('downloads.onDone.none');
+    }
+  }, [t]);
+
+  const handleSelectOnDone = useCallback(async (a: CompletionAction) => {
+    setShowOnDoneMenu(false);
+    try {
+      // No optimistic set: main broadcasts app:completionActionChanged, which
+      // the mount subscription above applies — one source of truth.
+      await window.api.setCompletionAction(a);
+      if (a !== 'none') addToast(t('downloads.onDoneSet'), 'info');
+    } catch {
+      addToast(t('downloads.onDoneFailed'), 'error');
+    }
+  }, [addToast, t]);
 
   // A torrent opened from the OS (double-click / magnet link): open the same
   // file-picker dialog as a manual add instead of adding silently.
@@ -349,12 +385,17 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedIds, downloads, addToast, shareRoomId, shareModalId, streamModalId, controlModalId, previewId, showFileSelector]);
 
-  // Clipboard magnet detection — on window focus, check for magnet: URIs
+  // Clipboard magnet detection — on window focus, check for magnet: URIs.
+  // Legacy hint for users WITHOUT the main-process clipboard watcher: when the
+  // watcher is on, it already opens the add dialog itself, and this toast on
+  // top of that dialog would be pure noise.
   useEffect(() => {
     let lastDetectedMagnet = '';
 
     const handleFocus = async () => {
       try {
+        const s = await window.api.getSettings();
+        if (s?.clipboardWatchEnabled) return;
         const text = await navigator.clipboard.readText();
         if (text && text.startsWith('magnet:?') && text !== lastDetectedMagnet) {
           lastDetectedMagnet = text;
@@ -823,6 +864,31 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             onClick={handleToggleAltSpeed}
             title={altSpeed ? t('downloads.altSpeedOn') : t('downloads.altSpeedOff')}
           />
+          {/* On-completion action (one-shot) */}
+          <div className="dropdown-wrapper">
+            <Button
+              variant={onDoneAction !== 'none' ? 'primary' : 'ghost'}
+              size="sm"
+              iconOnly
+              icon={<Icon name="power" size={16} />}
+              onClick={() => setShowOnDoneMenu(!showOnDoneMenu)}
+              title={`${t('downloads.onDone')}: ${onDoneLabel(onDoneAction)}`}
+            />
+            {showOnDoneMenu && (
+              <div className="dropdown-menu export-dropdown">
+                {onDoneAvailable.map((a) => (
+                  <button
+                    key={a}
+                    className="dropdown-item"
+                    onClick={() => handleSelectOnDone(a)}
+                  >
+                    <Icon name={onDoneAction === a ? 'check-circle' : 'circle'} size={16} />
+                    <span>{onDoneLabel(a)}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="sm"

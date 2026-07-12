@@ -12,16 +12,18 @@
 import { Notification } from 'electron';
 import { getAppIconPath } from './index';
 
-export function showOsNotification(title: string, body: string, opts?: { critical?: boolean }): void {
+export function showOsNotification(title: string, body: string, opts?: { critical?: boolean; onClick?: () => void }): void {
   try {
     if (!Notification.isSupported()) return;
     const iconPath = getAppIconPath();
-    new Notification({
+    const n = new Notification({
       title,
       body,
       ...(iconPath ? { icon: iconPath } : {}),
       ...(opts?.critical ? { urgency: 'critical' as const } : {}),
-    }).show();
+    });
+    if (opts?.onClick) n.on('click', opts.onClick);
+    n.show();
   } catch {
     /* best-effort */
   }

@@ -12,6 +12,10 @@ import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getVpnW
 import { getRSSService } from './services/rss-service';
 import { getIPBlocklistService } from './services/ip-blocklist';
 import { getWatchFolderService } from './torrent/watch-folder';
+import {
+  initCompletionAction, stopCompletionAction, tickCompletionAction,
+  getCompletionActionState, setCompletionAction,
+} from './utils/completion-action';
 import { t, initMainI18n, setMainLanguage } from './i18n';
 
 
@@ -280,6 +284,9 @@ function createTray(): void {
         : base
     );
     updateTaskbarProgress(stats);
+    // On-completion action detection rides this tick — the only loop that
+    // keeps running in closed-to-tray mode.
+    tickCompletionAction();
   };
 
   trayStatsInterval = setInterval(updateTrayTooltip, 3000);
@@ -346,6 +353,31 @@ function createTray(): void {
           logger.error('App', 'Tray alt-speed toggle failed', { error: String(e) });
         });
       },
+    },
+    {
+      // One-shot on-completion action — the tray is the only reachable
+      // surface in closed-to-tray mode; radio state rebuilds on right-click.
+      label: t('tray.onDone'),
+      submenu: (() => {
+        const st = getCompletionActionState();
+        const items: Electron.MenuItemConstructorOptions[] = st.available.map((a) => ({
+          label: t(`tray.onDone.${a}`),
+          type: 'radio' as const,
+          checked: st.action === a,
+          click: () => setCompletionAction(a),
+        }));
+        if (st.pending) {
+          // A countdown is running (the radio shows "Do nothing" because the
+          // one-shot was consumed at fire) — give tray-only users a cancel.
+          items.push({ type: 'separator' });
+          items.push({
+            label: t('tray.onDone.cancelPending'),
+            type: 'normal',
+            click: () => setCompletionAction('none'),
+          });
+        }
+        return items;
+      })(),
     },
     { type: 'separator' },
     {
@@ -674,6 +706,16 @@ async function initializeApp(): Promise<void> {
   createTray();
   logger.info('App', 'System tray created.');
 
+  // On-completion action (one-shot sleep/shutdown/quit; detection rides the
+  // tray tick). Registered BEFORE the window exists so the renderer's very
+  // first app:getCompletionAction invoke always finds the handler — the rest
+  // of startup (engine re-verification) can take tens of seconds.
+  initCompletionAction({
+    getMainWindow: () => mainWindow,
+    // isQuitting first, or close-to-tray (default ON) swallows the quit.
+    quitApp: () => { isQuitting = true; app.quit(); },
+  });
+
   await createWindow();
   logger.info('App', 'Main window created.');
 
@@ -734,6 +776,20 @@ async function initializeApp(): Promise<void> {
   } catch (e) {
     logger.error('App', 'Failed to init disk guard', { error: e });
   }
+
+  // Start the clipboard magnet watcher (no-op unless enabled in settings)
+  try {
+    const { initClipboardWatcher } = await import('./utils/clipboard-watcher');
+    initClipboardWatcher({
+      deliver: deliverOpenTorrent,
+      // Hidden-in-tray still counts: the window exists, deliverOpenTorrent
+      // fronts it with the add dialog — only a destroyed window stops delivery.
+      hasWindow: () => mainWindow !== null && !mainWindow.isDestroyed(),
+    });
+  } catch (e) {
+    logger.error('App', 'Failed to init clipboard watcher', { error: e });
+  }
+
 
   // Forward the listening port via UPnP so peers can connect inbound (no-op if
   // disabled in settings or the router has no UPnP). Best-effort; never blocks.
@@ -1021,6 +1077,15 @@ async function cleanup(): Promise<void> {
     const { stopDiskGuard } = await import('./utils/disk-guard');
     stopDiskGuard();
   } catch { /* ignore */ }
+
+  // Stop the clipboard watcher poll
+  try {
+    const { stopClipboardWatcher } = await import('./utils/clipboard-watcher');
+    stopClipboardWatcher();
+  } catch { /* ignore */ }
+
+  // Clear completion-action timers (an OS-scheduled shutdown is left alone)
+  stopCompletionAction();
 
   // Remove the UPnP port mapping and stop renewing it
   try {

@@ -100,6 +100,9 @@ function useSettingsController() {
   const [watchFolderPath, setWatchFolderPath] = useState('');
   const [watchFolderDeleteAfterAdd, setWatchFolderDeleteAfterAdd] = useState(false);
 
+  // Clipboard magnet watcher (opt-in)
+  const [clipboardWatchEnabled, setClipboardWatchEnabled] = useState(false);
+
   // Disk-space guard
   const [diskGuardEnabled, setDiskGuardEnabled] = useState(true);
   const [diskGuardMinFreeMB, setDiskGuardMinFreeMB] = useState(2048);
@@ -296,6 +299,8 @@ function useSettingsController() {
       setWatchFolderEnabled(s.watchFolderEnabled ?? false);
       setWatchFolderPath(s.watchFolderPath ?? '');
       setWatchFolderDeleteAfterAdd(s.watchFolderDeleteAfterAdd ?? false);
+
+      setClipboardWatchEnabled(s.clipboardWatchEnabled ?? false);
 
       setDiskGuardEnabled(s.diskGuardEnabled ?? true);
       setDiskGuardMinFreeMB(s.diskGuardMinFreeMB ?? 2048);
@@ -723,6 +728,7 @@ function useSettingsController() {
     // downloads
     watchFolderEnabled, setWatchFolderEnabled, watchFolderPath, setWatchFolderPath,
     watchFolderDeleteAfterAdd, setWatchFolderDeleteAfterAdd, applyWatchFolder,
+    clipboardWatchEnabled, setClipboardWatchEnabled,
     autoMoveEnabled, setAutoMoveEnabled, autoMovePath, setAutoMovePath,
     diskGuardEnabled, setDiskGuardEnabled, diskGuardMinFreeMB, setDiskGuardMinFreeMB,
     // sharing

@@ -1,5 +1,11 @@
 // Shared types for Havvn application
 
+// On-completion action (one-shot "when downloads finish → sleep/shutdown/quit").
+// Logic lives in shared/completion-action.ts; re-exported here so IPC surfaces
+// (preload, renderer) keep importing every wire type from one hub.
+import type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
+export type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
+
 export type DownloadStatus =
   | 'queued'
   | 'downloading'
@@ -377,6 +383,9 @@ export interface AppSettings {
   watchFolderEnabled: boolean;
   watchFolderPath: string;
   watchFolderDeleteAfterAdd: boolean;
+  // Clipboard magnet watcher (main-process 2s poll; opt-in, default OFF).
+  // Optional: absent on installs that predate 2.11 — treat as false.
+  clipboardWatchEnabled?: boolean;
   // Move completed downloads to another folder, then keep seeding from there
   autoMoveEnabled: boolean;
   autoMovePath: string;
@@ -903,6 +912,11 @@ export interface IpcApi {
   // Engine VPN-bind lifecycle: lost = bound address vanished (sockets dead),
   // rebound = engine restarted onto a new VPN IP, restored = same IP came back.
   onVpnBindStatus: (callback: (info: VpnBindEvent) => void) => () => void;
+  // On-completion action (one-shot; state lives in main, renderer mirrors it)
+  getCompletionAction: () => Promise<CompletionActionState>;
+  setCompletionAction: (action: CompletionAction) => Promise<{ ok: boolean }>;
+  onCompletionActionChanged: (callback: (action: CompletionAction) => void) => () => void;
+  onCompletionActionPending: (callback: (pending: CompletionPending | null) => void) => () => void;
   // Startup "VPN not detected" advisory + its "Don't show again" opt-out
   onVpnWarning: (callback: (info: { publicIP?: string }) => void) => () => void;
   vpnWarningDismissed: () => void;

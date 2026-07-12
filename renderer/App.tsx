@@ -5,7 +5,7 @@
 import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence, OnlinePerson } from './layout';
-import { DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
+import { CompletionPending, DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
 // their own chunks so the initial bundle is smaller and the app (and the startup
 // splash) reaches interactive sooner.
@@ -20,6 +20,7 @@ import { formatBytes } from './utils/format-helpers';
 import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
+import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
 import { dismissSplash } from './utils/splash';
 
@@ -54,6 +55,8 @@ const AppContent: React.FC = () => {
   const [vpnAlert, setVpnAlert] = useState<{ paused: number; publicIP?: string } | null>(null);
   // Engine VPN-bind banner (bound address vanished — sockets dead until VPN returns)
   const [vpnBindAlert, setVpnBindAlert] = useState(false);
+  // In-flight on-completion countdown (sleep/shutdown/quit) — cancellable modal
+  const [completionPending, setCompletionPending] = useState<CompletionPending | null>(null);
   // Disk-space guard warning banner
   const [diskAlert, setDiskAlert] = useState<{ paused: number; freeBytes: number; thresholdBytes: number } | null>(null);
   // The most-alive room right now — feeds the status-bar presence bridge
@@ -205,6 +208,21 @@ const AppContent: React.FC = () => {
     const off = window.api.onVpnBindStatus((info) => {
       setVpnBindAlert(info.kind === 'lost');
     });
+    return () => off();
+  }, []);
+
+  // On-completion countdown: live push from main, plus a mount-time pull so a
+  // window opened from the notification click finds the in-flight countdown.
+  // A push that lands before the pull resolves is fresher — don't clobber it.
+  useEffect(() => {
+    let pushed = false;
+    const off = window.api.onCompletionActionPending((p) => {
+      pushed = true;
+      setCompletionPending(p);
+    });
+    void window.api.getCompletionAction()
+      .then((s) => { if (!pushed) setCompletionPending(s.pending); })
+      .catch(() => { /* older main without the handler */ });
     return () => off();
   }, []);
 
@@ -461,6 +479,15 @@ const AppContent: React.FC = () => {
             <AlertBanner onDismiss={() => setVpnBindAlert(false)} dismissLabel={t('app.banner.dismiss')}>
               {t('privacy.vpnBind.lostBanner')}
             </AlertBanner>
+          )}
+          {completionPending && (
+            <CompletionCountdown
+              pending={completionPending}
+              onCancel={() => {
+                setCompletionPending(null);
+                void window.api.setCompletionAction('none');
+              }}
+            />
           )}
           {diskAlert && (
             <AlertBanner onDismiss={() => setDiskAlert(null)} dismissLabel={t('app.banner.dismiss')}>

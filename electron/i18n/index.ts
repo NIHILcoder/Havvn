@@ -34,6 +34,12 @@ const en: Dict = {
   'tray.pauseAll': 'Pause All Downloads',
   'tray.resumeAll': 'Resume All Downloads',
   'tray.altSpeed': 'Alternative speed limits',
+  'tray.onDone': 'When downloads finish',
+  'tray.onDone.none': 'Do nothing',
+  'tray.onDone.sleep': 'Sleep',
+  'tray.onDone.shutdown': 'Shut down',
+  'tray.onDone.quit': 'Quit Havvn',
+  'tray.onDone.cancelPending': 'Cancel the pending action',
   'tray.quit': 'Quit Havvn',
 
   // Native dialogs
@@ -63,6 +69,12 @@ const en: Dict = {
   'notify.vpnBindLost.body': 'Peer traffic is blocked at the socket level until the VPN returns.',
   'notify.vpnRebound.title': 'VPN address changed — engine re-bound',
   'notify.vpnRebound.body': 'The download engine restarted and is bound to {ip}.',
+  'notify.onDone.shutdownTitle': 'Downloads finished — shutting down',
+  'notify.onDone.shutdownBody': 'The computer will shut down in 60 seconds. Open Havvn to cancel.',
+  'notify.onDone.sleepTitle': 'Downloads finished — going to sleep',
+  'notify.onDone.sleepBody': 'The computer will go to sleep in 15 seconds. Open Havvn to cancel.',
+  'notify.onDone.quitTitle': 'Downloads finished — quitting',
+  'notify.onDone.quitBody': 'Havvn will quit in 15 seconds. Open it to cancel.',
 
   // Shared
   'common.ok': 'OK',
@@ -106,6 +118,12 @@ const ru: Dict = {
   'tray.pauseAll': 'Приостановить все загрузки',
   'tray.resumeAll': 'Возобновить все загрузки',
   'tray.altSpeed': 'Альтернативные лимиты скорости',
+  'tray.onDone': 'Когда загрузки завершатся',
+  'tray.onDone.none': 'Ничего не делать',
+  'tray.onDone.sleep': 'Спящий режим',
+  'tray.onDone.shutdown': 'Выключить компьютер',
+  'tray.onDone.quit': 'Выйти из Havvn',
+  'tray.onDone.cancelPending': 'Отменить запланированное действие',
   'tray.quit': 'Выйти из Havvn',
 
   // Native dialogs
@@ -135,6 +153,12 @@ const ru: Dict = {
   'notify.vpnBindLost.body': 'Трафик пиров заблокирован на уровне сокетов, пока VPN не восстановится.',
   'notify.vpnRebound.title': 'Адрес VPN изменился — движок перепривязан',
   'notify.vpnRebound.body': 'Движок загрузок перезапущен и привязан к {ip}.',
+  'notify.onDone.shutdownTitle': 'Загрузки завершены — выключение',
+  'notify.onDone.shutdownBody': 'Компьютер выключится через 60 секунд. Откройте Havvn, чтобы отменить.',
+  'notify.onDone.sleepTitle': 'Загрузки завершены — спящий режим',
+  'notify.onDone.sleepBody': 'Компьютер уснёт через 15 секунд. Откройте Havvn, чтобы отменить.',
+  'notify.onDone.quitTitle': 'Загрузки завершены — выход',
+  'notify.onDone.quitBody': 'Havvn закроется через 15 секунд. Откройте окно, чтобы отменить.',
 
   // Shared
   'common.ok': 'OK',

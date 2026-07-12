@@ -175,6 +175,8 @@ const configStore = new Store<ConfigSchema>({
       watchFolderEnabled: false,
       watchFolderPath: '',
       watchFolderDeleteAfterAdd: false,
+      // Clipboard magnet watcher (opt-in)
+      clipboardWatchEnabled: false,
       // Auto-move completed
       autoMoveEnabled: false,
       autoMovePath: '',

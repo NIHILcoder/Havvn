@@ -17,6 +17,9 @@ import {
   CreateTorrentProgress,
   PrivacyConfig,
   VpnBindEvent,
+  CompletionAction,
+  CompletionActionState,
+  CompletionPending,
   ShareInfo,
   RoomProfile,
   RoomState,
@@ -338,6 +341,27 @@ const api: IpcApi = {
     const handler = (_e: IpcRendererEvent, status: { kind: string }) => callback(status);
     ipcRenderer.on('app:updateStatus', handler);
     return () => { ipcRenderer.removeListener('app:updateStatus', handler); };
+  },
+
+  // On-completion action (one-shot: nothing / sleep / shutdown / quit)
+  getCompletionAction: (): Promise<CompletionActionState> => {
+    return ipcRenderer.invoke('app:getCompletionAction');
+  },
+
+  setCompletionAction: (action: CompletionAction): Promise<{ ok: boolean }> => {
+    return ipcRenderer.invoke('app:setCompletionAction', action);
+  },
+
+  onCompletionActionChanged: (callback: (action: CompletionAction) => void): (() => void) => {
+    const handler = (_e: IpcRendererEvent, action: CompletionAction) => callback(action);
+    ipcRenderer.on('app:completionActionChanged', handler);
+    return () => { ipcRenderer.removeListener('app:completionActionChanged', handler); };
+  },
+
+  onCompletionActionPending: (callback: (pending: CompletionPending | null) => void): (() => void) => {
+    const handler = (_e: IpcRendererEvent, pending: CompletionPending | null) => callback(pending);
+    ipcRenderer.on('app:completionActionPending', handler);
+    return () => { ipcRenderer.removeListener('app:completionActionPending', handler); };
   },
 
   // App version (from package.json via Electron)

@@ -585,6 +585,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         await restartGuardFromConfig();
       }
 
+      // Restart the clipboard magnet watcher when its toggle changes
+      if (settings.clipboardWatchEnabled !== undefined) {
+        const { restartClipboardWatcherFromConfig } = await import('../utils/clipboard-watcher');
+        await restartClipboardWatcherFromConfig();
+      }
+
       // Re-apply UPnP port forwarding if the toggle or the listening port changed.
       // (The port itself only takes effect after a restart, but re-running here
       // turns forwarding on/off live and re-maps when the user fixes the port.)

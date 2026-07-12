@@ -24,6 +24,7 @@ export const DownloadsSection: React.FC = () => {
     watchFolderEnabled, setWatchFolderEnabled,
     watchFolderPath, setWatchFolderPath,
     watchFolderDeleteAfterAdd, setWatchFolderDeleteAfterAdd,
+    clipboardWatchEnabled, setClipboardWatchEnabled,
     autoMoveEnabled, setAutoMoveEnabled,
     autoMovePath, setAutoMovePath,
     diskGuardEnabled, setDiskGuardEnabled,
@@ -131,6 +132,21 @@ export const DownloadsSection: React.FC = () => {
             />
           </>
         )}
+      </SettingsCard>
+
+      {/* Clipboard magnet watcher */}
+      <SettingsCard title={t('settings.grp.clipboard')} icon="copy">
+        <SettingRow
+          label={t('settings.clipboardWatch')}
+          description={t('settings.clipboardWatch.desc')}
+          control={
+            <Toggle
+              checked={clipboardWatchEnabled}
+              onChange={(v) => applyToggle(v, setClipboardWatchEnabled, { clipboardWatchEnabled: v })}
+              ariaLabel={t('settings.clipboardWatch')}
+            />
+          }
+        />
       </SettingsCard>
 
       {/* Auto-move completed */}
