@@ -1304,5 +1304,6 @@
   "rooms.typingAnd": "and",
   "rooms.typingMany": "more are typing",
   "rooms.haveBy": "Held by:",
-  "rooms.reactToggle": "React"
+  "rooms.reactToggle": "React",
+  "player.resumedFrom": "Resuming from"
 }

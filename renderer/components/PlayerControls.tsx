@@ -13,7 +13,8 @@ import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import './PlayerControls.css';
 
-const fmtTime = (s: number): string => {
+// Exported for reuse (StreamPlayerModal's "resuming from …" toast).
+export const fmtTime = (s: number): string => {
   if (!Number.isFinite(s) || s < 0) return '–:––';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);

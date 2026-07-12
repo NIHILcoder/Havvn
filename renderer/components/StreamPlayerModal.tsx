@@ -8,9 +8,10 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import toast from 'react-hot-toast';
 import { Icon } from './Icon';
 import { QRCode } from './QRCode';
-import { PlayerControls } from './PlayerControls';
+import { PlayerControls, fmtTime } from './PlayerControls';
 import { useTranslation } from '../utils/i18nContext';
 import { classifyMediaKind, MediaKind } from '../../shared/media';
 import './StreamPlayerModal.css';
@@ -34,6 +35,70 @@ const formatBytes = (bytes: number): string => {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+};
+
+// --- Playback-position memory -----------------------------------------------
+// A single localStorage JSON map remembers where the user stopped watching, so
+// reopening a film resumes instead of starting over. Keyed by
+// `${infoHash||downloadId}:${fileIndex}` — the infoHash survives remove+re-add.
+// Purely cosmetic: every touch of the store is wrapped so a corrupt map or a
+// full quota can never break playback.
+
+const PLAY_POSITIONS_KEY = 'playPositions';
+const PLAY_POSITIONS_MAX = 200;
+/** Don't remember short clips, near-starts, or near-ends. */
+const PLAY_POS_MIN_DURATION = 120;
+const PLAY_POS_MIN_TIME = 30;
+const PLAY_POS_FINISHED_FRAC = 0.95;
+const PLAY_POS_RESTORE_MAX_FRAC = 0.92;
+const PLAY_POS_SAVE_INTERVAL_MS = 5000;
+
+interface PlayPosition { t: number; d: number; at: number }
+type PlayPositionMap = Record<string, PlayPosition>;
+
+const readPlayPositions = (): PlayPositionMap => {
+  try {
+    const raw = localStorage.getItem(PLAY_POSITIONS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as PlayPositionMap) : {};
+  } catch { return {}; }
+};
+
+const writePlayPositions = (map: PlayPositionMap): void => {
+  try {
+    const keys = Object.keys(map);
+    if (keys.length > PLAY_POSITIONS_MAX) {
+      keys.sort((a, b) => (map[a]?.at ?? 0) - (map[b]?.at ?? 0));
+      for (const k of keys.slice(0, keys.length - PLAY_POSITIONS_MAX)) delete map[k];
+    }
+    localStorage.setItem(PLAY_POSITIONS_KEY, JSON.stringify(map));
+  } catch { /* cosmetic — quota/serialization failures are ignored */ }
+};
+
+const savePlayPosition = (key: string, t: number, d: number): void => {
+  try {
+    const map = readPlayPositions();
+    map[key] = { t, d, at: Date.now() };
+    writePlayPositions(map);
+  } catch { /* cosmetic */ }
+};
+
+const clearPlayPosition = (key: string): void => {
+  try {
+    const map = readPlayPositions();
+    if (key in map) {
+      delete map[key];
+      writePlayPositions(map);
+    }
+  } catch { /* cosmetic */ }
+};
+
+const getPlayPosition = (key: string): PlayPosition | null => {
+  try {
+    const entry = readPlayPositions()[key];
+    return entry && typeof entry.t === 'number' && typeof entry.d === 'number' ? entry : null;
+  } catch { return null; }
 };
 
 export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId, downloadName, onClose }) => {
@@ -71,6 +136,30 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   // captured via a callback ref; the stage wrapper is the fullscreen target.
   const [mediaEl, setMediaEl] = useState<HTMLVideoElement | HTMLAudioElement | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+
+  // Playback-position memory. The store key prefers the download's infoHash
+  // (survives remove+re-add); `ready` gates restore so an early loadedmetadata
+  // can't look the position up under the wrong (downloadId) key.
+  const [posKeyBase, setPosKeyBase] = useState<{ base: string; ready: boolean }>({ base: downloadId, ready: false });
+  // File index the currently mounted media element actually plays (activeIndex
+  // may already point at the next file while the old element is flushing).
+  const streamIndexRef = useRef<number | null>(null);
+  const posRestoredRef = useRef(false);   // restore attempted for this file-open
+  const posUserSeekedRef = useRef(false); // manual seek began — never restore after
+  const posLastSaveRef = useRef(0);       // throttle timestamp for timeupdate saves
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let base = downloadId;
+      try {
+        const dl = (await window.api.getDownloads()).find((d) => d.id === downloadId);
+        if (dl?.infoHash) base = dl.infoHash;
+      } catch { /* cosmetic — fall back to downloadId */ }
+      if (!cancelled) setPosKeyBase({ base, ready: true });
+    })();
+    return () => { cancelled = true; };
+  }, [downloadId]);
 
   // Load the streamable files in this torrent once.
   useEffect(() => {
@@ -111,6 +200,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       try {
         const info = await window.api.getStreamUrl(downloadId, activeIndex, { transcode: forceTranscode });
         if (cancelled) return;
+        streamIndexRef.current = activeIndex;
         setStreamUrl(info.url);
         setKind(info.kind === 'other' ? 'video' : info.kind);
         setTranscoded(info.transcoded);
@@ -143,6 +233,87 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       void window.api.stopStream(downloadId, idx === null ? undefined : idx);
     };
   }, [downloadId]);
+
+  // Reset the position-memory guards whenever a new media element mounts (the
+  // element remounts per stream URL, so this is exactly "per file-open").
+  useEffect(() => {
+    posRestoredRef.current = false;
+    posUserSeekedRef.current = false;
+    posLastSaveRef.current = 0;
+  }, [mediaEl]);
+
+  // Playback-position memory: throttled saves on timeupdate, clear on finish,
+  // one-shot restore on open, and a final flush in the effect cleanup — which
+  // runs on file switch (element remount), modal close and unmount alike.
+  useEffect(() => {
+    const fileIdx = streamIndexRef.current;
+    if (!mediaEl || fileIdx === null || !posKeyBase.ready) return;
+    const key = `${posKeyBase.base}:${fileIdx}`;
+
+    // Save the position, or clear it once the film is (nearly) finished.
+    const saveOrClear = (final: boolean) => {
+      try {
+        const d = mediaEl.duration;
+        if (!Number.isFinite(d) || d <= PLAY_POS_MIN_DURATION) return;
+        const cur = mediaEl.currentTime;
+        if (mediaEl.ended || cur / d >= PLAY_POS_FINISHED_FRAC) { clearPlayPosition(key); return; }
+        if (cur <= PLAY_POS_MIN_TIME) return;
+        if (!final && Date.now() - posLastSaveRef.current < PLAY_POS_SAVE_INTERVAL_MS) return;
+        posLastSaveRef.current = Date.now();
+        savePlayPosition(key, cur, d);
+      } catch { /* cosmetic — never break playback */ }
+    };
+
+    // A 'seeking' before our own restore ran can only be a manual seek — from
+    // then on the user owns the playhead and restore must stay out of the way.
+    const onSeeking = () => { if (!posRestoredRef.current) posUserSeekedRef.current = true; };
+    const onTimeUpdate = () => saveOrClear(false);
+    const onEnded = () => { try { clearPlayPosition(key); } catch { /* cosmetic */ } };
+
+    // One restore attempt per file-open. Fired on loadedmetadata and retried on
+    // canplay only while the seekable ranges haven't been reported yet.
+    const tryRestore = () => {
+      if (posRestoredRef.current || posUserSeekedRef.current) return;
+      try {
+        const d = mediaEl.duration;
+        if (!Number.isFinite(d)) return;
+        const entry = getPlayPosition(key);
+        if (!entry || entry.t <= PLAY_POS_MIN_TIME || entry.t >= PLAY_POS_RESTORE_MAX_FRAC * d) {
+          posRestoredRef.current = true;
+          return;
+        }
+        // Live transcodes aren't seekable — keep the entry for a future direct play.
+        if (transcoded) { posRestoredRef.current = true; return; }
+        let seekableNow = false;
+        try {
+          seekableNow = mediaEl.seekable.length > 0 && entry.t <= mediaEl.seekable.end(mediaEl.seekable.length - 1);
+        } catch { seekableNow = false; }
+        if (!seekableNow) return; // ranges not reported yet — retry on canplay
+        posRestoredRef.current = true;
+        mediaEl.currentTime = entry.t;
+        toast(`${t('player.resumedFrom')} ${fmtTime(entry.t)}`, { id: 'player-resume' });
+      } catch { posRestoredRef.current = true; }
+    };
+
+    const events: Array<[string, () => void]> = [
+      ['timeupdate', onTimeUpdate],
+      ['ended', onEnded],
+      ['seeking', onSeeking],
+      ['loadedmetadata', tryRestore],
+      ['canplay', tryRestore],
+    ];
+    for (const [ev, fn] of events) mediaEl.addEventListener(ev, fn);
+    if (mediaEl.readyState >= 1) tryRestore(); // metadata beat this effect
+
+    return () => {
+      for (const [ev, fn] of events) mediaEl.removeEventListener(ev, fn);
+      saveOrClear(true); // final flush — file switch, close and unmount all land here
+    };
+    // activeIndex is deliberately NOT a dep: the key is bound to the file the
+    // mounted element plays (streamIndexRef), so the flush-on-switch uses the
+    // OLD file's key even though activeIndex already points at the new one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mediaEl, transcoded, posKeyBase, t]);
 
   const selectFile = useCallback((index: number) => {
     setActiveIndex(index);

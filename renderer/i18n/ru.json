@@ -1304,5 +1304,6 @@
   "rooms.typingAnd": "и ещё",
   "rooms.typingMany": "печатают",
   "rooms.haveBy": "Есть у:",
-  "rooms.reactToggle": "Поставить реакцию"
+  "rooms.reactToggle": "Поставить реакцию",
+  "player.resumedFrom": "Продолжаем с"
 }
