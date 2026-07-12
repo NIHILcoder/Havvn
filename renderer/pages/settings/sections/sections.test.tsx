@@ -34,6 +34,7 @@ import { SharingSection } from './SharingSection';
 import { SeedingSection } from './SeedingSection';
 import { SchedulerSection } from './SchedulerSection';
 import { InterfaceSection } from './InterfaceSection';
+import { HotkeysSection } from './HotkeysSection';
 import { NotificationsSection } from './NotificationsSection';
 import { SystemSection } from './SystemSection';
 import { AboutSection } from './AboutSection';
@@ -47,6 +48,7 @@ const SECTIONS: Array<[string, React.FC]> = [
   ['seeding', SeedingSection],
   ['scheduler', SchedulerSection],
   ['interface', InterfaceSection],
+  ['hotkeys', HotkeysSection],
   ['notifications', NotificationsSection],
   ['system', SystemSection],
   ['about', AboutSection],

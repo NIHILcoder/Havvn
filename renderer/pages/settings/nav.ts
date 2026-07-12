@@ -30,6 +30,7 @@ export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'seeding', icon: 'share-2', group: 'seeding', keywords: 'seed раздача ratio рейтинг time время limit лимит' },
   { id: 'scheduler', icon: 'calendar', group: 'seeding', keywords: 'schedule расписание планировщик bandwidth график' },
   { id: 'interface', icon: 'sun', group: 'appearance', keywords: 'theme тема language язык appearance вид интерфейс' },
+  { id: 'hotkeys', icon: 'keyboard', group: 'appearance', keywords: 'hotkey hotkeys горячие клавиши shortcut shortcuts сочетания keyboard клавиатура keys бинды keybinding' },
   { id: 'notifications', icon: 'bell', group: 'appearance', keywords: 'notification уведомление sound звук alert' },
   { id: 'system', icon: 'power', group: 'system', keywords: 'cache кэш default client клиент export экспорт import импорт backup обновления' },
   { id: 'about', icon: 'info', group: 'system', keywords: 'version версия about о программе github license лицензия' },

@@ -17,8 +17,10 @@ const RSSPage = lazy(() => import('./pages/RSSPage'));
 const RoomsPage = lazy(() => import('./pages/RoomsPage'));
 const SwarmPage = lazy(() => import('./pages/SwarmPage'));
 import { formatBytes } from './utils/format-helpers';
+import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
+import { Onboarding } from './components/Onboarding';
 import { dismissSplash } from './utils/splash';
 
 
@@ -52,6 +54,9 @@ const AppContent: React.FC = () => {
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
   // Last full RoomState per room (pushed via onRoomUpdate) — member-level truth
   const roomStates = useRef<Map<string, RoomState>>(new Map());
+  // First-run onboarding: shown once, only when the app looks fresh
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const onboardingChecked = useRef(false);
 
   // Apply theme on mount
   useEffect(() => {
@@ -115,6 +120,23 @@ const AppContent: React.FC = () => {
     // Refresh periodically
     const interval = setInterval(loadDownloads, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  // First-run onboarding: only when the user has never seen it AND the app
+  // looks fresh (no downloads yet) — existing users upgrading must never get
+  // it. The ref guards against a double show (StrictMode re-running effects).
+  useEffect(() => {
+    if (onboardingChecked.current) return;
+    onboardingChecked.current = true;
+    try {
+      if (localStorage.getItem('onboarded') === '1') return;
+    } catch { return; /* storage unavailable — can't persist dismissal, don't nag */ }
+    (async () => {
+      try {
+        const list = await window.api.getDownloads();
+        if (Array.isArray(list) && list.length === 0) setShowOnboarding(true);
+      } catch { /* engine unavailable — can't tell it's fresh, stay quiet */ }
+    })();
   }, []);
 
   // Subscribe to stats for status bar
@@ -258,14 +280,13 @@ const AppContent: React.FC = () => {
     return () => { cancelled = true; clearInterval(interval); offUpdate(); offSync(); };
   }, []);
 
-  // Global navigation shortcuts (fixed, layout-independent via event.code)
+  // Global shortcuts — user-editable in Settings → Hotkeys, layout-independent
+  // via event.code. Bindings live in utils/hotkeys.ts; edits apply live.
   useEffect(() => {
-    const hotkeysMap: Record<string, string[]> = {
-      'open-downloads': ['Ctrl', 'KeyD'],
-      'open-settings': ['Ctrl', 'Comma'],
-      'add-torrent': ['Ctrl', 'KeyO'],
-      'create-torrent': ['Ctrl', 'KeyN'],
-    };
+    const hotkeysRef = { current: loadHotkeys() };
+    const unsubscribe = subscribeHotkeys(() => {
+      hotkeysRef.current = loadHotkeys();
+    });
 
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       // Don't trigger hotkeys when typing in input fields
@@ -289,34 +310,41 @@ const AppContent: React.FC = () => {
 
       // Match hotkey
       const keyString = keys.join('+');
-      for (const [action, hotkeyKeys] of Object.entries(hotkeysMap)) {
-        const hotkeyString = (hotkeyKeys as string[]).join('+');
-        if (keyString === hotkeyString) {
-          e.preventDefault();
+      for (const hotkey of hotkeysRef.current) {
+        if (hotkey.keys.length === 0 || keyString !== hotkey.keys.join('+')) continue;
+        e.preventDefault();
 
-          // Execute action
-          switch (action) {
-            case 'open-downloads':
-              setCurrentPage('downloads');
-              break;
-            case 'open-settings':
-              setCurrentPage('settings');
-              break;
-            case 'create-torrent':
-              setCurrentPage('create-torrent');
-              break;
-            case 'add-torrent':
-              // Navigate to downloads page where add torrent button is
-              setCurrentPage('downloads');
-              break;
-          }
-          break;
+        // Execute action — every id in defaultHotkeys must be handled here
+        switch (hotkey.id) {
+          case 'open-downloads':
+            setCurrentPage('downloads');
+            break;
+          case 'open-settings':
+            setCurrentPage('settings');
+            break;
+          case 'create-torrent':
+            setCurrentPage('create-torrent');
+            break;
+          case 'add-torrent':
+            // Navigate to downloads page where add torrent button is
+            setCurrentPage('downloads');
+            break;
+          case 'pause-all':
+            void window.api.pauseAll().catch(() => { /* engine unavailable */ });
+            break;
+          case 'resume-all':
+            void window.api.resumeAll().catch(() => { /* engine unavailable */ });
+            break;
         }
+        break;
       }
     };
 
     window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalKeyDown);
+      unsubscribe();
+    };
   }, []);
 
   // Calculate download counts for sidebar
@@ -426,6 +454,13 @@ const AppContent: React.FC = () => {
           <Suspense fallback={<div className="page-loading" />}>
             {renderPage()}
           </Suspense>
+
+          {showOnboarding && (
+            <Onboarding
+              onClose={() => setShowOnboarding(false)}
+              onCreateRoom={() => { setShowOnboarding(false); setCurrentPage('rooms'); }}
+            />
+          )}
 
           <StatusBar
             activeDownloads={activeDownloads}

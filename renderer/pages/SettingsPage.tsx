@@ -20,6 +20,7 @@ import { SharingSection } from './settings/sections/SharingSection';
 import { SeedingSection } from './settings/sections/SeedingSection';
 import { SchedulerSection } from './settings/sections/SchedulerSection';
 import { InterfaceSection } from './settings/sections/InterfaceSection';
+import { HotkeysSection } from './settings/sections/HotkeysSection';
 import { NotificationsSection } from './settings/sections/NotificationsSection';
 import { SystemSection } from './settings/sections/SystemSection';
 import { AboutSection } from './settings/sections/AboutSection';
@@ -38,6 +39,7 @@ const SECTIONS: Record<string, React.FC> = {
   seeding: SeedingSection,
   scheduler: SchedulerSection,
   interface: InterfaceSection,
+  hotkeys: HotkeysSection,
   notifications: NotificationsSection,
   system: SystemSection,
   about: AboutSection,

@@ -1,15 +1,13 @@
 import React, { useState } from 'react';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import type { Hotkey } from '../utils/hotkeys';
 import './HotkeySettings.css';
 
-interface Hotkey {
-  id: string;
-  label: string;
-  description: string;
-  keys: string[];
-  category: string;
-}
+// The type and defaults now live in utils/hotkeys.ts (shared with App.tsx's
+// global keydown handler); re-exported here for existing imports.
+export { defaultHotkeys } from '../utils/hotkeys';
+export type { Hotkey } from '../utils/hotkeys';
 
 interface HotkeySettingsProps {
   hotkeys: Hotkey[];
@@ -130,14 +128,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
 
   return (
     <div className="hotkey-settings">
-      <div className="hotkey-header">
-        <div className="hotkey-header-info">
-          <Icon name="keyboard" size={20} />
-          <div>
-            <h3>{t('hotkeys.title')}</h3>
-            <p>{t('hotkeys.subtitle')}</p>
-          </div>
-        </div>
+      <div className="hotkey-toolbar">
         <button className="btn-reset-hotkeys" onClick={onResetHotkeys}>
           <Icon name="rotate-ccw" size={16} />
           {t('hotkeys.resetAll')}
@@ -203,49 +194,3 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     </div>
   );
 };
-
-// Default hotkeys for the settings page
-export const defaultHotkeys: Hotkey[] = [
-  {
-    id: 'open-downloads',
-    label: 'Open Downloads',
-    description: 'Switch to the downloads page',
-    keys: ['Ctrl', 'KeyD'],
-    category: 'Navigation',
-  },
-  {
-    id: 'open-settings',
-    label: 'Open Settings',
-    description: 'Open the settings page',
-    keys: ['Ctrl', 'Comma'],
-    category: 'Navigation',
-  },
-  {
-    id: 'add-torrent',
-    label: 'Add Torrent',
-    description: 'Open the add torrent dialog',
-    keys: ['Ctrl', 'KeyO'],
-    category: 'Torrents',
-  },
-  {
-    id: 'create-torrent',
-    label: 'Create Torrent',
-    description: 'Navigate to torrent creation',
-    keys: ['Ctrl', 'KeyN'],
-    category: 'Torrents',
-  },
-  {
-    id: 'pause-all',
-    label: 'Pause All',
-    description: 'Pause all active downloads',
-    keys: ['Ctrl', 'Shift', 'KeyP'],
-    category: 'Torrents',
-  },
-  {
-    id: 'resume-all',
-    label: 'Resume All',
-    description: 'Resume all paused downloads',
-    keys: ['Ctrl', 'Shift', 'KeyR'],
-    category: 'Torrents',
-  },
-];

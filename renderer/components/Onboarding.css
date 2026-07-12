@@ -1,0 +1,93 @@
+/**
+ * Onboarding — first-run 3-step dialog. Rides on the Modal (.um-*) shell;
+ * only the step content and the footer progress dots live here.
+ */
+
+/* Steps swap with a soft rise — [data-reduce-motion] in base.css zeroes it,
+   plus the explicit override below for belt-and-braces. */
+.ob-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  animation: ob-step-in 180ms ease;
+}
+@keyframes ob-step-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .ob-step { animation: none; } }
+[data-reduce-motion] .ob-step { animation: none; }
+
+.ob-desc {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+}
+
+/* Step 1 — current download folder + Change */
+.ob-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.ob-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Step 2 — check button + compact verdict line */
+.ob-check-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.ob-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+  min-width: 0;
+}
+.ob-verdict svg { flex-shrink: 0; }
+.ob-verdict-ok { color: var(--color-success, var(--color-accent-secondary)); }
+.ob-verdict-warn { color: var(--color-warning, var(--color-accent-primary)); }
+.ob-verdict-unknown { color: var(--color-text-tertiary); }
+
+.ob-hint {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+/* Footer — dots on the left, actions keep the Modal's right alignment */
+.ob-dots {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-right: auto;
+}
+.ob-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full, 50%);
+  background: var(--color-border-strong);
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+.ob-dot-active {
+  background: var(--color-accent-primary);
+  transform: scale(1.25);
+}
