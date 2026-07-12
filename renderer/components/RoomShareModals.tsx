@@ -252,7 +252,24 @@ export const TransferPickerModal: React.FC<TransferPickerModalProps> = ({ roomId
   const share = async (download: Download, selectedPaths?: string[]) => {
     setBusyId(download.id);
     try {
-      const state = await window.api.rooms.shareDownload(roomId, download.id, selectedPaths);
+      // A multi-file torrent drops its files into a folder named after it — snapshot
+      // the room first so we can find exactly which files (and which folder) are new.
+      const multi = (selectedPaths?.length ?? 0) > 1;
+      const before = multi ? await window.api.rooms.get(roomId).catch(() => null) : null;
+      const beforeFiles = new Set(before?.files.map((f) => f.fileId) ?? []);
+      const beforeFolders = new Set(before?.folders?.map((f) => f.id) ?? []);
+      let state = await window.api.rooms.shareDownload(roomId, download.id, selectedPaths);
+      if (multi && before) {
+        const newIds = state.files.filter((f) => !beforeFiles.has(f.fileId)).map((f) => f.fileId);
+        if (newIds.length > 1) {
+          const created = await window.api.rooms.createFolder(roomId, download.name, 'folder', '#e8792b');
+          const folder = created.folders?.find((f) => !beforeFolders.has(f.id));
+          state = created;
+          if (folder) {
+            for (const fid of newIds) state = await window.api.rooms.assignFile(roomId, fid, folder.id);
+          }
+        }
+      }
       toast.success(`${t('share.toRoom.success')} ${state.name}`);
       onShared(state);
       onClose();
