@@ -30,6 +30,20 @@ import path from 'path';
 export const INSTANCE_ID = (process.env.TH_INSTANCE || '').trim();
 export const isSecondaryInstance = INSTANCE_ID.length > 0;
 
+/**
+ * Marker written ONLY after a fully successful migration. It — not the presence
+ * of config.json — is the "already migrated" anchor: config.json cannot serve
+ * that role because electron-store (loaded moments later in store.ts) writes it
+ * on the very same launch regardless of migration outcome, and a copy
+ * interrupted after config.json but before downloads.json/rooms.json would
+ * otherwise latch as "done" and silently strand the user's data.
+ *
+ * Declared BEFORE the top-level migrateLegacyProfile() call below: a `const`
+ * placed after that call sits in the temporal dead zone when the function runs
+ * at module evaluation, which made the migration throw on every launch.
+ */
+const MIGRATION_SENTINEL = '.migrated-from-torrenthunt';
+
 if (isSecondaryInstance) {
   // Derive the isolated profile dir from the default one, e.g.
   //   …/havvn  ->  …/havvn-peer2
@@ -41,16 +55,6 @@ if (isSecondaryInstance) {
 } else {
   migrateLegacyProfile();
 }
-
-/**
- * Marker written ONLY after a fully successful migration. It — not the presence
- * of config.json — is the "already migrated" anchor: config.json cannot serve
- * that role because electron-store (loaded moments later in store.ts) writes it
- * on the very same launch regardless of migration outcome, and a copy
- * interrupted after config.json but before downloads.json/rooms.json would
- * otherwise latch as "done" and silently strand the user's data.
- */
-const MIGRATION_SENTINEL = '.migrated-from-torrenthunt';
 
 /**
  * One-time copy of the pre-rebrand `…/torrenthunt` profile into `…/havvn`.
