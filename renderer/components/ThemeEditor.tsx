@@ -224,6 +224,38 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
             </div>
           ) : (
             <>
+              {/* Live preview — a mini app mock painted by the draft's tokens
+                  (the draft is already applied to :root, so this reflects every
+                  edit instantly, sidebar strip included). */}
+              <div className="te-preview" aria-hidden="true">
+                <div className="te-pv-app">
+                  <div className="te-pv-side">
+                    <span className="te-pv-dot" />
+                    <span className="te-pv-line" />
+                    <span className="te-pv-line te-pv-line--on" />
+                    <span className="te-pv-line" />
+                  </div>
+                  <div className="te-pv-main">
+                    <div className="te-pv-card">
+                      <strong className="te-pv-title">Aa · {draft.name || t('settings.theme.newName')}</strong>
+                      <p className="te-pv-sub">Secondary text · <span className="te-pv-muted">tertiary</span></p>
+                      <div className="te-pv-row">
+                        <button type="button" tabIndex={-1} className="te-pv-btn te-pv-btn--primary">Primary</button>
+                        <button type="button" tabIndex={-1} className="te-pv-btn te-pv-btn--ghost">Ghost</button>
+                        <span className="te-pv-badge">Accent</span>
+                      </div>
+                      <div className="te-pv-row te-pv-chips">
+                        <span className="te-pv-chip te-pv-chip--success" />
+                        <span className="te-pv-chip te-pv-chip--warning" />
+                        <span className="te-pv-chip te-pv-chip--error" />
+                        <span className="te-pv-chip te-pv-chip--info" />
+                      </div>
+                      <div className="te-pv-bar"><span className="te-pv-bar-fill" /></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="te-fields te-fields--head">
                 <label className="te-field te-field--name">
                   <span>{t('settings.theme.name')}</span>
