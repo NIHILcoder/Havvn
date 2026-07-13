@@ -68,7 +68,7 @@
 }
 
 [data-theme="light"] .metadata-item {
-  background: #FFFFFF;
+  background: var(--color-bg-elevated);
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
@@ -163,7 +163,7 @@
 }
 
 [data-theme="light"] .tracker-list {
-  background: #FFFFFF;
+  background: var(--color-bg-elevated);
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }

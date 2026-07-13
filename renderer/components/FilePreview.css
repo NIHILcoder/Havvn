@@ -67,7 +67,7 @@
 .fp-chip--done {
   color: var(--color-success);
   background: var(--color-success-bg);
-  border-color: rgba(226, 226, 226, 0.2);
+  border-color: var(--color-border-strong);
 }
 
 [data-theme="light"] .fp-chip--done {
@@ -162,7 +162,7 @@
 }
 
 [data-theme="light"] .fp-item {
-  background: #FFFFFF;
+  background: var(--color-bg-elevated);
   border-color: rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
@@ -181,7 +181,7 @@
 }
 
 .fp-item--done {
-  border-color: rgba(226, 226, 226, 0.18);
+  border-color: var(--color-border-strong);
 }
 
 [data-theme="light"] .fp-item--done {

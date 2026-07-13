@@ -28,7 +28,7 @@
 
 .stat-card.success {
   background: var(--color-success-bg);
-  border-color: rgba(226, 226, 226, 0.25);
+  border-color: rgba(var(--color-success-rgb), 0.25);
 }
 
 .stat-card.success svg {
@@ -158,7 +158,7 @@
 }
 
 .batch-item.completed {
-  border-color: rgba(226, 226, 226, 0.25);
+  border-color: rgba(var(--color-success-rgb), 0.25);
   background: var(--color-success-bg);
 }
 

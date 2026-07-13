@@ -593,6 +593,41 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  // Custom theme sharing. Export writes the theme JSON to a file; import reads a
+  // file and hands the raw parsed object back — the renderer runs validateTheme()
+  // on it before it is stored or applied, so main stays a dumb file mover for
+  // untrusted theme files.
+  ipcMain.handle('themes:export', wrapHandler('themes:export',
+    async (_event, theme: unknown, suggestedName?: string) => {
+      const base = (suggestedName || 'theme').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60) || 'theme';
+      const result = await dialog.showSaveDialog(mainWindow, {
+        title: t('dialog.exportTheme'),
+        defaultPath: `${base}.havvn-theme.json`,
+        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
+      });
+      if (result.canceled || !result.filePath) return { success: false };
+      await fs.writeFile(result.filePath, JSON.stringify(theme, null, 2), 'utf-8');
+      return { success: true, path: result.filePath };
+    }
+  ));
+
+  ipcMain.handle('themes:import', wrapHandler('themes:import',
+    async () => {
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: t('dialog.importTheme'),
+        properties: ['openFile'],
+        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) return { success: false };
+      try {
+        const content = await fs.readFile(result.filePaths[0], 'utf-8');
+        return { success: true, data: JSON.parse(content) as unknown };
+      } catch (e) {
+        return { success: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+  ));
+
   ipcMain.handle('downloads:getTorrentInfo', wrapHandler('downloads:getTorrentInfo',
     async (_event, params: { torrentPath?: string; magnetUri?: string }) => {
       return torrentManager.getTorrentInfo(params);
