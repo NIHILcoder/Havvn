@@ -4,6 +4,36 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.12.0] - 2026-07-13
+
+Rooms get folders. The shared file list — until now a single flat pile — can be
+organized into named, colored sections, so a room full of movies, music and
+everything else finally has structure.
+
+### Added
+- **Folders in rooms** (Rooms → a room's file list): create named sections with
+  an icon and color and drop files into them. A room with no folders looks
+  exactly as before — sections appear only once you make one.
+  - Add files straight into a section with its own "+", or drag a file between
+    sections to move it; a per-file "move to folder" menu does the same without
+    dragging. Files you don't sort land in **Uncategorized**.
+  - Sharing a multi-file torrent from Transfers automatically creates a folder
+    named after it and drops its files in.
+  - Any member can create and organize folders; changes sync to everyone in the
+    room over the same encrypted peer-to-peer channel as the files themselves.
+    Members on an older build simply keep seeing the flat list — nothing breaks.
+
+### Fixed
+- Deleting a folder moves its files to Uncategorized and never touches the files
+  themselves; the folder set converges cleanly across members (last edit wins)
+  and survives restarts.
+
+### Internal
+- Folder convergence, grouping and the icon allow-list are a pure, unit-tested
+  module; a peer-supplied icon can no longer crash the Rooms page (suite grows
+  to 203 tests). Timestamps from peers are clamped so a skewed clock can't
+  freeze a folder or a file's placement.
+
 ## [2.11.0] - 2026-07-12
 
 Privacy takes the spotlight: the native engine can be hard-bound to your VPN
