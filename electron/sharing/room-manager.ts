@@ -424,8 +424,13 @@ export class RoomManager {
     const file = state?.files.find((f) => f.fileId === fileId);
     const folder = this.folderOf(roomId);
     try { await this.call('releaseFile', { roomId, fileId }, 8000); } catch { /* engine may be down */ }
-    if (folder && file) {
-      try { await shell.openPath(path.join(folder, file.name)); } catch { /* ignore */ }
+    // Prefer the engine-known on-disk path (a folder subdir for foldered files,
+    // or a shared file's original location); fall back to the flat room join.
+    const tr = state?.transfers?.[fileId];
+    const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath
+      : (folder && file) ? path.join(folder, file.name) : null;
+    if (abs) {
+      try { await shell.openPath(abs); } catch { /* ignore */ }
     }
   }
 

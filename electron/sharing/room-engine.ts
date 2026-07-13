@@ -29,7 +29,7 @@ import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode,
 import { encryptFile, decryptFile } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon } from '../../shared/room-folders';
-import { safeBaseName } from '../../shared/path-safety';
+import { safeBaseName, safeDirSegment } from '../../shared/path-safety';
 import crypto from 'crypto';
 
 import TrackerClient from 'bittorrent-tracker';
@@ -605,10 +605,32 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
   }
 }
 
+/**
+ * Where a room file's plaintext lands on disk: <roomDir>/<folder name>/ when the
+ * file is assigned to a known folder (its name reduced to one safe path segment),
+ * else the room root — so the on-disk layout mirrors the folder grouping shown in
+ * the UI. Creates the directory (falls back to the room root if that fails).
+ * Keyed on the folder NAME for a human-readable layout; renaming a folder does
+ * not move already-landed files (that reconcile is out of scope here).
+ */
+function folderDirFor(room: Room, file: RoomFile): string {
+  const fid = file.folderId;
+  if (typeof fid === 'string' && fid) {
+    const folder = room.folders.get(fid);
+    const seg = folder ? safeDirSegment(folder.name) : '';
+    if (seg) {
+      const dir = path.join(room.folder, seg);
+      try { fs.mkdirSync(dir, { recursive: true }); return dir; }
+      catch { /* fall through to the room root */ }
+    }
+  }
+  return room.folder;
+}
+
 /** Decrypt one E2E file's cached ciphertext into the room folder (plaintext). */
 async function decryptOne(room: Room, file: RoomFile, cipherPath: string): Promise<void> {
   if (!room.secret) return;
-  const plain = path.join(room.folder, file.name);
+  const plain = path.join(folderDirFor(room, file), file.name);
   try {
     await decryptFile(cipherPath, plain, room.secret);
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: plain, cipherPath });
@@ -627,7 +649,7 @@ async function decryptPending(room: Room): Promise<void> {
   for (const [fileId, tr] of room.transfers) {
     const file = room.files.get(fileId);
     if (!file || !file.enc || !tr.cipherPath) continue;
-    const plain = path.join(room.folder, file.name);
+    const plain = path.join(folderDirFor(room, file), file.name);
     if (tr.haveLocally && fs.existsSync(plain)) continue;
     if (!fs.existsSync(tr.cipherPath)) continue;
     await decryptOne(room, file, tr.cipherPath);
@@ -1244,7 +1266,7 @@ function ensureLocal(room: Room, file: RoomFile): void {
   // E2E: the swarm carries ciphertext. Download it into the cache (never the
   // room folder), then decrypt the plaintext into the folder for watch/open.
   if (room.e2e) {
-    const plain = path.join(room.folder, file.name);
+    const plain = path.join(folderDirFor(room, file), file.name);
     const cipherName = `${file.name}.enc`;
     // The cache slot is keyed by fileId, NOT display name: two same-named files
     // are different ciphertexts, and a name-keyed slot would adopt (or truncate)
@@ -1279,7 +1301,11 @@ function ensureLocal(room: Room, file: RoomFile): void {
     return;
   }
 
-  const onDisk = path.join(room.folder, file.name);
+  // Land the file in its folder's subdirectory (or the room root if unassigned),
+  // mirroring the UI grouping. The same dir is used for the seed-from-disk check
+  // and the download target so a reseed finds what a prior download left.
+  const dir = folderDirFor(room, file);
+  const onDisk = path.join(dir, file.name);
   if (fs.existsSync(onDisk)) {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: onDisk });
     persistManifest(room, file, onDisk);
@@ -1291,10 +1317,10 @@ function ensureLocal(room: Room, file: RoomFile): void {
 
   setTransfer(room, file.fileId, { status: 'downloading', progress: 0 });
   try {
-    c.add(file.magnetURI, { path: room.folder, announce: ROOM_TRACKERS } as any, (torrent: any) => {
+    c.add(file.magnetURI, { path: dir, announce: ROOM_TRACKERS } as any, (torrent: any) => {
       wireTorrentStats(room, torrent);
       torrent.on('done', () => {
-        const landed = path.join(room.folder, file.name);
+        const landed = path.join(dir, file.name);
         setTransfer(room, file.fileId, { progress: 1, status: 'seeding', downSpeed: 0, haveLocally: true, localPath: landed });
         persistManifest(room, file, landed); // record where it landed so we re-seed it next launch
         broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
@@ -1331,7 +1357,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
   // E2E: re-seed the cached CIPHERTEXT (never the plaintext) and make sure the
   // plaintext exists in the folder for watch/open.
   if (room.e2e) {
-    const plain = path.join(room.folder, file.name);
+    const plain = path.join(folderDirFor(room, file), file.name);
     if (pf.cipherPath && fs.existsSync(pf.cipherPath)) {
       const cipherName = `${file.name}.enc`;
       let cipherPath = pf.cipherPath;

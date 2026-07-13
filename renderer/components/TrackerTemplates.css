@@ -58,7 +58,7 @@
 }
 
 [data-theme="light"] .template-card.selected {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--color-bg-hover);
 }
 
 /* Icon */

@@ -140,8 +140,11 @@ const configStore = new Store<ConfigSchema>({
       altDownKbps: 0,
       altUpKbps: 0,
       maxActiveDownloads: 3,
-      minimizeToTray: true,
-      closeToTray: true,
+      // Default to NOT hiding in the tray: closing quits, minimizing minimizes.
+      // Tray mode is opt-in (Settings → System); the reopen path is reliable
+      // when enabled, but a surprise background process is the worse default.
+      minimizeToTray: false,
+      closeToTray: false,
       autoLaunch: false,
       autoUpdate: false,
       updateChannel: 'stable',

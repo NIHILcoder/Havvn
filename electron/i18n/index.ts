@@ -51,6 +51,8 @@ const en: Dict = {
   'dialog.importSettings': 'Import Settings',
   'dialog.exportRoomIdentity': 'Export Room Identity',
   'dialog.importRoomIdentity': 'Import Room Identity',
+  'dialog.exportTheme': 'Export Theme',
+  'dialog.importTheme': 'Import Theme',
   'dialog.filter.torrent': 'Torrent Files',
   'dialog.filter.json': 'JSON Files',
 
@@ -135,6 +137,8 @@ const ru: Dict = {
   'dialog.importSettings': 'Импорт настроек',
   'dialog.exportRoomIdentity': 'Экспорт identity комнат',
   'dialog.importRoomIdentity': 'Импорт identity комнат',
+  'dialog.exportTheme': 'Экспорт темы',
+  'dialog.importTheme': 'Импорт темы',
   'dialog.filter.torrent': 'Торрент-файлы',
   'dialog.filter.json': 'Файлы JSON',
 

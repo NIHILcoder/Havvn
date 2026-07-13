@@ -23,3 +23,29 @@ export function safeBaseName(name: unknown): string {
   if (!base || base === '.' || base === '..') return '';
   return base;
 }
+
+/** Windows reserved device names — illegal as a file/dir name on any drive. */
+const WIN_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/**
+ * Reduce an (untrusted, peer-supplied) folder NAME to ONE safe path segment for
+ * a real subdirectory — so a room folder like "Movies" can nest files under
+ * <roomDir>/Movies/. Strips directory components (safeBaseName), replaces the
+ * characters Windows forbids in names (< > : " / \ | ? * and control chars) with
+ * a space, trims trailing dots/spaces, rejects reserved device names, and caps
+ * length. Returns '' when nothing usable remains — the caller then falls back to
+ * the base directory (no subfolder). Control chars are filtered by code point to
+ * avoid embedding raw control bytes in this source.
+ */
+export function safeDirSegment(name: unknown): string {
+  const base = safeBaseName(name);
+  if (!base) return '';
+  let s = '';
+  for (let i = 0; i < base.length; i++) {
+    if (base.charCodeAt(i) < 0x20) continue; // drop control chars
+    s += '<>:"/\\|?*'.includes(base[i]) ? ' ' : base[i];
+  }
+  s = s.replace(/\s+/g, ' ').trim().replace(/[.\s]+$/g, '').trim();
+  if (!s || s === '.' || s === '..' || WIN_RESERVED.test(s)) return '';
+  return s.slice(0, 80).replace(/[.\s]+$/g, '');
+}

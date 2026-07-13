@@ -47,6 +47,7 @@ export { ShareToRoomModal, TransferPickerModal } from './RoomShareModals';
 export { Identicon } from './Identicon';
 export { Modal, useEscape, useModalFocus } from './Modal';
 export type { ModalProps, ModalSize } from './Modal';
+export { ThemeEditor } from './ThemeEditor';
 export { Onboarding } from './Onboarding';
 export { ConfirmProvider, useConfirm } from './ConfirmDialog';
 export type { ConfirmOptions, AlertOptions } from './ConfirmDialog';

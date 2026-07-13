@@ -651,6 +651,14 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:importIdentity'),
   },
 
+  // Custom theme sharing (import/export as a JSON file)
+  themes: {
+    export: (theme: unknown, suggestedName?: string): Promise<{ success: boolean; path?: string }> =>
+      ipcRenderer.invoke('themes:export', theme, suggestedName),
+    import: (): Promise<{ success: boolean; data?: unknown; error?: string }> =>
+      ipcRenderer.invoke('themes:import'),
+  },
+
   onRoomUpdate: (callback: (state: RoomState) => void): (() => void) => {
     const handler = (_event: IpcRendererEvent, state: RoomState) => callback(state);
     ipcRenderer.on('rooms:update', handler);
