@@ -40,11 +40,22 @@ let refreshTrayLanguage: (() => void) | null = null;
 let rendererReady = false;
 let pendingOpenUri: string | null = null;
 
+/**
+ * Reliably bring the main window back to the foreground. restore() MUST come
+ * before show(): a window hidden (tray) while minimized stays minimized, and on
+ * Windows show() alone does not un-minimize it — so without restore() the tray
+ * icon looks dead and the app reads as a background zombie. Idempotent.
+ */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function deliverOpenTorrent(uri: string): void {
   if (mainWindow && !mainWindow.isDestroyed() && rendererReady) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
     mainWindow.webContents.send('app:openTorrent', uri);
   } else {
     // Renderer not ready yet (cold start) — remember it and flush on ready
@@ -85,12 +96,9 @@ if (!gotTheLock) {
   app.quit();
 } else if (!isSecondaryInstance) {
   app.on('second-instance', (_event, commandLine) => {
-    // Someone tried to run a second instance — focus existing window
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    // Someone tried to run a second instance — bring the existing window back
+    // (this is a primary reopen path when the app is hidden in the tray).
+    showMainWindow();
 
     // Handle protocol/file arguments from second instance
     const arg = commandLine.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
@@ -128,8 +136,7 @@ function showTrayHintOnce(): void {
         silent: true,
       });
       notification.on('click', () => {
-        mainWindow?.show();
-        mainWindow?.focus();
+        showMainWindow();
       });
       notification.show();
     } else {
@@ -303,13 +310,7 @@ function createTray(): void {
     {
       label: t('tray.open'),
       type: 'normal',
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-          if (mainWindow.isMinimized()) mainWindow.restore();
-        }
-      },
+      click: () => { showMainWindow(); },
     },
     {
       label: t('tray.openDownloads'),
@@ -405,16 +406,10 @@ function createTray(): void {
     tray.setContextMenu(buildContextMenu());
   };
 
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.focus();
-      } else {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    }
-  });
+  // Single-click AND double-click both reopen — on Windows users expect a
+  // single click on the tray icon to restore the window.
+  tray.on('click', () => { showMainWindow(); });
+  tray.on('double-click', () => { showMainWindow(); });
 }
 
 /**
@@ -948,7 +943,9 @@ app.on('activate', async () => {
 app.on('before-quit', async (event) => {
   isQuitting = true;
   event.preventDefault();
-  await cleanup();
+  // Bound the teardown: if cleanup() stalls (e.g. an unresponsive engine host),
+  // exit anyway so quitting can never hang the process in the background.
+  await Promise.race([cleanup(), new Promise((r) => setTimeout(r, 5000))]);
   app.exit(0);
 });
 
