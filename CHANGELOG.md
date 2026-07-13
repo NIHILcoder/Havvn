@@ -4,6 +4,49 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.13.0] - 2026-07-14
+
+Make it yours. Havvn's whole look is now themeable — pick an accent and font in a
+click, or open the theme editor and repaint every surface, dark and light
+independently, then save, export and share your theme as a file. Rooms also gain
+real on-disk folders and folder drag-drop, and closing to the tray is finally
+reliable.
+
+### Added
+- **Custom themes** (Settings → Interface → Appearance):
+  - One-click **accent color** and **font** pickers that reskin the whole app
+    live, with a reset back to the default Ember look.
+  - A full **theme editor** — paint backgrounds, text, accent, borders, semantic
+    and status colors and corner radius, with a live mini-preview. Each theme
+    carries a separate **dark and light** palette and follows your
+    dark/light/system choice, exactly like the built-in Ember; a "copy to other"
+    button bootstraps the second variant.
+  - **Import and export** themes as `.json` files to share them. Every imported
+    file is validated first — a hostile value (a remote `url()`, an `@import`, an
+    absurd size) is dropped, never applied, and a structurally broken file is
+    rejected outright.
+- **Room folders now map to real subfolders on disk** — a file you sort into a
+  folder is stored under `<room>/<folder>/`, mirroring the grouping shown in the
+  app instead of a single flat pile.
+- **Dropping a folder into a room adds the files inside it** — dragging a
+  directory onto a room's shared-files list expands it into its contents (up to
+  25 files at a time).
+
+### Fixed
+- **Closing to the tray could make the window unrecoverable on Windows** and
+  leave the app lingering as a background process. The tray icon, a relaunch and
+  the completion notification now reliably restore the window, and quitting is
+  bounded so it can't hang. Minimize/close-to-tray is now **off by default** —
+  it's opt-in under Settings → System.
+- A room's **folder header no longer slides** as file counts and names change; it
+  holds a fixed layout like the members list.
+
+### Internal
+- Custom themes apply as inline CSS variables (never injected CSS), so the strict
+  production CSP is untouched; a pure, unit-tested sanitizer is the trust boundary
+  for every imported/shared theme. A shared `DropdownMenu` component replaces the
+  hand-rolled menus. The test suite grows to 260.
+
 ## [2.12.0] - 2026-07-13
 
 Rooms get folders. The shared file list — until now a single flat pile — can be
