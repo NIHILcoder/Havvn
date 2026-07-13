@@ -325,3 +325,50 @@ describe('editor metadata', () => {
     }
   });
 });
+
+describe('hardening — magnitude caps against griefing/DoS themes', () => {
+  it('rejects any 7+ digit numeric run outright', () => {
+    expect(sanitizeTokenValue('--glass-blur', 'blur(99999999px)')).toBeNull();
+    expect(sanitizeTokenValue('--transition-normal', '99999999s')).toBeNull();
+    expect(sanitizeTokenValue('--shadow-lg', '0 0 99999999px 99999999px #000')).toBeNull();
+  });
+  it('caps blur radius', () => {
+    expect(sanitizeTokenValue('--glass-blur', 'blur(20px)')).toBe('blur(20px)');
+    expect(sanitizeTokenValue('--glass-blur', 'blur(2000px)')).toBeNull();
+  });
+  it('caps length magnitude and clamps viewport units hard', () => {
+    expect(sanitizeTokenValue('--space-4', '16px')).toBe('16px');
+    expect(sanitizeTokenValue('--radius-full', '9999px')).toBe('9999px'); // real token value survives
+    expect(sanitizeTokenValue('--space-16', '10001px')).toBeNull();
+    expect(sanitizeTokenValue('--space-16', '99999vw')).toBeNull(); // the layout-bomb
+    expect(sanitizeTokenValue('--space-16', '201vw')).toBeNull();
+    expect(sanitizeTokenValue('--space-16', '100vw')).toBe('100vw');
+  });
+  it('caps z-index and line-height magnitude', () => {
+    expect(sanitizeTokenValue('--z-modal', '400')).toBe('400');
+    expect(sanitizeTokenValue('--z-modal-backdrop', '999999')).toBeNull();
+    expect(sanitizeTokenValue('--line-height-normal', '1.5')).toBe('1.5');
+    expect(sanitizeTokenValue('--line-height-normal', '5000')).toBeNull();
+  });
+  it('rejects syntactically-invalid rgb()/hsl() the charset check used to pass', () => {
+    expect(sanitizeTokenValue('--glass-bg', 'rgb(zz)')).toBeNull();
+    expect(sanitizeTokenValue('--glass-bg', 'rgb(255, 255, 255)')).toBe('rgb(255, 255, 255)');
+    expect(sanitizeTokenValue('--color-bg-primary', 'hsl(24deg 88% 60% / 0.5)')).toBe('hsl(24deg 88% 60% / 0.5)');
+  });
+});
+
+describe('applyTheme is self-defending (re-sanitizes untrusted drafts)', () => {
+  it('drops a raw dangerous value even if it slipped into tokens', () => {
+    const props = new Map<string, string>();
+    const root: ThemeApplyTarget = {
+      style: { setProperty: (n, v) => { props.set(n, v); }, removeProperty: (n) => { props.delete(n); } },
+      setAttribute: () => {},
+    };
+    applyTheme(root, {
+      id: 'x', name: 'X', base: 'dark',
+      tokens: { '--color-bg-primary': 'url(https://evil/beacon)', '--color-text-primary': '#eee' },
+    });
+    expect(props.has('--color-bg-primary')).toBe(false); // dropped by the in-apply sanitizer
+    expect(props.get('--color-text-primary')).toBe('#eee');
+  });
+});

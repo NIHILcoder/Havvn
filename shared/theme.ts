@@ -163,6 +163,10 @@ function hasForbiddenSequence(value: string): boolean {
   if (FORBIDDEN_SUBSTRINGS.some((s) => lower.includes(s))) return true;
   // Stylesheet-breakout punctuation and angle brackets — never valid in a value.
   if (/[<>{};]/.test(value)) return true;
+  // Absurd numeric runs — no legitimate token value has a 7+ digit number, but a
+  // shared theme could grief the UI with blur(99999999px) / 99999999s / huge
+  // shadows. Per-category caps below handle the smaller-but-harmful magnitudes.
+  if (/\d{7,}/.test(value)) return true;
   // Control characters (incl. NUL, newlines, DEL). A numeric scan avoids
   // embedding raw control bytes in this source file.
   for (let i = 0; i < value.length; i++) {
@@ -194,10 +198,12 @@ function isColorValue(v: string): boolean {
   const fn = /^(rgb|rgba|hsl|hsla)\(([^()]*)\)$/i.exec(v);
   if (fn) {
     const inner = fn[2].trim();
-    // digits, dot, comma, %, slash (modern a/ syntax), whitespace, and the
-    // angle-unit letters for hsl hue. No parens (the [^()] above guarantees it),
-    // so no nested function can hide here.
-    return inner.length > 0 && /^[-0-9a-z.,%/\s]+$/i.test(inner);
+    if (!inner) return false;
+    // Every component must be a real number (optionally %/angle) — this rejects
+    // junk like rgb(zz) that a bare charset check would wave through. Separators
+    // are comma / slash / whitespace; no parens can hide (the [^()] guarantees).
+    const parts = inner.split(/[\s,/]+/).filter(Boolean);
+    return parts.length > 0 && parts.every((p) => /^-?(\d+\.?\d*|\.\d+)(%|deg|turn|rad|grad)?$/i.test(p));
   }
   return NAMED_COLORS.has(v.toLowerCase());
 }
@@ -214,16 +220,25 @@ function isGradientValue(v: string): boolean {
 }
 
 function isBlurValue(v: string): boolean {
-  return /^blur\(\s*\d+(\.\d+)?(px|rem|em)\s*\)$/i.test(v);
+  const m = /^blur\(\s*(\d+(?:\.\d+)?)(px|rem|em)\s*\)$/i.exec(v);
+  return m !== null && parseFloat(m[1]) <= 1000; // default is 20px; cap absurd radii
 }
 
 const LENGTH_RE = /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|vmin|vmax|ch)$/i;
 function isLengthValue(v: string): boolean {
-  return v === '0' || LENGTH_RE.test(v);
+  if (v === '0') return true;
+  const m = LENGTH_RE.exec(v);
+  if (!m) return false;
+  const n = Math.abs(parseFloat(v));
+  // No real token exceeds 9999px; viewport units are capped far tighter so a
+  // shared theme can't set a gap to 99999vw and blow the layout apart.
+  const cap = /^(vh|vw|vmin|vmax)$/i.test(m[2]) ? 200 : 10000;
+  return Number.isFinite(n) && n <= cap;
 }
 
 function isNumberOrLength(v: string): boolean {
-  return /^\d+(\.\d+)?$/.test(v) || isLengthValue(v);
+  if (/^\d+(\.\d+)?$/.test(v)) return parseFloat(v) <= 1000;
+  return isLengthValue(v);
 }
 
 function isFontWeight(v: string): boolean {
@@ -231,7 +246,7 @@ function isFontWeight(v: string): boolean {
 }
 
 function isIntegerValue(v: string): boolean {
-  return /^\d{1,6}$/.test(v);
+  return /^\d{1,5}$/.test(v) && Number(v) <= 10000; // z-scale tops out at 600
 }
 
 function isShadowValue(v: string): boolean {
@@ -468,14 +483,23 @@ export function clearAppliedTheme(root: ThemeApplyTarget): void {
 /**
  * Apply a theme: set `data-theme` to its base, wipe any prior inline overrides,
  * then write each whitelisted token. Idempotent and self-cleaning, so switching
- * between themes never leaves a stale override behind. Assumes `theme` already
- * came through validateTheme / sanitizeTokenValue.
+ * between themes never leaves a stale override behind.
+ *
+ * Self-defending: every value is re-run through sanitizeTokenValue here, so a
+ * caller that hands over un-validated tokens (e.g. the editor's live preview of
+ * a draft the user is still typing) can never push a dangerous or malformed
+ * value onto :root — safety no longer depends on every call site pre-validating.
  */
 export function applyTheme(root: ThemeApplyTarget, theme: Theme): void {
   clearAppliedTheme(root);
   root.setAttribute('data-theme', theme.base);
   for (const [key, value] of Object.entries(theme.tokens)) {
-    if (TOKEN_WHITELIST.has(key)) root.style.setProperty(key, value);
+    if (!TOKEN_WHITELIST.has(key)) continue;
+    const clean = sanitizeTokenValue(key, value);
+    if (clean !== null) root.style.setProperty(key, clean);
   }
-  if (theme.font) root.style.setProperty('--font-family', theme.font);
+  if (theme.font) {
+    const cleanFont = sanitizeTokenValue('--font-family', theme.font);
+    if (cleanFont !== null) root.style.setProperty('--font-family', cleanFont);
+  }
 }
