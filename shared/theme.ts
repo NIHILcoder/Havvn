@@ -19,15 +19,23 @@
  */
 
 export type ThemeBase = 'dark' | 'light';
+/** Which palette variant is showing — follows the app's dark/light/system mode. */
+export type ThemeMode = ThemeBase;
 
-/** A custom theme: base gives the starting palette, `tokens` overrides it. */
+/**
+ * A custom theme carries a full palette for BOTH modes; the active variant
+ * follows the app's dark/light/system selection (so one theme can paint dark
+ * and light independently, like the built-in Ember). Either map may be empty —
+ * that mode then falls back to the built-in palette.
+ */
 export interface Theme {
   id: string;
   name: string;
-  base: ThemeBase;
-  /** Whitelisted `--token` → sanitized value overrides layered on `base`. */
-  tokens: Record<string, string>;
-  /** Optional font stack; convenience mirror of the `--font-family` token. */
+  /** Whitelisted `--token` → sanitized value overrides for dark mode. */
+  dark: Record<string, string>;
+  /** …and for light mode. */
+  light: Record<string, string>;
+  /** Optional font stack (applies in both modes); mirror of --font-family. */
   font?: string;
 }
 
@@ -418,6 +426,21 @@ function sanitizeId(id: unknown): string {
   return typeof id === 'string' && /^[a-z0-9_-]{1,64}$/i.test(id) ? id.slice(0, MAX_ID_LEN) : '';
 }
 
+/** Sanitize one palette map: keep whitelisted tokens with valid values, drop the rest. */
+function sanitizeTokenMap(raw: unknown, label: string, warnings: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > MAX_TOKENS) warnings.push(`too many tokens (${label}); only the first ${MAX_TOKENS} were considered`);
+  for (const [key, val] of entries.slice(0, MAX_TOKENS)) {
+    if (!TOKEN_WHITELIST.has(key)) { warnings.push(`unknown token dropped (${label}): ${key}`); continue; }
+    const clean = sanitizeTokenValue(key, val);
+    if (clean === null) { warnings.push(`invalid value dropped (${label}): ${key}`); continue; }
+    out[key] = clean;
+  }
+  return out;
+}
+
 export function validateTheme(input: unknown): ValidateResult {
   const errors: string[] = [];
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
@@ -425,27 +448,27 @@ export function validateTheme(input: unknown): ValidateResult {
   }
   const obj = input as Record<string, unknown>;
 
-  const base = obj.base;
-  if (base !== 'dark' && base !== 'light') errors.push('base must be "dark" or "light"');
-
   const name = typeof obj.name === 'string' ? clampName(obj.name) : '';
   if (!name) errors.push('name is required');
 
-  const rawTokens = obj.tokens;
-  const tokensOk = typeof rawTokens === 'object' && rawTokens !== null && !Array.isArray(rawTokens);
-  if (!tokensOk) errors.push('tokens must be an object');
-
-  if (errors.length) return { ok: false, errors };
-
   const warnings: string[] = [];
-  const tokens: Record<string, string> = {};
-  const entries = Object.entries(rawTokens as Record<string, unknown>);
-  if (entries.length > MAX_TOKENS) warnings.push(`too many tokens; only the first ${MAX_TOKENS} were considered`);
-  for (const [key, val] of entries.slice(0, MAX_TOKENS)) {
-    if (!TOKEN_WHITELIST.has(key)) { warnings.push(`unknown token dropped: ${key}`); continue; }
-    const clean = sanitizeTokenValue(key, val);
-    if (clean === null) { warnings.push(`invalid value dropped: ${key}`); continue; }
-    tokens[key] = clean;
+  let dark: Record<string, string>;
+  let light: Record<string, string>;
+
+  if ('tokens' in obj && obj.dark === undefined && obj.light === undefined) {
+    // Legacy single-base theme { base, tokens } → migrate into one variant.
+    const base = obj.base;
+    if (base !== 'dark' && base !== 'light') errors.push('base must be "dark" or "light"');
+    if (typeof obj.tokens !== 'object' || obj.tokens === null || Array.isArray(obj.tokens)) errors.push('tokens must be an object');
+    if (errors.length) return { ok: false, errors };
+    const migrated = sanitizeTokenMap(obj.tokens, base as string, warnings);
+    dark = base === 'dark' ? migrated : {};
+    light = base === 'light' ? migrated : {};
+  } else {
+    // Dual-mode theme { dark, light }.
+    if (errors.length) return { ok: false, errors };
+    dark = sanitizeTokenMap(obj.dark, 'dark', warnings);
+    light = sanitizeTokenMap(obj.light, 'light', warnings);
   }
 
   let font: string | undefined;
@@ -458,8 +481,8 @@ export function validateTheme(input: unknown): ValidateResult {
   const theme: Theme = {
     id: sanitizeId(obj.id),
     name,
-    base: base as ThemeBase,
-    tokens,
+    dark,
+    light,
     ...(font ? { font } : {}),
   };
   return { ok: true, theme, warnings };
@@ -481,19 +504,20 @@ export function clearAppliedTheme(root: ThemeApplyTarget): void {
 }
 
 /**
- * Apply a theme: set `data-theme` to its base, wipe any prior inline overrides,
- * then write each whitelisted token. Idempotent and self-cleaning, so switching
- * between themes never leaves a stale override behind.
+ * Apply a theme's `mode` variant: set `data-theme`, wipe any prior inline
+ * overrides, then write each whitelisted token from that variant. Idempotent and
+ * self-cleaning, so switching modes or themes never leaves a stale override.
  *
  * Self-defending: every value is re-run through sanitizeTokenValue here, so a
  * caller that hands over un-validated tokens (e.g. the editor's live preview of
  * a draft the user is still typing) can never push a dangerous or malformed
  * value onto :root — safety no longer depends on every call site pre-validating.
  */
-export function applyTheme(root: ThemeApplyTarget, theme: Theme): void {
+export function applyTheme(root: ThemeApplyTarget, theme: Theme, mode: ThemeMode): void {
   clearAppliedTheme(root);
-  root.setAttribute('data-theme', theme.base);
-  for (const [key, value] of Object.entries(theme.tokens)) {
+  root.setAttribute('data-theme', mode);
+  const tokens = mode === 'light' ? theme.light : theme.dark;
+  for (const [key, value] of Object.entries(tokens)) {
     if (!TOKEN_WHITELIST.has(key)) continue;
     const clean = sanitizeTokenValue(key, value);
     if (clean !== null) root.style.setProperty(key, clean);

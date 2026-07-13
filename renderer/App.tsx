@@ -96,6 +96,9 @@ const AppContent: React.FC = () => {
     const handleChange = () => {
       if (localStorage.getItem('theme') === 'system') {
         applyTheme('system');
+        // In system mode a flip changes the active custom theme's variant too.
+        bootApplyActiveTheme();
+        restoreThemePrefs();
       }
     };
     mediaQuery.addEventListener('change', handleChange);

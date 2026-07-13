@@ -184,7 +184,6 @@ describe('deriveAccent', () => {
     expect(d!['--color-accent-primary']).toBe('#f2913f');
     expect(d!['--color-accent-rgb']).toBe('242, 145, 63');
     expect(d!['--color-accent-bg']).toBe('rgba(242, 145, 63, 0.12)');
-    // hover is a darken of the base
     expect(d!['--color-accent-primary-hover']).toMatch(/^#[0-9a-f]{6}$/);
     expect(d!['--color-accent-primary-hover']).not.toBe('#f2913f');
   });
@@ -211,68 +210,78 @@ describe('validateTheme — structure', () => {
     expect(validateTheme('x').ok).toBe(false);
     expect(validateTheme(42).ok).toBe(false);
   });
-  it('rejects a bad base', () => {
-    const r = validateTheme({ name: 'X', base: 'blue', tokens: {} });
-    expect(r.ok).toBe(false);
+  it('rejects a legacy theme with a bad base', () => {
+    expect(validateTheme({ name: 'X', base: 'blue', tokens: {} }).ok).toBe(false);
   });
   it('rejects a missing name', () => {
+    expect(validateTheme({ dark: {} }).ok).toBe(false);
     expect(validateTheme({ base: 'dark', tokens: {} }).ok).toBe(false);
   });
-  it('rejects non-object tokens', () => {
+  it('rejects a legacy theme with non-object tokens', () => {
     expect(validateTheme({ name: 'X', base: 'dark', tokens: 'nope' }).ok).toBe(false);
     expect(validateTheme({ name: 'X', base: 'dark', tokens: [] }).ok).toBe(false);
   });
 });
 
-describe('validateTheme — token handling', () => {
-  it('accepts a clean theme and keeps valid tokens', () => {
+describe('validateTheme — dual-mode + legacy migration', () => {
+  it('accepts a dual-mode theme and keeps valid tokens per variant', () => {
     const r = validateTheme({
-      id: 'my-theme', name: 'My Theme', base: 'dark',
-      tokens: { '--color-bg-primary': '#101010', '--color-accent-primary': '#00ffcc' },
+      id: 'my-theme', name: 'My Theme',
+      dark: { '--color-bg-primary': '#101010', '--color-accent-primary': '#00ffcc' },
+      light: { '--color-bg-primary': '#fafafa' },
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.theme.tokens['--color-bg-primary']).toBe('#101010');
-      expect(r.theme.tokens['--color-accent-primary']).toBe('#00ffcc');
+      expect(r.theme.dark['--color-bg-primary']).toBe('#101010');
+      expect(r.theme.dark['--color-accent-primary']).toBe('#00ffcc');
+      expect(r.theme.light['--color-bg-primary']).toBe('#fafafa');
       expect(r.warnings).toHaveLength(0);
     }
   });
-  it('drops unknown keys with a warning but still validates', () => {
-    const r = validateTheme({ name: 'X', base: 'light', tokens: { '--evil': '#000', '--color-bg-primary': '#111' } });
+  it('migrates a legacy { base, tokens } theme into the matching variant', () => {
+    const r = validateTheme({ name: 'Legacy', base: 'dark', tokens: { '--color-bg-primary': '#111' } });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.theme.tokens['--evil']).toBeUndefined();
-      expect(r.theme.tokens['--color-bg-primary']).toBe('#111');
+      expect(r.theme.dark['--color-bg-primary']).toBe('#111');
+      expect(r.theme.light).toEqual({}); // untouched → falls back to built-in light
+    }
+  });
+  it('drops unknown keys with a warning but still validates', () => {
+    const r = validateTheme({ name: 'X', dark: { '--evil': '#000', '--color-bg-primary': '#111' } });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.theme.dark['--evil']).toBeUndefined();
+      expect(r.theme.dark['--color-bg-primary']).toBe('#111');
       expect(r.warnings.some((w) => w.includes('--evil'))).toBe(true);
     }
   });
   it('drops a malicious token value but keeps the good ones (poison isolation)', () => {
     const r = validateTheme({
-      name: 'Trojan', base: 'dark',
-      tokens: {
-        '--color-bg-primary': 'url(https://evil/beacon)',
-        '--color-text-primary': '#eeeeee',
-      },
+      name: 'Trojan',
+      dark: { '--color-bg-primary': 'url(https://evil/beacon)', '--color-text-primary': '#eeeeee' },
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      // the whole point: a malicious value never reaches the applied token map
-      expect(r.theme.tokens['--color-bg-primary']).toBeUndefined();
-      expect(r.theme.tokens['--color-text-primary']).toBe('#eeeeee');
+      expect(r.theme.dark['--color-bg-primary']).toBeUndefined();
+      expect(r.theme.dark['--color-text-primary']).toBe('#eeeeee');
       expect(r.warnings.some((w) => w.includes('--color-bg-primary'))).toBe(true);
     }
   });
-  it('validates and sanitizes an optional font', () => {
-    const good = validateTheme({ name: 'X', base: 'dark', tokens: {}, font: "'Inter', sans-serif" });
+  it('validates and sanitizes an optional theme-level font', () => {
+    const good = validateTheme({ name: 'X', dark: {}, light: {}, font: "'Inter', sans-serif" });
     expect(good.ok && good.theme.font).toBe("'Inter', sans-serif");
-    const bad = validateTheme({ name: 'X', base: 'dark', tokens: {}, font: 'Inter; @import url(x)' });
+    const bad = validateTheme({ name: 'X', dark: {}, font: 'Inter; @import url(x)' });
     expect(bad.ok && bad.theme.font).toBeUndefined();
   });
+  it('defaults a missing variant to an empty map', () => {
+    const r = validateTheme({ name: 'Sparse', dark: { '--color-bg-primary': '#101010' } });
+    expect(r.ok && r.theme.light).toEqual({});
+  });
   it('strips control chars from the name and clamps length', () => {
-    const r = validateTheme({ name: 'A B'.padEnd(200, 'x'), base: 'dark', tokens: {} });
+    const r = validateTheme({ name: 'Nice\tName' + 'x'.repeat(200), dark: {} });
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.theme.name).not.toContain(' ');
+      expect(r.theme.name).not.toContain('\t'); // control char stripped (spaces are fine)
       expect(r.theme.name.length).toBeLessThanOrEqual(60);
     }
   });
@@ -280,28 +289,35 @@ describe('validateTheme — token handling', () => {
 
 describe('applyTheme / clearAppliedTheme', () => {
   const theme: Theme = {
-    id: 't', name: 'T', base: 'light',
-    tokens: { '--color-bg-primary': '#101010', '--radius-lg': '4px' },
+    id: 't', name: 'T',
+    dark: { '--color-bg-primary': '#101010', '--radius-lg': '4px' },
+    light: { '--color-bg-primary': '#fafafa' },
     font: "'Inter', sans-serif",
   };
-  it('sets data-theme to the base and writes each token', () => {
+  it('applies the requested variant and sets data-theme', () => {
     const f = fakeRoot();
-    applyTheme(f.root, theme);
-    expect(f.attr).toBe('light');
+    applyTheme(f.root, theme, 'dark');
+    expect(f.attr).toBe('dark');
     expect(f.props.get('--color-bg-primary')).toBe('#101010');
     expect(f.props.get('--radius-lg')).toBe('4px');
     expect(f.props.get('--font-family')).toBe("'Inter', sans-serif");
   });
+  it('applies the light variant when asked', () => {
+    const f = fakeRoot();
+    applyTheme(f.root, theme, 'light');
+    expect(f.attr).toBe('light');
+    expect(f.props.get('--color-bg-primary')).toBe('#fafafa');
+    expect(f.props.has('--radius-lg')).toBe(false); // only present in the dark variant
+  });
   it('clears prior overrides first (self-cleaning)', () => {
     const f = fakeRoot();
-    applyTheme(f.root, theme);
-    // every whitelisted token was removed before re-applying
+    applyTheme(f.root, theme, 'dark');
     expect(f.removed).toContain('--color-bg-primary');
     expect(f.removed.length).toBe(TOKEN_WHITELIST.size);
   });
-  it('never writes a non-whitelisted token even if present on the object', () => {
+  it('never writes a non-whitelisted token even if present', () => {
     const f = fakeRoot();
-    applyTheme(f.root, { ...theme, tokens: { ...theme.tokens, '--evil': 'red' } as Record<string, string> });
+    applyTheme(f.root, { ...theme, dark: { ...theme.dark, '--evil': 'red' } as Record<string, string> }, 'dark');
     expect(f.props.has('--evil')).toBe(false);
   });
   it('clearAppliedTheme removes exactly the whitelist', () => {
@@ -358,16 +374,17 @@ describe('hardening — magnitude caps against griefing/DoS themes', () => {
 });
 
 describe('applyTheme is self-defending (re-sanitizes untrusted drafts)', () => {
-  it('drops a raw dangerous value even if it slipped into tokens', () => {
+  it('drops a raw dangerous value even if it slipped into a variant', () => {
     const props = new Map<string, string>();
     const root: ThemeApplyTarget = {
       style: { setProperty: (n, v) => { props.set(n, v); }, removeProperty: (n) => { props.delete(n); } },
       setAttribute: () => {},
     };
     applyTheme(root, {
-      id: 'x', name: 'X', base: 'dark',
-      tokens: { '--color-bg-primary': 'url(https://evil/beacon)', '--color-text-primary': '#eee' },
-    });
+      id: 'x', name: 'X',
+      dark: { '--color-bg-primary': 'url(https://evil/beacon)', '--color-text-primary': '#eee' },
+      light: {},
+    }, 'dark');
     expect(props.has('--color-bg-primary')).toBe(false); // dropped by the in-apply sanitizer
     expect(props.get('--color-text-primary')).toBe('#eee');
   });

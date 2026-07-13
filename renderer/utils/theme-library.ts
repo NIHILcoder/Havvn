@@ -11,7 +11,7 @@
  * Everything read back from disk goes through validateTheme again — the library
  * is as untrusted as an imported file once it has round-tripped through storage.
  */
-import { Theme, validateTheme, applyTheme, clearAppliedTheme } from '../../shared/theme';
+import { Theme, ThemeMode, validateTheme, applyTheme, clearAppliedTheme } from '../../shared/theme';
 import { restoreThemePrefs } from './theme-prefs';
 
 const LIBRARY_KEY = 'havvn.theme.library';
@@ -63,7 +63,8 @@ export function getActiveTheme(): Theme | null {
   return loadLibrary().find((t) => t.id === id) ?? null;
 }
 
-function resolvedBase(): 'dark' | 'light' {
+/** The current display mode — the built-in dark/light/system selector resolved. */
+export function resolvedMode(): ThemeMode {
   const pref = read(BASE_PREF_KEY);
   if (pref === 'dark' || pref === 'light') return pref;
   try {
@@ -71,16 +72,22 @@ function resolvedBase(): 'dark' | 'light' {
   } catch { return 'dark'; }
 }
 
-/** Apply a custom theme live (data-theme + overrides), then re-layer quick prefs. */
+/** Apply a custom theme's current-mode variant live, then re-layer quick prefs. */
 export function applyThemeObject(theme: Theme): void {
-  applyTheme(root(), theme);
+  applyTheme(root(), theme, resolvedMode());
   restoreThemePrefs();
 }
 
-/** Clear any custom overrides, revert to the built-in base, re-layer quick prefs. */
+/** Preview a specific variant of a theme (used by the editor while editing it). */
+export function previewTheme(theme: Theme, mode: ThemeMode): void {
+  applyTheme(root(), theme, mode);
+  restoreThemePrefs();
+}
+
+/** Clear any custom overrides, revert to the built-in palette, re-layer quick prefs. */
 export function revertToBase(): void {
   clearAppliedTheme(root());
-  root().setAttribute('data-theme', resolvedBase());
+  root().setAttribute('data-theme', resolvedMode());
   restoreThemePrefs();
 }
 
@@ -103,5 +110,5 @@ export function deactivateTheme(): void {
  */
 export function bootApplyActiveTheme(): void {
   const active = getActiveTheme();
-  if (active) applyTheme(root(), active);
+  if (active) applyTheme(root(), active, resolvedMode());
 }

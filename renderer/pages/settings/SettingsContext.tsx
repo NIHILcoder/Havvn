@@ -15,7 +15,7 @@ import {
 } from '../../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from '../../utils/i18nContext';
-import { getActiveTheme, applyThemeObject, deactivateTheme } from '../../utils/theme-library';
+import { getActiveTheme, applyThemeObject } from '../../utils/theme-library';
 import { restoreThemePrefs } from '../../utils/theme-prefs';
 
 export type Theme = 'light' | 'dark' | 'system';
@@ -268,10 +268,11 @@ function useSettingsController() {
   const handleThemeChange = (newTheme: Theme) => {
     setTheme(newTheme);
     localStorage.setItem('theme', newTheme);
-    applyTheme(newTheme);
-    // Choosing a built-in base drops any active custom theme overlay; the quick
-    // accent/font prefs are re-layered on top by deactivateTheme().
-    deactivateTheme();
+    applyTheme(newTheme); // data-theme baseline for the chosen dark/light/system
+    // The dark/light selector now switches MODE, not theme: an active custom
+    // theme stays active and re-applies its matching variant on top.
+    const active = getActiveTheme();
+    if (active) applyThemeObject(active); else restoreThemePrefs();
   };
 
   const loadSettings = async () => {
