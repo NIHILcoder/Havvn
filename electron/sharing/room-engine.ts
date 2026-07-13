@@ -28,7 +28,7 @@ import WebTorrent from 'webtorrent';
 import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
-import { mergeFolderUpsert, applyFolderDelete, applyAssignment } from '../../shared/room-folders';
+import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon } from '../../shared/room-folders';
 import { safeBaseName } from '../../shared/path-safety';
 import crypto from 'crypto';
 
@@ -97,7 +97,7 @@ type Msg =
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
   // showing the flat list. Files carry their folderId; reassignment is 'assign'.
-  | { t: 'folder'; op: 'upsert' | 'del'; id: string; name?: string; icon?: string; color?: string; at: number }
+  | { t: 'folder'; op: 'upsert' | 'del'; id: string; name?: string; icon?: string; color?: string; at: number; memberId: string }
   // A file moved between folders (or to Uncategorized when folderId is ''). LWW
   // by `at`; kept separate from 'add' because mergeFile is add-only.
   | { t: 'assign'; fileId: string; folderId: string; at: number; memberId: string }
@@ -391,9 +391,10 @@ function buildState(room: Room): RoomState {
     e2e: room.e2e,
     members,
     files: Array.from(room.files.values()).sort((a, b) => a.addedAt - b.addedAt),
-    // Folders sorted by name (natural) for a stable order that doesn't jump when
-    // one is renamed/recolored; the renderer groups files under them.
-    folders: Array.from(room.folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })),
+    // Folders sorted by name (natural), then by id as a deterministic tiebreaker
+    // so two same-named folders render in the SAME order on every peer (Map
+    // insertion order differs per peer). The renderer groups files under them.
+    folders: Array.from(room.folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id)),
     transfers,
     history: room.history.slice(-100),
     chat: room.chat.slice(-100),
@@ -488,9 +489,11 @@ function persistFolder(room: Room, folder: RoomFolder): void {
   try { ipcRenderer.send('room-folder-upsert', { roomId: room.roomId, folder }); } catch { /* ignore */ }
 }
 
-/** Persist a folder deletion (tombstone + drop from the set). */
-function persistFolderDelete(room: Room, id: string, at: number): void {
-  try { ipcRenderer.send('room-folder-del', { roomId: room.roomId, id, at }); } catch { /* ignore */ }
+/** Persist a folder deletion. `removed` = the folder was actually dropped from
+ *  the live set (vs. an edit-after-delete that kept it): only then may the store
+ *  drop it, so a kept folder doesn't vanish on the next restart. */
+function persistFolderDelete(room: Room, id: string, at: number, removed: boolean): void {
+  try { ipcRenderer.send('room-folder-del', { roomId: room.roomId, id, at, removed }); } catch { /* ignore */ }
 }
 
 // ── E2E config authenticity (Ed25519, same identity keys as chat) ────────────
@@ -763,19 +766,29 @@ function clampFile(f: any): RoomFile | null {
     addedAt: Number.isFinite(f.addedAt) ? f.addedAt : Date.now(),
     ...(f.enc ? { enc: true } : {}),
     // Folder assignment MUST be copied explicitly or it is silently stripped on
-    // receive — the same trap the enc/infoHash fields document above.
+    // receive — the same trap the enc/infoHash fields document above. folderAt is
+    // clamped so a future timestamp can't lock the assignment (see clampAt).
     ...(typeof f.folderId === 'string' && f.folderId ? { folderId: clampStr(f.folderId, MAX_STR) } : {}),
-    ...(Number.isFinite(f.folderAt) ? { folderAt: f.folderAt } : {}),
+    ...(clampAt(f.folderAt) ? { folderAt: clampAt(f.folderAt) } : {}),
   } as RoomFile;
+}
+
+/** A wall-clock `at` from a peer, never accepted from the future (a skewed or
+ *  hostile clock would otherwise pin a folder/assignment forever — LWW can't
+ *  beat a timestamp past `now`). Clamps to this receiver's clock. */
+function clampAt(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(n, Date.now()) : 0;
 }
 
 /** Coerce a peer-supplied folder entry to a sane shape, or null if unusable. */
 function clampFolder(f: any): RoomFolder | null {
   if (!f || typeof f !== 'object') return null;
   const id = clampStr(f.id, MAX_STR);
-  const at = Number(f.at);
-  if (!id || !Number.isFinite(at)) return null;
-  return { id, name: clampStr(f.name, MAX_STR), icon: clampStr(f.icon, 64), color: clampStr(f.color, 64), at };
+  if (!id || !Number.isFinite(Number(f.at))) return null;
+  // Icon is validated against the known set — an unknown name would crash <Icon>
+  // on the recipient. Name falls back so an empty one still renders.
+  return { id, name: clampStr(f.name, MAX_STR) || 'Folder', icon: sanitizeFolderIcon(f.icon), color: clampStr(f.color, 64), at: clampAt(f.at) };
 }
 
 /** Bound a decoded gossip message's strings/arrays in place (anti-DoS). */
@@ -814,16 +827,18 @@ function clampGossip(msg: any): void {
   // Folder gossip fields (folder/assign messages + folders/folderTombs in hello).
   if ('id' in msg) msg.id = clampStr(msg.id, MAX_STR);
   if ('op' in msg) msg.op = msg.op === 'del' ? 'del' : 'upsert';
-  if ('icon' in msg) msg.icon = clampStr(msg.icon, 64);
+  if ('icon' in msg) msg.icon = sanitizeFolderIcon(msg.icon);
   if ('color' in msg) msg.color = clampStr(msg.color, 64);
   if ('folderId' in msg) msg.folderId = clampStr(msg.folderId, MAX_STR);
+  // 'at' on folder/assign messages: never accept a future timestamp (see clampAt).
+  if (msg.t === 'folder' || msg.t === 'assign') msg.at = clampAt(msg.at);
   if (Array.isArray(msg.folders)) msg.folders = msg.folders.slice(0, MAX_ARRAY).map(clampFolder).filter(Boolean);
   if ('folderTombs' in msg) {
     const out: Record<string, number> = {};
     if (msg.folderTombs && typeof msg.folderTombs === 'object' && !Array.isArray(msg.folderTombs)) {
       for (const [k, v] of Object.entries(msg.folderTombs).slice(0, MAX_ARRAY)) {
-        const at = Number(v);
-        if (Number.isFinite(at)) out[clampStr(k, MAX_STR)] = at;
+        const at = clampAt(v);
+        if (at) out[clampStr(k, MAX_STR)] = at;
       }
     }
     msg.folderTombs = out;
@@ -885,10 +900,21 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // express revives — treat it as fresh so its deletion still sticks.
       for (const id of msg.tombs || []) applyTombstone(room, id, msg.tombsAt?.[id] ?? Date.now());
       for (const f of msg.files || []) mergeFile(room, f);
+      // Reconcile the folder ASSIGNMENT of files we ALREADY hold: mergeFile is
+      // add-only, so a reassignment made while we were offline rides the peer's
+      // HELLO files but would otherwise be dropped. LWW by folderAt.
+      for (const f of msg.files || []) {
+        if (f.folderAt === undefined) continue;
+        const existing = room.files.get(f.fileId);
+        if (existing && existing !== f && applyAssignment(existing, f.folderId, f.folderAt)) {
+          const tr = room.transfers.get(f.fileId);
+          persistManifest(room, existing, tr?.localPath, tr?.cipherPath);
+        }
+      }
       // Folder overlay convergence: apply the peer's deletions first (so a stale
       // folder in their list can't override our newer delete), then their upserts.
       for (const [id, at] of Object.entries(msg.folderTombs || {})) {
-        if (applyFolderDelete(room.folders, room.folderTombstones, id, Number(at) || 0)) persistFolderDelete(room, id, Number(at) || 0);
+        if (applyFolderDelete(room.folders, room.folderTombstones, id, Number(at) || 0)) persistFolderDelete(room, id, Number(at) || 0, !room.folders.has(id));
       }
       for (const f of msg.folders || []) {
         if (mergeFolderUpsert(room.folders, room.folderTombstones, f)) persistFolder(room, f);
@@ -916,13 +942,15 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       break;
     }
     case 'folder': {
+      if (room.mutes.has(msg.memberId)) break; // a muted member can't reshape our folders
       if (msg.op === 'del') {
-        if (applyFolderDelete(room.folders, room.folderTombstones, msg.id, Number(msg.at) || 0)) {
-          persistFolderDelete(room, msg.id, Number(msg.at) || 0);
+        if (applyFolderDelete(room.folders, room.folderTombstones, msg.id, msg.at)) {
+          persistFolderDelete(room, msg.id, msg.at, !room.folders.has(msg.id));
           pushState(room);
         }
       } else {
-        const folder: RoomFolder = { id: msg.id, name: msg.name || 'Folder', icon: msg.icon || 'folder', color: msg.color || '', at: Number(msg.at) || 0 };
+        // clampGossip already sanitized name/icon/color/at.
+        const folder: RoomFolder = { id: msg.id, name: msg.name || 'Folder', icon: msg.icon || 'folder', color: msg.color || '', at: msg.at };
         if (mergeFolderUpsert(room.folders, room.folderTombstones, folder)) {
           persistFolder(room, folder);
           pushState(room);
@@ -931,8 +959,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       break;
     }
     case 'assign': {
+      if (room.mutes.has(msg.memberId)) break; // muted member can't move our files
       const file = room.files.get(msg.fileId);
-      if (file && applyAssignment(file, msg.folderId, Number(msg.at) || 0)) {
+      if (file && applyAssignment(file, msg.folderId, msg.at)) {
         const tr = room.transfers.get(msg.fileId);
         persistManifest(room, file, tr?.localPath, tr?.cipherPath); // re-persist the whole file with its new folderId
         pushState(room);
@@ -1617,13 +1646,14 @@ function mergeFileLocal(room: Room, file: RoomFile, localPath?: string): void {
   }
 }
 
-async function addFiles(roomId: string, paths: string[]): Promise<RoomState> {
+async function addFiles(roomId: string, paths: string[], opts?: { folderId?: string; folderName?: string }): Promise<RoomState> {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
   // Track per-file outcomes: resolving with a state while NOTHING was shared
   // used to read as success upstream ("Shared to <room>" with an empty room).
   let added = 0;
   let firstError: string | null = null;
+  const addedIds: string[] = [];
   for (const p of paths) {
     try {
       const file = await seedLocal(room, p);
@@ -1638,7 +1668,7 @@ async function addFiles(roomId: string, paths: string[]): Promise<RoomState> {
       }
       mergeFileLocal(room, file, p);
       // Already present (same content shared before) counts as success too.
-      if (room.files.has(file.fileId)) added++;
+      if (room.files.has(file.fileId)) { added++; addedIds.push(file.fileId); }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (!firstError) firstError = msg;
@@ -1648,23 +1678,56 @@ async function addFiles(roomId: string, paths: string[]): Promise<RoomState> {
   if (paths.length > 0 && added === 0) {
     throw new Error(firstError || 'No files could be shared');
   }
+  // Assign the files we JUST added to a target folder — done here (not by a
+  // renderer before/after diff) so a peer's concurrent add can't be swept in and
+  // an already-shared re-add still lands in the target. folderName resolves to an
+  // existing same-named folder (dedupe on re-share) or a new one.
+  if (addedIds.length > 0 && (opts?.folderId || opts?.folderName)) {
+    let targetId = opts.folderId;
+    if (!targetId && opts.folderName) {
+      const existing = Array.from(room.folders.values()).find((f) => f.name === opts.folderName);
+      targetId = (existing ?? makeFolder(room, opts.folderName, 'folder', '')).id;
+    }
+    if (targetId && room.folders.has(targetId)) {
+      for (const fid of addedIds) {
+        const file = room.files.get(fid);
+        if (file && applyAssignment(file, targetId, nextAt(file.folderAt ?? 0))) {
+          const tr = room.transfers.get(fid);
+          persistManifest(room, file, tr?.localPath, tr?.cipherPath);
+          broadcast(room, { t: 'assign', fileId: fid, folderId: targetId, at: file.folderAt as number, memberId: room.self.memberId });
+        }
+      }
+    }
+    pushState(room, true);
+  }
   return buildState(room);
 }
 
 // ── Folders / sections (local commands) ───────────────────────────────────────
-function createFolder(roomId: string, name: string, icon: string, color: string): RoomState {
-  const room = rooms.get(roomId);
-  if (!room) throw new Error('Room not active');
+// A local edit must always beat what we currently hold, even if that value was
+// stamped by a peer whose clock ran ahead of ours — so `at` is max(now, cur+1),
+// never a bare Date.now() that a fast-clock peer's value would silently reject.
+function nextAt(prev: number): number { return Math.max(Date.now(), prev + 1); }
+
+/** Create/register a folder in this room + broadcast + persist (no pushState). */
+function makeFolder(room: Room, name: string, icon: string, color: string): RoomFolder {
   const folder: RoomFolder = {
     id: crypto.randomBytes(8).toString('hex'),
     name: String(name || '').trim().slice(0, 200) || 'Folder',
-    icon: String(icon || 'folder').slice(0, 64),
+    icon: sanitizeFolderIcon(icon),
     color: String(color || '').slice(0, 64),
     at: Date.now(),
   };
   room.folders.set(folder.id, folder);
   persistFolder(room, folder);
-  broadcast(room, { t: 'folder', op: 'upsert', id: folder.id, name: folder.name, icon: folder.icon, color: folder.color, at: folder.at });
+  broadcast(room, { t: 'folder', op: 'upsert', id: folder.id, name: folder.name, icon: folder.icon, color: folder.color, at: folder.at, memberId: room.self.memberId });
+  return folder;
+}
+
+function createFolder(roomId: string, name: string, icon: string, color: string): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  makeFolder(room, name, icon, color);
   pushState(room, true);
   return buildState(room);
 }
@@ -1677,13 +1740,13 @@ function updateFolder(roomId: string, folderId: string, patch: { name?: string; 
   const next: RoomFolder = {
     ...cur,
     ...(typeof patch?.name === 'string' ? { name: patch.name.trim().slice(0, 200) || cur.name } : {}),
-    ...(typeof patch?.icon === 'string' ? { icon: patch.icon.slice(0, 64) } : {}),
+    ...(typeof patch?.icon === 'string' ? { icon: sanitizeFolderIcon(patch.icon) } : {}),
     ...(typeof patch?.color === 'string' ? { color: patch.color.slice(0, 64) } : {}),
-    at: Date.now(),
+    at: nextAt(cur.at),
   };
   room.folders.set(folderId, next);
   persistFolder(room, next);
-  broadcast(room, { t: 'folder', op: 'upsert', id: next.id, name: next.name, icon: next.icon, color: next.color, at: next.at });
+  broadcast(room, { t: 'folder', op: 'upsert', id: next.id, name: next.name, icon: next.icon, color: next.color, at: next.at, memberId: room.self.memberId });
   pushState(room, true);
   return buildState(room);
 }
@@ -1691,12 +1754,12 @@ function updateFolder(roomId: string, folderId: string, patch: { name?: string; 
 function deleteFolder(roomId: string, folderId: string): RoomState {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
-  const at = Date.now();
+  const at = nextAt(room.folders.get(folderId)?.at ?? room.folderTombstones.get(folderId) ?? 0);
   // Files keep their (now-dangling) folderId → they render Uncategorized via
   // groupFilesByFolder. No per-file reassignment gossip needed.
   if (applyFolderDelete(room.folders, room.folderTombstones, folderId, at)) {
-    persistFolderDelete(room, folderId, at);
-    broadcast(room, { t: 'folder', op: 'del', id: folderId, at });
+    persistFolderDelete(room, folderId, at, !room.folders.has(folderId));
+    broadcast(room, { t: 'folder', op: 'del', id: folderId, at, memberId: room.self.memberId });
     pushState(room, true);
   }
   return buildState(room);
@@ -1707,7 +1770,7 @@ function assignFile(roomId: string, fileId: string, folderId: string | null): Ro
   if (!room) throw new Error('Room not active');
   const file = room.files.get(fileId);
   if (!file) return buildState(room);
-  const at = Date.now();
+  const at = nextAt(file.folderAt ?? 0);
   if (applyAssignment(file, folderId, at)) {
     const tr = room.transfers.get(fileId);
     persistManifest(room, file, tr?.localPath, tr?.cipherPath);
@@ -1791,7 +1854,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
   try {
     let data: any;
     if (type === 'join') data = startRoom(msg.payload);
-    else if (type === 'addFiles') data = await addFiles(msg.roomId, msg.paths);
+    else if (type === 'addFiles') data = await addFiles(msg.roomId, msg.paths, msg.opts);
     else if (type === 'createFolder') data = createFolder(msg.roomId, msg.name, msg.icon, msg.color);
     else if (type === 'updateFolder') data = updateFolder(msg.roomId, msg.folderId, msg.patch || {});
     else if (type === 'deleteFolder') data = deleteFolder(msg.roomId, msg.folderId);

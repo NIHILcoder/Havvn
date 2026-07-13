@@ -89,6 +89,8 @@
   "rooms.folder.delete": "Delete folder",
   "rooms.folder.deleteConfirm": "Delete this folder? Its files move to Uncategorized — the files themselves are kept.",
   "rooms.folder.moveTo": "Move to folder",
+  "rooms.folder.icon": "Folder icon",
+  "rooms.folder.color": "Folder color",
   "rooms.online": "Online",
   "rooms.offline": "Offline",
   "rooms.direct": "Connected directly",

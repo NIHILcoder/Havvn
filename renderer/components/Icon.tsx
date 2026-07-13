@@ -219,6 +219,9 @@ export const Icon: React.FC<IconProps> = ({
   className = '',
   color = 'currentColor'
 }) => {
+  // An unknown name must never crash the caller: some names now come from
+  // untrusted sources (a peer's room-folder icon), and a hard `paths[name].split`
+  // would take down the whole page. Render an empty box instead.
   const pathData = paths[name];
 
   return (
@@ -233,7 +236,7 @@ export const Icon: React.FC<IconProps> = ({
       strokeLinejoin="round"
       className={className}
     >
-      {pathData.split(' M').map((d, i) => (
+      {(pathData ?? '').split(' M').filter(Boolean).map((d, i) => (
         <path key={i} d={i === 0 ? d : `M${d}`} />
       ))}
     </svg>

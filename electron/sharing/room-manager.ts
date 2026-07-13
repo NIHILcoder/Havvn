@@ -102,12 +102,14 @@ export class RoomManager {
     ipcMain.on('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types').PersistedRoomFolder }) => {
       try { if (payload?.roomId && payload?.folder?.id) db.upsertRoomFolder(payload.roomId, payload.folder); } catch { /* ignore */ }
     });
-    // A folder was deleted — persist the tombstone and drop it from the set.
-    ipcMain.on('room-folder-del', (_e, payload: { roomId: string; id: string; at?: number }) => {
+    // A folder was deleted — persist the tombstone; drop it from the set ONLY if
+    // the engine actually removed it (an edit-after-delete keeps a newer folder
+    // live, and dropping it here would make it vanish on the next restart).
+    ipcMain.on('room-folder-del', (_e, payload: { roomId: string; id: string; at?: number; removed?: boolean }) => {
       try {
         if (payload?.roomId && payload?.id) {
           db.addRoomFolderTombstone(payload.roomId, payload.id, Number(payload.at) || Date.now());
-          db.removeRoomFolder(payload.roomId, payload.id);
+          if (payload.removed !== false) db.removeRoomFolder(payload.roomId, payload.id);
         }
       } catch { /* ignore */ }
     });
@@ -398,11 +400,11 @@ export class RoomManager {
     return this.reactivate(persisted).catch(() => null);
   }
 
-  async addFiles(roomId: string, paths: string[]): Promise<RoomState> {
+  async addFiles(roomId: string, paths: string[], opts?: { folderId?: string; folderName?: string }): Promise<RoomState> {
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     if (!persisted) throw new Error('Room not found');
     if (!this.cache.has(roomId)) await this.reactivate(persisted);
-    const state = await this.call<RoomState>('addFiles', { roomId, paths });
+    const state = await this.call<RoomState>('addFiles', { roomId, paths, opts });
     state.createdAt = persisted.createdAt;
     this.cache.set(roomId, state);
     return state;

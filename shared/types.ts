@@ -1003,9 +1003,9 @@ export interface IpcApi {
     leave: (roomId: string, deleteFiles?: boolean) => Promise<{ ok: boolean }>;
     list: () => Promise<RoomSummary[]>;
     get: (roomId: string) => Promise<RoomState | null>;
-    addFiles: (roomId: string, paths: string[]) => Promise<RoomState>;
-    pickAndAddFiles: (roomId: string) => Promise<RoomState | null>;
-    shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[]) => Promise<RoomState>;
+    addFiles: (roomId: string, paths: string[], folderId?: string) => Promise<RoomState>;
+    pickAndAddFiles: (roomId: string, folderId?: string) => Promise<RoomState | null>;
+    shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[], folderName?: string) => Promise<RoomState>;
     listShareableFiles: (downloadId: string) => Promise<{ files: Array<{ path: string; name: string; size: number }>; truncated: boolean; maxShare: number }>;
     openFolder: (roomId: string) => Promise<void>;
     openFile: (roomId: string, fileId: string) => Promise<void>;

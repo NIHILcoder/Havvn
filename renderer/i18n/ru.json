@@ -89,6 +89,8 @@
   "rooms.folder.delete": "Удалить папку",
   "rooms.folder.deleteConfirm": "Удалить эту папку? Её файлы переедут в «Без категории» — сами файлы сохранятся.",
   "rooms.folder.moveTo": "Переместить в папку",
+  "rooms.folder.icon": "Иконка папки",
+  "rooms.folder.color": "Цвет папки",
   "rooms.online": "В сети",
   "rooms.offline": "Не в сети",
   "rooms.direct": "Прямое соединение",

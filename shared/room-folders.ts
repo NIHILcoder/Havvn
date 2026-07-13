@@ -13,6 +13,17 @@
 import type { RoomFile, RoomFolder } from './types';
 
 /**
+ * Canonical folder icon names (a subset of the renderer's Icon set). The engine
+ * validates a peer-supplied icon against this list so an unknown/hostile name
+ * can never reach <Icon> — the renderer imports the same list for its picker.
+ */
+export const FOLDER_ICONS = ['folder', 'film', 'music', 'image', 'file-text', 'download', 'archive', 'star'] as const;
+const FOLDER_ICON_SET: ReadonlySet<string> = new Set(FOLDER_ICONS);
+export function sanitizeFolderIcon(icon: unknown): string {
+  return typeof icon === 'string' && FOLDER_ICON_SET.has(icon) ? icon : 'folder';
+}
+
+/**
  * Apply an incoming folder create/edit with last-writer-wins by `at`, honoring a
  * later tombstone. Mutates `folders`/`tombs` in place; returns true if anything
  * changed (so the caller can decide whether to push/persist).
@@ -25,9 +36,11 @@ export function mergeFolderUpsert(
   if (!incoming || !incoming.id || !Number.isFinite(incoming.at)) return false;
   const deletedAt = tombs.get(incoming.id) ?? 0;
   if (deletedAt >= incoming.at) return false;      // deleted at/after this edit — stays gone
-  if (deletedAt) tombs.delete(incoming.id);        // re-created after a deletion — revive
   const cur = folders.get(incoming.id);
   if (cur && cur.at >= incoming.at) return false;  // we already hold a newer/equal edit
+  // Only mutate once we've decided to apply — clearing the tombstone above and
+  // THEN bailing would desync the in-memory map from the persisted one.
+  if (deletedAt) tombs.delete(incoming.id);        // re-created after a deletion — revive
   folders.set(incoming.id, { ...incoming });
   return true;
 }

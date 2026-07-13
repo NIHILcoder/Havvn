@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  mergeFolderUpsert, applyFolderDelete, applyAssignment, groupFilesByFolder,
+  mergeFolderUpsert, applyFolderDelete, applyAssignment, groupFilesByFolder, sanitizeFolderIcon, FOLDER_ICONS,
 } from './room-folders';
 import type { RoomFile, RoomFolder } from './types';
 
@@ -38,6 +38,26 @@ describe('mergeFolderUpsert', () => {
     const folders = new Map<string, RoomFolder>(); const tombs = new Map<string, number>();
     expect(mergeFolderUpsert(folders, tombs, { id: '', name: 'x', icon: '', color: '', at: 1 })).toBe(false);
     expect(mergeFolderUpsert(folders, tombs, { id: 'a', name: 'x', icon: '', color: '', at: NaN })).toBe(false);
+  });
+  it('does not clear an existing tombstone when the upsert is rejected as stale', () => {
+    // Guards the reorder fix: mutating tombs then returning false would desync
+    // the in-memory map from the persisted one.
+    const folders = new Map([['a', folder('a', 60)]]); const tombs = new Map([['a', 40]]);
+    expect(mergeFolderUpsert(folders, tombs, folder('a', 50))).toBe(false);
+    expect(tombs.get('a')).toBe(40); // still there
+  });
+});
+
+describe('sanitizeFolderIcon', () => {
+  it('passes a known icon through', () => {
+    for (const ic of FOLDER_ICONS) expect(sanitizeFolderIcon(ic)).toBe(ic);
+  });
+  it('falls back to folder for unknown / empty / non-string', () => {
+    expect(sanitizeFolderIcon('definitely-not-an-icon')).toBe('folder');
+    expect(sanitizeFolderIcon('')).toBe('folder');
+    expect(sanitizeFolderIcon(undefined)).toBe('folder');
+    expect(sanitizeFolderIcon(42)).toBe('folder');
+    expect(sanitizeFolderIcon({ evil: true })).toBe('folder');
   });
 });
 

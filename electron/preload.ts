@@ -605,10 +605,10 @@ const api: IpcApi = {
     leave: (roomId: string, deleteFiles?: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:leave', roomId, deleteFiles),
     list: (): Promise<RoomSummary[]> => ipcRenderer.invoke('rooms:list'),
     get: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:get', roomId),
-    addFiles: (roomId: string, paths: string[]): Promise<RoomState> => ipcRenderer.invoke('rooms:addFiles', roomId, paths),
-    pickAndAddFiles: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:pickAndAddFiles', roomId),
-    shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[]): Promise<RoomState> =>
-      ipcRenderer.invoke('rooms:shareDownload', roomId, downloadId, selectedPaths),
+    addFiles: (roomId: string, paths: string[], folderId?: string): Promise<RoomState> => ipcRenderer.invoke('rooms:addFiles', roomId, paths, folderId),
+    pickAndAddFiles: (roomId: string, folderId?: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:pickAndAddFiles', roomId, folderId),
+    shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[], folderName?: string): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:shareDownload', roomId, downloadId, selectedPaths, folderName),
     listShareableFiles: (downloadId: string): Promise<{ files: Array<{ path: string; name: string; size: number }>; truncated: boolean; maxShare: number }> =>
       ipcRenderer.invoke('rooms:listShareableFiles', downloadId),
     openFolder: (roomId: string): Promise<void> => ipcRenderer.invoke('rooms:openFolder', roomId),

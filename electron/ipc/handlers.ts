@@ -374,17 +374,18 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:addFiles', wrapHandler('rooms:addFiles',
-    async (_event, roomId: string, paths: string[]) => roomManager.addFiles(roomId, Array.isArray(paths) ? paths : [])
+    async (_event, roomId: string, paths: string[], folderId?: string) =>
+      roomManager.addFiles(roomId, Array.isArray(paths) ? paths : [], folderId ? { folderId } : undefined)
   ));
 
   ipcMain.handle('rooms:pickAndAddFiles', wrapHandler('rooms:pickAndAddFiles',
-    async (_event, roomId: string) => {
+    async (_event, roomId: string, folderId?: string) => {
       const result = await dialog.showOpenDialog(mainWindow, {
         title: t('dialog.addFilesToRoom'),
         properties: ['openFile', 'multiSelections'],
       });
       if (result.canceled || !result.filePaths.length) return null;
-      return roomManager.addFiles(roomId, result.filePaths);
+      return roomManager.addFiles(roomId, result.filePaths, folderId ? { folderId } : undefined);
     }
   ));
 
@@ -450,7 +451,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:shareDownload', wrapHandler('rooms:shareDownload',
-    async (_event, roomId: string, downloadId: string, selectedPaths?: string[]) => {
+    async (_event, roomId: string, downloadId: string, selectedPaths?: string[], folderName?: string) => {
       let files = await collectShareableFiles(downloadId);
       if (Array.isArray(selectedPaths) && selectedPaths.length > 0) {
         // The renderer picks FROM the collected list — raw paths are not trusted.
@@ -461,7 +462,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       if (files.length > ROOM_SHARE_MAX_FILES) {
         throw new Error(`Too many files to share at once (over ${ROOM_SHARE_MAX_FILES}) — pick specific files`);
       }
-      return roomManager.addFiles(roomId, files);
+      // A multi-file share auto-folders under the download's name (engine assigns
+      // exactly the files it adds — no racy renderer diff).
+      const opts = files.length > 1 && folderName ? { folderName: String(folderName).slice(0, 200) } : undefined;
+      return roomManager.addFiles(roomId, files, opts);
     }
   ));
 

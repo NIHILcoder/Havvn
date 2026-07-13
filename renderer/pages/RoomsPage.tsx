@@ -13,7 +13,7 @@ import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm } from '../components';
 import { avatarCandidates } from '../components/Identicon';
-import { groupFilesByFolder } from '../../shared/room-folders';
+import { groupFilesByFolder, FOLDER_ICONS } from '../../shared/room-folders';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
@@ -24,11 +24,17 @@ const isPlayable = (name: string): boolean => classifyMediaKind(name) !== 'other
 /** The compact per-file reaction set (mirrors the engine's allow-list). */
 const FILE_REACT_EMOJIS = ['🔥', '👍', '❤️', '😂'] as const;
 
-/** Icon + color choices for a room folder (v1 keeps the palette small). */
-const FOLDER_ICONS: IconName[] = ['folder', 'film', 'music', 'image', 'file-text', 'download', 'archive', 'star'];
+/** Colors for a room folder (icons come from the shared FOLDER_ICONS list). */
 const FOLDER_COLORS = ['#e8792b', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#eab308', '#14b8a6', '#94a3b8'];
 /** dataTransfer type carrying a fileId when a file row is dragged onto a section. */
 const FILE_DND_TYPE = 'text/havvn-fileid';
+
+/** The colored folder icon chip (or the muted Uncategorized one). */
+const FolderIcon: React.FC<{ folder: RoomFolder | null; size?: number }> = ({ folder, size = 14 }) => (
+  folder
+    ? <span className="room-folder-ic" style={{ color: folder.color || undefined }}><Icon name={(folder.icon as IconName) || 'folder'} size={size} /></span>
+    : <span className="room-folder-ic room-folder-ic-none"><Icon name="folder" size={size} /></span>
+);
 
 function membersWithFile(room: RoomState, fileId: string): number {
   return room.members.filter((m) => m.have.includes(fileId)).length;
@@ -252,23 +258,14 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     void refreshList();
   };
 
-  // Assign the files that an add just introduced (diff vs `before`) to a target
-  // folder, returning the final state. Shared by the pick-dialog and drop paths.
-  const assignNewToFolder = async (roomId: string, state: RoomState, before: Set<string>, folderId?: string): Promise<RoomState> => {
-    if (!folderId) return state;
-    let final = state;
-    for (const f of state.files) {
-      if (!before.has(f.fileId)) final = await window.api.rooms.assignFile(roomId, f.fileId, folderId);
-    }
-    return final;
-  };
-
+  // The target folder (if any) is handed to the engine, which assigns exactly
+  // the files it adds — no renderer before/after diff that a concurrent peer add
+  // could poison, and a re-added existing file still lands in the target.
   const handleAddFiles = async (roomId: string, targetFolderId?: string) => {
     setBusy(true);
     try {
-      const before = new Set((room?.files ?? []).map((f) => f.fileId));
-      const state = await window.api.rooms.pickAndAddFiles(roomId);
-      if (state) applyRoomState(await assignNewToFolder(roomId, state, before, targetFolderId));
+      const state = await window.api.rooms.pickAndAddFiles(roomId, targetFolderId);
+      if (state) applyRoomState(state);
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
     finally { setBusy(false); }
   };
@@ -278,9 +275,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const handleDropPaths = async (roomId: string, paths: string[], targetFolderId?: string) => {
     setBusy(true);
     try {
-      const before = new Set((room?.files ?? []).map((f) => f.fileId));
-      const state = await assignNewToFolder(roomId, await window.api.rooms.addFiles(roomId, paths), before, targetFolderId);
-      applyRoomState(state);
+      applyRoomState(await window.api.rooms.addFiles(roomId, paths, targetFolderId));
       toast.success(t('rooms.dropShared'));
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
     finally { setBusy(false); }
@@ -565,16 +560,16 @@ const RoomFolderEditor: React.FC<{
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
       />
-      <div className="room-folder-swatches">
+      <div className="room-folder-swatches" role="group" aria-label={t('rooms.folder.icon')}>
         {FOLDER_ICONS.map((ic) => (
-          <button key={ic} type="button" className={`room-folder-swatch${icon === ic ? ' active' : ''}`} onClick={() => setIcon(ic)} aria-label={ic}>
+          <button key={ic} type="button" className={`room-folder-swatch${icon === ic ? ' active' : ''}`} onClick={() => setIcon(ic)} aria-label={ic} aria-pressed={icon === ic}>
             <Icon name={ic} size={13} />
           </button>
         ))}
       </div>
-      <div className="room-folder-swatches">
+      <div className="room-folder-swatches" role="group" aria-label={t('rooms.folder.color')}>
         {FOLDER_COLORS.map((c) => (
-          <button key={c} type="button" className={`room-folder-color${color === c ? ' active' : ''}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />
+          <button key={c} type="button" className={`room-folder-color${color === c ? ' active' : ''}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={`${t('rooms.folder.color')} ${c}`} aria-pressed={color === c} />
         ))}
       </div>
       <div className="room-folder-editor-actions">
@@ -822,13 +817,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
                       ) : (
                         <div className="room-folder-header">
                           <span className="room-folder-label">
-                            {g.folder ? (
-                              <span className="room-folder-ic" style={{ color: g.folder.color || undefined }}>
-                                <Icon name={(g.folder.icon as IconName) || 'folder'} size={14} />
-                              </span>
-                            ) : (
-                              <span className="room-folder-ic room-folder-ic-none"><Icon name="folder" size={14} /></span>
-                            )}
+                            <FolderIcon folder={g.folder} />
                             <span className="room-folder-title">{g.folder ? g.folder.name : t('rooms.folder.uncategorized')}</span>
                             <span className="room-folder-count">{g.files.length}</span>
                           </span>
@@ -1301,12 +1290,12 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
             <div className="room-file-move-menu">
               {folders.map((fo) => (
                 <button key={fo.id} className={`room-file-move-item${file.folderId === fo.id ? ' on' : ''}`} onClick={() => { setMoveOpen(false); onAssignFile(file.fileId, fo.id); }}>
-                  <span className="room-folder-ic" style={{ color: fo.color || undefined }}><Icon name={(fo.icon as IconName) || 'folder'} size={12} /></span>
+                  <FolderIcon folder={fo} size={12} />
                   <span>{fo.name}</span>
                 </button>
               ))}
               <button className={`room-file-move-item${!file.folderId ? ' on' : ''}`} onClick={() => { setMoveOpen(false); onAssignFile(file.fileId, null); }}>
-                <span className="room-folder-ic room-folder-ic-none"><Icon name="folder" size={12} /></span>
+                <FolderIcon folder={null} size={12} />
                 <span>{t('rooms.folder.uncategorized')}</span>
               </button>
             </div>
