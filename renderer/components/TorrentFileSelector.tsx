@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Button, Icon } from './index';
+import { DropdownMenu } from './DropdownMenu';
 import { Modal } from './Modal';
 import { useTranslation } from '../utils/i18nContext';
 import './TorrentFileSelector.css';
@@ -299,30 +300,42 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
               {selectAllState === 'all' ? t('filePicker.deselectAll') : t('filePicker.selectAll')}
             </Button>
             
-            <div className="dropdown-wrapper">
-              <Button variant="ghost" size="sm">
-                {t('filePicker.quickSelect')}
-                <Icon name="chevron-down" size={14} />
-              </Button>
-              <div className="quick-select-menu">
-                <button onClick={() => handleSelectByExtension('.mp4')}>
-                  <Icon name="film" size={14} />
-                  {t('filePicker.selectVideos')}
-                </button>
-                <button onClick={() => handleSelectByExtension('.mkv')}>
-                  <Icon name="film" size={14} />
-                  {t('filePicker.selectMkv')}
-                </button>
-                <button onClick={() => handleDeselectByExtension('.txt')}>
-                  <Icon name="file-text" size={14} />
-                  {t('filePicker.deselectText')}
-                </button>
-                <button onClick={() => handleDeselectByExtension('.nfo')}>
-                  <Icon name="file" size={14} />
-                  {t('filePicker.deselectNfo')}
-                </button>
-              </div>
-            </div>
+            <DropdownMenu
+              menuClassName="quick-select-menu"
+              itemClassName=""
+              renderTrigger={({ toggle }) => (
+                <Button variant="ghost" size="sm" onClick={toggle}>
+                  {t('filePicker.quickSelect')}
+                  <Icon name="chevron-down" size={14} />
+                </Button>
+              )}
+              items={[
+                {
+                  key: 'videos',
+                  icon: <Icon name="film" size={14} />,
+                  label: t('filePicker.selectVideos'),
+                  onSelect: () => handleSelectByExtension('.mp4'),
+                },
+                {
+                  key: 'mkv',
+                  icon: <Icon name="film" size={14} />,
+                  label: t('filePicker.selectMkv'),
+                  onSelect: () => handleSelectByExtension('.mkv'),
+                },
+                {
+                  key: 'text',
+                  icon: <Icon name="file-text" size={14} />,
+                  label: t('filePicker.deselectText'),
+                  onSelect: () => handleDeselectByExtension('.txt'),
+                },
+                {
+                  key: 'nfo',
+                  icon: <Icon name="file" size={14} />,
+                  label: t('filePicker.deselectNfo'),
+                  onSelect: () => handleDeselectByExtension('.nfo'),
+                },
+              ]}
+            />
           </div>
         </div>
 

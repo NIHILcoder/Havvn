@@ -15,6 +15,7 @@ import {
   EmptyState,
   FilePreview,
   ContextMenu,
+  DropdownMenu,
   TorrentFileSelector,
   TorrentControlModal,
   StreamPlayerModal,
@@ -104,7 +105,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [altSpeed, setAltSpeed] = useState(false);
-  const [showExportMenu, setShowExportMenu] = useState(false);
 
   // Torrent control modal
   const [controlModalId, setControlModalId] = useState<string | null>(null);
@@ -132,7 +132,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // On-completion action (one-shot; main owns the state, this mirrors it)
   const [onDoneAction, setOnDoneAction] = useState<CompletionAction>('none');
   const [onDoneAvailable, setOnDoneAvailable] = useState<CompletionAction[]>(['none', 'quit']);
-  const [showOnDoneMenu, setShowOnDoneMenu] = useState(false);
 
   // Toast helper
   const addToast = useCallback((message: string, variant: 'success' | 'error' | 'warning' | 'info' = 'info', duration = 5000) => {
@@ -244,7 +243,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   }, [t]);
 
   const handleSelectOnDone = useCallback(async (a: CompletionAction) => {
-    setShowOnDoneMenu(false);
     try {
       // No optimistic set: main broadcasts app:completionActionChanged, which
       // the mount subscription above applies — one source of truth.
@@ -377,7 +375,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       // Escape - Clear selection
       if (e.key === 'Escape') {
         setSelectedIds(new Set());
-        setShowExportMenu(false);
       }
     };
 
@@ -458,7 +455,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     URL.revokeObjectURL(url);
 
     addToast(`${t('downloads.exportedPrefix')} ${data.length} ${t('downloads.downloadsAs')} ${format.toUpperCase()}`, 'success');
-    setShowExportMenu(false);
   }, [downloads, addToast]);
 
   // Header sort handler
@@ -865,30 +861,25 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             title={altSpeed ? t('downloads.altSpeedOn') : t('downloads.altSpeedOff')}
           />
           {/* On-completion action (one-shot) */}
-          <div className="dropdown-wrapper">
-            <Button
-              variant={onDoneAction !== 'none' ? 'primary' : 'ghost'}
-              size="sm"
-              iconOnly
-              icon={<Icon name="power" size={16} />}
-              onClick={() => setShowOnDoneMenu(!showOnDoneMenu)}
-              title={`${t('downloads.onDone')}: ${onDoneLabel(onDoneAction)}`}
-            />
-            {showOnDoneMenu && (
-              <div className="dropdown-menu export-dropdown">
-                {onDoneAvailable.map((a) => (
-                  <button
-                    key={a}
-                    className="dropdown-item"
-                    onClick={() => handleSelectOnDone(a)}
-                  >
-                    <Icon name={onDoneAction === a ? 'check-circle' : 'circle'} size={16} />
-                    <span>{onDoneLabel(a)}</span>
-                  </button>
-                ))}
-              </div>
+          <DropdownMenu
+            menuClassName="dropdown-menu dropdown-menu-right"
+            renderTrigger={({ toggle }) => (
+              <Button
+                variant={onDoneAction !== 'none' ? 'primary' : 'ghost'}
+                size="sm"
+                iconOnly
+                icon={<Icon name="power" size={16} />}
+                onClick={toggle}
+                title={`${t('downloads.onDone')}: ${onDoneLabel(onDoneAction)}`}
+              />
             )}
-          </div>
+            items={onDoneAvailable.map((a) => ({
+              key: a,
+              icon: <Icon name={onDoneAction === a ? 'check-circle' : 'circle'} size={16} />,
+              label: onDoneLabel(a),
+              onSelect: () => handleSelectOnDone(a),
+            }))}
+          />
           <Button
             variant="ghost"
             size="sm"
@@ -898,35 +889,34 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             title={t('downloads.refresh')}
           />
           {/* Export Dropdown */}
-          <div className="dropdown-wrapper">
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="download" size={16} />}
-              onClick={() => setShowExportMenu(!showExportMenu)}
-              title={t('downloads.exportList')}
-            >
-              {t('downloads.export')}
-            </Button>
-            {showExportMenu && (
-              <div className="dropdown-menu export-dropdown">
-                <button
-                  className="dropdown-item"
-                  onClick={() => handleExport('json')}
-                >
-                  <Icon name="file" size={16} />
-                  <span>{t('downloads.exportJson')}</span>
-                </button>
-                <button
-                  className="dropdown-item"
-                  onClick={() => handleExport('csv')}
-                >
-                  <Icon name="grid" size={16} />
-                  <span>{t('downloads.exportCsv')}</span>
-                </button>
-              </div>
+          <DropdownMenu
+            menuClassName="dropdown-menu dropdown-menu-right"
+            renderTrigger={({ toggle }) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icon name="download" size={16} />}
+                onClick={toggle}
+                title={t('downloads.exportList')}
+              >
+                {t('downloads.export')}
+              </Button>
             )}
-          </div>
+            items={[
+              {
+                key: 'json',
+                icon: <Icon name="file" size={16} />,
+                label: t('downloads.exportJson'),
+                onSelect: () => handleExport('json'),
+              },
+              {
+                key: 'csv',
+                icon: <Icon name="grid" size={16} />,
+                label: t('downloads.exportCsv'),
+                onSelect: () => handleExport('csv'),
+              },
+            ]}
+          />
           <Button
             variant="primary"
             size="sm"

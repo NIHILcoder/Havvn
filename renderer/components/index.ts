@@ -21,6 +21,8 @@ export { Toast, ToastContainer } from './Toast';
 export type { ToastProps } from './Toast';
 export { ContextMenu } from './ContextMenu';
 export type { ContextMenuItem } from './ContextMenu';
+export { DropdownMenu } from './DropdownMenu';
+export type { DropdownMenuItem } from './DropdownMenu';
 export { TorrentFileSelector } from './TorrentFileSelector';
 export { SpeedGraph } from './SpeedGraph';
 export { CreateTorrentModal } from './CreateTorrentModal';

@@ -227,7 +227,7 @@
   border-color: var(--color-error);
 }
 
-/* === Dropdown (export menu) === */
+/* === Dropdown menus (page-header actions) === */
 .dropdown-wrapper {
   position: relative;
 }
@@ -247,7 +247,7 @@
   overflow: hidden;
 }
 
-.export-dropdown {
+.dropdown-menu-right {
   right: 0;
   left: auto;
   min-width: 180px;
