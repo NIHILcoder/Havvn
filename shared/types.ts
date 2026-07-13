@@ -5,6 +5,8 @@
 // (preload, renderer) keep importing every wire type from one hub.
 import type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
 export type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
+import type { Theme } from './theme';
+export type { Theme, ThemeBase, ValidateResult } from './theme';
 
 export type DownloadStatus =
   | 'queued'
@@ -1027,6 +1029,12 @@ export interface IpcApi {
     reactFile: (roomId: string, fileId: string, emoji: string) => Promise<void>;
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;
+  };
+  // Custom theme sharing (import/export as a JSON file). Imported `data` is
+  // untrusted raw JSON — the renderer runs validateTheme() before using it.
+  themes: {
+    export: (theme: Theme, suggestedName?: string) => Promise<{ success: boolean; path?: string }>;
+    import: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
   };
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
   onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void) => () => void;

@@ -15,6 +15,8 @@ import {
 } from '../../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from '../../utils/i18nContext';
+import { getActiveTheme, applyThemeObject, deactivateTheme } from '../../utils/theme-library';
+import { restoreThemePrefs } from '../../utils/theme-prefs';
 
 export type Theme = 'light' | 'dark' | 'system';
 
@@ -143,6 +145,11 @@ function useSettingsController() {
     const savedTheme = (localStorage.getItem('theme') as Theme) || 'system';
     setTheme(savedTheme);
     applyTheme(savedTheme);
+    // Re-layer an active custom theme + the accent/font quick prefs so opening
+    // Settings doesn't reset data-theme to the base (App.tsx already applied
+    // them at boot; this keeps them when the lazy Settings tree mounts).
+    const activeCustom = getActiveTheme();
+    if (activeCustom) applyThemeObject(activeCustom); else restoreThemePrefs();
 
     window.api.getAutoLaunch().then(setAutoLaunch).catch(console.error);
     window.api.isDefaultClient().then(setIsDefaultClient).catch(console.error);
@@ -262,6 +269,9 @@ function useSettingsController() {
     setTheme(newTheme);
     localStorage.setItem('theme', newTheme);
     applyTheme(newTheme);
+    // Choosing a built-in base drops any active custom theme overlay; the quick
+    // accent/font prefs are re-layered on top by deactivateTheme().
+    deactivateTheme();
   };
 
   const loadSettings = async () => {

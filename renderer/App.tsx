@@ -19,6 +19,7 @@ const SwarmPage = lazy(() => import('./pages/SwarmPage'));
 import { formatBytes } from './utils/format-helpers';
 import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
 import { restoreThemePrefs } from './utils/theme-prefs';
+import { bootApplyActiveTheme } from './utils/theme-library';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
 import { CompletionCountdown } from './components/CompletionCountdown';
@@ -117,8 +118,10 @@ const AppContent: React.FC = () => {
       if (localStorage.getItem('density') === 'compact') {
         document.documentElement.dataset.density = 'compact';
       }
-      // Custom accent / font overlays — inline :root props that beat the
-      // [data-theme] blocks, restored the same way as the prefs above.
+      // Active custom theme (if any) first, then the accent/font overlays on
+      // top — all inline :root props that beat the [data-theme] blocks, restored
+      // the same way as the prefs above.
+      bootApplyActiveTheme();
       restoreThemePrefs();
     } catch { /* prefs are cosmetic — never block boot */ }
   }, []);

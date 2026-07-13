@@ -7,7 +7,7 @@
 import React, { useState } from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow } from '../controls';
-import { Select, ThemeSelector, Toggle } from '../../../components';
+import { Select, ThemeSelector, Toggle, Button, Icon, ThemeEditor } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { setSpeedUnits, getSpeedUnits, SpeedUnits } from '../../../utils/format-helpers';
 import {
@@ -43,6 +43,7 @@ export const InterfaceSection: React.FC = () => {
   const [accent, setAccent] = useState<string>(currentAccent);
   const [accentOn, setAccentOn] = useState<boolean>(hasAccentOverride);
   const [fontId, setFontId] = useState<string>(currentFontId);
+  const [showThemeEditor, setShowThemeEditor] = useState(false);
 
   const applyScale = (scale: number) => {
     setUiScale(scale);
@@ -133,6 +134,15 @@ export const InterfaceSection: React.FC = () => {
                 onChange={handleFont}
               />
             </div>
+          }
+        />
+        <SettingRow
+          label={t('settings.theme.customThemes')}
+          description={t('settings.theme.customThemes.desc')}
+          control={
+            <Button variant="secondary" size="sm" icon={<Icon name="sun" size={15} />} onClick={() => setShowThemeEditor(true)}>
+              {t('settings.theme.openEditor')}
+            </Button>
           }
         />
         <SettingRow
@@ -229,6 +239,8 @@ export const InterfaceSection: React.FC = () => {
           }
         />
       </SettingsCard>
+
+      {showThemeEditor && <ThemeEditor onClose={() => setShowThemeEditor(false)} />}
     </>
   );
 };
