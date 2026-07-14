@@ -104,7 +104,8 @@ export type IconName =
   | 'maximize'
   | 'minimize'
   | 'skip-forward'
-  | 'pip';
+  | 'pip'
+  | 'pipette';
 
 interface IconProps {
   name: IconName;
@@ -211,6 +212,7 @@ const paths: Record<IconName, string> = {
   'minimize': 'M8 3v3a2 2 0 0 1-2 2H3 M21 8h-3a2 2 0 0 1-2-2V3 M3 16h3a2 2 0 0 1 2 2v3 M16 21v-3a2 2 0 0 1 2-2h3',
   'skip-forward': 'M5 4l10 8-10 8V4z M19 5v14',
   'pip': 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M12 12h7v5h-7z',
+  'pipette': 'M2 22l1-1h3l9-9 M3 21v-3l9-9 M15 6l3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4z',
 };
 
 export const Icon: React.FC<IconProps> = ({

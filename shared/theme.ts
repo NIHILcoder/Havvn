@@ -408,6 +408,44 @@ export const EDITABLE_TOKENS: readonly EditableGroup[] = [
 ];
 
 /* ------------------------------------------------------------------ *
+ * Advanced groups — EVERY whitelisted token, partitioned into semantic
+ * groups (first match wins) for the editor's Advanced mode. Unlike
+ * EDITABLE_TOKENS, these are keyed by the raw token name: the Advanced UI
+ * shows the name itself plus a category-appropriate control, and only the
+ * group header is translated. Derived from TOKEN_NAMES, so it can never
+ * drift out of sync with the whitelist (a test asserts full coverage).
+ * ------------------------------------------------------------------ */
+export interface AdvancedGroup { id: string; labelKey: string; tokens: string[]; }
+
+const ADVANCED_GROUP_DEFS: { id: string; labelKey: string; match: (n: string) => boolean }[] = [
+  { id: 'backgrounds', labelKey: 'settings.theme.adv.backgrounds', match: (n) => n.startsWith('--color-bg-') },
+  { id: 'borders', labelKey: 'settings.theme.adv.borders', match: (n) => n.startsWith('--color-border') },
+  { id: 'text', labelKey: 'settings.theme.adv.text', match: (n) => n.startsWith('--color-text') },
+  { id: 'accent', labelKey: 'settings.theme.adv.accent', match: (n) => n.startsWith('--color-accent') },
+  { id: 'statuses', labelKey: 'settings.theme.adv.statuses', match: (n) => n.startsWith('--color-status-') },
+  { id: 'semantic', labelKey: 'settings.theme.adv.semantic', match: (n) => /^--color-(success|warning|error|info)/.test(n) },
+  { id: 'filetypes', labelKey: 'settings.theme.adv.filetypes', match: (n) => /^--color-(video|audio|image|archive|document)$/.test(n) },
+  { id: 'glass', labelKey: 'settings.theme.adv.glass', match: (n) => n.startsWith('--glass-') },
+  { id: 'gradients', labelKey: 'settings.theme.adv.gradients', match: (n) => n.startsWith('--gradient-') },
+  { id: 'shadows', labelKey: 'settings.theme.adv.shadows', match: (n) => n.startsWith('--shadow-') },
+  { id: 'spacing', labelKey: 'settings.theme.adv.spacing', match: (n) => n.startsWith('--space-') },
+  { id: 'corners', labelKey: 'settings.theme.adv.corners', match: (n) => n.startsWith('--radius-') },
+  { id: 'typography', labelKey: 'settings.theme.adv.typography', match: (n) => n.startsWith('--font-') || n.startsWith('--line-height-') },
+  { id: 'motion', labelKey: 'settings.theme.adv.motion', match: (n) => n.startsWith('--transition-') },
+  { id: 'layering', labelKey: 'settings.theme.adv.layering', match: (n) => n.startsWith('--z-') },
+  { id: 'layout', labelKey: 'settings.theme.adv.layout', match: () => true }, // catch-all (sidebar/header/footer/…)
+];
+
+export const ADVANCED_GROUPS: readonly AdvancedGroup[] = (() => {
+  const groups: AdvancedGroup[] = ADVANCED_GROUP_DEFS.map((d) => ({ id: d.id, labelKey: d.labelKey, tokens: [] }));
+  for (const name of TOKEN_NAMES) {
+    const idx = ADVANCED_GROUP_DEFS.findIndex((d) => d.match(name));
+    groups[idx].tokens.push(name);
+  }
+  return groups.filter((g) => g.tokens.length > 0);
+})();
+
+/* ------------------------------------------------------------------ *
  * Whole-theme validation — the gate every imported file passes before it
  * can touch the DOM. Structural problems fail closed; individual bad
  * tokens are dropped with a warning so one hostile value can't poison an

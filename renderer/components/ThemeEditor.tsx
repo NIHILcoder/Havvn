@@ -23,17 +23,30 @@ import { Button } from './Button';
 import Icon from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import {
-  Theme, ThemeMode, EDITABLE_TOKENS, FONT_OPTIONS, deriveAccent, validateTheme,
-  sanitizeTokenValue, clearAppliedTheme, TOKEN_WHITELIST,
+  Theme, ThemeMode, EDITABLE_TOKENS, ADVANCED_GROUPS, FONT_OPTIONS, deriveAccent, validateTheme,
+  sanitizeTokenValue, tokenCategory, clearAppliedTheme, TOKEN_WHITELIST,
 } from '../../shared/theme';
+import { contrastRatio, wcagLevel } from '../../shared/contrast';
+import { parseColor, toRgbString } from '../../shared/color';
 import {
   loadLibrary, saveLibrary, getActiveId, getActiveTheme, genThemeId,
   applyThemeObject, previewTheme, activateTheme, deactivateTheme, revertToBase, resolvedMode,
 } from '../utils/theme-library';
+import { ColorField } from './ColorField';
 import { DownloadsSample, RoomsSample, ChatSample, FormsSample } from './theme-preview/GallerySamples';
 import './ThemeEditor.css';
 
-const EDITABLE_TOKEN_NAMES = EDITABLE_TOKENS.flatMap((g) => g.tokens.map((tk) => tk.token));
+type EditMode = 'simple' | 'advanced';
+
+// Text-on-background pairs the contrast checker reports (resolved from the draft).
+const CONTRAST_PAIRS: [string, string][] = [
+  ['--color-text-primary', '--color-bg-primary'],
+  ['--color-text-secondary', '--color-bg-primary'],
+  ['--color-text-primary', '--color-bg-elevated'],
+  ['--color-text-tertiary', '--color-bg-elevated'],
+  ['--color-accent-primary', '--color-bg-primary'],
+];
+const shortToken = (name: string): string => name.replace(/^--color-/, '').replace(/^--/, '');
 
 // Dock geometry + persistence.
 const DOCK_MIN = 320;
@@ -73,18 +86,18 @@ const initialWidth = (): number => {
 function readModeDefaults(mode: ThemeMode): Record<string, string> {
   const el = document.documentElement;
   const prevAttr = el.getAttribute('data-theme');
-  // Snapshot EVERY whitelisted inline override — not just the editable ones —
-  // so clearing to read the base palette and then restoring doesn't drop the
-  // non-editable overrides (e.g. an imported theme's gradients/shadows). With
-  // the dock, the real app is visible behind us, so a dropped override would
-  // flash to base until the preview effect repaints it.
+  // Snapshot EVERY whitelisted inline override, then read the base value of
+  // EVERY whitelisted token (Advanced mode edits all 122 — reading only the
+  // editable subset left the other ~96 fields blank + flagged invalid). Clearing
+  // and restoring the full set also avoids flashing non-editable overrides to
+  // base on the live app behind the dock.
   const saved: Record<string, string> = {};
   for (const token of TOKEN_WHITELIST) saved[token] = el.style.getPropertyValue(token);
   clearAppliedTheme(el);
   el.setAttribute('data-theme', mode);
   const out: Record<string, string> = {};
   const cs = getComputedStyle(el);
-  for (const token of EDITABLE_TOKEN_NAMES) out[token] = cs.getPropertyValue(token).trim();
+  for (const token of TOKEN_WHITELIST) out[token] = cs.getPropertyValue(token).trim();
   if (prevAttr) el.setAttribute('data-theme', prevAttr); else el.removeAttribute('data-theme');
   for (const [token, val] of Object.entries(saved)) if (val) el.style.setProperty(token, val);
   return out;
@@ -124,6 +137,10 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   const [collapsed, setCollapsed] = useState(false);
   const [tab, setTab] = useState<EditorTab>('edit');
   const [previewPage, setPreviewPage] = useState<PreviewPage>('overview');
+  // Simple (curated groups) vs Advanced (every token + search + only-changed).
+  const [editMode, setEditMode] = useState<EditMode>('simple');
+  const [search, setSearch] = useState('');
+  const [onlyChanged, setOnlyChanged] = useState(false);
 
   // Defaults for the edited variant — seeds every field's shown value.
   const defaults = useMemo(() => readModeDefaults(variant), [variant]);
@@ -159,6 +176,33 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
 
   const setToken = (token: string, value: string) =>
     setDraft((d) => (d ? { ...d, [paletteKey]: { ...d[paletteKey], [token]: value } } : d));
+
+  /** Write one value into BOTH variants at once (the apply-to-both affordance). */
+  const setTokenBoth = (token: string, value: string) =>
+    setDraft((d) => (d ? { ...d, dark: { ...d.dark, [token]: value }, light: { ...d.light, [token]: value } } : d));
+
+  /** Does the draft explicitly override this token in the edited variant? */
+  const hasOverride = (token: string): boolean => !!draft && draft[paletteKey][token] !== undefined;
+
+  // WCAG contrast of the key text-on-bg pairs, resolved from the draft. Cheap
+  // (5 pairs) so it just recomputes on every edit; deps cover every input the
+  // inner resolver reads.
+  const contrastRows = useMemo(() => {
+    const resolve = (token: string): string =>
+      (draft && draft[paletteKey][token] !== undefined ? draft[paletteKey][token] : defaults[token]) ?? '';
+    // Re-serialize the swatch colors through the parser so a raw draft value the
+    // user is still typing (e.g. "url(...)") can never reach an inline style —
+    // the swatch only ever renders a parsed, re-emitted color (or nothing).
+    const safe = (v: string): string | undefined => { const p = parseColor(v); return p ? toRgbString(p) : undefined; };
+    // Translucent surfaces are composited over the page's base surface, not white.
+    const baseBg = resolve('--color-bg-primary');
+    return CONTRAST_PAIRS.map(([fg, bg]) => {
+      const fgVal = resolve(fg);
+      const bgVal = resolve(bg);
+      const ratio = contrastRatio(fgVal, bgVal, baseBg);
+      return { fg, bg, fgCss: safe(fgVal), bgCss: safe(bgVal), ratio, level: ratio != null ? wcagLevel(ratio) : null };
+    });
+  }, [draft, paletteKey, defaults]);
 
   const setAccent = (hex: string) => {
     const derived = deriveAccent(hex);
@@ -312,6 +356,81 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     { id: 'forms', labelKey: 'settings.theme.preview.forms' },
   ];
 
+  // ── token control renderers (shared by Simple + Advanced) ──────────────────
+  const applyBothTitle = t('settings.theme.applyBoth');
+  const eyedropperTitle = t('settings.theme.eyedropper');
+  const sliderTitles = { h: t('settings.theme.hsl.h'), s: t('settings.theme.hsl.s'), l: t('settings.theme.hsl.l'), a: t('settings.theme.hsl.a') };
+
+  // A base value can legitimately be un-sanitizable (a var()-referencing gradient,
+  // a multi-layer shadow) — only flag the red outline for a USER override that
+  // fails, never for the untouched default.
+  const tokenValid = (token: string, v: string): boolean => !hasOverride(token) || sanitizeTokenValue(token, v) !== null;
+
+  const renderColorToken = (token: string, labelNode: React.ReactNode, format: 'auto' | 'triplet') => {
+    const v = valueOf(token);
+    return (
+      <ColorField key={token} label={labelNode} value={v} valid={tokenValid(token, v)} format={format}
+        onChange={(nv) => setToken(token, nv)} onApplyBoth={(nv) => setTokenBoth(token, nv)}
+        applyBothTitle={applyBothTitle} eyedropperTitle={eyedropperTitle} sliderTitles={sliderTitles} />
+    );
+  };
+
+  const renderTextToken = (token: string, labelNode: React.ReactNode) => {
+    const v = valueOf(token);
+    const valid = tokenValid(token, v);
+    return (
+      <label key={token} className="te-token te-token--len">
+        <span className="te-token-label">{labelNode}</span>
+        <input type="text" className={`te-token-text ${valid ? '' : 'te-invalid'}`} value={v} spellCheck={false}
+          onChange={(e) => setToken(token, e.target.value)} />
+      </label>
+    );
+  };
+
+  const renderToken = (token: string, labelNode: React.ReactNode) => {
+    const cat = tokenCategory(token);
+    if (cat === 'color') return renderColorToken(token, labelNode, 'auto');
+    if (cat === 'colorTriplet') return renderColorToken(token, labelNode, 'triplet');
+    return renderTextToken(token, labelNode);
+  };
+
+  const matchesFilter = (token: string): boolean => {
+    const q = search.trim().toLowerCase();
+    if (q && !token.toLowerCase().includes(q)) return false;
+    if (onlyChanged && !hasOverride(token)) return false;
+    return true;
+  };
+  const advancedGroups = ADVANCED_GROUPS
+    .map((g) => ({ ...g, tokens: g.tokens.filter(matchesFilter) }))
+    .filter((g) => g.tokens.length > 0);
+
+  const modeToggleAndContrast = (
+    <>
+      <div className="te-mode-row">
+        <div className="iface-seg" role="group">
+          {(['simple', 'advanced'] as EditMode[]).map((m) => (
+            <button key={m} type="button" className={editMode === m ? 'active' : ''} onClick={() => setEditMode(m)}>
+              {t(`settings.theme.mode.${m}`)}
+            </button>
+          ))}
+        </div>
+      </div>
+      <details className="te-contrast">
+        <summary>{t('settings.theme.contrast')}</summary>
+        <div className="te-contrast-body">
+          {contrastRows.map((r) => (
+            <div key={`${r.fg}|${r.bg}`} className="te-contrast-row">
+              <span className="te-contrast-swatch" style={{ background: r.bgCss, color: r.fgCss }}>Aa</span>
+              <span className="te-contrast-pair">{shortToken(r.fg)} <span className="te-contrast-on">/</span> {shortToken(r.bg)}</span>
+              <span className="te-contrast-ratio">{r.ratio != null ? r.ratio.toFixed(2) : '—'}</span>
+              <span className={`te-contrast-badge lvl-${r.level ?? 'na'}`}>{r.level ?? '—'}</span>
+            </div>
+          ))}
+        </div>
+      </details>
+    </>
+  );
+
   return (
     <aside className="ted" data-side={side} style={{ width }} role="region" aria-label={t('settings.theme.editorTitle')}>
       <div className="ted-resize" onPointerDown={onResizeDown} role="separator" aria-orientation="vertical" />
@@ -401,59 +520,60 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
                 </button>
               </div>
 
-              {EDITABLE_TOKENS.map((group) => (
-                <div key={group.id} className="te-group">
-                  <h4 className="te-group-title">{label(group.labelKey)}</h4>
-                  <div className="te-group-body">
-                    {group.kind === 'accent' && (
-                      <label className="te-token te-token--accent">
-                        <input type="color" className="accent-swatch" value={hexOf(valueOf('--color-accent-primary'))}
-                          onChange={(e) => setAccent(e.target.value)} aria-label={label(group.labelKey)} />
-                        <span className="te-token-label">{t('settings.theme.accentHint')}</span>
-                      </label>
-                    )}
-                    {group.kind === 'font' && (
-                      // A segmented control (not a Select) so there is no popup to
-                      // clip against the dock's overflow; only 3 bundled families.
-                      <div className="te-token te-token--font">
-                        <div className="iface-seg" role="group">
-                          {FONT_OPTIONS.map((o) => (
-                            <button key={o.id} type="button" className={currentFontId() === o.id ? 'active' : ''} onClick={() => setFont(o.id)}>
-                              {o.label}
-                            </button>
-                          ))}
+              {modeToggleAndContrast}
+
+              {editMode === 'simple' ? (
+                EDITABLE_TOKENS.map((group) => (
+                  <div key={group.id} className="te-group">
+                    <h4 className="te-group-title">{label(group.labelKey)}</h4>
+                    <div className="te-group-body">
+                      {group.kind === 'accent' && (
+                        <label className="te-token te-token--accent">
+                          <input type="color" className="accent-swatch" value={hexOf(valueOf('--color-accent-primary'))}
+                            onChange={(e) => setAccent(e.target.value)} aria-label={label(group.labelKey)} />
+                          <span className="te-token-label">{t('settings.theme.accentHint')}</span>
+                        </label>
+                      )}
+                      {group.kind === 'font' && (
+                        // A segmented control (not a Select) so there is no popup to
+                        // clip against the dock's overflow; only 3 bundled families.
+                        <div className="te-token te-token--font">
+                          <div className="iface-seg" role="group">
+                            {FONT_OPTIONS.map((o) => (
+                              <button key={o.id} type="button" className={currentFontId() === o.id ? 'active' : ''} onClick={() => setFont(o.id)}>
+                                {o.label}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                    {group.kind === 'color' && group.tokens.map((tk) => {
-                      const v = valueOf(tk.token);
-                      const valid = sanitizeTokenValue(tk.token, v) !== null;
-                      return (
-                        <label key={tk.token} className="te-token">
-                          <input type="color" className="accent-swatch" value={hexOf(v)}
-                            onChange={(e) => setToken(tk.token, e.target.value)} aria-label={label(tk.labelKey)} />
-                          <span className="te-token-label">{label(tk.labelKey)}</span>
-                          <input type="text" className={`te-token-text ${valid ? '' : 'te-invalid'}`}
-                            value={v} spellCheck={false}
-                            onChange={(e) => setToken(tk.token, e.target.value)} />
-                        </label>
-                      );
-                    })}
-                    {group.kind === 'length' && group.tokens.map((tk) => {
-                      const v = valueOf(tk.token);
-                      const valid = sanitizeTokenValue(tk.token, v) !== null;
-                      return (
-                        <label key={tk.token} className="te-token te-token--len">
-                          <span className="te-token-label">{label(tk.labelKey)}</span>
-                          <input type="text" className={`te-token-text ${valid ? '' : 'te-invalid'}`}
-                            value={v} spellCheck={false} placeholder="10px"
-                            onChange={(e) => setToken(tk.token, e.target.value)} />
-                        </label>
-                      );
-                    })}
+                      )}
+                      {group.kind === 'color' && group.tokens.map((tk) => renderToken(tk.token, label(tk.labelKey)))}
+                      {group.kind === 'length' && group.tokens.map((tk) => renderToken(tk.token, label(tk.labelKey)))}
+                    </div>
                   </div>
+                ))
+              ) : (
+                <div className="te-adv">
+                  <div className="te-adv-filters">
+                    <input type="text" className="te-search" placeholder={t('settings.theme.search')}
+                      value={search} spellCheck={false} onChange={(e) => setSearch(e.target.value)} />
+                    <label className="te-onlychanged">
+                      <input type="checkbox" checked={onlyChanged} onChange={(e) => setOnlyChanged(e.target.checked)} />
+                      {t('settings.theme.onlyChanged')}
+                    </label>
+                  </div>
+                  {advancedGroups.length === 0 ? (
+                    <p className="te-empty">{t('settings.theme.noMatches')}</p>
+                  ) : advancedGroups.map((group) => (
+                    <div key={group.id} className="te-group">
+                      <h4 className="te-group-title">{label(group.labelKey)} <span className="te-group-count">{group.tokens.length}</span></h4>
+                      <div className="te-group-body">
+                        {group.tokens.map((tk) => renderToken(tk, <code className="te-token-name">{tk}</code>))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
