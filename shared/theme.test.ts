@@ -9,6 +9,7 @@ import {
   clearAppliedTheme,
   FONT_OPTIONS,
   EDITABLE_TOKENS,
+  ADVANCED_GROUPS,
   type Theme,
   type ThemeApplyTarget,
 } from './theme';
@@ -387,5 +388,26 @@ describe('applyTheme is self-defending (re-sanitizes untrusted drafts)', () => {
     }, 'dark');
     expect(props.has('--color-bg-primary')).toBe(false); // dropped by the in-apply sanitizer
     expect(props.get('--color-text-primary')).toBe('#eee');
+  });
+});
+
+describe('ADVANCED_GROUPS', () => {
+  const flat = ADVANCED_GROUPS.flatMap((g) => g.tokens);
+
+  it('covers every whitelisted token exactly once', () => {
+    expect(new Set(flat).size).toBe(flat.length); // no duplicates
+    expect(new Set(flat)).toEqual(new Set(TOKEN_WHITELIST)); // no missing / no unknown
+    expect(flat.length).toBe(TOKEN_WHITELIST.size);
+  });
+
+  it('only lists whitelisted tokens', () => {
+    for (const name of flat) expect(TOKEN_WHITELIST.has(name)).toBe(true);
+  });
+
+  it('has no empty groups and stable ids', () => {
+    for (const g of ADVANCED_GROUPS) {
+      expect(g.tokens.length).toBeGreaterThan(0);
+      expect(g.labelKey.startsWith('settings.theme.adv.')).toBe(true);
+    }
   });
 });

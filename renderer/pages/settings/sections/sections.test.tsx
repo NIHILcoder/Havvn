@@ -26,6 +26,7 @@ beforeAll(() => {
 import { SettingsProvider } from '../SettingsContext';
 import { SettingsNav } from '../SettingsNav';
 import { ConfirmProvider } from '../../../components/ConfirmDialog';
+import { ThemeEditorProvider } from '../../../components/ThemeEditorContext';
 import { GeneralSection } from './GeneralSection';
 import { DownloadsSection } from './DownloadsSection';
 import { ConnectionSection } from './ConnectionSection';
@@ -58,9 +59,11 @@ describe('settings sections render on the primitives system', () => {
   it.each(SECTIONS)('%s section mounts inside the provider without crashing', (_id, Section) => {
     const html = renderToStaticMarkup(
       <ConfirmProvider>
-        <SettingsProvider>
-          <Section />
-        </SettingsProvider>
+        <ThemeEditorProvider>
+          <SettingsProvider>
+            <Section />
+          </SettingsProvider>
+        </ThemeEditorProvider>
       </ConfirmProvider>,
     );
     expect(html.length).toBeGreaterThan(0);
@@ -70,9 +73,11 @@ describe('settings sections render on the primitives system', () => {
     for (const [id, Section] of SECTIONS) {
       const html = renderToStaticMarkup(
         <ConfirmProvider>
-          <SettingsProvider>
-            <Section />
-          </SettingsProvider>
+          <ThemeEditorProvider>
+            <SettingsProvider>
+              <Section />
+            </SettingsProvider>
+          </ThemeEditorProvider>
         </ConfirmProvider>,
       );
       expect(html, `${id} still renders legacy .setting-item markup`).not.toContain('"setting-item"');

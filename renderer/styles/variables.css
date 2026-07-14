@@ -179,6 +179,9 @@
   /* === Z-Index Scale === */
   --z-dropdown: 100;
   --z-sticky: 200;
+  /* Theme-editor dock: above page content + sticky headers, but BELOW the modal
+     backdrop so page dialogs still layer on top of it (not hidden behind it). */
+  --z-dock: 250;
   --z-modal-backdrop: 300;
   --z-modal: 400;
   --z-popover: 500;
