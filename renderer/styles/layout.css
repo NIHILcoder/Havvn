@@ -11,7 +11,18 @@
   width: 100vw;
   overflow: hidden;
   background: var(--color-bg-primary);
+  /* Push-layout for the theme-editor dock: reserve the dock's width on the
+     matching side so the shell shrinks beside it instead of hiding under it.
+     The dock (ThemeEditor.tsx) sets data-te-dock + --te-dock-w on <html> while
+     open; border-box + these paddings keep total width at 100vw. */
+  transition: padding var(--transition-normal);
 }
+html[data-te-dock='right'] .app-container { padding-right: var(--te-dock-w, 0px); }
+html[data-te-dock='left'] .app-container { padding-left: var(--te-dock-w, 0px); }
+/* While dragging the dock edge the width changes every frame; the 250ms padding
+   ease would make content rubber-band behind the panel, so drop it during drag. */
+body.te-resizing .app-container { transition: none; }
+/* (reduced motion zeroes this transition globally via [data-reduce-motion] in base.css) */
 
 /* === Sidebar === */
 .sidebar {

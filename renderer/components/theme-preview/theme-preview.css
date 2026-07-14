@@ -1,0 +1,62 @@
+/**
+ * Gallery-scoped styling for the theme-editor preview.
+ *
+ * The samples reuse the app's real classes, but those classes assume a
+ * page-fill flex context (flex:1, height:100%, inner scroll regions). Inside the
+ * narrow dock we want each sample to lay out at its natural content height, so
+ * the resets below neutralize the fill/scroll behavior — WITHOUT touching color
+ * tokens, so the recolor fidelity is preserved.
+ *
+ * Everything here is scoped under `.te-gallery`, so it can never leak into the
+ * real Rooms/Downloads pages.
+ */
+
+.te-gallery {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--space-3);
+  min-height: 0;
+}
+
+/* One sample fills the gallery; let it size to content, don't fill the viewport. */
+.te-gallery-surface { min-width: 0; }
+
+/* Neutralize page-fill / inner-scroll so the whole sample is visible at once. */
+.te-gallery .room-section,
+.te-gallery .room-chat,
+.te-gallery .room-chat-log,
+.te-gallery .room-folder-list,
+.te-gallery .room-files,
+.te-gallery .room-members,
+.te-gallery .downloads-list {
+  flex: none;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+}
+
+/* Reveal the inline controls that are opacity:0 until row hover, so the editor
+   shows the full colored palette at rest (these are safe to reveal — they sit
+   inline; the trailing .trow-actions cluster is left to hover to avoid overlap). */
+.te-gallery .room-file-react,
+.te-gallery .room-folder-acts,
+.te-gallery .room-folder-act,
+.te-gallery .room-member-mute,
+.te-gallery .room-member-kick { opacity: 1; }
+
+/* Downloads sample: the list normally sits on a page; give it a hair of breathing room. */
+.te-gallery-list { padding-top: var(--space-2); }
+
+/* Forms sample layout ------------------------------------------------------- */
+.te-gallery-forms { display: flex; flex-direction: column; gap: var(--space-4); }
+/* .form-group/.label/.help-text live in page-scoped stylesheets that aren't
+   loaded here; give the sample its own token-driven styling so the label/hint
+   read as intentional form chrome and still recolor with the theme. */
+.te-gallery-forms .form-group { display: block; }
+.te-gallery-forms .label { display: block; margin-bottom: 5px; font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); color: var(--color-text-secondary); }
+.te-gallery-forms .help-text { display: block; margin-top: 5px; font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+.te-gallery-toggles { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: center; }
+.te-gallery-btnrow { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+/* The modal card is normally centered on a backdrop; here show it inline. */
+.te-gallery-modalcard { position: static; margin: 0; width: 100%; max-width: 100%; }

@@ -22,6 +22,10 @@ import { restoreThemePrefs } from './utils/theme-prefs';
 import { bootApplyActiveTheme } from './utils/theme-library';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
+import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorContext';
+// Lazy: the editor + its preview gallery pull in Rooms/Downloads CSS, so keep
+// them out of the initial bundle until the dock is actually opened.
+const ThemeEditor = lazy(() => import('./components/ThemeEditor'));
 import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
 import { dismissSplash } from './utils/splash';
@@ -43,6 +47,9 @@ const AlertBanner: React.FC<{
 const AppContent: React.FC = () => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
+  // The theme editor is a top-level dock (not a Settings modal) so it stays open
+  // beside every page — click Rooms/Downloads and watch them recolor live.
+  const { open: themeEditorOpen, closeEditor } = useThemeEditor();
   // Start page honors the Settings → Interface preference (downloads is the default).
   const [currentPage, setCurrentPage] = useState<PageId>(() => {
     try { return localStorage.getItem('startPage') === 'rooms' ? 'rooms' : 'downloads'; }
@@ -530,6 +537,15 @@ const AppContent: React.FC = () => {
           />
         </main>
       </div>
+
+      {/* Dock the theme editor at the shell level (outside .app-container) so its
+          fixed panel composes with the container's push-layout reservation, and
+          it survives page navigation while open. */}
+      {themeEditorOpen && (
+        <Suspense fallback={null}>
+          <ThemeEditor onClose={closeEditor} />
+        </Suspense>
+      )}
     </>
   );
 };
@@ -538,7 +554,9 @@ const App: React.FC = () => {
   return (
     <I18nProvider>
       <ConfirmProvider>
-        <AppContent />
+        <ThemeEditorProvider>
+          <AppContent />
+        </ThemeEditorProvider>
       </ConfirmProvider>
     </I18nProvider>
   );
