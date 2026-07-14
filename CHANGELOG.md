@@ -4,6 +4,16 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.13.1] - 2026-07-14
+
+A small follow-up to 2.13.0.
+
+### Fixed
+- In a room, the shared-files card now keeps its header (title, **New folder**
+  and auto-download) and its footer (**From downloads** / **Add files** and the
+  speed limits) pinned in place — only the folder and file list scrolls between
+  them, instead of the whole card sliding away.
+
 ## [2.13.0] - 2026-07-14
 
 Make it yours. Havvn's whole look is now themeable — pick an accent and font in a
