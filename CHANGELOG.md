@@ -4,6 +4,23 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.14.1] - 2026-07-15
+
+A follow-up to 2.14.0's theme editor.
+
+### Added
+- **Upload a custom font** in the theme editor (`.woff2` / `.woff` / `.ttf` /
+  `.otf`) — embedded in the theme itself and carried with export/import.
+- **Ctrl/Cmd+Z** to undo (and **Ctrl/Cmd+Shift+Z** / **Ctrl+Y** to redo) theme
+  edits while the editor is focused.
+
+### Fixed
+- Download rows: the hover action buttons no longer show the speed/peers stats
+  bleeding through behind them.
+- Theme editor preview: the Downloads sample no longer overflows the narrow dock
+  (its buttons could overlap the row), and the Forms sample's controls are now
+  consistently labelled so the folder picker sits like every other field.
+
 ## [2.14.0] - 2026-07-14
 
 The theme editor grew up. It's no longer a modal you edit blind in — it's a
