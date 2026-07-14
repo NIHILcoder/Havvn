@@ -4,6 +4,40 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.14.0] - 2026-07-14
+
+The theme editor grew up. It's no longer a modal you edit blind in — it's a
+dockable side panel you keep open beside the whole app, with a live preview
+gallery, control over every design token, a readability checker, a
+click-to-find inspector, and one-click palette generation.
+
+### Added
+- **Dockable theme editor** — the editor is now a resizable panel you can dock
+  to the left or right (or collapse to a tab) that stays open beside the app.
+  Click through Downloads, Rooms and Settings and watch them recolor live,
+  instead of editing against a static mock.
+- **Preview gallery** — a *Preview* tab renders faithful samples of Downloads,
+  Rooms (shared files, chat, members) and form controls, so you can see how a
+  theme repaints those surfaces without navigating to them.
+- **Advanced mode** — switch from the curated palette to every one of the app's
+  122 design tokens, grouped by purpose, with name search and an *only changed*
+  filter.
+- **Smart color fields** — every color gets HSL + alpha sliders, a screen
+  **eyedropper** to grab any pixel's color, and an *apply to both variants*
+  shortcut.
+- **Contrast checker** — a live WCAG panel rates key text-on-background pairs
+  AA / AAA / fail so unreadable combinations don't slip through.
+- **Screen inspector** — click any element in the running app to jump straight
+  to the token that colors it.
+- **Palette generation** — build a coherent palette from just an accent + a
+  background, or adapt the current variant into the opposite mode (light from
+  dark, or dark from light) in one click.
+- **Undo / redo** and per-token **reset to default** while editing.
+
+### Changed
+- The theme editor now opens as the dock panel described above (still launched
+  from Settings → Interface → Custom themes) rather than as a Settings dialog.
+
 ## [2.13.1] - 2026-07-14
 
 A small follow-up to 2.13.0.
