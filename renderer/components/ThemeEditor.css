@@ -13,8 +13,17 @@
   box-shadow: var(--shadow-xl);
   overflow: hidden;
 }
+
 .ted[data-side='right'] { right: 0; border-left: 1px solid var(--color-border-default); }
 .ted[data-side='left'] { left: 0; border-right: 1px solid var(--color-border-default); }
+/* Popped out into its own OS window: fill it edge to edge (after the data-side
+   rules so the side border is dropped too). */
+.ted[data-popout] {
+  inset: 0;
+  width: auto;
+  border: none;
+  box-shadow: none;
+}
 
 /* Drag the inner edge to resize. */
 .ted-resize {
@@ -124,6 +133,9 @@ body.te-resizing { cursor: ew-resize; user-select: none; }
   gap: 4px;
   max-height: 240px;
   overflow-y: auto;
+  /* overflow:auto zeroes the automatic min-size in the flex column, so without
+     this the fields below crush the library (New/Default/themes) to nothing. */
+  flex-shrink: 0;
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-border-subtle);
 }
@@ -509,7 +521,14 @@ body.te-inspecting, body.te-inspecting * { cursor: crosshair !important; }
   padding: var(--space-3);
   border-top: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
+  /* Narrow dock: the buttons wrap to the next line instead of clipping mid-word;
+     flex-end keeps wrapped rows aligned with the first one. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
+/* The status/hint text yields space first (ellipsis); buttons never shrink. */
+.ted-foot .te-status { flex: 1 1 auto; min-width: 0; }
+.ted-foot .btn { flex-shrink: 0; white-space: nowrap; }
 .te-status { font-size: var(--font-size-sm); margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .te-status--ok { color: var(--color-success); }
 .te-status--err { color: var(--color-error); }

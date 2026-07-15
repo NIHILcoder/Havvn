@@ -19,6 +19,7 @@
  * the same trust boundary an imported file crosses.
  */
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from './Button';
 import Icon from './Icon';
 import { useTranslation } from '../utils/i18nContext';
@@ -32,6 +33,7 @@ import { generatePalette, adaptVariant } from '../../shared/palette';
 import {
   loadLibrary, saveLibrary, getActiveId, getActiveTheme, genThemeId,
   applyThemeObject, previewTheme, activateTheme, deactivateTheme, revertToBase, resolvedMode,
+  registerThemeFontInto,
 } from '../utils/theme-library';
 import { ColorField } from './ColorField';
 import { DownloadsSample, RoomsSample, ChatSample, FormsSample } from './theme-preview/GallerySamples';
@@ -181,6 +183,11 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   // Custom-font upload: hidden file input + the picked file's name for display.
   const fontInputRef = useRef<HTMLInputElement>(null);
   const [customFontName, setCustomFontName] = useState('');
+  // Pop-out: the editor rendered into its own OS window (drag to a 2nd monitor).
+  // The child is an about:blank window we script directly; the component tree
+  // stays HERE (portal), so all state and the live preview keep working.
+  const [popout, setPopout] = useState<Window | null>(null);
+  const popoutRef = useRef<Window | null>(null);
 
   // Defaults for the edited variant — seeds every field's shown value.
   const defaults = useMemo(() => readModeDefaults(variant), [variant]);
@@ -195,9 +202,9 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   // frame where the app is full width and then jumps.
   useLayoutEffect(() => {
     const el = document.documentElement;
-    if (collapsed) { delete el.dataset.teDock; el.style.removeProperty('--te-dock-w'); }
+    if (collapsed || popout) { delete el.dataset.teDock; el.style.removeProperty('--te-dock-w'); }
     else { el.dataset.teDock = side; el.style.setProperty('--te-dock-w', `${width}px`); }
-  }, [side, width, collapsed]);
+  }, [side, width, collapsed, popout]);
   // Always release the reservation (and any stuck resize state) when the editor
   // unmounts (closed) — including if it unmounts mid-drag.
   useEffect(() => () => {
@@ -369,6 +376,93 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     return next;
   });
 
+  // ── pop-out window ─────────────────────────────────────────────────────────
+  /** Detach the editor into its own OS window. The main process allows exactly
+   *  this named about:blank child; styles are cloned into it and the editor is
+   *  portaled there while the preview keeps painting the MAIN window. */
+  const openPopout = () => {
+    const existing = popoutRef.current;
+    if (existing && !existing.closed) { existing.focus(); return; }
+    const w = window.open('about:blank', 'havvn-theme-editor');
+    if (!w) { note('err', t('settings.theme.popoutFailed')); return; }
+    w.document.title = t('settings.theme.editorTitle');
+    // Clone every stylesheet (dev: style-loader <style> tags; prod: <link>s) so
+    // the portal renders styled. Editor CSS is already loaded at this point.
+    // Link hrefs must be made absolute: the child's base URL is about:blank,
+    // where the production build's relative hrefs would not resolve.
+    for (const node of Array.from(document.querySelectorAll('style, link[rel="stylesheet"]'))) {
+      const clone = node.cloneNode(true) as HTMLElement;
+      if (clone instanceof HTMLLinkElement) clone.href = (node as HTMLLinkElement).href;
+      w.document.head.appendChild(clone);
+    }
+    const base = w.document.createElement('style');
+    base.textContent = 'body { margin: 0; overflow: hidden; }';
+    w.document.head.appendChild(base);
+    setInspecting(false);
+    setCollapsed(false);
+    setPopout(w);
+  };
+
+  /** Bring the editor back into the app (also runs when the OS window closes). */
+  const popIn = () => {
+    const w = popoutRef.current;
+    popoutRef.current = null;
+    setPopout(null);
+    if (w && !w.closed) w.close();
+  };
+
+  useEffect(() => { popoutRef.current = popout; }, [popout]);
+  // Close the child window when the editor unmounts (editor closed / app nav),
+  // and when the MAIN document unloads (reload / window close) — React cleanups
+  // don't run on unload, and an orphaned child would outlive its JS context.
+  useEffect(() => {
+    const closeOnUnload = () => { popoutRef.current?.close(); };
+    window.addEventListener('pagehide', closeOnUnload);
+    return () => {
+      window.removeEventListener('pagehide', closeOnUnload);
+      popoutRef.current?.close();
+    };
+  }, []);
+
+  // While popped out: mirror the root's theme attributes (inline token overrides,
+  // data-theme, density, reduced motion) onto the child so the editor chrome is
+  // painted by the same draft; return to docked mode when the window is closed.
+  useEffect(() => {
+    if (!popout) return;
+    const src = document.documentElement;
+    const ATTRS = ['style', 'data-theme', 'data-density', 'data-reduce-motion'];
+    const sync = () => {
+      if (popout.closed) return;
+      const dst = popout.document.documentElement;
+      for (const a of ATTRS) {
+        const v = src.getAttribute(a);
+        if (v === null) dst.removeAttribute(a); else dst.setAttribute(a, v);
+      }
+    };
+    sync();
+    const mo = new MutationObserver(sync);
+    mo.observe(src, { attributes: true, attributeFilter: ATTRS });
+    const onGone = () => {
+      const w = popoutRef.current;
+      popoutRef.current = null;
+      setPopout(null);
+      // beforeunload also fires when the child NAVIGATES (e.g. a reload): the
+      // portal DOM dies with its document, so a navigated child is useless —
+      // close it, or the next pop-out would reuse the blank window by name and
+      // come up empty. Deferred so a real close isn't double-closed.
+      setTimeout(() => { try { if (w && !w.closed) w.close(); } catch { /* gone */ } }, 0);
+    };
+    popout.addEventListener('beforeunload', onGone);
+    return () => { mo.disconnect(); popout.removeEventListener('beforeunload', onGone); };
+  }, [popout]);
+
+  // The pop-out's own chrome must render an uploaded custom font too — FontFace
+  // registrations don't cross documents, so mirror the draft's font into the
+  // child (re-runs when the font changes; cheap no-op otherwise).
+  useEffect(() => {
+    if (popout && !popout.closed && draft?.fontData) registerThemeFontInto(popout.document, draft);
+  }, [popout, draft]);
+
   /** Drag the inner edge to resize; clamped and persisted on release. */
   const onResizeDown = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -448,6 +542,18 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     finally { setBusy(false); }
   };
 
+  /** Footer export: the CURRENT draft (validated/cleaned first), saved or not. */
+  const exportDraft = () => {
+    if (!draft) return;
+    const result = validateTheme({ ...draft, name: draft.name.trim() || t('settings.theme.newName') });
+    if (!result.ok) { note('err', result.errors.join('; ')); return; }
+    void exportTheme({ ...result.theme, id: draft.id || genThemeId() }).then(() => {
+      // Surface silently-dropped invalid values — the file may differ from the
+      // editor's unsaved state.
+      if (result.warnings.length) note('err', t('settings.theme.exportedWarn'));
+    });
+  };
+
   const importTheme = async () => {
     setBusy(true);
     try {
@@ -515,6 +621,10 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
       } else {
         note('err', t('settings.theme.inspectNone'));
       }
+      // The pick click focused the MAIN window — bring the popped-out editor
+      // (where the jumped-to token now shows) back to front.
+      const w = popoutRef.current;
+      if (w && !w.closed) w.focus();
     };
     document.body.classList.add('te-inspecting');
     window.addEventListener('pointermove', onMove, true);
@@ -534,7 +644,8 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
 
   // Collapsed → a small edge tab that re-opens the panel (the draft stays applied
   // to :root, so the app remains recolored while the panel is tucked away).
-  if (collapsed) {
+  // Never while popped out — the editor lives in its own window then.
+  if (collapsed && !popout) {
     return (
       <button
         type="button"
@@ -661,23 +772,34 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     </>
   );
 
-  return (
-    <>
-      {inspecting && inspectRect && (
-        <div className="te-inspect-box" style={{ left: inspectRect.x, top: inspectRect.y, width: inspectRect.w, height: inspectRect.h }} />
-      )}
-    <aside className="ted" data-side={side} style={{ width }} role="region" aria-label={t('settings.theme.editorTitle')} onKeyDown={onDockKeyDown}>
-      <div className="ted-resize" onPointerDown={onResizeDown} role="separator" aria-orientation="vertical" />
+  // The editor panel itself — rendered in place when docked, or portaled into
+  // the pop-out window's body when detached.
+  const editorNode = (
+    <aside className="ted" data-side={side} data-popout={popout ? 'true' : undefined} style={popout ? undefined : { width }} role="region" aria-label={t('settings.theme.editorTitle')} onKeyDown={onDockKeyDown}>
+      {!popout && <div className="ted-resize" onPointerDown={onResizeDown} role="separator" aria-orientation="vertical" />}
 
       <header className="ted-head">
         <h3 className="ted-title"><Icon name="sun" size={16} /> {t('settings.theme.editorTitle')}</h3>
         <div className="ted-head-actions">
-          <button type="button" title={t('settings.theme.dockSide')} aria-label={t('settings.theme.dockSide')} onClick={flipSide}>
-            <Icon name={side === 'right' ? 'chevron-left' : 'chevron-right'} size={16} />
-          </button>
-          <button type="button" title={t('settings.theme.collapse')} aria-label={t('settings.theme.collapse')} onClick={() => { setInspecting(false); setCollapsed(true); }}>
-            <Icon name="minimize" size={16} />
-          </button>
+          {!popout && (
+            <button type="button" title={t('settings.theme.dockSide')} aria-label={t('settings.theme.dockSide')} onClick={flipSide}>
+              <Icon name={side === 'right' ? 'chevron-left' : 'chevron-right'} size={16} />
+            </button>
+          )}
+          {popout ? (
+            <button type="button" title={t('settings.theme.popin')} aria-label={t('settings.theme.popin')} onClick={popIn}>
+              <Icon name="pip" size={16} />
+            </button>
+          ) : (
+            <button type="button" title={t('settings.theme.popout')} aria-label={t('settings.theme.popout')} onClick={openPopout}>
+              <Icon name="external-link" size={16} />
+            </button>
+          )}
+          {!popout && (
+            <button type="button" title={t('settings.theme.collapse')} aria-label={t('settings.theme.collapse')} onClick={() => { setInspecting(false); setCollapsed(true); }}>
+              <Icon name="minimize" size={16} />
+            </button>
+          )}
           <button type="button" title={t('common.close')} aria-label={t('common.close')} onClick={handleClose} disabled={busy}>
             <Icon name="x" size={16} />
           </button>
@@ -883,11 +1005,24 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
         <Button variant="ghost" size="sm" icon={<Icon name="upload" size={15} />} onClick={importTheme} disabled={busy}>
           {t('settings.theme.import')}
         </Button>
+        <Button variant="ghost" size="sm" icon={<Icon name="download" size={15} />} onClick={exportDraft} disabled={!draft || busy}>
+          {t('settings.theme.export')}
+        </Button>
         <Button variant="primary" size="sm" icon={<Icon name="check" size={15} />} onClick={save} disabled={!draft}>
           {t('settings.theme.save')}
         </Button>
       </footer>
     </aside>
+  );
+
+  // The inspect highlight always lives in the MAIN document — it outlines app
+  // elements there, even while the editor itself sits in the pop-out window.
+  return (
+    <>
+      {inspecting && inspectRect && (
+        <div className="te-inspect-box" style={{ left: inspectRect.x, top: inspectRect.y, width: inspectRect.w, height: inspectRect.h }} />
+      )}
+      {popout && !popout.closed ? createPortal(editorNode, popout.document.body) : editorNode}
     </>
   );
 };

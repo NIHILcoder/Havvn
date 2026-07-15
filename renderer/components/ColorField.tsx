@@ -77,9 +77,14 @@ export const ColorField: React.FC<ColorFieldProps> = ({
   const swatchHex = toHex(hslToRgb({ ...hsla, a: 1 }));
   const fromHex = (hex: string) => { const p = parseColor(hex); if (p) emitRgba({ ...p, a: hsla.a }); };
 
-  const pickScreen = () => {
+  const pickScreen = (e: React.MouseEvent<HTMLButtonElement>) => {
+    // Use the button's OWN window: in the popped-out editor the transient user
+    // activation (which EyeDropper.open requires) belongs to that window, and
+    // the main window's constructor would silently reject there.
+    const win = (e.currentTarget.ownerDocument?.defaultView ?? window) as unknown as { EyeDropper?: EyeDropperCtor };
+    if (!win.EyeDropper) return;
     try {
-      const ed = new (window as unknown as { EyeDropper: EyeDropperCtor }).EyeDropper();
+      const ed = new win.EyeDropper();
       ed.open().then((r) => fromHex(r.sRGBHex)).catch(() => { /* cancelled */ });
     } catch { /* unsupported */ }
   };

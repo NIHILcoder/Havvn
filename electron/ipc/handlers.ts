@@ -600,7 +600,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('themes:export', wrapHandler('themes:export',
     async (_event, theme: unknown, suggestedName?: string) => {
       const base = (suggestedName || 'theme').replace(/[^a-z0-9._-]+/gi, '-').slice(0, 60) || 'theme';
-      const result = await dialog.showSaveDialog(mainWindow, {
+      // Parent to the focused window: the theme editor may live in its pop-out
+      // on another monitor — the dialog should appear there, not over main.
+      const result = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
         title: t('dialog.exportTheme'),
         defaultPath: `${base}.havvn-theme.json`,
         filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
@@ -613,7 +615,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('themes:import', wrapHandler('themes:import',
     async () => {
-      const result = await dialog.showOpenDialog(mainWindow, {
+      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
         title: t('dialog.importTheme'),
         properties: ['openFile'],
         filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],

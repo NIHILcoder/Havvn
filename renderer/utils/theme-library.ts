@@ -56,6 +56,23 @@ export function registerThemeFont(theme: Theme): void {
   } catch { registeredFonts.delete(family); }
 }
 
+/**
+ * Register a theme's embedded font into a SPECIFIC document — font
+ * registrations don't cross documents, so the theme editor's pop-out window
+ * needs its own copy to render the uploaded font. No once-guard: pop-outs are
+ * fresh documents each time (re-adding the same face is a cheap no-op anyway).
+ */
+export function registerThemeFontInto(doc: Document, theme: Pick<Theme, 'font' | 'fontData'>): void {
+  if (!theme.fontData) return;
+  const family = themeFontFamily(theme.font);
+  if (!family) return;
+  try {
+    if (typeof FontFace === 'undefined' || !doc.fonts) return;
+    const face = new FontFace(family, `url("${theme.fontData}")`);
+    face.load().then((f) => doc.fonts.add(f)).catch(() => { /* stack fallback takes over */ });
+  } catch { /* unsupported — fall back */ }
+}
+
 export function genThemeId(): string {
   try {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return `thm-${crypto.randomUUID().slice(0, 8)}`;

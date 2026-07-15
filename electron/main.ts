@@ -521,11 +521,53 @@ async function createWindow(): Promise<void> {
   const isDev = process.env.NODE_ENV === 'development';
   const allowedOrigin = isDev ? 'http://localhost:3000' : 'file://';
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
+    // The theme editor's pop-out panel: an about:blank child window the renderer
+    // scripts directly (same-origin DOM portal — no navigation, no remote
+    // content), so the user can drag the editor to a second monitor.
+    if (frameName === 'havvn-theme-editor' && (url === 'about:blank' || url === '')) {
+      return {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          width: 480,
+          height: 900,
+          minWidth: 360,
+          minHeight: 480,
+          autoHideMenuBar: true,
+          backgroundColor: '#141519',
+          title: 'Havvn',
+        },
+      };
+    }
     if (url.startsWith('https://') || url.startsWith('http://')) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
+  });
+
+  // Children allowed above (the theme-editor pop-out) are same-origin
+  // about:blank windows the renderer scripts directly. Lock each one down —
+  // it inherits the preload bridge, so it must never navigate or open windows
+  // of its own — and never let it outlive the window that scripts it (an
+  // orphaned child would also keep 'window-all-closed' from ever firing).
+  const ownerWindow = mainWindow; // non-null capture for the closures below
+  ownerWindow.webContents.on('did-create-window', (child) => {
+    child.removeMenu(); // no app menu → no Ctrl+R accelerator reloading the child
+    child.webContents.setWindowOpenHandler(({ url: childUrl }) => {
+      if (childUrl.startsWith('https://') || childUrl.startsWith('http://')) {
+        void shell.openExternal(childUrl);
+      }
+      return { action: 'deny' };
+    });
+    // A file/link drag-dropped onto the child would otherwise navigate it.
+    child.webContents.on('will-navigate', (event) => event.preventDefault());
+    const closeChild = () => { if (!child.isDestroyed()) child.close(); };
+    ownerWindow.on('closed', closeChild);
+    ownerWindow.on('hide', closeChild); // close-to-tray must not leave it floating
+    child.on('closed', () => {
+      ownerWindow.removeListener('closed', closeChild);
+      ownerWindow.removeListener('hide', closeChild);
+    });
   });
 
   mainWindow.webContents.on('will-navigate', (event, url) => {

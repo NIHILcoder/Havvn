@@ -19,6 +19,12 @@
 }
 html[data-te-dock='right'] .app-container { padding-right: var(--te-dock-w, 0px); }
 html[data-te-dock='left'] .app-container { padding-left: var(--te-dock-w, 0px); }
+/* At full push the remaining space can get too tight for the page layouts —
+   text wraps one word per line and toggles crush. Keep the content at a usable
+   minimum width and let the shell scroll horizontally instead of squeezing. */
+html[data-te-dock] .app-container { overflow-x: auto; }
+html[data-te-dock] .main-content { min-width: 480px; }
+html[data-te-dock] .sidebar { flex-shrink: 0; }
 /* While dragging the dock edge the width changes every frame; the 250ms padding
    ease would make content rubber-band behind the panel, so drop it during drag. */
 body.te-resizing .app-container { transition: none; }
