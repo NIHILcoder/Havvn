@@ -13,6 +13,10 @@
   overflow: hidden;
   background: var(--color-bg-primary);
   animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* Query container for the page's own width — the dock squeezes it without
+     moving the viewport. Safe: this page renders no modal/position:fixed. */
+  container-type: inline-size;
+  container-name: swarm;
 }
 
 .swarm-topbar {
@@ -52,6 +56,15 @@
   grid-template-columns: minmax(0, 1.6fr) 300px;
   gap: var(--space-4);
   padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+/* The stage (~300px min) + the 300px stat panel + gap need ~640px of PAGE.
+   Keyed to the page's own width (container `swarm`, declared on .swarm-page) so
+   it also collapses when the theme-editor dock squeezes the page — the viewport
+   @media below can't see that. */
+@container swarm (max-width: 640px) {
+  .swarm-wrap { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+  .swarm-stage { min-height: 300px; }
 }
 
 @media (max-width: 900px) {

@@ -7,6 +7,12 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
+  /* Query container for the results table below — it has 410px of fixed tracks
+     and NO breakpoint at all, so it overflowed as soon as the page was squeezed
+     (by a narrow window or the theme-editor dock, which doesn't move the
+     viewport). Safe: this page renders no modal/position:fixed. */
+  container-type: inline-size;
+  container-name: search;
 }
 
 .page-header {
@@ -196,6 +202,21 @@
   border-bottom: 1px solid var(--color-border);
   align-items: center;
   transition: background 0.1s ease;
+}
+
+/* Shed columns as the page narrows, least-important first, so the title keeps a
+   readable share instead of the row overflowing. Full row needs
+   name + 90+80+110+130 + 4 gaps ~= 620px; ~490px once the provider is gone. */
+@container search (max-width: 620px) {
+  .results-thead,
+  .results-row { grid-template-columns: 1fr 90px 80px 130px; }
+  .provider-col { display: none; }
+}
+
+@container search (max-width: 480px) {
+  .results-thead,
+  .results-row { grid-template-columns: 1fr 80px 130px; }
+  .size-col { display: none; }
 }
 
 .results-row:last-child {

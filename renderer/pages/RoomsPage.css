@@ -69,6 +69,13 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* Query container for the room's own width. The dock squeezes the page
+     without moving the viewport, so the @media rules below never fired and the
+     hard 360px chat track + the file row's fixed chrome overflowed. Safe to
+     contain: the only position:fixed here (.room-player-backdrop) belongs to
+     RoomPlayer, which renders outside this component's tree. */
+  container-type: inline-size;
+  container-name: room;
 }
 
 /* Drop-files-here overlay (shown while an OS file drag hovers the room) */
@@ -156,6 +163,14 @@
 .room-chat-section .room-chat-head { margin-bottom: var(--space-3); }
 .room-chat-section .room-chat { flex: 1; min-height: 0; }
 .room-chat-section .room-chat-log { flex: 1; max-height: none; }
+
+/* Files column (~340px min) + the 360px chat + gap need ~720px of ROOM width.
+   Keyed to the room's own width (container `room`) so the dock's squeeze counts. */
+@container room (max-width: 720px) {
+  .room-detail-grid { grid-template-columns: minmax(0, 1fr); flex: initial; }
+  .room-col-main { overflow: visible; }
+  .room-section { flex: initial; }
+}
 
 @media (max-width: 980px) {
   /* Single column: the page scrolls as one flow again, chat gets a capped log. */
@@ -686,6 +701,14 @@
   gap: var(--space-3);
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--color-border-subtle);
+  /* The row's chrome (owner avatar + Watch/Open/delete + status) is all
+     flex-shrink:0 — ~385px that squeezed the name to nothing in a narrow room.
+     Let the action cluster drop to its own line instead. */
+  flex-wrap: wrap;
+}
+/* Below that, the name needs the whole line to itself. */
+@container room (max-width: 420px) {
+  .room-file-main { flex: 1 1 100%; order: -1; }
 }
 .room-file:last-child { border-bottom: 0; }
 .room-file-owner { flex-shrink: 0; display: flex; }
@@ -1240,6 +1263,9 @@
 /* Delete shared file */
 .room-file-del {
   width: 30px; height: 30px; display: grid; place-items: center;
+  /* The only item in .room-file without it — so this was the one button that
+     got squashed out of square when the row ran out of room. */
+  flex-shrink: 0;
   border-radius: var(--radius-md); border: 1px solid transparent;
   background: transparent; color: var(--color-text-tertiary); cursor: pointer;
   transition: color 0.15s ease, background 0.15s ease;

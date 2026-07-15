@@ -417,7 +417,10 @@
 
 .form-row-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* Bare `1fr` is `minmax(auto, 1fr)` — the min-content floor stopped the two
+     fields shrinking and pushed them out of a squeezed panel. auto-fit drops to
+     one field per row instead, with no query needed. */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.75rem;
 }
 

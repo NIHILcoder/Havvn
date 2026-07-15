@@ -99,10 +99,12 @@ const writePref = (key: string, value: string): void => {
 };
 
 const initialSide = (): DockSide => (readPref(SIDE_KEY) === 'left' ? 'left' : 'right');
-/** Clamp a width to [MIN, MAX] and to the viewport, so the dock can never eat
- *  the whole app on a narrow window (leave ~160px of app visible). */
+/** Clamp a width to [MIN, MAX] and to the viewport. The reserve is the shell's
+ *  real minimum — the 260px sidebar plus a usable slice of page — not an
+ *  arbitrary 160px, which left less room than the sidebar alone occupies. */
+const SHELL_MIN = 480;
 const clampWidth = (w: number): number => {
-  const viewportCap = (typeof window !== 'undefined' ? window.innerWidth : DOCK_MAX) - 160;
+  const viewportCap = (typeof window !== 'undefined' ? window.innerWidth : DOCK_MAX) - SHELL_MIN;
   return Math.max(DOCK_MIN, Math.min(DOCK_MAX, Math.max(DOCK_MIN, viewportCap), w));
 };
 const initialWidth = (): number => {

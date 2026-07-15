@@ -95,6 +95,12 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Query container for the two-panel layout. Contained here rather than on the
+     page root because the page's modals (TrackerTemplates / BatchCreate) are
+     siblings of this element — containing them would stop their fixed backdrop
+     covering the window. */
+  container-type: inline-size;
+  container-name: create;
 }
 
 /* === Two Panel Layout === */
@@ -115,6 +121,15 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+/* Two panels need ~300px each + gap; below that stack them. Keyed to the
+   content's own width (container `create`) so the dock's squeeze counts too. */
+@container create (max-width: 640px) {
+  .create-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
   }
 }
 
@@ -1117,7 +1132,9 @@
   padding: var(--space-3) var(--space-4);
   border-top: 2px solid var(--color-border-default);
   background: var(--color-bg-secondary);
-  gap: var(--space-4);
+  /* Wrap rather than push the actions off the edge when squeezed. */
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
 }
 
 .footer-info {

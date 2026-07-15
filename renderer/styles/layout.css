@@ -502,7 +502,10 @@ body.te-resizing .app-container { transition: none; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
   height: var(--footer-height);
+  /* Squeezed shell: hide the overflow rather than let the bar grow/clip badly. */
+  overflow: hidden;
   padding: 0 var(--space-4);
   font-size: var(--font-size-xs);
   color: var(--color-text-disabled);
@@ -522,6 +525,11 @@ body.te-resizing .app-container { transition: none; }
   align-items: center;
   gap: var(--space-1);
   font-weight: var(--font-weight-medium);
+  /* Fixed-height bar: without nowrap these labels wrapped to a second line and
+     were clipped once the shell was squeezed. Let the row scroll/ellipsize
+     instead of breaking the bar. */
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .status-dot {

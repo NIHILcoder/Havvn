@@ -383,7 +383,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  /* Two groups of nowrap buttons — wrap instead of pushing out of the bar when
+     the page is squeezed. */
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
   padding: var(--space-2) var(--space-3);
   margin-bottom: var(--space-3);
   background: var(--color-accent-bg);
@@ -424,6 +427,13 @@
   overflow-y: auto;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
+  /* Query container for the rows. The row's columns must shed based on the
+     LIST's width, not the window: the theme-editor dock squeezes the page
+     without touching the viewport, so the @media rules below never fired and
+     the row's 472px of fixed tracks overlapped/overflowed. Safe to contain —
+     the only position:fixed here (.drop-zone) is a sibling, not a descendant. */
+  container-type: inline-size;
+  container-name: dl;
 }
 
 .downloads-list {
@@ -682,6 +692,28 @@
 /* The sub-line percent only appears once the progress column is dropped */
 .trow-sub-pct { display: none; }
 
+/* Shed columns based on the LIST's own width (container `dl`), so the row also
+   adapts when the theme-editor dock squeezes the page — the viewport @media
+   below can't see that at all. Thresholds are what the row actually needs:
+   40 + name + 200 + 132 + 100 + gaps ~= 660px for the full row, ~460px once the
+   progress column is gone. The @media rules stay as a small-window floor. */
+@container dl (max-width: 660px) {
+  .trow-main { grid-template-columns: 40px minmax(0, 1fr) 132px 100px; }
+  .trow-prog { display: none; }
+  .trow-sub-pct { display: inline; }
+  @media (hover: none) {
+    .trow-main { grid-template-columns: 40px minmax(0, 1fr) 132px; }
+  }
+}
+
+@container dl (max-width: 460px) {
+  .trow-main { grid-template-columns: 40px minmax(0, 1fr) 100px; }
+  .trow-rate { display: none; }
+  @media (hover: none) {
+    .trow-main { grid-template-columns: 40px minmax(0, 1fr); }
+  }
+}
+
 /* Narrow widths: shed the progress column (percent moves to the sub-line),
    then the rate column */
 @media (max-width: 1080px) {
@@ -733,7 +765,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
+  /* The title + the action cluster (flex-shrink:0) can't share one line in a
+     squeezed page; wrapping beats the title being crushed to nothing. Its old
+     stacking rule was viewport-keyed, which the dock never triggers. */
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
 }
 
 .download-item-title {
