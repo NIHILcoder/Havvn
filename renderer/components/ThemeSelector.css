@@ -6,7 +6,11 @@
 
 .theme-selector-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* Self-adapting: reflow to 2 then 1 card as the settings column narrows.
+     `repeat(3, 1fr)` was `repeat(3, minmax(auto, 1fr))` — the auto floor is
+     min-content, so the tracks refused to shrink, the grid overflowed its
+     column and the last card got sliced by the page's overflow:hidden. */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 16px;
 }
 

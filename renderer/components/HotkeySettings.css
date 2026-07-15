@@ -67,8 +67,21 @@
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
   border-radius: 14px;
-  gap: 3rem;
+  gap: 1rem 3rem;
+  flex-wrap: wrap;
   transition: all 0.2s ease;
+}
+
+/* The settings column (container `stg`, see pages/settings/shell.css) can be far
+   narrower than the window — the dock squeezes it without moving the viewport.
+   Stack the row rather than let the 3rem gap + the recorder crush the label. */
+@container stg (max-width: 560px) {
+  .hotkey-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 1.25rem;
+  }
 }
 
 .hotkey-item:hover {
@@ -187,7 +200,9 @@
   font-size: 1rem;
   font-weight: 700;
   color: var(--color-accent-primary);
-  min-width: 160px;
+  /* A hard 160px floor made the recorder wider than a squeezed column; cap it
+     against the available width so it shrinks instead of overflowing. */
+  min-width: min(160px, 100%);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }

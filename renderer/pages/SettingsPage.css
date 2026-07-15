@@ -791,8 +791,14 @@
   padding: 10px;
   border-radius: var(--radius-md, 8px);
   line-height: 0;
-  flex-shrink: 0;
+  /* Was flex-shrink:0 around a fixed 168px canvas — wider than a squeezed
+     column, so it pushed out of the card. Let it scale down instead. */
+  flex-shrink: 1;
+  max-width: 100%;
 }
+.web-remote-qr svg,
+.web-remote-qr canvas,
+.web-remote-qr img { max-width: 100%; height: auto; }
 .web-remote-info { flex: 1; min-width: 220px; }
 .web-remote-hint { font-size: 13px; color: var(--color-text-secondary); margin: 0 0 8px; }
 .web-remote-url {
@@ -895,8 +901,10 @@
 .doh-add { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--color-border-subtle); }
 .doh-add-title { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin-bottom: 8px; }
 .doh-add-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.doh-add-name { width: 150px; }
-.doh-add-url { flex: 1; min-width: 220px; }
+.doh-add-name { width: 150px; max-width: 100%; }
+/* min-width:220px kept the URL field wider than a squeezed column even after the
+   row wrapped it onto its own line — 0 lets it fill whatever is actually there. */
+.doh-add-url { flex: 1 1 200px; min-width: 0; }
 
 /* ── Smart network profiles ─────────────────────────────────────────────── */
 .np-panel {
@@ -1027,6 +1035,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap; /* the text + button don't fit side by side when squeezed */
   margin-top: 12px;
   padding: 10px 12px;
   background: var(--color-warning-bg);

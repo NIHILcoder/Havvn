@@ -226,7 +226,9 @@ export const InterfaceSection: React.FC = () => {
           label={t('settings.iface.speedUnits')}
           description={t('settings.iface.speedUnits.desc')}
           control={
-            <div style={{ width: 210 }}>
+            // max-width, not a hard width: 210px overflowed the control column
+            // once the settings column was squeezed by the theme-editor dock.
+            <div style={{ width: '100%', maxWidth: 210 }}>
               <Select
                 options={[
                   { value: 'binary', label: t('settings.iface.units.binary') },

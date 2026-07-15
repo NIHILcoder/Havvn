@@ -27,12 +27,15 @@
 }
 
 .stg-head {
-  height: var(--topbar-height, 80px);
+  /* min-height, not height: in a squeezed column the subtitle wraps to two
+     lines and a fixed height clipped it. */
+  min-height: var(--topbar-height, 80px);
   box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 28px;
+  gap: 12px;
+  padding: 14px 28px;
   border-bottom: 1px solid var(--color-border-subtle);
   flex: none;
 }
@@ -72,7 +75,10 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  /* The note + the two nowrap buttons don't fit side by side in a squeezed
+     column — wrap instead of pushing the buttons out of the bar. */
+  flex-wrap: wrap;
+  gap: 10px 16px;
   padding: 14px 28px;
   background: var(--glass-bg);
   backdrop-filter: var(--glass-blur);
