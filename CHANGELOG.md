@@ -4,6 +4,34 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.14.2] - 2026-07-15
+
+Windows and panels stay where you put them.
+
+### Added
+- **Pop the theme editor out into its own window** — drag it to a second monitor
+  or park it beside Havvn. The app keeps recolouring live while you edit, and a
+  button docks it back.
+- **Export** next to Import in the theme editor, for the theme you're editing
+  right now — saved or not.
+- **Text size** in the theme editor's Simple mode.
+
+### Fixed
+- **Custom fonts now apply to every piece of text.** Buttons, inputs and selects
+  don't inherit a font by default, so the sidebar and parts of Settings stayed in
+  the system font no matter which font a theme picked.
+- **The interface no longer breaks when the window is narrow or the editor is
+  docked.** Every page's layout was sized by the *window*, but the editor's dock
+  squeezes pages without the window changing at all — so nothing adapted: the
+  download rows lost their name column entirely, Settings wrapped labels one word
+  per line, and the theme cards, search results and room chat were clipped.
+  Pages are now sized by the space they actually have.
+- The theme editor's **element inspector** picks the right thing: clicking a
+  folder outline or the logo used to select the text inside it. It now offers the
+  fill, the border or the text where a spot has several.
+- The theme editor's own panel no longer hides the theme list when a theme is
+  open, and its buttons stop clipping mid-word in a narrow dock.
+
 ## [2.14.1] - 2026-07-15
 
 A follow-up to 2.14.0's theme editor.
