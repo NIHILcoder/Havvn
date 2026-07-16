@@ -86,7 +86,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   // Room queued for the leave dialog (which offers keep-files vs delete-files).
   const [leaveTarget, setLeaveTarget] = useState<string | null>(null);
   const [createName, setCreateName] = useState('');
-  const [createE2E, setCreateE2E] = useState(false);
+  // E2E on by default: a new room encrypts its files before they touch the public
+  // swarm. Turning it OFF is an explicit choice (files go out in plaintext).
+  const [createE2E, setCreateE2E] = useState(true);
   const [joinCode, setJoinCode] = useState('');
   const [profileName, setProfileName] = useState('');
   const [profileSeed, setProfileSeed] = useState('');
@@ -218,7 +220,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       setRoom(state);
       setDialog('invite');
       setCreateName('');
-      setCreateE2E(false);
+      setCreateE2E(true); // back to the safe default for the next room
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
     finally { setBusy(false); }
   };
@@ -446,8 +448,8 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           <button type="button" className={`rooms-e2e-toggle ${createE2E ? 'on' : ''}`} onClick={() => setCreateE2E((v) => !v)}>
             <span className="rooms-e2e-check">{createE2E && <Icon name="check" size={12} />}</span>
             <span className="rooms-e2e-text">
-              <span className="rooms-e2e-label"><Icon name="lock" size={12} /> {t('rooms.e2e')} <em>{t('rooms.e2eExperimental')}</em></span>
-              <span className="rooms-e2e-hint">{t('rooms.e2eHint')}</span>
+              <span className="rooms-e2e-label"><Icon name="lock" size={12} /> {t('rooms.e2e')} <em>{t('rooms.e2eRecommended')}</em></span>
+              <span className={`rooms-e2e-hint ${createE2E ? '' : 'warn'}`}>{createE2E ? t('rooms.e2eHint') : t('rooms.e2eOffWarn')}</span>
             </span>
           </button>
         </Modal>

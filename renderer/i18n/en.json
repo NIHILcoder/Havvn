@@ -152,6 +152,8 @@
   "rooms.kickedBanner": "You were removed from this room. You can no longer see new activity or files — leave to clear it.",
   "rooms.e2e": "End-to-end encryption",
   "rooms.e2eExperimental": "experimental",
+  "rooms.e2eRecommended": "recommended",
+  "rooms.e2eOffWarn": "Off: files are shared in plaintext under their real names. Anyone who gets the file's infohash can download it from the public swarm — turn this on unless you mean to share publicly.",
   "rooms.e2eHint": "File contents are encrypted with a room key before sharing, so the swarm only ever carries ciphertext. Uses ~2× disk (encrypted + decrypted copy). Can’t be changed after the room is created.",
   "rooms.encrypted": "Encrypted",
   "rooms.history": "Activity",

@@ -543,6 +543,8 @@
 .rooms-e2e-label { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600; color: var(--color-text-primary); }
 .rooms-e2e-label em { font-style: normal; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-tertiary); border: 1px solid var(--color-border); border-radius: var(--radius-full); padding: 1px 6px; }
 .rooms-e2e-hint { font-size: 11px; line-height: 1.4; color: var(--color-text-tertiary); }
+/* Off state: shared plaintext — warn in the semantic warning colour. */
+.rooms-e2e-hint.warn { color: var(--color-warning); }
 
 /* E2E room badge */
 .room-e2e-badge {
