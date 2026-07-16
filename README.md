@@ -5,7 +5,7 @@
 # Havvn
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
-![Version](https://img.shields.io/badge/Version-2.16.0-orange)
+![Version](https://img.shields.io/badge/Version-2.17.0-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20WebTorrent-informational)
 

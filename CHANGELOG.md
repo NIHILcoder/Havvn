@@ -4,6 +4,27 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.17.0] - 2026-07-16
+
+Rooms get chat catch-up, unread badges, desktop notifications, and a batch of
+smaller quality-of-life touches. No re-create needed — this one is additive.
+
+### Added
+- **Chat catch-up.** Messages sent while you were offline now arrive when you
+  reconnect, instead of being lost. Each backfilled message is re-verified
+  against its author's signature, so catch-up can't be forged.
+- **Unread badges and desktop notifications.** Rooms you aren't looking at show
+  an unread count in the sidebar, and new chat or shared files raise a desktop
+  notification (rate-limited, and off if you've disabled notifications). Clicking
+  one opens the room.
+- **Rename a room.** The room owner can rename the room from its title bar; the
+  new name propagates to everyone and is owner-signed so only the owner can change it.
+- **File list sort & filter, and multi-select delete.** Sort a room's files by
+  date, name, size, or download status, filter by type, and select several at
+  once to remove them in one step.
+- **Request a file.** Ask the room for something by name — it posts to the chat
+  so anyone who has it can drag it in.
+
 ## [2.16.0] - 2026-07-16
 
 Rooms protocol authorization. Room commands are now cryptographically
