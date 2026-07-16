@@ -652,13 +652,63 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
     if (paths.length === 0) { toast.error(t('create.dropReadError')); return; }
     onDropFiles(paths);
   };
-  // Client-side file filter (rendered only when the room has >5 files).
+  // Client-side file filter/sort + bulk selection (all room-local, no engine calls).
   const [fileQuery, setFileQuery] = useState('');
+  const [sortKey, setSortKey] = useState<'added' | 'name' | 'size' | 'status'>('added');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'video' | 'audio' | 'other'>('all');
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const statusRank = useCallback((f: RoomFile) => {
+    const tr = room.transfers?.[f.fileId];
+    if (tr?.haveLocally) return 0;
+    if (tr?.status === 'downloading') return 1;
+    if (tr?.status === 'queued') return 2;
+    return 3;
+  }, [room.transfers]);
   const visibleFiles = useMemo(() => {
     const q = fileQuery.trim().toLowerCase();
-    if (!q) return room.files;
-    return room.files.filter((f) => f.name.toLowerCase().includes(q));
-  }, [room.files, fileQuery]);
+    let arr = room.files;
+    if (q) arr = arr.filter((f) => f.name.toLowerCase().includes(q));
+    if (typeFilter !== 'all') arr = arr.filter((f) => classifyMediaKind(f.name) === typeFilter);
+    return [...arr].sort((a, b) => {
+      if (sortKey === 'name') return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+      if (sortKey === 'size') return (b.size || 0) - (a.size || 0);
+      if (sortKey === 'status') return statusRank(a) - statusRank(b) || (b.addedAt || 0) - (a.addedAt || 0);
+      return (b.addedAt || 0) - (a.addedAt || 0); // 'added' = newest first
+    });
+  }, [room.files, fileQuery, typeFilter, sortKey, statusRank]);
+  const toggleSelect = useCallback((fileId: string) => {
+    setSelected((prev) => { const next = new Set(prev); if (next.has(fileId)) next.delete(fileId); else next.add(fileId); return next; });
+  }, []);
+  // Drop selected ids that no longer exist (a file was removed elsewhere).
+  useEffect(() => {
+    setSelected((prev) => {
+      if (!prev.size) return prev;
+      const live = new Set(room.files.map((f) => f.fileId));
+      const next = new Set(Array.from(prev).filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [room.files]);
+  // Owner-only inline room rename (the engine gates + signs + gossips it).
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(room.name);
+  useEffect(() => { setRenaming(false); setNameDraft(room.name); }, [room.roomId, room.name]);
+  const submitRename = () => {
+    const n = nameDraft.trim();
+    setRenaming(false);
+    if (n && n !== room.name) window.api.rooms.rename(room.roomId, n).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+  };
+  // Request-a-file: rides the signed chat pipeline (renders as a normal message).
+  const [requesting, setRequesting] = useState(false);
+  const [requestDraft, setRequestDraft] = useState('');
+  const submitRequest = () => {
+    const q = requestDraft.trim();
+    setRequesting(false); setRequestDraft('');
+    if (!q) return;
+    window.api.rooms.requestFile(room.roomId, `🙋 ${t('rooms.requestPrefix')}: ${q}`)
+      .then(() => toast.success(t('rooms.requestSent')))
+      .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+  };
   // Activity log lives in its own modal now (opened from the title bar) so it
   // doesn't crowd the files column.
   const [showActivity, setShowActivity] = useState(false);
@@ -670,6 +720,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
     setUpDraft(String(room.upKbps || ''));
     setDownDraft(String(room.downKbps || ''));
     setFileQuery(''); // the filter belongs to one room's list, not the next
+    setSortKey('added'); setTypeFilter('all'); setSelecting(false); setSelected(new Set());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.roomId]);
   const commitLimits = () => {
@@ -711,7 +762,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
   });
 
   const renderFolderFiles = (files: RoomFile[]) => (
-    files.map((f) => <RoomFileRow key={f.fileId} file={f} room={room} onWatch={onWatch} onAssignFile={onAssignFile} />)
+    files.map((f) => (
+      <RoomFileRow
+        key={f.fileId} file={f} room={room} onWatch={onWatch} onAssignFile={onAssignFile}
+        selecting={selecting} selected={selected.has(f.fileId)} onToggleSelect={toggleSelect}
+      />
+    ))
   );
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
@@ -742,7 +798,23 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
       {/* Title bar */}
       <div className="room-detail-head">
         <div className="room-detail-title">
-          <h2>{room.name}</h2>
+          {renaming ? (
+            <input
+              className="room-rename-input" autoFocus value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={submitRename}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') { setRenaming(false); setNameDraft(room.name); } }}
+            />
+          ) : (
+            <h2 className={room.canManage ? 'renamable' : ''} onDoubleClick={room.canManage ? () => setRenaming(true) : undefined} title={room.canManage ? t('rooms.rename') : undefined}>
+              {room.name}
+              {room.canManage && (
+                <button type="button" className="room-rename-btn" onClick={() => setRenaming(true)} title={t('rooms.rename')} aria-label={t('rooms.rename')}>
+                  <Icon name="edit-2" size={13} />
+                </button>
+              )}
+            </h2>
+          )}
           {room.e2e && (
             <span className="room-e2e-badge" title={t('rooms.e2eHint')}>
               <Icon name="lock" size={12} /> {t('rooms.encrypted')}
@@ -782,6 +854,14 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
                 <button
                   type="button"
                   className="room-newfolder-btn"
+                  title={t('rooms.requestFile')}
+                  onClick={() => setRequesting((v) => !v)}
+                >
+                  <Icon name="help-circle" size={13} /> {t('rooms.requestFile')}
+                </button>
+                <button
+                  type="button"
+                  className="room-newfolder-btn"
                   title={t('rooms.folder.new')}
                   onClick={() => { setEditFolderId(null); setNewFolderOpen((v) => !v); }}
                 >
@@ -803,6 +883,59 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
                   onChange={(e) => setFileQuery(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Escape') setFileQuery(''); }}
                 />
+              </div>
+            )}
+
+            {room.files.length > 1 && !selecting && (
+              <div className="room-file-toolbar">
+                <select className="room-file-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as typeof sortKey)} title={t('rooms.sort.label')} aria-label={t('rooms.sort.label')}>
+                  <option value="added">{t('rooms.sort.added')}</option>
+                  <option value="name">{t('rooms.sort.name')}</option>
+                  <option value="size">{t('rooms.sort.size')}</option>
+                  <option value="status">{t('rooms.sort.status')}</option>
+                </select>
+                <select className="room-file-select" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)} aria-label={t('rooms.filter.all')}>
+                  <option value="all">{t('rooms.filter.all')}</option>
+                  <option value="video">{t('rooms.filter.video')}</option>
+                  <option value="audio">{t('rooms.filter.audio')}</option>
+                  <option value="other">{t('rooms.filter.other')}</option>
+                </select>
+                <button type="button" className="room-file-select-btn" onClick={() => setSelecting(true)}>
+                  <Icon name="check-circle" size={13} /> {t('rooms.select')}
+                </button>
+              </div>
+            )}
+
+            {selecting && (
+              <div className="room-file-bulkbar">
+                <span className="room-file-bulk-count">{t('rooms.selectedCount').replace('{n}', String(selected.size))}</span>
+                <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set(visibleFiles.map((f) => f.fileId)))}>{t('rooms.selectAll')}</button>
+                <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set())}>{t('rooms.clearSelection')}</button>
+                <button
+                  type="button" className="room-file-bulk-del" disabled={selected.size === 0}
+                  onClick={async () => {
+                    const ids = Array.from(selected);
+                    if (!ids.length) return;
+                    if (!(await confirm({ message: t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length)), danger: true }))) return;
+                    window.api.rooms.removeFiles(room.roomId, ids).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+                    setSelected(new Set()); setSelecting(false);
+                  }}
+                >
+                  <Icon name="trash" size={13} /> {t('rooms.deleteSelected')}
+                </button>
+                <button type="button" className="room-file-select-btn" onClick={() => { setSelecting(false); setSelected(new Set()); }}>{t('rooms.selectDone')}</button>
+              </div>
+            )}
+
+            {requesting && (
+              <div className="room-request-row">
+                <Icon name="help-circle" size={14} />
+                <input
+                  type="text" autoFocus placeholder={t('rooms.requestPlaceholder')} value={requestDraft}
+                  onChange={(e) => setRequestDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') submitRequest(); if (e.key === 'Escape') { setRequesting(false); setRequestDraft(''); } }}
+                />
+                <Button variant="primary" size="sm" onClick={submitRequest} disabled={!requestDraft.trim()}>{t('rooms.requestFile')}</Button>
               </div>
             )}
 
@@ -1171,7 +1304,7 @@ const RoomChat: React.FC<{ room: RoomState; withMembers?: boolean }> = ({ room, 
   );
 };
 
-const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onAssignFile: (fileId: string, folderId: string | null) => void }> = ({ file, room, onWatch, onAssignFile }) => {
+const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string) => void }> = ({ file, room, onWatch, onAssignFile, selecting = false, selected = false, onToggleSelect }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const [moveOpen, setMoveOpen] = useState(false);
@@ -1204,10 +1337,17 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 
   return (
     <div
-      className="room-file"
-      draggable={folders.length > 0}
+      className={`room-file ${selecting ? 'selecting' : ''} ${selected ? 'selected' : ''}`}
+      draggable={folders.length > 0 && !selecting}
       onDragStart={(e) => { e.dataTransfer.setData(FILE_DND_TYPE, file.fileId); e.dataTransfer.effectAllowed = 'move'; }}
+      onClick={selecting ? () => onToggleSelect?.(file.fileId) : undefined}
     >
+      {selecting && (
+        <input
+          type="checkbox" className="room-file-check" checked={selected} readOnly
+          aria-label={file.name}
+        />
+      )}
       <div className="room-file-owner" title={`${t('rooms.addedBy')}: ${owner?.name || file.addedByName}`}>
         <Identicon seed={owner?.avatarSeed || file.addedBy} size={30} />
       </div>

@@ -476,3 +476,62 @@ describe('owner pin: a joiner adopts only the pinned owner', () => {
     expect((await cmd(J, { type: 'snapshot', roomId })).ownerId).toBe('FIRST'); // first claim wins when unpinned
   });
 });
+
+describe('room rename: owner-only, signed, last-writer-wins', () => {
+  const ownerKeys = makeKeys();
+  const OWNER = deriveMemberId(ownerKeys.pub);
+
+  it('the owner renames the room and a connected member applies it; a non-owner cannot', async () => {
+    const code = generateRoomCode();
+    const roomId = 'r-rename';
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: OWNER, ownerId: OWNER, ownerPin: OWNER, keys: ownerKeys, folder: newFolder() }));
+    O.tracker = H.trackers[H.trackers.length - 1];
+    const J = await makeEngine();
+    await cmd(J, joinPayload({ roomId, code, memberId: 'member-J', ownerPin: OWNER, folder: newFolder() }));
+    J.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    await flush();
+    // J adopts the pinned owner from O's hello.
+    expect((await cmd(J, { type: 'snapshot', roomId })).ownerId).toBe(OWNER);
+
+    // The owner renames — J applies it.
+    await cmd(O, { type: 'rename', roomId, name: 'Movie Night' });
+    await flush();
+    expect((await cmd(J, { type: 'snapshot', roomId })).name).toBe('Movie Night');
+
+    // A hostile member forges a rename with its OWN id — J ignores it (not the owner).
+    const mal = hostilePeer(J);
+    mal.send(encrypt(deriveKey(code), { t: 'rename', name: 'Hacked', at: Date.now() + 10_000, by: 'MAL', pub: 'x', sig: 'x' }));
+    await flush();
+    expect((await cmd(J, { type: 'snapshot', roomId })).name).toBe('Movie Night');
+
+    // A stale (older `at`) owner-signed rename is ignored (last-writer-wins).
+    const topic = topicHash(code);
+    const staleAt = 1; // far in the past
+    const canon = Buffer.from(JSON.stringify(['rename', topic, 'Old Name', staleAt, OWNER]), 'utf8');
+    const sig = crypto.sign(null, canon, crypto.createPrivateKey(ownerKeys.priv)).toString('base64');
+    mal.send(encrypt(deriveKey(code), { t: 'rename', name: 'Old Name', at: staleAt, by: OWNER, pub: ownerKeys.pub, sig }));
+    await flush();
+    expect((await cmd(J, { type: 'snapshot', roomId })).name).toBe('Movie Night');
+
+    // A member floods an unsigned HELLO with a huge nameAt (>= 2^53) trying to
+    // wedge the LWW clock so the owner can never rename again. It must be clamped.
+    mal.send(helloFrame(code, { memberId: 'MAL', roomName: 'Movie Night', nameAt: 1e16, ownerId: OWNER }));
+    await flush();
+
+    // A genuinely newer owner rename still wins (the poison was clamped, not wedged).
+    await cmd(O, { type: 'rename', roomId, name: 'Final Name' });
+    await flush();
+    expect((await cmd(J, { type: 'snapshot', roomId })).name).toBe('Final Name');
+  }, 25000);
+
+  it('a non-owner engine cannot rename its own room (engine refuses)', async () => {
+    const code = generateRoomCode();
+    const roomId = 'r-rename-noowner';
+    const M = await makeEngine();
+    // Owner is someone else (not us) — we're just a member.
+    await cmd(M, joinPayload({ roomId, code, memberId: 'member-M', ownerId: OWNER, keys: makeKeys(), folder: newFolder() }));
+    await expect(cmd(M, { type: 'rename', roomId, name: 'Nope' })).rejects.toThrow(/owner/i);
+  });
+});

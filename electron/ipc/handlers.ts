@@ -514,6 +514,26 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, fileId: string) => roomManager.removeFile(roomId, fileId)
   ));
 
+  ipcMain.handle('rooms:removeFiles', wrapHandler('rooms:removeFiles',
+    async (_event, roomId: string, fileIds: string[]) => roomManager.removeFiles(roomId, Array.isArray(fileIds) ? fileIds : [])
+  ));
+
+  ipcMain.handle('rooms:rename', wrapHandler('rooms:rename',
+    async (_event, roomId: string, name: string) => roomManager.renameRoom(roomId, String(name || '').trim())
+  ));
+
+  ipcMain.handle('rooms:requestFile', wrapHandler('rooms:requestFile',
+    async (_event, roomId: string, text: string) => roomManager.requestFile(roomId, String(text || ''))
+  ));
+
+  ipcMain.handle('rooms:markRead', wrapHandler('rooms:markRead',
+    async (_event, roomId: string) => roomManager.markRead(roomId)
+  ));
+
+  ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',
+    async (_event, roomId: string | null) => roomManager.setActiveRoom(roomId ?? null)
+  ));
+
   ipcMain.handle('rooms:createFolder', wrapHandler('rooms:createFolder',
     async (_event, roomId: string, name: string, icon: string, color: string) => roomManager.createFolder(roomId, name, icon, color)
   ));

@@ -472,3 +472,44 @@ describe('revive authorization: only the owner or the deleter can bring a delete
     expect((await cmd(O, plf('FO'))).files).toHaveLength(0); // owner deletion still works — not blocked
   }, 30000);
 });
+
+describe('chat backfill: messages said while offline arrive on reconnect', () => {
+  const ROOMC = 'room-chat-backfill';
+  function cp(label: string) {
+    const k = keysFor(label);
+    return { type: 'join', payload: {
+      roomId: ROOMC, name: 'Chat room', code: CODE, folder: path.join(dir, 'chat-' + label.toLowerCase()),
+      self: { memberId: k.memberId, name: label, avatarSeed: label, pub: k.pub, priv: k.priv },
+      useTurn: false, turnServers: [], tombstones: {}, manifest: [], ownerId: idFor('CA'),
+      mutes: [], history: [], chat: [], identities: {}, e2e: false, secret: '', cacheDir: '',
+    } };
+  }
+  const texts = (s: any) => s.chat.map((m: any) => m.text);
+
+  it('a member that was offline receives the messages it missed', async () => {
+    fs.mkdirSync(path.join(dir, 'chat-ca'), { recursive: true }); fs.mkdirSync(path.join(dir, 'chat-cb'), { recursive: true });
+    const A = await makeEngine(); await cmd(A, cp('CA')); A.tracker = H.trackers[H.trackers.length - 1];
+    const B = await makeEngine(); await cmd(B, cp('CB')); B.tracker = H.trackers[H.trackers.length - 1];
+    const [aWire, bWire] = connect(A, B);
+    await flush();
+
+    // A speaks while B is online — B gets it live.
+    await cmd(A, { type: 'chat', roomId: ROOMC, payload: { text: 'hello while online' } });
+    await flush();
+    expect(texts(await cmd(B, cp('CB')))).toContain('hello while online');
+
+    // B goes offline; A keeps talking.
+    aWire.destroy(); bWire.destroy();
+    await cmd(A, { type: 'chat', roomId: ROOMC, payload: { text: 'you missed this one' } });
+    await flush();
+    // B hasn't received the offline message.
+    expect(texts(await cmd(B, cp('CB')))).not.toContain('you missed this one');
+
+    // B reconnects: its HELLO says how caught-up it is, and A backfills the gap.
+    connect(A, B);
+    await flush();
+    const after = texts(await cmd(B, cp('CB')));
+    expect(after).toContain('hello while online');
+    expect(after).toContain('you missed this one'); // backfilled + signature re-verified
+  }, 30000);
+});

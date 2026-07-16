@@ -174,6 +174,10 @@ export interface RoomChatMessage {
   name: string;          // sender display name at send time
   avatarSeed: string;    // sender avatar at send time
   text: string;          // message body (already trimmed + length-capped)
+  // The sender's Ed25519 signature over the message, kept so a message re-served
+  // as backfill to a peer that was offline still self-authenticates (verifyChat).
+  pub?: string;
+  sig?: string;
 }
 
 /** An entry in a room's activity log (locally observed; capped + persisted). */
@@ -245,6 +249,8 @@ export interface RoomSummary {
   /** Networking torn down by the VPN kill-switch (VPN dropped) — nothing is
    *  seeding or announcing until the VPN returns. */
   suspended?: boolean;
+  /** Unread chat messages from others since the room was last viewed. */
+  unread?: number;
 }
 
 /** This install's identity in rooms. */
@@ -1031,6 +1037,11 @@ export interface IpcApi {
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }>;
     broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
+    removeFiles: (roomId: string, fileIds: string[]) => Promise<{ ok: boolean }>;
+    rename: (roomId: string, name: string) => Promise<RoomState>;
+    requestFile: (roomId: string, text: string) => Promise<{ ok: boolean }>;
+    markRead: (roomId: string) => Promise<{ ok: boolean }>;
+    setActiveRoom: (roomId: string | null) => Promise<{ ok: boolean }>;
     // Folders/sections (any member may manage; convergence is last-writer-wins)
     createFolder: (roomId: string, name: string, icon: string, color: string) => Promise<RoomState>;
     updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }) => Promise<RoomState>;
@@ -1055,6 +1066,7 @@ export interface IpcApi {
   };
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
   onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void) => () => void;
+  onRoomOpen: (callback: (roomId: string) => void) => () => void;
 
   // IP Blocklist
   blocklist: {

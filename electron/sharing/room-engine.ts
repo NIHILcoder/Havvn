@@ -65,7 +65,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -76,6 +76,7 @@ const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync'
 const MAX_FRAME_CHARS = 1_000_000;   // reject an encrypted frame larger than ~1 MB
 const MAX_ARRAY = 5000;              // have / files / tombs entries
 const MAX_TOMBSIGS = 500;            // signed tombstones per hello — each costs an Ed25519 verify, and the store caps at 500 anyway
+const MAX_CHAT_LOG = 200;            // backfilled chat messages per frame (matches the persisted chat cap; each costs a verify)
 const MAX_STR = 1024;                // ids, names, seeds
 const MAX_MAGNET = 4096;             // a magnet URI
 const MAX_TEXT = 2000;               // a chat message body
@@ -100,7 +101,7 @@ type Msg =
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number> }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -133,6 +134,14 @@ type Msg =
   // over the immutable fields — proves authorship, so no keyholder can post under
   // another member's id (anti-spoofing on top of the room-key confidentiality).
   | { t: 'chat'; id: string; memberId: string; name: string; avatarSeed: string; text: string; at: number; pub: string; sig: string }
+  // Backfill: a UNICAST reply to a peer whose HELLO said it was behind — the
+  // messages it missed while offline, each carrying its own pub/sig so they
+  // re-verify independently of who re-served them. Never broadcast/relayed.
+  | { t: 'chat-log'; msgs: Array<{ id: string; memberId: string; name: string; avatarSeed: string; text: string; at: number; pub: string; sig: string }> }
+  // Owner renamed the room. OWNER-SIGNED + last-writer-wins by `at`, so it can
+  // actually change an already-set name (the plain HELLO roomName only bootstraps
+  // a placeholder). Relayed verbatim; peers verify `by === ownerId`.
+  | { t: 'rename'; name: string; at: number; by: string; pub: string; sig: string }
   // Liveness: the sender is composing a chat message. Renderer-triggered, never
   // persisted; receivers stamp it and let a ~4s TTL fade it out on their own.
   | { t: 'typing'; memberId: string }
@@ -157,6 +166,7 @@ interface E2ECfg { ownerId: string; e2e: boolean; secret: string; pub: string; s
 interface Room {
   roomId: string;
   name: string;
+  nameAt: number;                        // last-writer-wins clock for the room name (owner rename)
   code: string;
   folder: string;
   key: Buffer;
@@ -506,6 +516,7 @@ function helloMsg(room: Room): Msg {
     tombsAt: Object.fromEntries(room.tombstones), // legacy: timestamps let a newer re-share revive
     ...(room.tombSigs.size ? { tombSigs: tombSigsToRecord(room) } : {}), // authenticated deletions (peers verify authority before applying)
     roomName: room.name, // so a joiner (who only knows the code) learns the name
+    ...(room.nameAt ? { nameAt: room.nameAt } : {}), // the name's LWW clock, so a joiner won't later reject a newer rename
     ownerId: room.ownerId, // so joiners learn who the owner is
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
     secret: room.secret,
@@ -513,6 +524,9 @@ function helloMsg(room: Room): Msg {
     ...(room.fileReacts.size ? { fileReacts: reactsToRecord(room) } : {}), // late joiners union this in
     ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
     ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
+    // How caught-up our chat is — a reconnecting peer replies with a chat-log of
+    // anything newer that it holds, so messages said while we were offline arrive.
+    ...(room.chat.length ? { chatAt: room.chat[room.chat.length - 1].at } : {}),
   };
 }
 
@@ -709,12 +723,25 @@ function logEvent(room: Room, ev: Omit<RoomEvent, 'id' | 'at'>): void {
  * Record a chat message (in memory + persisted) and refresh the UI immediately.
  * Idempotent on message id so re-delivery across multiple wires is harmless.
  */
-function addChat(room: Room, msg: RoomChatMessage): void {
+function addChat(room: Room, msg: RoomChatMessage, backfill = false): void {
   if (room.chat.some((m) => m.id === msg.id)) return;
   room.chat.push(msg);
   if (room.chat.length > 200) room.chat = room.chat.slice(-200);
-  try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: msg }); } catch { /* ignore */ }
+  // `backfill` = historical catch-up (not live) — the main process persists + badges
+  // it but does NOT fire an OS notification, so a reconnect can't detonate a toast storm.
+  try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: msg, backfill }); } catch { /* ignore */ }
   pushState(room, true);
+}
+
+/** Reply to a peer's HELLO with the chat messages it missed while offline: those
+ *  newer than its `since` that we can re-serve WITH a signature (so they verify on
+ *  its side). Unicast — never broadcast — so backfill goes only to who needs it. */
+function sendChatBackfill(room: Room, wire: Wire, since: number): void {
+  const msgs = room.chat
+    .filter((m) => m.at > since && m.pub && m.sig)
+    .slice(-100)
+    .map((m) => ({ id: m.id, memberId: m.memberId, name: m.name, avatarSeed: m.avatarSeed, text: m.text, at: m.at, pub: m.pub as string, sig: m.sig as string }));
+  if (msgs.length) sendTo(room, wire, { t: 'chat-log', msgs });
 }
 
 // ── Chat authorship (Ed25519) ────────────────────────────────────────────────
@@ -795,6 +822,10 @@ function rekeyCanonical(topic: string, m: { newCode: string; kickedId: string; b
 }
 function kickedCanonical(topic: string, m: { targetId: string; by: string }): Buffer {
   return Buffer.from(JSON.stringify(['kicked', topic, m.targetId, m.by]), 'utf8');
+}
+/** Bytes the owner signs to rename the room (owner-gated + last-writer-wins). */
+function renameCanonical(topic: string, m: { name: string; at: number; by: string }): Buffer {
+  return Buffer.from(JSON.stringify(['rename', topic, m.name, m.at, m.by]), 'utf8');
 }
 /** Bytes an owner/deleter signs to authorize lifting an authenticated tombstone.
  *  Bound to `tombAt` — the deletion timestamp being lifted, a value every peer
@@ -1051,6 +1082,15 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       m.have = Array.from(new Set(msg.have || []));
       maybeAdoptRoomName(room, msg.roomName);
+      // Track the name's LWW clock once we're in sync on the name, so a later
+      // owner rename (at > nameAt) is accepted and a stale one is rejected. HELLO
+      // is UNSIGNED, so clamp to our clock — an unbounded nameAt (e.g. 2^53) would
+      // otherwise wedge the LWW: the owner's `nameAt + 1` stops incrementing at
+      // that float magnitude and every signed rename is then rejected as not-newer.
+      if (room.name === msg.roomName) {
+        const incoming = Math.min(Number(msg.nameAt) || 0, Date.now());
+        if (incoming > room.nameAt) room.nameAt = incoming;
+      }
       maybeAdoptOwner(room, msg.ownerId);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
@@ -1083,7 +1123,32 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       }
       // Union the peer's reaction view into ours (late-join convergence).
       if (mergeReacts(room, msg.fileReacts)) persistReacts(room);
+      // Chat backfill: if this peer is behind our chat (or hasn't said how caught-up
+      // it is), UNICAST it the messages it's missing — only ones we can re-serve with
+      // a signature, so they self-authenticate on its side. Only on a DIRECT hello,
+      // so `wire` really is that peer (relayed hellos don't identify the wire).
+      if (direct) sendChatBackfill(room, wire, Number(msg.chatAt) || 0);
       pushState(room);
+      break;
+    }
+    case 'chat-log': {
+      // Backfilled messages a peer re-served us. Each self-authenticates (verifyChat
+      // over its own pub/sig), and addChat dedupes by id — so overlapping backfill
+      // from multiple peers is harmless. Capped, and dedup/future/mute checks run
+      // BEFORE the expensive verify so a stuffed frame can't force N signature checks.
+      const list = Array.isArray(msg.msgs) ? msg.msgs.slice(0, MAX_CHAT_LOG) : [];
+      for (const c of list) {
+        const text = String(c?.text || '').slice(0, 2000);
+        const memberId = String(c?.memberId || '');
+        const id = String(c?.id || '');
+        const at = Number(c?.at) || 0;
+        if (!id || !text || !memberId || room.mutes.has(memberId)) continue;
+        if (at > Date.now() + 60_000) continue;             // no future-dated chat (would sit unread forever)
+        if (room.chat.some((m) => m.id === id)) continue;   // already have it — skip the verify
+        const cm = { id, at, memberId, text, pub: String(c.pub || ''), sig: String(c.sig || '') };
+        if (!verifyChat(room, cm)) continue;
+        addChat(room, { id, at: at || Date.now(), memberId, name: String(c.name || '?'), avatarSeed: String(c.avatarSeed || memberId), text, pub: cm.pub, sig: cm.sig }, true /* backfill — no toast */);
+      }
       break;
     }
     case 'ping': {
@@ -1170,6 +1235,21 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       markKicked(room, msg.byName || '?');
       break;
     }
+    case 'rename': {
+      // Owner-only, last-writer-wins by `at`. Encryption proves only membership, so
+      // an unsigned rename would be a free "rename anyone's room" — verify the owner.
+      const at = Number(msg.at) || 0;
+      const name = String(msg.name || '').slice(0, MAX_STR).trim();
+      if (!name || at <= room.nameAt) break;                       // empty or not newer — ignore
+      if (at > Date.now() + 60_000) break;                         // no future-dated rename (would wedge the LWW clock)
+      if (!room.ownerId || msg.by !== room.ownerId) break;         // only the owner renames
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, renameCanonical(room.topic, { name, at, by: msg.by }))) break;
+      room.name = name;
+      room.nameAt = at;
+      try { ipcRenderer.send('room-name', { roomId: room.roomId, name, at }); } catch { /* ignore */ }
+      pushState(room, true);
+      break;
+    }
     case 'bye': {
       // A member left voluntarily — drop them immediately (no offline ghost).
       const m = room.members.get(msg.memberId);
@@ -1201,12 +1281,14 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (room.mutes.has(msg.memberId)) break; // a muted member's messages stay hidden
       const text = String(msg.text || '').slice(0, 2000);
       if (!text) break;
+      if ((Number(msg.at) || 0) > Date.now() + 60_000) break; // no future-dated chat (would sit unread forever + skew ordering)
       // Reject unsigned, badly-signed, or impersonating messages outright.
       if (!verifyChat(room, { id: String(msg.id), at: Number(msg.at) || 0, memberId: msg.memberId, text, pub: msg.pub, sig: msg.sig })) break;
       // Keep the sender fresh in the member list so a chatter never looks offline.
       const m = room.members.get(msg.memberId);
       if (m) m.lastSeen = Date.now();
-      addChat(room, { id: String(msg.id), at: Number(msg.at) || Date.now(), memberId: msg.memberId, name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, text });
+      // Keep pub/sig so this message can be re-served as backfill and still verify.
+      addChat(room, { id: String(msg.id), at: Number(msg.at) || Date.now(), memberId: msg.memberId, name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, text, pub: msg.pub, sig: msg.sig });
       break;
     }
     case 'typing': {
@@ -1894,7 +1976,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; nameAt?: number; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -1912,6 +1994,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
   room = {
     roomId: p.roomId,
     name: p.name,
+    nameAt: Number(p.nameAt) || 0,
     code: p.code,
     folder: p.folder,
     key,
@@ -2248,7 +2331,41 @@ function sendChat(roomId: string, rawText: string): void {
   // Bind our own identity locally too, so the roster is complete on our side.
   if (!room.identities.has(room.self.memberId)) room.identities.set(room.self.memberId, room.self.pub);
   broadcast(room, { t: 'chat', ...msg, pub: room.self.pub, sig });
-  addChat(room, msg);
+  addChat(room, { ...msg, pub: room.self.pub, sig }); // keep our sig so we can re-serve this as backfill
+}
+
+/** Delete one file: sign a tombstone, apply it locally, and gossip it. Records the
+ *  authenticated proof only when WE may delete it for everyone (owner or author);
+ *  otherwise it degrades to a local hide (peers drop the unauthorized del). */
+function broadcastDelete(r: Room, fileId: string, at: number): void {
+  const file = r.files.get(fileId);
+  const authorized = (!!r.ownerId && r.self.memberId === r.ownerId) || (!!file && file.addedBy === r.self.memberId);
+  const sig = signBytes(r, delCanonical(r.topic, { fileId, memberId: r.self.memberId, at }));
+  applyTombstone(r, fileId, at, { id: r.self.memberId, name: r.self.name || 'You' });
+  if (authorized && r.tombstones.get(fileId) === at) {
+    r.tombSigs.set(fileId, { by: r.self.memberId, pub: r.self.pub, sig });
+    try { ipcRenderer.send('room-tomb', { roomId: r.roomId, fileId, at, by: r.self.memberId, pub: r.self.pub, sig }); } catch { /* ignore */ }
+  }
+  broadcast(r, { t: 'del', fileId, memberId: r.self.memberId, at, pub: r.self.pub, sig });
+}
+
+/** Owner-only: rename the room, sign it, and gossip the change (LWW by `at`). A
+ *  non-owner call is refused (encryption proves membership, not authority). */
+function renameRoom(roomId: string, rawName: string): RoomState {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can rename the room');
+  const name = String(rawName || '').slice(0, MAX_STR).trim();
+  if (!name) throw new Error('Room name cannot be empty');
+  const at = Math.max(Date.now(), room.nameAt + 1); // strictly newer, never in the past
+  const by = room.self.memberId;
+  const sig = signBytes(room, renameCanonical(room.topic, { name, at, by }));
+  room.name = name;
+  room.nameAt = at;
+  try { ipcRenderer.send('room-name', { roomId: room.roomId, name, at }); } catch { /* ignore */ }
+  broadcast(room, { t: 'rename', name, at, by, pub: room.self.pub, sig });
+  pushState(room, true);
+  return buildState(room);
 }
 
 /** Apply a profile change (name/avatar) to every active room and tell peers. */
@@ -2270,6 +2387,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'addFiles') data = await addFiles(msg.roomId, msg.paths, msg.opts);
     else if (type === 'createFolder') data = createFolder(msg.roomId, msg.name, msg.icon, msg.color);
     else if (type === 'updateFolder') data = updateFolder(msg.roomId, msg.folderId, msg.patch || {});
+    else if (type === 'rename') data = renameRoom(msg.roomId, msg.name);
     else if (type === 'deleteFolder') data = deleteFolder(msg.roomId, msg.folderId);
     else if (type === 'assignFile') data = assignFile(msg.roomId, msg.fileId, msg.folderId ?? null);
     else if (type === 'leave') { leaveRoom(msg.roomId); data = { ok: true }; }
@@ -2279,26 +2397,15 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'releaseFile') { releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }
     else if (type === 'removeFile') {
       const r = rooms.get(msg.roomId);
+      if (r) { broadcastDelete(r, msg.fileId, Number(msg.at) || Date.now()); pushState(r, true); }
+      data = { ok: true };
+    }
+    else if (type === 'removeFiles') {
+      const r = rooms.get(msg.roomId);
       if (r) {
-        // Reuse the manager's timestamp so the persisted tombstone and the
-        // gossiped one agree on when the deletion happened.
         const at = Number(msg.at) || Date.now();
-        // Are WE allowed to delete this for everyone (owner, or the file's author)?
-        // If not, this is a purely local hide — applied here, dropped by peers.
-        const file = r.files.get(msg.fileId);
-        const authorized = (!!r.ownerId && r.self.memberId === r.ownerId) || (!!file && file.addedBy === r.self.memberId);
-        const sig = signBytes(r, delCanonical(r.topic, { fileId: msg.fileId, memberId: r.self.memberId, at }));
-        applyTombstone(r, msg.fileId, at, { id: r.self.memberId, name: r.self.name || 'You' });
-        // Record + persist the proof only when authorized, so it re-gossips
-        // (and survives restart) as an AUTHENTICATED tombstone peers will honor.
-        if (authorized && r.tombstones.get(msg.fileId) === at) {
-          r.tombSigs.set(msg.fileId, { by: r.self.memberId, pub: r.self.pub, sig });
-          try { ipcRenderer.send('room-tomb', { roomId: r.roomId, fileId: msg.fileId, at, by: r.self.memberId, pub: r.self.pub, sig }); } catch { /* ignore */ }
-        }
-        // Signed with our key; peers apply it only if we're the file's author or
-        // the owner (a non-author delete is a local hide, not a room-wide one).
-        broadcast(r, { t: 'del', fileId: msg.fileId, memberId: r.self.memberId, at, pub: r.self.pub, sig });
-        pushState(r, true);
+        for (const fileId of (Array.isArray(msg.fileIds) ? msg.fileIds : [])) if (fileId) broadcastDelete(r, String(fileId), at);
+        pushState(r, true); // one refresh for the whole batch
       }
       data = { ok: true };
     }

@@ -25,6 +25,7 @@ const log = logger.child('RoomManager');
 // Same relay set as share links — friends behind symmetric NATs need TURN to
 // connect. Honors the existing "Use TURN relays" privacy toggle.
 import { customTurnToIce } from './ice-servers';
+import { showOsNotification } from '../utils/os-notify';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -45,6 +46,13 @@ export class RoomManager {
   // every lazy reactivation funnels through reactivate(), so gating it there
   // closes every re-leak path at once.
   private networkSuspended = false;
+
+  // The room currently open on screen (reported by the renderer). Activity in this
+  // room is not OS-notified (the user is already looking at it).
+  private activeRoomId: string | null = null;
+  // Per-room OS-notification throttle so a hostile member can't detonate a toast
+  // storm — at most one toast per room per NOTIFY_COOLDOWN_MS.
+  private lastNotify = new Map<string, number>();
 
   constructor() {
     // Renderer-facing liveness channels live HERE (not ipc/handlers.ts): they
@@ -141,11 +149,30 @@ export class RoomManager {
     // A new activity-log event was observed — persist it (capped) so the room's
     // history survives restart.
     ipcMain.on('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types').RoomEvent }) => {
-      try { if (payload?.roomId && payload?.event?.id) db.appendRoomEvents(payload.roomId, [payload.event]); } catch { /* ignore */ }
+      try {
+        if (!payload?.roomId || !payload?.event?.id) return;
+        db.appendRoomEvents(payload.roomId, [payload.event]);
+        // Notify when SOMEONE ELSE adds a file to a room you're not looking at.
+        const ev = payload.event;
+        if (ev.type === 'file-added' && ev.actorId && ev.actorId !== db.getRoomProfile().memberId) {
+          this.notifyRoomActivity(payload.roomId, ev.actorName || 'Someone', `shared ${ev.fileName || 'a file'}`);
+        }
+      } catch { /* ignore */ }
     });
-    // A chat message (sent or received) — persist it (capped, deduped by id).
-    ipcMain.on('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types').RoomChatMessage }) => {
-      try { if (payload?.roomId && payload?.message?.id) db.appendRoomChats(payload.roomId, [payload.message]); } catch { /* ignore */ }
+    // A chat message (sent or received) — persist it (capped, deduped by id) and,
+    // if it's from someone else and not the room you're looking at, OS-notify.
+    ipcMain.on('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types').RoomChatMessage; backfill?: boolean }) => {
+      try {
+        if (!payload?.roomId || !payload?.message?.id) return;
+        const isNew = db.appendRoomChats(payload.roomId, [payload.message]);
+        const m = payload.message;
+        if (isNew && !payload.backfill && m.memberId && m.memberId !== db.getRoomProfile().memberId) {
+          // If you're looking at this room (and the window is focused), the message
+          // is already read — no badge; else notify (rate-limited per room).
+          if (payload.roomId === this.activeRoomId && this.mainWindowFocused()) db.setRoomLastRead(payload.roomId, Date.now());
+          this.notifyRoomActivity(payload.roomId, m.name || 'Someone', m.text || '');
+        }
+      } catch { /* ignore */ }
     });
     // A file reaction toggled (ours or a peer's) — persist the room's whole
     // reaction map (toggles don't append well) so it survives restart.
@@ -197,13 +224,14 @@ export class RoomManager {
     // A joiner learned the room's friendly name from a peer (it had only the
     // code) — persist it so the name survives restart and shows in the list even
     // before the room reconnects. Live UI updates ride the normal room-update.
-    ipcMain.on('room-name', (_e, payload: { roomId: string; name: string }) => {
+    ipcMain.on('room-name', (_e, payload: { roomId: string; name: string; at?: number }) => {
       try {
         if (!payload?.roomId || !payload?.name) return;
         const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
-        if (r && r.name !== payload.name) {
-          db.savePersistedRoom({ ...r, name: payload.name });
-          log.info('Room name learned from peer', { roomId: payload.roomId, name: payload.name });
+        const at = Math.min(Number(payload.at) || 0, Date.now() + 60_000); // never persist a future clock (LWW-wedge guard)
+        if (r && (r.name !== payload.name || at > (r.nameAt ?? 0))) {
+          db.savePersistedRoom({ ...r, name: payload.name, ...(at ? { nameAt: at } : {}) });
+          log.info('Room name updated', { roomId: payload.roomId, name: payload.name });
         }
       } catch { /* ignore */ }
     });
@@ -308,6 +336,7 @@ export class RoomManager {
         folderTombs: db.getRoomFolderTombstones(roomId),
         ownerId: ownerId ?? '',
         ownerPin: ownerPin ?? '',
+        nameAt: persisted?.nameAt ?? 0,
         mutes: db.getRoomMutes(roomId),
         history: db.getRoomHistory(roomId),
         chat: db.getRoomChats(roomId),
@@ -424,6 +453,7 @@ export class RoomManager {
     db.clearRoomHistory(roomId);
     db.clearRoomMutes(roomId);
     db.clearRoomChats(roomId);
+    db.clearRoomLastRead(roomId);
     db.clearRoomReacts(roomId);
     db.clearRoomIdentities(roomId);
     try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
@@ -439,8 +469,11 @@ export class RoomManager {
   }
 
   async list(): Promise<RoomSummary[]> {
+    const self = db.getRoomProfile().memberId;
     return db.getPersistedRooms().map((r) => {
       const s = this.cache.get(r.roomId);
+      const lastRead = db.getRoomLastRead(r.roomId);
+      const unread = db.getRoomChats(r.roomId).filter((m) => m.at > lastRead && m.memberId !== self).length;
       return {
         roomId: r.roomId,
         name: r.name,
@@ -452,6 +485,7 @@ export class RoomManager {
         createdAt: r.createdAt,
         e2e: r.e2e ?? false,
         suspended: this.networkSuspended,
+        unread,
       };
     });
   }
@@ -530,6 +564,11 @@ export class RoomManager {
     return state;
   }
 
+  /** Owner-only room rename — the engine gates + signs it, then gossips + persists. */
+  renameRoom(roomId: string, name: string): Promise<RoomState> {
+    return this.folderCmd(roomId, 'rename', { name });
+  }
+
   createFolder(roomId: string, name: string, icon: string, color: string): Promise<RoomState> {
     return this.folderCmd(roomId, 'createFolder', { name, icon, color });
   }
@@ -551,6 +590,72 @@ export class RoomManager {
       this.win.webContents.send('room-cmd', { type: 'removeFile', reqId: ++this.reqSeq, roomId, fileId, at });
     }
     return { ok: true };
+  }
+
+  /** Remove several files at once (one gossip pass; per-file authorization in the
+   *  engine is unchanged — a file you can't delete for everyone is a local hide). */
+  async removeFiles(roomId: string, fileIds: string[]): Promise<{ ok: boolean }> {
+    const ids = (fileIds || []).filter((x) => typeof x === 'string' && x);
+    if (!ids.length) return { ok: true };
+    const at = Date.now();
+    for (const fileId of ids) db.addRoomTombstone(roomId, fileId, at);
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'removeFiles', reqId: ++this.reqSeq, roomId, fileIds: ids, at });
+    }
+    return { ok: true };
+  }
+
+  /** Ask peers to share something — rides the signed chat pipeline (no new gossip
+   *  type). The renderer decorates the text so it renders as a request. */
+  async requestFile(roomId: string, text: string): Promise<{ ok: boolean }> {
+    return this.sendChat(roomId, text);
+  }
+
+  /** Mark a room read up to now (clears its unread badge). The renderer refreshes
+   *  its list once this resolves; live chat refreshes via the room-update push. */
+  async markRead(roomId: string): Promise<{ ok: boolean }> {
+    db.setRoomLastRead(roomId, Date.now());
+    return { ok: true };
+  }
+
+  /** The renderer tells us which room is on screen, so we don't OS-notify it. */
+  async setActiveRoom(roomId: string | null): Promise<{ ok: boolean }> {
+    this.activeRoomId = roomId || null;
+    if (roomId) db.setRoomLastRead(roomId, Date.now()); // opening a room reads it
+    return { ok: true };
+  }
+
+  private mainWindowFocused(): boolean {
+    return !!this.mainWindow && !this.mainWindow.isDestroyed() && this.mainWindow.isFocused();
+  }
+
+  /** OS-notify activity in a room that isn't the one on screen (best-effort). */
+  private async notifyRoomActivity(roomId: string, who: string, body: string): Promise<void> {
+    try {
+      // Looking right at it (and the app is focused)? No notification.
+      if (roomId === this.activeRoomId && this.mainWindowFocused()) return;
+      // Rate-limit: one toast per room per cooldown, so a burst/backfill can't spam.
+      const NOTIFY_COOLDOWN_MS = 8000;
+      const now = Date.now();
+      if (now - (this.lastNotify.get(roomId) ?? 0) < NOTIFY_COOLDOWN_MS) return;
+      const settings = await db.getSettings();
+      if (settings.enableNotifications === false) return;
+      this.lastNotify.set(roomId, now);
+      const roomName = db.getPersistedRooms().find((r) => r.roomId === roomId)?.name || 'Room';
+      const preview = body.length > 140 ? body.slice(0, 140) + '…' : body;
+      showOsNotification(`${who} · ${roomName}`, preview, { onClick: () => this.focusAndOpenRoom(roomId) });
+    } catch { /* best-effort */ }
+  }
+
+  /** Bring the app forward and ask the renderer to open a room (notification click). */
+  private focusAndOpenRoom(roomId: string): void {
+    try {
+      const w = this.mainWindow;
+      if (!w || w.isDestroyed()) return;
+      if (w.isMinimized()) w.restore();
+      w.show(); w.focus();
+      w.webContents.send('rooms:open', { roomId });
+    } catch { /* ignore */ }
   }
 
   /** Owner-only: remove a member by rotating the room code (engine enforces it). */

@@ -339,6 +339,17 @@ const AppContent: React.FC = () => {
     return () => { cancelled = true; clearInterval(interval); offUpdate(); offSync(); };
   }, []);
 
+  // Tell the main process which room is on screen (so it won't OS-notify it and
+  // marks it read), and refresh the list so its unread badge clears immediately.
+  useEffect(() => {
+    const open = currentPage === 'rooms' ? activeRoomId : null;
+    window.api.rooms.setActiveRoom(open).catch(() => { /* ignore */ });
+    if (open) window.api.rooms.list().then(setRoomSummaries).catch(() => { /* ignore */ });
+  }, [activeRoomId, currentPage]);
+
+  // A room notification was clicked — open that room.
+  useEffect(() => window.api.onRoomOpen((roomId) => { if (roomId) openRoom(roomId); }), []);
+
   // Global shortcuts — user-editable in Settings → Hotkeys, layout-independent
   // via event.code. Bindings live in utils/hotkeys.ts; edits apply live.
   useEffect(() => {

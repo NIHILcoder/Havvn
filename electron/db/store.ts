@@ -70,6 +70,7 @@ interface RoomsSchema {
   roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
   roomTombstoneProofs: Record<string, Record<string, { by: string; pub: string; sig: string }>>; // roomId → (fileId → author/owner deletion signature), so a tombstone re-verifies as it gossips
   roomRevives: Record<string, Record<string, number>>; // roomId → (fileId → revAt of a VERIFIED revive); persisted so the re-deletion guard survives restart
+  roomLastRead: Record<string, number>; // roomId → last time the user viewed the room (ms); chat newer than this is unread
   roomManifests: Record<string, PersistedRoomFile[]>; // roomId → known files (resume on restart)
   roomFolders: Record<string, PersistedRoomFolder[]>; // roomId → folders/sections (resume on restart)
   roomFolderTombstones: Record<string, Record<string, number>>; // roomId → (deleted folderId → deletedAt ms)
@@ -103,6 +104,7 @@ export interface PersistedRoom {
   createdAt: number;
   ownerId?: string;  // memberId of the room owner (creator); learned via gossip for joiners
   ownerPin?: string; // owner memberId pinned from the invite — only this identity may be adopted as owner (absent = trust-on-first-use)
+  nameAt?: number;   // last-writer-wins clock for the room name (owner rename); absent/0 = never renamed
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
   // Owner-signed E2E config blob (Ed25519 over topic+ownerId+e2e+secret). Kept so
@@ -253,7 +255,7 @@ const searchStore = new Store<SearchSchema>({
 
 const roomsStore = new Store<RoomsSchema>({
   name: 'rooms',
-  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
 });
 
 const reputationStore = new Store<ReputationSchema>({
@@ -615,22 +617,42 @@ export function getRoomChats(roomId: string): RoomChatMessage[] {
   return list.map((m) => ({ ...m, text: decryptSecret(m.text) }));
 }
 
-export function appendRoomChats(roomId: string, messages: RoomChatMessage[]): void {
-  if (!messages.length) return;
+/** Returns true if at least one message was new (not a re-delivery/backfill dup). */
+export function appendRoomChats(roomId: string, messages: RoomChatMessage[]): boolean {
+  if (!messages.length) return false;
   const all = roomsStore.get('roomChats') ?? {};
   const seen = new Set((all[roomId] ?? []).map((m) => m.id));
   const fresh = messages
     .filter((m) => m.id && !seen.has(m.id))
     .map((m) => ({ ...m, text: encryptSecret(m.text) }));
-  if (!fresh.length) return;
+  if (!fresh.length) return false;
   all[roomId] = (all[roomId] ?? []).concat(fresh).slice(-200); // cap
   roomsStore.set('roomChats', all);
+  return true;
 }
 
 export function clearRoomChats(roomId: string): void {
   const all = roomsStore.get('roomChats') ?? {};
   delete all[roomId];
   roomsStore.set('roomChats', all);
+}
+
+// === Room unread (last time the user viewed a room; chat after it is unread) ===
+
+export function getRoomLastRead(roomId: string): number {
+  return (roomsStore.get('roomLastRead') ?? {})[roomId] ?? 0;
+}
+
+export function setRoomLastRead(roomId: string, at: number = Date.now()): void {
+  const all = roomsStore.get('roomLastRead') ?? {};
+  all[roomId] = Math.max(at, all[roomId] ?? 0);
+  roomsStore.set('roomLastRead', all);
+}
+
+export function clearRoomLastRead(roomId: string): void {
+  const all = roomsStore.get('roomLastRead') ?? {};
+  delete all[roomId];
+  roomsStore.set('roomLastRead', all);
 }
 
 // === Room file reactions (gossiped emoji toggles, persisted locally + capped) ===

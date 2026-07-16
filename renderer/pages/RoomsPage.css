@@ -687,6 +687,104 @@
 }
 .room-file-search input::placeholder { color: var(--color-text-tertiary); }
 
+/* Sort/filter + bulk-select toolbar */
+.room-file-toolbar,
+.room-file-bulkbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+.room-file-select {
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.room-file-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.room-file-select-btn:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+.room-file-bulk-count { font-size: 12px; color: var(--color-text-tertiary); margin-right: auto; }
+.room-file-bulk-del {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--color-danger, #ef4444);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.room-file-bulk-del:disabled { opacity: 0.5; cursor: default; }
+.room-file-check { margin-right: var(--space-2); flex-shrink: 0; cursor: pointer; }
+.room-file.selecting { cursor: pointer; }
+.room-file.selected { background: rgba(var(--color-accent-rgb), 0.1); border-radius: var(--radius-sm); }
+
+/* Inline room rename in the title bar */
+.room-detail-title h2.renamable { display: inline-flex; align-items: center; gap: 6px; }
+.room-rename-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+.room-rename-btn:hover { color: var(--color-accent-primary); }
+.room-rename-input {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-focus);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  max-width: 320px;
+}
+
+/* Request-a-file inline row */
+.room-request-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  color: var(--color-text-tertiary);
+}
+.room-request-row input {
+  flex: 1;
+  height: 30px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-default);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
 .room-files { display: flex; flex-direction: column; }
 .room-files-empty {
   padding: var(--space-6);

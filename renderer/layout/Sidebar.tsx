@@ -182,7 +182,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         : `${room.memberCount} ${t('rooms.rail.members')} · ${room.fileCount} ${t('rooms.rail.files')}`}
                     </span>
                   </span>
-                  {room.onlineCount > 1 && <span className="room-nav-live" />}
+                  {room.unread ? (
+                    <span className="room-nav-unread" title={t('rooms.rail.unread')}>{room.unread > 99 ? '99+' : room.unread}</span>
+                  ) : room.onlineCount > 1 && <span className="room-nav-live" />}
                 </button>
               ))
             )}

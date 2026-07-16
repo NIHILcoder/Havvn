@@ -619,6 +619,16 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:broadcastSync', roomId, payload),
     removeFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:removeFile', roomId, fileId),
+    removeFiles: (roomId: string, fileIds: string[]): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:removeFiles', roomId, fileIds),
+    rename: (roomId: string, name: string): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:rename', roomId, name),
+    requestFile: (roomId: string, text: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:requestFile', roomId, text),
+    markRead: (roomId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:markRead', roomId),
+    setActiveRoom: (roomId: string | null): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:setActiveRoom', roomId),
     createFolder: (roomId: string, name: string, icon: string, color: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color),
     updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }): Promise<RoomState> =>
@@ -669,6 +679,13 @@ const api: IpcApi = {
     const handler = (_event: IpcRendererEvent, msg: any) => callback(msg);
     ipcRenderer.on('rooms:sync', handler);
     return () => { ipcRenderer.removeListener('rooms:sync', handler); };
+  },
+
+  // The user clicked a room notification — open that room.
+  onRoomOpen: (callback: (roomId: string) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, msg: { roomId: string }) => callback(msg?.roomId);
+    ipcRenderer.on('rooms:open', handler);
+    return () => { ipcRenderer.removeListener('rooms:open', handler); };
   },
 
   // Priority 2: IP Blocklist
