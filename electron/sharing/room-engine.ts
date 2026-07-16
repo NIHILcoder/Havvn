@@ -25,7 +25,7 @@ import { ipcRenderer } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import WebTorrent from 'webtorrent';
-import { deriveKey, topicHash, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
+import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon } from '../../shared/room-folders';
@@ -152,7 +152,8 @@ interface Room {
   code: string;
   folder: string;
   key: Buffer;
-  topic: string;
+  topic: string;                         // internal signature domain separator (never announced)
+  rendezvous: string;                    // public tracker rendezvous id (slow-derived from key)
   peerId: string;
   iceServers: any[];
   tracker: any;
@@ -1441,7 +1442,7 @@ function wireTorrentStats(room: Room, torrent: any): void {
 function attachTracker(room: Room): void {
   try {
     const tracker = new TrackerClient({
-      infoHash: room.topic,
+      infoHash: room.rendezvous,
       peerId: room.peerId,
       announce: ROOM_TRACKERS,
       port: 6881,
@@ -1455,7 +1456,7 @@ function attachTracker(room: Room): void {
     tracker.on('update', () => { room.started = true; });
     tracker.start();
     room.started = true;
-    log('Tracker announced: ' + room.name + ' (' + room.topic.slice(0, 8) + ')');
+    log('Tracker announced: ' + room.name + ' (' + room.rendezvous.slice(0, 8) + ')');
   } catch (e) {
     log('tracker start failed: ' + String(e));
   }
@@ -1495,6 +1496,7 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   room.code = newCode;
   room.key = deriveKey(newCode);
   room.topic = topicHash(newCode);
+  room.rendezvous = rendezvousId(room.key);
   try { ipcRenderer.send('room-rekey', { roomId: room.roomId, code: newCode }); } catch { /* ignore */ }
   // The signed E2E config binds the topic, which just rotated: the owner mints a
   // fresh one (broadcast in the re-greet below); members drop the now-stale blob
@@ -1595,13 +1597,15 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     ? STUN_SERVERS.concat(p.turnServers)
     : STUN_SERVERS.slice();
 
+  const key = deriveKey(p.code); // one PBKDF2; feeds both the gossip key and the rendezvous id
   room = {
     roomId: p.roomId,
     name: p.name,
     code: p.code,
     folder: p.folder,
-    key: deriveKey(p.code),
+    key,
     topic: topicHash(p.code),
+    rendezvous: rendezvousId(key),
     peerId: randomPeerId(),
     iceServers,
     tracker: null,

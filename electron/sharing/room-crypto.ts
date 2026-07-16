@@ -79,9 +79,30 @@ export function deriveKey(code: string): Buffer {
   return crypto.pbkdf2Sync(normalizeCode(code), SALT, 150000, 32, 'sha256');
 }
 
-/** 20-byte tracker rendezvous topic (hex) derived from the code. */
+/**
+ * Internal domain separator (20-byte hex) bound into every Ed25519 signature
+ * (chat / E2E config) so a signature can't be replayed into another room. It is
+ * NEVER transmitted or announced — only mixed into signed byte strings — so a
+ * fast hash of the code is fine here (an attacker never sees it). Kept as the
+ * historical value so persisted signatures still verify across the topicHash
+ * split below; do not change it.
+ */
 export function topicHash(code: string): string {
   return crypto.createHash('sha1').update('th-room:v1:' + normalizeCode(code)).digest('hex');
+}
+
+/**
+ * Public tracker RENDEZVOUS id (20-byte hex) — the ONE room value that goes on
+ * the public WSS trackers. Derived from the SLOW PBKDF2 key, NOT a fast hash of
+ * the low-entropy code: the old `sha1(code)` topic let any tracker operator
+ * brute-force the ~2^33 code space offline in seconds (one sha1 per guess) and
+ * recover the room key. Binding the rendezvous to the PBKDF2 key makes reversing
+ * it cost 2^33 × 150k PBKDF2 rounds — the same as attacking the encrypted gossip
+ * directly, so the tracker is no longer a cheaper oracle. Takes the already-
+ * derived key so joining doesn't pay a second PBKDF2.
+ */
+export function rendezvousId(key: Buffer): string {
+  return crypto.createHmac('sha1', key).update('th-room-rv:v1').digest('hex');
 }
 
 /** A random 20-byte peer id (hex) for a tracker session. */
