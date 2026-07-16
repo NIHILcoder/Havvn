@@ -35,6 +35,7 @@ import crypto from 'crypto';
 import TrackerClient from 'bittorrent-tracker';
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
+import { VoiceSession, VoiceAdapter, SignalKind } from './room-voice';
 
 const ROOM_TRACKERS = RENDEZVOUS_TRACKERS;
 
@@ -65,7 +66,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'voice-state', 'voice-signal']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -149,7 +150,15 @@ type Msg =
   | { t: 'react-file'; memberId: string; fileId: string; emoji: string; on: boolean }
   // Coarse download progress (0-100, PROG_STEP granularity) so peers see a
   // member's transfer move; completion is signalled by the normal 'have'.
-  | { t: 'prog'; memberId: string; fileId: string; pct: number };
+  | { t: 'prog'; memberId: string; fileId: string; pct: number }
+  // Voice presence: the sender joined/left the room's voice channel or toggled
+  // mute. SIGNED so a member can't fake another's presence; relayed so late/relay-
+  // only members learn who is talking.
+  | { t: 'voice-state'; memberId: string; inVoice: boolean; muted: boolean; at: number; pub: string; sig: string }
+  // Voice signaling (WebRTC offer/answer/ICE) from `memberId` to `to`. SIGNED so
+  // signaling can't be spoofed; relayed+targeted so it reaches a peer we can only
+  // reach through another member. The media itself is DTLS-SRTP peer-to-peer.
+  | { t: 'voice-signal'; memberId: string; to: string; kind: 'offer' | 'answer' | 'ice'; data: any; pub: string; sig: string };
 
 interface Wire { id: number; peer: any; memberId?: string; }
 
@@ -206,6 +215,7 @@ interface Room {
   memberProg: Map<string, Map<string, number>>;      // memberId → fileId → coarse download % (session-only)
   progSent: Map<string, number>;         // fileId → last PROG_STEP % WE gossiped (throttle)
   identities: Map<string, string>;       // memberId → Ed25519 public key (PEM), TOFU-bound
+  voice: VoiceSession;                    // serverless mesh voice channel (session-only)
   seenGids: Set<string>;                 // relay dedup — gossip ids already processed
   seenGidOrder: string[];                // FIFO order for capping seenGids
   kicked: boolean;                       // the owner removed us (session-only)
@@ -447,6 +457,7 @@ function buildState(room: Room): RoomState {
     typingMemberIds,
     fileReacts: reactsToRecord(room),
     memberProg,
+    voice: room.voice.getState(),
   };
 }
 
@@ -827,6 +838,38 @@ function kickedCanonical(topic: string, m: { targetId: string; by: string }): Bu
 function renameCanonical(topic: string, m: { name: string; at: number; by: string }): Buffer {
   return Buffer.from(JSON.stringify(['rename', topic, m.name, m.at, m.by]), 'utf8');
 }
+/** Bytes a member signs over a voice presence announcement. `at` is bound in so a
+ *  replayed (older) presence can't resurrect a departed member or flip their mute. */
+function voiceStateCanonical(topic: string, m: { memberId: string; inVoice: boolean; muted: boolean; at: number }): Buffer {
+  return Buffer.from(JSON.stringify(['voice-state', topic, m.memberId, m.at, m.inVoice, m.muted]), 'utf8');
+}
+/** Bytes a member signs over a voice signaling blob (offer/answer/ice). */
+function voiceSignalCanonical(topic: string, m: { memberId: string; to: string; kind: string; data: unknown }): Buffer {
+  return Buffer.from(JSON.stringify(['voice-signal', topic, m.memberId, m.to, m.kind, m.data]), 'utf8');
+}
+
+/** Wire a room's VoiceSession to the room's signed, encrypted gossip. Presence and
+ *  signaling are Ed25519-signed (so a member can't spoof another's voice), ride the
+ *  relay flood (so relay-only members are reachable), and any voice change re-pushes
+ *  room state to the UI. */
+function createVoiceSession(room: Room): VoiceSession {
+  const adapter: VoiceAdapter = {
+    selfId: room.self.memberId,
+    iceServers: room.iceServers as RTCIceServer[],
+    sendSignal(to: string, kind: SignalKind, data: unknown): void {
+      const sig = signBytes(room, voiceSignalCanonical(room.topic, { memberId: room.self.memberId, to, kind, data }));
+      broadcast(room, { t: 'voice-signal', memberId: room.self.memberId, to, kind, data, pub: room.self.pub, sig });
+    },
+    announce(inVoice: boolean, muted: boolean, at: number): void {
+      const sig = signBytes(room, voiceStateCanonical(room.topic, { memberId: room.self.memberId, inVoice, muted, at }));
+      broadcast(room, { t: 'voice-state', memberId: room.self.memberId, inVoice, muted, at, pub: room.self.pub, sig });
+    },
+    onChange(): void { pushState(room, true); },
+    log,
+  };
+  return new VoiceSession(adapter);
+}
+
 /** Bytes an owner/deleter signs to authorize lifting an authenticated tombstone.
  *  Bound to `tombAt` — the deletion timestamp being lifted, a value every peer
  *  agrees on (it rode the signed `del`) — NOT the reviving add's addedAt, which
@@ -965,6 +1008,8 @@ function clampGossip(msg: any): void {
   if ('roomName' in msg) msg.roomName = clampStr(msg.roomName, MAX_STR);
   if ('avatarSeed' in msg) msg.avatarSeed = clampStr(msg.avatarSeed, MAX_STR);
   if ('ownerId' in msg) msg.ownerId = clampStr(msg.ownerId, MAX_STR);
+  if ('to' in msg) msg.to = clampStr(msg.to, MAX_STR);       // voice-signal target
+  if ('kind' in msg) msg.kind = clampStr(msg.kind, 16);      // voice-signal kind (offer/answer/ice)
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
   if ('secret' in msg) msg.secret = clampStr(msg.secret, MAX_SECRET);
   if ('text' in msg) msg.text = clampStr(msg.text, MAX_TEXT);
@@ -1093,7 +1138,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       }
       maybeAdoptOwner(room, msg.ownerId);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
-      if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
+      if (isNew) { logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' }); room.voice.reannounce(); } // let a late joiner learn we're in voice
       // Merge the peer's files first so an authenticated tombstone below can check
       // authorship (addedBy) against the file, then re-suppress it. `tombSigs` are
       // AUTHENTICATED deletions — each re-verifies (owner/author + signature)
@@ -1260,10 +1305,27 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // Their session-only liveness goes with them.
       room.memberProg.delete(msg.memberId);
       delete room.typing[msg.memberId];
+      room.voice.onMemberGone(msg.memberId); // tear down any voice connection to them
       for (const w of Array.from(room.wires.values())) {
         if (w.memberId === msg.memberId) { try { w.peer.destroy(); } catch { /* ignore */ } room.wires.delete(w.id); }
       }
       pushState(room, true);
+      break;
+    }
+    case 'voice-state': {
+      if (room.mutes.has(msg.memberId)) break; // locally-muted member — ignore their voice too
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break; // reject unstamped / far-future presence
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceStateCanonical(room.topic, { memberId: msg.memberId, inVoice: msg.inVoice, muted: msg.muted, at }))) break;
+      room.voice.onPeerState(msg.memberId, !!msg.inVoice, !!msg.muted, at);
+      break;
+    }
+    case 'voice-signal': {
+      if (msg.to !== room.self.memberId) break; // not addressed to us (already relayed above)
+      if (room.mutes.has(msg.memberId)) break;
+      if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice') break;
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceSignalCanonical(room.topic, { memberId: msg.memberId, to: msg.to, kind: msg.kind, data: msg.data }))) break;
+      room.voice.onSignal(msg.memberId, msg.kind as SignalKind, msg.data);
       break;
     }
     case 'sync': {
@@ -1859,6 +1921,10 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   room.members.delete(kickedId);
   room.memberProg.delete(kickedId);
   delete room.typing[kickedId];
+  // Drop the kicked member from voice too: the media PC is DTLS-SRTP direct and
+  // survives the code rotation, so without this a kicked (or malicious) member
+  // keeps hearing/speaking on the established connection. Enforce it on our side.
+  room.voice.onMemberGone(kickedId);
   for (const wire of Array.from(room.wires.values())) {
     if (wire.memberId === kickedId) { try { wire.peer.destroy(); } catch { /* ignore */ } room.wires.delete(wire.id); }
   }
@@ -1911,6 +1977,7 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
 function suspendAllNetworking(): void {
   let n = 0;
   for (const room of Array.from(rooms.values())) {
+    try { room.voice.suspend(); } catch { /* ignore */ } // voice leaks the real IP too — tear it down
     try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
     room.tracker = null;
     for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
@@ -1932,6 +1999,7 @@ function markKicked(room: Room, byName: string): void {
   room.kicked = true;
   room.kickedBy = byName;
   logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: byName, targetName: room.self.name || 'You' });
+  try { room.voice.suspend(); } catch { /* ignore */ }
   try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
   room.tracker = null;
   for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
@@ -2046,6 +2114,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     // Only load bindings whose id is the hash of its key — drops any stale/legacy
     // entry that predates the key-derived id, so a poisoned binding can't survive.
     identities: new Map(Object.entries(p.identities || {}).filter(([id, pub]) => idMatchesPub(id, pub as string))),
+    voice: undefined as unknown as VoiceSession, // set right after (its adapter closes over `room`)
     seenGids: new Set(),
     seenGidOrder: [],
     kicked: false,
@@ -2054,6 +2123,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     lastSnapshot: 0,
   };
   rooms.set(p.roomId, room);
+  room.voice = createVoiceSession(room);
 
   // E2E authenticity: the owner mints the signed config fresh (it holds the
   // private key, so no persistence is needed); everyone else restores the
@@ -2280,6 +2350,7 @@ function leaveRoom(roomId: string): void {
   const room = rooms.get(roomId);
   if (!room) return;
   // Tell peers we're leaving so they drop us at once (no 45s offline ghost).
+  try { room.voice.suspend(); } catch { /* ignore */ } // release the mic + close voice PCs
   broadcast(room, { t: 'bye', memberId: room.self.memberId });
   rooms.delete(roomId);
   const c = clients.get(roomId);
@@ -2466,6 +2537,23 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       }
       data = { ok: true };
     }
+    else if (type === 'voiceJoin') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+      await r.voice.join(); // getUserMedia — rejects (→ toast) if the mic is denied
+      // The kill-switch may have tripped DURING getUserMedia (suspend can't tear
+      // down a session that wasn't active yet) — re-check and undo, or the mic +
+      // real-IP ICE would stay live for the whole outage.
+      if (netSuspended || !rooms.has(msg.roomId)) { r.voice.leave(); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+      data = { ok: true };
+    }
+    else if (type === 'voiceLeave') { rooms.get(msg.roomId)?.voice.leave(); data = { ok: true }; }
+    else if (type === 'voiceMute') { rooms.get(msg.roomId)?.voice.setMuted(!!msg.muted); data = { ok: true }; }
+    else if (type === 'voiceDeafen') { rooms.get(msg.roomId)?.voice.setDeafened(!!msg.deafened); data = { ok: true }; }
+    else if (type === 'voiceVolume') { rooms.get(msg.roomId)?.voice.setVolume(String(msg.memberId || ''), Number(msg.volume)); data = { ok: true }; }
+    else if (type === 'voiceInputMode') { rooms.get(msg.roomId)?.voice.setInputMode(msg.mode); data = { ok: true }; }
+    else if (type === 'voicePtt') { rooms.get(msg.roomId)?.voice.setPtt(!!msg.active); data = { ok: true }; }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
     else if (type === 'setAutoFetch') {
       const r = rooms.get(msg.roomId);

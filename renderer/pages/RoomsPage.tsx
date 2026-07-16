@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
-import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, VoiceInputMode } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm } from '../components';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByFolder, FOLDER_ICONS } from '../../shared/room-folders';
@@ -1105,6 +1105,215 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
 };
 
 // ── Members list (rows with mute/kick controls) ───────────────────────────
+// ── Voice preferences (per install, localStorage — the engine is told the mode) ──
+type VoicePrefs = { inputMode: VoiceInputMode; pttKey: string };
+const VOICE_PREFS_KEY = 'voicePrefs';
+const VOICE_PREFS_EVENT = 'havvn:voice-prefs-changed';
+function loadVoicePrefs(): VoicePrefs {
+  try {
+    const p = JSON.parse(localStorage.getItem(VOICE_PREFS_KEY) || '{}');
+    const inputMode: VoiceInputMode = p.inputMode === 'vad' || p.inputMode === 'ptt' ? p.inputMode : 'always';
+    return { inputMode, pttKey: typeof p.pttKey === 'string' && p.pttKey ? p.pttKey : 'Backquote' };
+  } catch { return { inputMode: 'always', pttKey: 'Backquote' }; }
+}
+function saveVoicePrefs(p: VoicePrefs): void {
+  try { localStorage.setItem(VOICE_PREFS_KEY, JSON.stringify(p)); } catch { /* ignore */ }
+  window.dispatchEvent(new Event(VOICE_PREFS_EVENT));
+}
+const KEY_LABELS: Record<string, string> = {
+  Backquote: '`', Space: 'Space', Enter: 'Enter', Tab: 'Tab', ShiftLeft: 'L-Shift', ShiftRight: 'R-Shift',
+  ControlLeft: 'L-Ctrl', ControlRight: 'R-Ctrl', AltLeft: 'L-Alt', AltRight: 'R-Alt', CapsLock: 'Caps',
+};
+const keyLabel = (code: string): string => KEY_LABELS[code] || code.replace(/^Key|^Digit/, '');
+// A short synthesized join/leave chime so we don't bundle audio assets.
+let chimeCtx: AudioContext | null = null;
+function playChime(rising: boolean): void {
+  try {
+    chimeCtx = chimeCtx || new AudioContext();
+    if (chimeCtx.state === 'suspended') chimeCtx.resume();
+    const ctx = chimeCtx, now = ctx.currentTime;
+    const osc = ctx.createOscillator(), gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(rising ? 520 : 660, now);
+    osc.frequency.exponentialRampToValueAtTime(rising ? 784 : 440, now + 0.12);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.11, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(now); osc.stop(now + 0.24);
+  } catch { /* audio unavailable — no chime */ }
+}
+const isTypingTarget = (e: KeyboardEvent): boolean => {
+  const el = e.target as HTMLElement | null;
+  const tag = el?.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || !!el?.isContentEditable;
+};
+
+// Serverless mesh voice channel: a live roster (glowing ring while talking), self
+// mute/deafen/leave, mic-live indicator, input-mode + push-to-talk settings, and
+// per-participant volume.
+const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
+  const { t } = useTranslation();
+  const roomId = room.roomId;
+  const v = room.voice;
+  const [busy, setBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [volumeFor, setVolumeFor] = useState<string | null>(null);
+  const [vols, setVols] = useState<Record<string, number>>({}); // remembered per-peer volume (engine doesn't echo it back)
+  const [capturing, setCapturing] = useState(false);
+  const [prefs, setPrefs] = useState(loadVoicePrefs);
+  const memberOf = (id: string) => room.members.find((m) => m.memberId === id);
+  const selfId = room.members.find((m) => m.isSelf)?.memberId;
+  const nameOf = (id: string) => (id === selfId ? t('rooms.you') : (memberOf(id)?.name || '?'));
+  const seedOf = (id: string) => memberOf(id)?.avatarSeed || id;
+  const fail = (e: unknown) => toast.error(String(e instanceof Error ? e.message : e));
+  const wrap = (fn: () => Promise<unknown>) => async () => { setBusy(true); try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); } };
+
+  useEffect(() => {
+    const h = () => setPrefs(loadVoicePrefs());
+    window.addEventListener(VOICE_PREFS_EVENT, h);
+    return () => window.removeEventListener(VOICE_PREFS_EVENT, h);
+  }, []);
+
+  // Tell the engine our input mode whenever we're in voice (and when it changes).
+  useEffect(() => { if (v.inVoice) window.api.rooms.voice.inputMode(roomId, prefs.inputMode).catch(() => { /* ignore */ }); }, [v.inVoice, prefs.inputMode, roomId]);
+
+  // Push-to-talk: hold the key to transmit (window-wide while a room is open).
+  useEffect(() => {
+    if (!v.inVoice || prefs.inputMode !== 'ptt') return;
+    let held = false;
+    const set = (a: boolean) => { held = a; window.api.rooms.voice.ptt(roomId, a).catch(() => { /* ignore */ }); };
+    const down = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && !held && !e.repeat && !isTypingTarget(e)) set(true); };
+    const up = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && held) set(false); };
+    const blur = () => { if (held) set(false); };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+      if (held) window.api.rooms.voice.ptt(roomId, false).catch(() => { /* ignore */ });
+    };
+  }, [v.inVoice, prefs.inputMode, prefs.pttKey, roomId]);
+
+  // Capture the next key press to set the push-to-talk key.
+  useEffect(() => {
+    if (!capturing) return;
+    const h = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      setCapturing(false);
+      if (e.code !== 'Escape') saveVoicePrefs({ ...loadVoicePrefs(), pttKey: e.code });
+    };
+    window.addEventListener('keydown', h, true);
+    return () => window.removeEventListener('keydown', h, true);
+  }, [capturing]);
+
+  // Join/leave chimes: rising when someone joins the call, falling when they go.
+  const prevCount = useRef<number | null>(null);
+  useEffect(() => {
+    if (!v.inVoice) { prevCount.current = null; return; }
+    const n = v.participants.length;
+    if (prevCount.current !== null && n !== prevCount.current) playChime(n > prevCount.current);
+    prevCount.current = n;
+  }, [v.inVoice, v.participants.length]);
+
+  const setMode = (mode: VoiceInputMode) => saveVoicePrefs({ ...loadVoicePrefs(), inputMode: mode });
+  const modes: { id: VoiceInputMode; label: string }[] = [
+    { id: 'always', label: t('rooms.voice.modeAlways') },
+    { id: 'vad', label: t('rooms.voice.modeVad') },
+    { id: 'ptt', label: t('rooms.voice.modePtt') },
+  ];
+
+  return (
+    <div className="room-voice">
+      <div className="room-voice-head">
+        <span className="room-voice-title">
+          <Icon name="headphones" size={13} /> {t('rooms.voice.title')}
+          {v.inVoice && v.transmitting && !v.muted && <span className="room-voice-live" title={t('rooms.voice.live')} />}
+        </span>
+        {v.inVoice ? (
+          <div className="room-voice-ctl">
+            <button className={`room-voice-btn${v.muted ? ' active' : ''}`} onClick={() => window.api.rooms.voice.mute(roomId, !v.muted).catch(fail)} title={v.muted ? t('rooms.voice.unmute') : t('rooms.voice.mute')}>
+              <Icon name={v.muted ? 'mic-off' : 'mic'} size={15} />
+            </button>
+            <button className={`room-voice-btn${v.deafened ? ' active' : ''}`} onClick={() => window.api.rooms.voice.deafen(roomId, !v.deafened).catch(fail)} title={v.deafened ? t('rooms.voice.undeafen') : t('rooms.voice.deafen')}>
+              <Icon name={v.deafened ? 'volume-x' : 'headphones'} size={15} />
+            </button>
+            <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
+              <Icon name="settings" size={15} />
+            </button>
+            <button className="room-voice-btn leave" onClick={wrap(() => window.api.rooms.voice.leave(roomId))} disabled={busy} title={t('rooms.voice.leave')}>
+              <Icon name="phone-off" size={15} />
+            </button>
+          </div>
+        ) : (
+          <div className="room-voice-ctl">
+            <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
+              <Icon name="settings" size={15} />
+            </button>
+            <button className="room-voice-join" onClick={wrap(() => window.api.rooms.voice.join(roomId))} disabled={busy}>
+              <Icon name="mic" size={14} /> {t('rooms.voice.join')}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {settingsOpen && (
+        <div className="room-voice-settings">
+          <div className="room-voice-set-label">{t('rooms.voice.mode')}</div>
+          <div className="room-voice-modes">
+            {modes.map((m) => (
+              <button key={m.id} className={`room-voice-mode${prefs.inputMode === m.id ? ' active' : ''}`} onClick={() => setMode(m.id)}>{m.label}</button>
+            ))}
+          </div>
+          {prefs.inputMode === 'ptt' && (
+            <div className="room-voice-ptt-row">
+              <span className="room-voice-set-label">{t('rooms.voice.pttKey')}</span>
+              <button className={`room-voice-key${capturing ? ' capturing' : ''}`} onClick={() => setCapturing(true)}>
+                {capturing ? t('rooms.voice.pressKey') : keyLabel(prefs.pttKey)}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {v.participants.length > 0 && (
+        <div className="room-voice-people">
+          {v.participants.map((p) => {
+            const self = p.memberId === selfId;
+            const live = self && v.transmitting && !v.muted;
+            return (
+              <div key={p.memberId} className={`room-voice-person${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${live ? ' live' : ''}`} title={nameOf(p.memberId)}>
+                <button
+                  className="room-voice-ring"
+                  onClick={() => { if (!self) setVolumeFor((cur) => (cur === p.memberId ? null : p.memberId)); }}
+                  title={self ? nameOf(p.memberId) : t('rooms.voice.volume')}
+                >
+                  <Identicon seed={seedOf(p.memberId)} size={30} />
+                </button>
+                <span className="room-voice-pname">{nameOf(p.memberId)}</span>
+                {p.muted && <Icon name="mic-off" size={12} className="room-voice-pmic" />}
+                {volumeFor === p.memberId && !self && (
+                  <input
+                    type="range" min={0} max={100} value={vols[p.memberId] ?? 100} className="room-voice-vol"
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setVols((m) => ({ ...m, [p.memberId]: val }));
+                      window.api.rooms.voice.volume(roomId, p.memberId, val / 100).catch(() => { /* ignore */ });
+                    }}
+                    title={t('rooms.voice.volume')}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Extracted from the old side-column card; now rendered inside the chat
 // card's collapsible panel. Markup and handlers are unchanged.
 const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
@@ -1254,6 +1463,7 @@ const RoomChat: React.FC<{ room: RoomState; withMembers?: boolean }> = ({ room, 
       ) : (
         <div className="room-section-title">{t('rooms.chat')}</div>
       )}
+      <RoomVoicePanel room={room} />
       <div className="room-chat">
         <div className="room-chat-log" ref={listRef}>
           {messages.length === 0 ? (

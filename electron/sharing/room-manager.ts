@@ -269,7 +269,22 @@ export class RoomManager {
     });
     win.on('closed', () => { if (this.win === win) { this.win = null; this.ready = false; } });
     this.win = win;
-    await win.loadURL('about:blank');
+    // Load a blank file:// page, NOT about:blank: file:// is a SECURE CONTEXT, so
+    // navigator.mediaDevices exists and the engine can capture the mic for voice
+    // chat (a top-level about:blank is not trustworthy → getUserMedia is undefined).
+    // The page is just a host for the preload (which does all the work).
+    let enginePage = '';
+    try {
+      enginePage = path.join(app.getPath('userData'), 'room-engine.html');
+      if (!fs.existsSync(enginePage)) {
+        fs.writeFileSync(enginePage, '<!doctype html><html><head><meta charset="utf-8"><title>engine</title></head><body></body></html>');
+      }
+    } catch { enginePage = ''; }
+    if (enginePage) {
+      try { await win.loadFile(enginePage); } catch { await win.loadURL('about:blank'); }
+    } else {
+      await win.loadURL('about:blank');
+    }
     if (!this.ready) await new Promise<void>((res) => this.readyWaiters.push(res));
     log.info('Room window ready');
     return this.readied(win);
@@ -580,6 +595,36 @@ export class RoomManager {
   }
   assignFile(roomId: string, fileId: string, folderId: string | null): Promise<RoomState> {
     return this.folderCmd(roomId, 'assignFile', { fileId, folderId });
+  }
+
+  // ── Voice ─────────────────────────────────────────────────────────────────
+  /** Join a room's serverless mesh voice channel (captures the mic). Rejects if
+   *  the VPN kill-switch is up or mic permission is denied — the caller toasts it. */
+  async voiceJoin(roomId: string): Promise<{ ok: boolean }> {
+    this.assertNotSuspended(); // a voice call leaks the real IP just like seeding
+    await this.ensureMicAccess();
+    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+    return this.call<{ ok: boolean }>('voiceJoin', { roomId }, 15000);
+  }
+  voiceLeave(roomId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceLeave', { roomId }); }
+  voiceMute(roomId: string, muted: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceMute', { roomId, muted }); }
+  voiceDeafen(roomId: string, deafened: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceDeafen', { roomId, deafened }); }
+  voiceVolume(roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceVolume', { roomId, memberId, volume }); }
+  voiceInputMode(roomId: string, mode: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceInputMode', { roomId, mode }); }
+  voicePtt(roomId: string, active: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voicePtt', { roomId, active }); }
+
+  /** macOS gates the microphone at the OS (TCC) level; prompt once from the main
+   *  process before capture. No-op on Windows/Linux (handled by the OS/permission
+   *  handler). */
+  private async ensureMicAccess(): Promise<void> {
+    if (process.platform !== 'darwin') return;
+    try {
+      const { systemPreferences } = await import('electron');
+      if (systemPreferences.getMediaAccessStatus('microphone') === 'not-determined') {
+        await systemPreferences.askForMediaAccess('microphone');
+      }
+    } catch { /* best-effort — getUserMedia will surface a denial */ }
   }
 
   /** Remove a shared file from the room for everyone (persists a tombstone). */

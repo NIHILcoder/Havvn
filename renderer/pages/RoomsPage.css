@@ -1423,3 +1423,177 @@
 .room-suspended svg { color: var(--color-warning); }
 .room-suspended-title { margin: 4px 0 0; font-size: var(--font-size-md); font-weight: var(--font-weight-semibold); color: var(--color-text-primary); }
 .room-suspended-body { margin: 0; max-width: 42ch; font-size: var(--font-size-sm); line-height: 1.5; }
+
+/* ── Voice channel (serverless mesh) ─────────────────────────────────────── */
+.room-voice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+.room-voice-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.room-voice-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+.room-voice-join {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+.room-voice-join:hover:not(:disabled) { filter: brightness(1.08); }
+.room-voice-join:disabled { opacity: 0.6; cursor: default; }
+.room-voice-ctl { display: inline-flex; align-items: center; gap: 4px; }
+.room-voice-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-voice-btn:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-border-default); }
+.room-voice-btn.active { background: var(--color-accent-primary); border-color: var(--color-accent-primary); color: #fff; }
+.room-voice-btn.leave { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 40%, transparent); }
+.room-voice-btn.leave:hover:not(:disabled) { background: var(--color-error); color: #fff; }
+.room-voice-btn:disabled { opacity: 0.6; cursor: default; }
+
+.room-voice-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: 2px;
+}
+.room-voice-person {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 52px;
+  text-align: center;
+}
+.room-voice-ring {
+  display: inline-flex;
+  border-radius: var(--radius-full);
+  padding: 2px;
+  box-shadow: 0 0 0 2px transparent;
+  transition: box-shadow 120ms ease-out;
+}
+.room-voice-person.speaking .room-voice-ring {
+  box-shadow: 0 0 0 2px var(--color-accent-primary), 0 0 10px color-mix(in srgb, var(--color-accent-primary) 60%, transparent);
+  animation: room-voice-pulse 1.4s ease-in-out infinite;
+}
+@keyframes room-voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--color-accent-primary), 0 0 6px color-mix(in srgb, var(--color-accent-primary) 45%, transparent); }
+  50% { box-shadow: 0 0 0 2px var(--color-accent-primary), 0 0 14px color-mix(in srgb, var(--color-accent-primary) 70%, transparent); }
+}
+.room-voice-person.muted .room-voice-ring { opacity: 0.55; }
+.room-voice-pname {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-voice-pmic { color: var(--color-text-tertiary); margin-top: -2px; }
+
+/* Voice — Phase 2 (mic-live, settings popover, modes, PTT key, volume) */
+.room-voice-live {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-left: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-error);
+  box-shadow: 0 0 6px var(--color-error);
+  animation: room-voice-live-pulse 1.2s ease-in-out infinite;
+  vertical-align: middle;
+}
+@keyframes room-voice-live-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+.room-voice-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
+}
+.room-voice-set-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+}
+.room-voice-modes { display: inline-flex; gap: 4px; }
+.room-voice-mode {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-voice-mode:hover { color: var(--color-text-primary); }
+.room-voice-mode.active { background: var(--color-accent-primary); border-color: var(--color-accent-primary); color: #fff; }
+.room-voice-ptt-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.room-voice-key {
+  min-width: 64px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  cursor: pointer;
+}
+.room-voice-key.capturing { border-color: var(--color-accent-primary); color: var(--color-accent-primary); }
+
+.room-voice-person.live .room-voice-ring {
+  box-shadow: 0 0 0 2px var(--color-error), 0 0 10px color-mix(in srgb, var(--color-error) 55%, transparent);
+}
+.room-voice-ring {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 2px;
+}
+.room-voice-vol {
+  width: 100%;
+  margin-top: 2px;
+  accent-color: var(--color-accent-primary);
+  cursor: pointer;
+}

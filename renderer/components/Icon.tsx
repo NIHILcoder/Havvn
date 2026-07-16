@@ -107,7 +107,11 @@ export type IconName =
   | 'pip'
   | 'pipette'
   | 'rotate-cw'
-  | 'crosshair';
+  | 'crosshair'
+  | 'mic'
+  | 'mic-off'
+  | 'headphones'
+  | 'phone-off';
 
 interface IconProps {
   name: IconName;
@@ -217,6 +221,10 @@ const paths: Record<IconName, string> = {
   'skip-forward': 'M5 4l10 8-10 8V4z M19 5v14',
   'pip': 'M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M12 12h7v5h-7z',
   'pipette': 'M2 22l1-1h3l9-9 M3 21v-3l9-9 M15 6l3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4z',
+  'mic': 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z M19 10v2a7 7 0 0 1-14 0v-2 M12 19v3',
+  'mic-off': 'M2 2l20 20 M18.89 13.23A7.12 7.12 0 0 0 19 12v-2 M5 10v2a7 7 0 0 0 12 5 M15 9.34V5a3 3 0 0 0-5.68-1.33 M9 9v3a3 3 0 0 0 5.12 2.12 M12 19v3',
+  'headphones': 'M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5a9 9 0 0 1 18 0v5a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3',
+  'phone-off': 'M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 3.05 5.7 2 2 0 0 1 5 3.5h3a2 2 0 0 1 2 1.72c.128.94.36 1.865.7 2.755a2 2 0 0 1-.45 2.11L8.09 12.35 M22 2 2 22',
 };
 
 export const Icon: React.FC<IconProps> = ({

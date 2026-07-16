@@ -679,6 +679,10 @@ function applyContentSecurityPolicy(): void {
   ].join('; ');
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // The hidden room-engine page (a blank file:// host for the WebRTC engine) must
+    // NOT get the renderer's CSP: connect-src 'self' would block the room trackers'
+    // WSS and break all room networking. It loads no remote content, so no CSP.
+    if (details.url.startsWith('file://') && details.url.includes('room-engine.html')) { callback({ responseHeaders: details.responseHeaders }); return; }
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -732,6 +736,14 @@ async function initializeApp(): Promise<void> {
 
   // Apply CSP before any window loads content
   applyContentSecurityPolicy();
+
+  // Grant the microphone (voice chat) etc. for the app's OWN trusted windows, in
+  // BOTH dev and prod (the CSP function above is prod-only). The app never loads
+  // remote content, so this doesn't widen the attack surface. The synchronous
+  // check handler runs FIRST — if it doesn't allow 'media', Chromium blocks capture
+  // before the request handler is consulted. `webContents` may be null.
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(true));
+  session.defaultSession.setPermissionCheckHandler(() => true);
 
   // Load the persisted UI language so the tray/menu built below is already in
   // the right language, before the renderer loads and re-announces it.

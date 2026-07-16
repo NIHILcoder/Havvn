@@ -232,6 +232,30 @@ export interface RoomState {
   typingMemberIds?: string[]; // members composing a chat message right now (self excluded, ~4s TTL)
   fileReacts?: Record<string, Record<string, string[]>>; // fileId → emoji → reacting memberIds
   memberProg?: Record<string, Record<string, number>>;   // memberId → fileId → coarse download % (0-100; a member's 'have' implies 100)
+  voice: RoomVoiceState; // serverless mesh voice channel state (who's in the call, who's talking)
+}
+
+/** A participant currently in a room's voice channel. */
+export interface RoomVoiceParticipant {
+  memberId: string;
+  muted: boolean;
+  speaking: boolean;
+}
+
+/** The room's voice channel as this install sees it. `inVoice`/`muted` are OUR own
+ *  state; `participants` includes self (when in voice) plus every peer we've heard
+ *  announce voice presence. Session-only — never persisted. */
+/** Mic transmit mode: always open, gated by voice activity (auto-mute on silence),
+ *  or push-to-talk. */
+export type VoiceInputMode = 'always' | 'vad' | 'ptt';
+
+export interface RoomVoiceState {
+  inVoice: boolean;
+  muted: boolean;
+  deafened: boolean;
+  transmitting: boolean;  // mic is live right now (for the mic-live indicator)
+  inputMode: VoiceInputMode;
+  participants: RoomVoiceParticipant[];
 }
 
 /** Lightweight room listing entry. */
@@ -1055,6 +1079,16 @@ export interface IpcApi {
     sendChat: (roomId: string, text: string) => Promise<{ ok: boolean }>;
     typing: (roomId: string) => void;
     reactFile: (roomId: string, fileId: string, emoji: string) => Promise<void>;
+    // Serverless mesh voice channel.
+    voice: {
+      join: (roomId: string) => Promise<{ ok: boolean }>;
+      leave: (roomId: string) => Promise<{ ok: boolean }>;
+      mute: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
+      deafen: (roomId: string, deafened: boolean) => Promise<{ ok: boolean }>;
+      volume: (roomId: string, memberId: string, volume: number) => Promise<{ ok: boolean }>;
+      inputMode: (roomId: string, mode: VoiceInputMode) => Promise<{ ok: boolean }>;
+      ptt: (roomId: string, active: boolean) => Promise<{ ok: boolean }>;
+    };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;
   };

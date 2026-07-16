@@ -530,6 +530,29 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string) => roomManager.markRead(roomId)
   ));
 
+  // ── Voice ─────────────────────────────────────────────────────────────────
+  ipcMain.handle('rooms:voiceJoin', wrapHandler('rooms:voiceJoin',
+    async (_event, roomId: string) => roomManager.voiceJoin(roomId)
+  ));
+  ipcMain.handle('rooms:voiceLeave', wrapHandler('rooms:voiceLeave',
+    async (_event, roomId: string) => roomManager.voiceLeave(roomId)
+  ));
+  ipcMain.handle('rooms:voiceMute', wrapHandler('rooms:voiceMute',
+    async (_event, roomId: string, muted: boolean) => roomManager.voiceMute(roomId, !!muted)
+  ));
+  ipcMain.handle('rooms:voiceDeafen', wrapHandler('rooms:voiceDeafen',
+    async (_event, roomId: string, deafened: boolean) => roomManager.voiceDeafen(roomId, !!deafened)
+  ));
+  ipcMain.handle('rooms:voiceVolume', wrapHandler('rooms:voiceVolume',
+    async (_event, roomId: string, memberId: string, volume: number) => roomManager.voiceVolume(roomId, String(memberId || ''), Number(volume))
+  ));
+  ipcMain.handle('rooms:voiceInputMode', wrapHandler('rooms:voiceInputMode',
+    async (_event, roomId: string, mode: string) => roomManager.voiceInputMode(roomId, String(mode || 'always'))
+  ));
+  ipcMain.handle('rooms:voicePtt', wrapHandler('rooms:voicePtt',
+    async (_event, roomId: string, active: boolean) => roomManager.voicePtt(roomId, !!active)
+  ));
+
   ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',
     async (_event, roomId: string | null) => roomManager.setActiveRoom(roomId ?? null)
   ));

@@ -629,6 +629,15 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:markRead', roomId),
     setActiveRoom: (roomId: string | null): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setActiveRoom', roomId),
+    voice: {
+      join: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceJoin', roomId),
+      leave: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceLeave', roomId),
+      mute: (roomId: string, muted: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMute', roomId, muted),
+      deafen: (roomId: string, deafened: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceDeafen', roomId, deafened),
+      volume: (roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceVolume', roomId, memberId, volume),
+      inputMode: (roomId: string, mode: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceInputMode', roomId, mode),
+      ptt: (roomId: string, active: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voicePtt', roomId, active),
+    },
     createFolder: (roomId: string, name: string, icon: string, color: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color),
     updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string }): Promise<RoomState> =>
