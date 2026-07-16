@@ -4,6 +4,28 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.18.0] - 2026-07-17
+
+Voice chat for rooms — talk to your room, serverless and end-to-end.
+
+### Added
+- **Voice chat.** Join a room's voice channel and talk in real time. It's a
+  full peer-to-peer mesh — no server ever carries or hears the audio, which stays
+  encrypted directly between members (the same serverless, private model as the
+  rest of rooms). Best for friend-scale calls (up to ~8 in a room).
+- **Full controls.** Mute, deafen, per-person volume, speaking indicators, and a
+  live "mic on" light so you always know when you're transmitting. Choose how your
+  mic opens: always on, voice-activated (auto-mutes in silence), or push-to-talk
+  with a key you pick. Join/leave chimes round it out.
+- Works alongside watch-together, so you can hang out on a call over a shared file.
+
+### Security
+- Voice presence and signaling are Ed25519-signed and bound to your room identity,
+  so a member can't fake who's in the call, impersonate another's connection, or
+  replay stale presence. The call is capped and gated so a member can't exhaust
+  your connection budget, and a kicked member is cut off from the call immediately.
+  Voice is torn down the instant the VPN kill-switch trips, like the rest of rooms.
+
 ## [2.17.0] - 2026-07-16
 
 Rooms get chat catch-up, unread badges, desktop notifications, and a batch of
