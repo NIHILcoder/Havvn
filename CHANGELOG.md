@@ -4,6 +4,34 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.16.0] - 2026-07-16
+
+Rooms protocol authorization. Room commands are now cryptographically
+authenticated, so membership no longer equals authority.
+
+> **Heads-up — please re-create your rooms after updating.** This release
+> re-derives each member's identity from their signing key, which changes how
+> ownership is recognized. Existing rooms keep your files and codes, but their
+> owner/kick/rename controls may not line up until everyone re-creates the room
+> on 2.16.0. Peers still on older versions can't authenticate to 2.16.0 rooms.
+
+### Fixed
+- **Only the room owner can kick members or rotate the code, and only a file's
+  author (or the owner) can delete it for everyone.** Previously any member could
+  forge those commands, because holding the room code was treated as proof of
+  authority. Owner and delete commands are now Ed25519-signed and verified against
+  a member identity that is bound to their key, so they can't be forged or replayed.
+- **A member can no longer un-delete a file someone removed, resurrect it by
+  re-sharing it, or make one permanently un-deletable.** Deletions carry a signed
+  proof that travels with them (so they stick for members who join later too), and
+  bringing a file back requires a signed authorization from the owner or the person
+  who removed it.
+- **Invites now verify the room owner.** A shared invite (copy or QR) pins the
+  owner's identity, so a member can't trick someone joining into treating an
+  impostor as the owner. The spoken code still works for quick sharing.
+- **Rooms stay covered by the identity checks after a restart** — deletion and
+  revive proofs are persisted, so the guarantees survive relaunching the app.
+
 ## [2.15.0] - 2026-07-15
 
 Rooms privacy hardening. If you rely on the VPN kill-switch or share in rooms,
