@@ -110,6 +110,44 @@ export function randomPeerId(): string {
   return crypto.randomBytes(20).toString('hex');
 }
 
+/**
+ * A member's id is the hash of its Ed25519 public key — NOT a random UUID. This
+ * cryptographically binds identity: to claim a given memberId (e.g. the owner's)
+ * you must present a pubkey that hashes to it, which is a 128-bit preimage — so a
+ * member can no longer assert someone else's memberId with its own key to forge
+ * owner commands or poison another peer's TOFU binding. Peers reject any
+ * (memberId, pub) pair where memberId !== deriveMemberId(pub). 32 hex chars keeps
+ * the historical id length; the security rests on the full sha256 preimage.
+ */
+export function deriveMemberId(pub: string): string {
+  return crypto.createHash('sha256').update(pub, 'utf8').digest('hex').slice(0, 32);
+}
+
+// A shareable invite optionally PINS the room owner: "<code>~<ownerId>", where
+// ownerId is the owner's key-derived memberId (a commitment to their pubkey). A
+// joiner given the pin adopts ONLY that identity as owner, so a member can't
+// self-declare as owner to a fresh joiner. The pin is NOT part of the KDF — a
+// joiner who pastes only the bare speakable code still derives the same key and
+// joins (unpinned = trust-on-first-use, the historical behavior). The separator
+// is a char that never appears in a code or a hex id.
+const INVITE_SEP = '~';
+const OWNER_ID_RE = /^[0-9a-f]{32}$/; // deriveMemberId shape
+
+/** Build the shareable invite for a room, pinning the owner when known. */
+export function buildInvite(code: string, ownerId?: string): string {
+  const c = normalizeCode(code);
+  return ownerId && OWNER_ID_RE.test(ownerId) ? c + INVITE_SEP + ownerId : c;
+}
+
+/** Split a pasted invite into its KDF code and (optional, validated) owner pin. */
+export function parseInvite(raw: string): { code: string; ownerPin: string } {
+  const s = (raw || '').trim();
+  const i = s.indexOf(INVITE_SEP);
+  if (i < 0) return { code: normalizeCode(s), ownerPin: '' };
+  const pin = s.slice(i + 1).trim().toLowerCase();
+  return { code: normalizeCode(s.slice(0, i)), ownerPin: OWNER_ID_RE.test(pin) ? pin : '' };
+}
+
 /** Encrypt a JSON-serializable object → compact base64 token (iv|tag|cipher). */
 export function encrypt(key: Buffer, obj: unknown): string {
   const iv = crypto.randomBytes(12);

@@ -25,6 +25,7 @@ import { app } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
 import { encryptSecret, decryptSecret } from './secrets';
+import { deriveMemberId } from '../sharing/room-crypto';
 
 // === Per-file store schemas ===
 
@@ -67,6 +68,8 @@ interface RoomsSchema {
   rooms: Record<string, PersistedRoom>;      // Friend swarms / private rooms (Phase 3)
   roomProfile: RoomProfile | null;           // This install's identity in rooms
   roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
+  roomTombstoneProofs: Record<string, Record<string, { by: string; pub: string; sig: string }>>; // roomId → (fileId → author/owner deletion signature), so a tombstone re-verifies as it gossips
+  roomRevives: Record<string, Record<string, number>>; // roomId → (fileId → revAt of a VERIFIED revive); persisted so the re-deletion guard survives restart
   roomManifests: Record<string, PersistedRoomFile[]>; // roomId → known files (resume on restart)
   roomFolders: Record<string, PersistedRoomFolder[]>; // roomId → folders/sections (resume on restart)
   roomFolderTombstones: Record<string, Record<string, number>>; // roomId → (deleted folderId → deletedAt ms)
@@ -99,6 +102,7 @@ export interface PersistedRoom {
   folder: string;
   createdAt: number;
   ownerId?: string;  // memberId of the room owner (creator); learned via gossip for joiners
+  ownerPin?: string; // owner memberId pinned from the invite — only this identity may be adopted as owner (absent = trust-on-first-use)
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
   // Owner-signed E2E config blob (Ed25519 over topic+ownerId+e2e+secret). Kept so
@@ -249,7 +253,7 @@ const searchStore = new Store<SearchSchema>({
 
 const roomsStore = new Store<RoomsSchema>({
   name: 'rooms',
-  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
 });
 
 const reputationStore = new Store<ReputationSchema>({
@@ -346,6 +350,50 @@ function migrateTombstoneTimestamps(): void {
 
 migrateTombstoneTimestamps();
 
+/**
+ * One-time upgrade of this install's memberId from a random UUID to the
+ * key-derived form deriveMemberId(pub), which cryptographically binds identity so
+ * a member can no longer forge the owner's (or anyone's) id. This is a DELIBERATE
+ * compatibility break: our id changes, so we re-own the rooms we owned (local
+ * ownership preserved) and drop the stale TOFU bindings (they map old-format ids
+ * and would reject our own re-key otherwise; peers re-bind, now validated, on the
+ * next hello). Peers on the old id format can no longer authenticate to us —
+ * mixed old/new rooms must be re-created, which is the point of the break.
+ *
+ * Called from initializeApp AFTER app.whenReady(), NOT at module load: it may
+ * generate the signing keypair via getRoomIdentity(), and safeStorage (which
+ * encrypts the private key at rest) is unavailable until 'ready' — running it
+ * earlier could persist the key in plaintext on platforms without DPAPI.
+ */
+export function migrateMemberIdToKeyDerived(): void {
+  const profile = roomsStore.get('roomProfile');
+  if (!profile || !profile.memberId) return; // fresh install: getRoomProfile derives it directly
+  const { pub } = getRoomIdentity(); // ensure the keypair exists so we can derive
+  const derived = deriveMemberId(pub);
+  if (profile.memberId === derived) return; // already key-derived
+  const old = profile.memberId;
+  const rooms = roomsStore.get('rooms') ?? {};
+  let changed = false;
+  for (const r of Object.values(rooms)) {
+    if (r && r.ownerId === old) { r.ownerId = derived; changed = true; }
+    if (r && r.ownerPin === old) { r.ownerPin = derived; changed = true; }
+  }
+  if (changed) roomsStore.set('rooms', rooms);
+  // Re-attribute OUR OWN files in every manifest (addedBy = our old id → derived),
+  // so a file we shared before the upgrade still authorizes our own author-delete
+  // locally. (Peers' ids and other members' files are untouched — foreign authorship
+  // can't be re-proven; those legacy files stay owner-delete-only room-wide.)
+  const manifests = roomsStore.get('roomManifests') ?? {};
+  let mChanged = false;
+  for (const files of Object.values(manifests)) {
+    if (!Array.isArray(files)) continue;
+    for (const f of files) if (f && f.addedBy === old) { f.addedBy = derived; mChanged = true; }
+  }
+  if (mChanged) roomsStore.set('roomManifests', manifests);
+  roomsStore.set('roomIdentities', {}); // stale bindings → re-TOFU (now validated) on next hello
+  roomsStore.set('roomProfile', { ...profile, memberId: derived, avatarSeed: profile.avatarSeed === old ? derived : profile.avatarSeed });
+}
+
 export function getRoomTombstones(roomId: string): Record<string, number> {
   return (roomsStore.get('roomTombstones') ?? {})[roomId] ?? {};
 }
@@ -355,12 +403,17 @@ export function addRoomTombstone(roomId: string, fileId: string, at: number = Da
   const map = { ...(all[roomId] ?? {}) };
   map[fileId] = Math.max(at, map[fileId] ?? 0); // a newer deletion always wins
   const entries = Object.entries(map);
+  let evicted: string[] = [];
   if (entries.length > 500) { // cap: evict the oldest deletions first
     entries.sort((a, b) => a[1] - b[1]);
-    entries.splice(0, entries.length - 500);
+    evicted = entries.splice(0, entries.length - 500).map((e) => e[0]);
   }
   all[roomId] = Object.fromEntries(entries);
   roomsStore.set('roomTombstones', all);
+  // Keep the proof store a subset of the tombstone store: whatever tombstone the
+  // 500-cap dropped, drop its proof too (else a live tombstone could outlive its
+  // proof and stop re-verifying for late joiners).
+  if (evicted.length) pruneRoomTombstoneProofs(roomId, evicted);
 }
 
 /** Lift one tombstone (the user explicitly re-shared the file into the room). */
@@ -378,6 +431,85 @@ export function clearRoomTombstones(roomId: string): void {
   const all = roomsStore.get('roomTombstones') ?? {};
   delete all[roomId];
   roomsStore.set('roomTombstones', all);
+}
+
+// Deletion proofs (parallel to roomTombstones, keyed identically). Stored apart
+// so the tombstone timestamp map keeps its shape; a tombstone without a proof
+// here is a legacy/local one that gossips only as a bare (unauthenticated) tomb.
+
+export function getRoomTombstoneProofs(roomId: string): Record<string, { by: string; pub: string; sig: string }> {
+  return (roomsStore.get('roomTombstoneProofs') ?? {})[roomId] ?? {};
+}
+
+export function addRoomTombstoneProof(roomId: string, fileId: string, proof: { by: string; pub: string; sig: string }): void {
+  const all = roomsStore.get('roomTombstoneProofs') ?? {};
+  const map = { ...(all[roomId] ?? {}) };
+  map[fileId] = proof;
+  // No independent cap here: a proof only exists for a live tombstone, and the
+  // tombstone store's 500-cap (which prunes proofs it evicts) governs the size.
+  all[roomId] = map;
+  roomsStore.set('roomTombstoneProofs', all);
+}
+
+/** Drop proofs for tombstones that were evicted, so proofs stay a subset. */
+export function pruneRoomTombstoneProofs(roomId: string, fileIds: string[]): void {
+  const all = roomsStore.get('roomTombstoneProofs') ?? {};
+  const map = all[roomId];
+  if (!map) return;
+  let changed = false;
+  for (const id of fileIds) if (id in map) { delete map[id]; changed = true; }
+  if (changed) { all[roomId] = map; roomsStore.set('roomTombstoneProofs', all); }
+}
+
+export function removeRoomTombstoneProof(roomId: string, fileId: string): void {
+  const all = roomsStore.get('roomTombstoneProofs') ?? {};
+  const map = all[roomId];
+  if (!map || !(fileId in map)) return;
+  const rest = { ...map };
+  delete rest[fileId];
+  all[roomId] = rest;
+  roomsStore.set('roomTombstoneProofs', all);
+}
+
+export function clearRoomTombstoneProofs(roomId: string): void {
+  const all = roomsStore.get('roomTombstoneProofs') ?? {};
+  delete all[roomId];
+  roomsStore.set('roomTombstoneProofs', all);
+}
+
+// Verified revives (fileId → revAt). Persisted so the re-deletion guard (a revived
+// file can't be re-deleted by an equal/older tombstone) survives restart. Only the
+// engine's verified-revive sites write here; a stale entry can at worst block a
+// deletion at-or-older than revAt, which is exactly what a revive is meant to do.
+
+export function getRoomRevives(roomId: string): Record<string, number> {
+  return (roomsStore.get('roomRevives') ?? {})[roomId] ?? {};
+}
+
+export function addRoomRevive(roomId: string, fileId: string, revAt: number): void {
+  const all = roomsStore.get('roomRevives') ?? {};
+  const map = { ...(all[roomId] ?? {}) };
+  map[fileId] = Math.max(revAt, map[fileId] ?? 0); // a newer revive always wins
+  const entries = Object.entries(map);
+  if (entries.length > 500) { entries.sort((a, b) => a[1] - b[1]); entries.splice(0, entries.length - 500); } // cap: evict oldest
+  all[roomId] = Object.fromEntries(entries);
+  roomsStore.set('roomRevives', all);
+}
+
+export function removeRoomRevive(roomId: string, fileId: string): void {
+  const all = roomsStore.get('roomRevives') ?? {};
+  const map = all[roomId];
+  if (!map || !(fileId in map)) return;
+  const rest = { ...map };
+  delete rest[fileId];
+  all[roomId] = rest;
+  roomsStore.set('roomRevives', all);
+}
+
+export function clearRoomRevives(roomId: string): void {
+  const all = roomsStore.get('roomRevives') ?? {};
+  delete all[roomId];
+  roomsStore.set('roomRevives', all);
 }
 
 // === Room manifest (known files — resume a room's file list/seeding on restart) ===
@@ -593,11 +725,16 @@ export function importRoomIdentityBundle(bundle: unknown): { rooms: number } {
     throw new Error('Room identity file has no valid profile');
   }
 
+  // The memberId is ALWAYS the hash of the imported signing key (the same anchor
+  // getRoomProfile/migration enforce) — never the value stored in the bundle,
+  // which an old export may carry in the pre-derivation UUID form. Re-own the
+  // bundle's rooms under the derived id so imported ownership survives the switch.
+  const memberId = deriveMemberId(id.pub);
   roomsStore.set('roomIdentity', { pub: id.pub, priv: encryptSecret(id.priv) });
   roomsStore.set('roomProfile', {
-    memberId: profile.memberId,
+    memberId,
     name: typeof profile.name === 'string' ? profile.name : '',
-    avatarSeed: typeof profile.avatarSeed === 'string' && profile.avatarSeed ? profile.avatarSeed : profile.memberId,
+    avatarSeed: typeof profile.avatarSeed === 'string' && profile.avatarSeed ? profile.avatarSeed : memberId,
   });
 
   const existing = roomsStore.get('rooms') ?? {};
@@ -606,6 +743,8 @@ export function importRoomIdentityBundle(bundle: unknown): { rooms: number } {
     if (!room || typeof room !== 'object') continue;
     if (typeof room.roomId !== 'string' || !room.roomId) continue;
     if (typeof room.code !== 'string' || !room.code) continue;
+    if (room.ownerId === profile.memberId) room.ownerId = memberId; // keep ownership under the derived id
+    if (room.ownerPin === profile.memberId) room.ownerPin = memberId; // and keep the owner pin consistent
     existing[room.roomId] = room;
     count++;
   }
@@ -1474,11 +1613,14 @@ export function setRoomLimits(roomId: string, upKbps: number, downKbps: number):
   roomsStore.set('rooms', rooms);
 }
 
-/** This install's room identity, lazily created and persisted on first use. */
+/** This install's room identity, lazily created and persisted on first use. Our
+ *  memberId is the hash of our signing pubkey (see deriveMemberId) so it can't be
+ *  claimed by anyone else's key. */
 export function getRoomProfile(): RoomProfile {
   let profile = roomsStore.get('roomProfile');
-  if (!profile) {
-    const memberId = uuidv4().replace(/-/g, '');
+  if (!profile || !profile.memberId) {
+    const { pub } = getRoomIdentity(); // ensure the keypair exists, then bind id to it
+    const memberId = deriveMemberId(pub);
     profile = { memberId, name: '', avatarSeed: memberId };
     roomsStore.set('roomProfile', profile);
   }

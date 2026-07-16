@@ -17,7 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
 import * as db from '../db/store';
 import { RoomState, RoomSummary, RoomProfile } from '../../shared/types';
-import { generateRoomCode, normalizeCode, codeIsE2E } from './room-crypto';
+import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-crypto';
 import { generateRoomSecret } from './room-e2e';
 
 const log = logger.child('RoomManager');
@@ -84,14 +84,35 @@ export class RoomManager {
         this.mainWindow.webContents.send('rooms:sync', payload);
       }
     });
-    // A peer deleted a file — persist the tombstone so it stays gone after restart.
-    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string; at?: number }) => {
-      try { if (payload?.roomId && payload?.fileId) db.addRoomTombstone(payload.roomId, payload.fileId, Number(payload.at) || Date.now()); } catch { /* ignore */ }
+    // A file was deleted — persist the tombstone so it stays gone after restart,
+    // plus its author/owner signature (when present) so the deletion re-verifies
+    // as it gossips and survives our own restart as an authenticated tombstone.
+    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string; at?: number; by?: string; pub?: string; sig?: string }) => {
+      try {
+        if (!payload?.roomId || !payload?.fileId) return;
+        db.addRoomTombstone(payload.roomId, payload.fileId, Number(payload.at) || Date.now());
+        if (payload.by && payload.pub && payload.sig) {
+          db.addRoomTombstoneProof(payload.roomId, payload.fileId, { by: payload.by, pub: payload.pub, sig: payload.sig });
+        }
+      } catch { /* ignore */ }
     });
     // A file was explicitly re-shared after deletion — lift the persisted
-    // tombstone so the revive survives restart.
+    // tombstone (and its proof) so the revive survives restart.
     ipcMain.on('room-tomb-del', (_e, payload: { roomId: string; fileId: string }) => {
-      try { if (payload?.roomId && payload?.fileId) db.removeRoomTombstone(payload.roomId, payload.fileId); } catch { /* ignore */ }
+      try {
+        if (!payload?.roomId || !payload?.fileId) return;
+        db.removeRoomTombstone(payload.roomId, payload.fileId);
+        db.removeRoomTombstoneProof(payload.roomId, payload.fileId);
+      } catch { /* ignore */ }
+    });
+    // A VERIFIED revive — persist its revAt so the re-deletion guard survives a
+    // restart (a re-gossiped equal/older tombstone can't silently re-delete it).
+    ipcMain.on('room-revive', (_e, payload: { roomId: string; fileId: string; revAt?: number }) => {
+      try { if (payload?.roomId && payload?.fileId && Number.isFinite(payload.revAt)) db.addRoomRevive(payload.roomId, payload.fileId, Number(payload.revAt)); } catch { /* ignore */ }
+    });
+    // A strictly-newer deletion superseded the revive — drop the persisted guard.
+    ipcMain.on('room-revive-del', (_e, payload: { roomId: string; fileId: string }) => {
+      try { if (payload?.roomId && payload?.fileId) db.removeRoomRevive(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
     // A file entered/changed in a room's manifest — persist it so the room shows
     // and re-seeds it immediately on the next launch, before peers reconnect.
@@ -261,7 +282,7 @@ export class RoomManager {
     return path.join(app.getPath('userData'), 'room-enc', roomId);
   }
 
-  private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string, e2eCfg?: db.PersistedRoom['e2eCfg']) {
+  private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string, e2eCfg?: db.PersistedRoom['e2eCfg'], ownerPin?: string) {
     const profile = db.getRoomProfile();
     const identity = db.getRoomIdentity();
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
@@ -280,10 +301,13 @@ export class RoomManager {
         useTurn,
         turnServers,
         tombstones: db.getRoomTombstones(roomId),
+        tombSigs: db.getRoomTombstoneProofs(roomId),
+        revives: db.getRoomRevives(roomId),
         manifest: db.getRoomManifest(roomId),
         folders: db.getRoomFolders(roomId),
         folderTombs: db.getRoomFolderTombstones(roomId),
         ownerId: ownerId ?? '',
+        ownerPin: ownerPin ?? '',
         mutes: db.getRoomMutes(roomId),
         history: db.getRoomHistory(roomId),
         chat: db.getRoomChats(roomId),
@@ -332,8 +356,10 @@ export class RoomManager {
     // E2E rooms get a content secret (separate from the rotating gossip key) so a
     // later kick/rekey doesn't strand access to already-shared files.
     const secret = e2e ? generateRoomSecret() : undefined;
-    db.savePersistedRoom({ roomId, name, code, folder, createdAt, ownerId, e2e, secret });
-    const { type, payload } = await this.joinPayload(roomId, name, code, folder, ownerId, e2e, secret);
+    // We ARE the owner, so pin ourselves — our shared invite carries this id and
+    // joiners will only accept us as owner (no self-declared-owner hijack).
+    db.savePersistedRoom({ roomId, name, code, folder, createdAt, ownerId, ownerPin: ownerId, e2e, secret });
+    const { type, payload } = await this.joinPayload(roomId, name, code, folder, ownerId, e2e, secret, undefined, ownerId);
     const state = await this.call<RoomState>(type, { payload });
     state.createdAt = createdAt;
     this.cache.set(roomId, state);
@@ -342,7 +368,9 @@ export class RoomManager {
 
   async joinRoom(rawCode: string): Promise<RoomState> {
     this.assertNotSuspended();
-    const code = normalizeCode(rawCode);
+    // The invite may pin the owner ("<code>~<ownerId>"); the pin is not part of the
+    // KDF, so bare-code and pinned joiners derive the same key.
+    const { code, ownerPin } = parseInvite(rawCode);
     if (!code) throw new Error('Empty room code');
     // Already joined this code? Return the existing room.
     const existing = db.getPersistedRooms().find((r) => normalizeCode(r.code) === code);
@@ -355,8 +383,8 @@ export class RoomManager {
     // A "-e2e" code tells us the room is end-to-end encrypted before any peer
     // does — so the engine refuses to seed plaintext even into an empty swarm.
     const e2e = codeIsE2E(code);
-    db.savePersistedRoom({ roomId, name, code, folder, createdAt, e2e });
-    const { type, payload } = await this.joinPayload(roomId, name, code, folder, undefined, e2e);
+    db.savePersistedRoom({ roomId, name, code, folder, createdAt, e2e, ownerPin: ownerPin || undefined });
+    const { type, payload } = await this.joinPayload(roomId, name, code, folder, undefined, e2e, undefined, undefined, ownerPin);
     const state = await this.call<RoomState>(type, { payload });
     state.createdAt = createdAt;
     this.cache.set(roomId, state);
@@ -371,7 +399,7 @@ export class RoomManager {
       if (cached) return cached;
       throw new Error('Rooms are paused: the VPN is down (kill-switch)');
     }
-    const { type, payload } = await this.joinPayload(r.roomId, r.name, r.code, r.folder, r.ownerId, r.e2e, r.secret, r.e2eCfg);
+    const { type, payload } = await this.joinPayload(r.roomId, r.name, r.code, r.folder, r.ownerId, r.e2e, r.secret, r.e2eCfg, r.ownerPin);
     const state = await this.call<RoomState>(type, { payload });
     state.createdAt = r.createdAt;
     this.cache.set(r.roomId, state);
@@ -389,6 +417,8 @@ export class RoomManager {
     try { await this.call('leave', { roomId }, 8000); } catch { /* engine may be down */ }
     db.deletePersistedRoom(roomId);
     db.clearRoomTombstones(roomId);
+    db.clearRoomTombstoneProofs(roomId);
+    db.clearRoomRevives(roomId);
     db.clearRoomManifest(roomId);
     db.clearRoomFolders(roomId);
     db.clearRoomHistory(roomId);

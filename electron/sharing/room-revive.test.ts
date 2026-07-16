@@ -10,9 +10,30 @@
  *   holding the stale tombstone.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import crypto from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { deriveMemberId, deriveKey, topicHash, encrypt } from './room-crypto';
+
+// Stable Ed25519 identity per simulated member — a member's key is persistent
+// across rejoins, so its signed deletes verify against the pub peers TOFU-bound
+// from its hello. Regenerating per join would look like an identity swap.
+// memberId is DERIVED from the pubkey (deriveMemberId), exactly like production,
+// so signed commands pass the id↔pub anchor in verifySignedBy.
+const identityKeys = new Map<string, { pub: string; priv: string; memberId: string }>();
+function keysFor(label: string): { pub: string; priv: string; memberId: string } {
+  let k = identityKeys.get(label);
+  if (!k) {
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+    const pub = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    k = { pub, priv: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), memberId: deriveMemberId(pub) };
+    identityKeys.set(label, k);
+  }
+  return k;
+}
+/** The key-derived memberId for a simulated member label ('A', 'B', ...). */
+function idFor(label: string): string { return keysFor(label).memberId; }
 
 type Sent = { channel: string; payload: any };
 type EngineCtx = {
@@ -110,6 +131,15 @@ function connect(a: { tracker: any }, b: { tracker: any }): [FakePeer, FakePeer]
   return [pA, pB];
 }
 
+/** A raw test-controlled peer attached to an engine (a member gone hostile: holds
+ *  the code, but the test crafts every frame). Returns the sending end. */
+function hostilePeer(inst: { tracker: any }): FakePeer {
+  const pEngine = new FakePeer(); const pTest = new FakePeer();
+  pEngine.other = pTest; pTest.other = pEngine;
+  inst.tracker.emitPeer(pEngine);
+  return pTest;
+}
+
 const flush = async (rounds = 25): Promise<void> => {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setTimeout(r, 0));
 };
@@ -150,14 +180,15 @@ async function makeEngine(): Promise<Engine> {
 const ROOM_ID = 'room-test-1';
 const CODE = 'apple-battery-copper-dragon';
 
-function joinPayload(memberId: string, folder: string, tombstones: Record<string, number> = {}) {
+function joinPayload(label: string, folder: string, tombstones: Record<string, number> = {}) {
+  const k = keysFor(label);
   return {
     type: 'join',
     payload: {
       roomId: ROOM_ID, name: 'Test room', code: CODE, folder,
-      self: { memberId, name: memberId, avatarSeed: memberId, pub: '', priv: '' },
+      self: { memberId: k.memberId, name: label, avatarSeed: label, pub: k.pub, priv: k.priv },
       useTurn: false, turnServers: [],
-      tombstones, manifest: [], ownerId: 'A', mutes: [], history: [], chat: [],
+      tombstones, manifest: [], ownerId: idFor('A'), mutes: [], history: [], chat: [],
       identities: {}, e2e: false, secret: '', cacheDir: '',
     },
   };
@@ -252,11 +283,192 @@ describe('room tombstones: delete stays deleted, explicit re-share revives', () 
   });
 
   it('a fresh deletion still beats the revive (delete wins when newer)', async () => {
-    await cmd(B, { type: 'removeFile', roomId: ROOM_ID, fileId, at: Date.now() });
+    // The owner/author deletes; a delete stamped after the revive wins everywhere.
+    await cmd(A, { type: 'removeFile', roomId: ROOM_ID, fileId, at: Date.now() });
     await flush();
     for (const inst of [A, B, C]) {
       const state = await cmd(inst, joinPayload('X', path.join(dir, 'a')));
       expect(state.files).toHaveLength(0);
     }
   });
+
+  it('a non-author, non-owner delete is dropped by everyone else', async () => {
+    // Re-share so there is a live file authored by A (the owner).
+    const shared = await cmd(A, { type: 'addFiles', roomId: ROOM_ID, paths: [sourceFile] });
+    expect(shared.files.map((f: any) => f.fileId)).toEqual([fileId]);
+    await flush();
+
+    // B (neither the file's author nor the owner) tries to delete it for the room.
+    await cmd(B, { type: 'removeFile', roomId: ROOM_ID, fileId, at: Date.now() });
+    await flush();
+
+    // B hides it locally (its own choice), but A and C keep the file — B's
+    // unauthorized delete never becomes room-wide.
+    const stateB = await cmd(B, joinPayload('B', path.join(dir, 'b')));
+    expect(stateB.files).toHaveLength(0);
+    const stateA = await cmd(A, joinPayload('A', path.join(dir, 'a')));
+    const stateC = await cmd(C, joinPayload('C', path.join(dir, 'c')));
+    expect(stateA.files.map((f: any) => f.fileId)).toEqual([fileId]);
+    expect(stateC.files.map((f: any) => f.fileId)).toEqual([fileId]);
+  });
+});
+
+describe('revive authorization: only the owner or the deleter can bring a deleted file back', () => {
+  const ROOM = 'room-revive-auth';
+  const OWNER_FOLDER = () => path.join(dir, 'auth-o');
+  const MEMBER_FOLDER = () => path.join(dir, 'auth-m');
+  function payload(label: string, folder: string, ownerLabel: string) {
+    const k = keysFor(label);
+    return {
+      type: 'join',
+      payload: {
+        roomId: ROOM, name: 'Auth room', code: CODE, folder,
+        self: { memberId: k.memberId, name: label, avatarSeed: label, pub: k.pub, priv: k.priv },
+        useTurn: false, turnServers: [],
+        tombstones: {}, manifest: [], ownerId: idFor(ownerLabel), mutes: [], history: [], chat: [],
+        identities: {}, e2e: false, secret: '', cacheDir: '',
+      },
+    };
+  }
+
+  it('a non-owner, non-deleter re-share cannot resurrect an owner-deleted file', async () => {
+    for (const d of [OWNER_FOLDER(), MEMBER_FOLDER()]) fs.mkdirSync(d, { recursive: true });
+    const O = await makeEngine(); // 'AO' is the owner
+    const M = await makeEngine(); // 'AM' is a plain member
+    await cmd(O, payload('AO', OWNER_FOLDER(), 'AO'));
+    await cmd(M, payload('AM', MEMBER_FOLDER(), 'AO'));
+    O.tracker = H.trackers[H.trackers.length - 2]; M.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, M);
+    await flush();
+
+    const shared = await cmd(O, { type: 'addFiles', roomId: ROOM, paths: [sourceFile] });
+    const fid = shared.files[0].fileId;
+    await flush();
+    expect((await cmd(M, payload('AM', MEMBER_FOLDER(), 'AO'))).files.map((f: any) => f.fileId)).toEqual([fid]);
+
+    // The owner deletes it — an AUTHENTICATED tombstone lands on both installs.
+    await cmd(O, { type: 'removeFile', roomId: ROOM, fileId: fid, at: Date.now() });
+    await flush();
+    expect((await cmd(O, payload('AO', OWNER_FOLDER(), 'AO'))).files).toHaveLength(0);
+    expect((await cmd(M, payload('AM', MEMBER_FOLDER(), 'AO'))).files).toHaveLength(0);
+
+    // The plain member re-sharing the same content is REFUSED (it cannot lift an
+    // authenticated tombstone), so it can't resurrect the file for anyone.
+    await expect(cmd(M, { type: 'addFiles', roomId: ROOM, paths: [sourceFile] })).rejects.toThrow(/restored/i);
+    await flush();
+    expect((await cmd(O, payload('AO', OWNER_FOLDER(), 'AO'))).files).toHaveLength(0);
+    expect((await cmd(M, payload('AM', MEMBER_FOLDER(), 'AO'))).files).toHaveLength(0);
+
+    // ...but the OWNER can bring it back (an authorized, signed revive).
+    const revived = await cmd(O, { type: 'addFiles', roomId: ROOM, paths: [sourceFile] });
+    expect(revived.files.map((f: any) => f.fileId)).toEqual([fid]);
+    await flush();
+    expect((await cmd(M, payload('AM', MEMBER_FOLDER(), 'AO'))).files.map((f: any) => f.fileId)).toEqual([fid]);
+  }, 20000);
+
+  it('an author deletion converges to a late joiner via a pending proof, blocking a straggler re-seed', async () => {
+    const ROOM2 = 'room-revive-pending';
+    const fld = (n: string) => path.join(dir, 'pend-' + n);
+    for (const n of ['o', 'm', 'p', 'j']) fs.mkdirSync(fld(n), { recursive: true });
+    function pl(label: string, folder: string) {
+      const k = keysFor(label);
+      return { type: 'join', payload: {
+        roomId: ROOM2, name: 'Pending room', code: CODE, folder,
+        self: { memberId: k.memberId, name: label, avatarSeed: label, pub: k.pub, priv: k.priv },
+        useTurn: false, turnServers: [], tombstones: {}, manifest: [], ownerId: idFor('PO'),
+        mutes: [], history: [], chat: [], identities: {}, e2e: false, secret: '', cacheDir: '',
+      } };
+    }
+    const O = await makeEngine(); await cmd(O, pl('PO', fld('o'))); O.tracker = H.trackers[H.trackers.length - 1];
+    const M = await makeEngine(); await cmd(M, pl('PM', fld('m'))); M.tracker = H.trackers[H.trackers.length - 1];
+    const P = await makeEngine(); await cmd(P, pl('PP', fld('p'))); P.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, M);
+    const [oToP] = connect(O, P); // capture O's and M's wires to P so we can cut them
+    const [mToP] = connect(M, P);
+    await flush();
+
+    // Member M (NOT the owner) authors and shares X; owner O and holder P list it.
+    const shared = await cmd(M, { type: 'addFiles', roomId: ROOM2, paths: [sourceFile] });
+    const fid = shared.files[0].fileId;
+    await flush();
+    expect((await cmd(P, pl('PP', fld('p')))).files.map((f: any) => f.fileId)).toEqual([fid]);
+
+    // P goes offline (its only wires were to O and M) BEFORE M deletes its own file,
+    // so the authenticated author tombstone reaches O but never the offline P.
+    oToP.destroy(); mToP.destroy();
+    await cmd(M, { type: 'removeFile', roomId: ROOM2, fileId: fid, at: Date.now() });
+    await flush();
+    expect((await cmd(O, pl('PO', fld('o')))).files).toHaveLength(0); // owner converged on the delete
+    expect((await cmd(P, pl('PP', fld('p')))).files.map((f: any) => f.fileId)).toEqual([fid]); // straggler still holds X
+
+    // Late joiner J connects to O only: it never held X, and M isn't the owner, so
+    // it can't authorize the tombstone yet — it stores the signed proof as PENDING.
+    const J = await makeEngine(); await cmd(J, pl('PJ', fld('j'))); J.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, J);
+    await flush();
+    expect((await cmd(J, pl('PJ', fld('j')))).files).toHaveLength(0);
+
+    // The straggler P (still seeding X, no tombstone) reaches J. Without the pending
+    // proof J would resurrect X; with it, J recognizes M as X's author, verifies the
+    // deletion, and drops the re-seed.
+    connect(P, J);
+    await flush();
+    expect((await cmd(J, pl('PJ', fld('j')))).files).toHaveLength(0);
+  }, 30000);
+
+  it('a future-dated revive cannot make a file permanently un-deletable', async () => {
+    const ROOM3 = 'room-revive-future';
+    for (const n of ['fo', 'fm']) fs.mkdirSync(path.join(dir, 'fut-' + n), { recursive: true });
+    const plf = (label: string) => {
+      const k = keysFor(label);
+      return { type: 'join', payload: {
+        roomId: ROOM3, name: 'Future room', code: CODE, folder: path.join(dir, 'fut-' + (label === 'FO' ? 'fo' : 'fm')),
+        self: { memberId: k.memberId, name: label, avatarSeed: label, pub: k.pub, priv: k.priv },
+        useTurn: false, turnServers: [], tombstones: {}, manifest: [], ownerId: idFor('FO'),
+        mutes: [], history: [], chat: [], identities: {}, e2e: false, secret: '', cacheDir: '',
+      } };
+    };
+    const O = await makeEngine(); await cmd(O, plf('FO')); O.tracker = H.trackers[H.trackers.length - 1];
+    const M = await makeEngine(); await cmd(M, plf('FM')); M.tracker = H.trackers[H.trackers.length - 1];
+    connect(O, M);
+    await flush();
+
+    // Member M authors and shares X, then deletes it (author delete) — O records an
+    // authenticated tombstone (proof.by = M).
+    const shared = await cmd(M, { type: 'addFiles', roomId: ROOM3, paths: [sourceFile] });
+    const fid = shared.files[0].fileId;
+    await flush();
+    await cmd(M, { type: 'removeFile', roomId: ROOM3, fileId: fid, at: Date.now() });
+    await flush();
+    expect((await cmd(O, plf('FO'))).files).toHaveLength(0);
+
+    // M crafts a VALID but FUTURE-DATED revive of its own file (revAt = year 9999),
+    // signed with M's own key — the attack that would otherwise plant an eternal
+    // re-deletion guard and block the owner from ever removing X.
+    const futureAt = 253402300799000; // year 9999
+    const mk = keysFor('FM');
+    const canon = Buffer.from(JSON.stringify(['revive', topicHash(CODE), fid, futureAt, mk.memberId]), 'utf8');
+    const revSig = crypto.sign(null, canon, crypto.createPrivateKey(mk.priv)).toString('base64');
+    const frame = encrypt(deriveKey(CODE), {
+      t: 'add',
+      file: {
+        fileId: fid, name: 'movie.mkv', size: 1, infoHash: fid, magnetURI: shared.files[0].magnetURI,
+        addedBy: mk.memberId, addedByName: 'FM', addedAt: Date.now(),
+        revBy: mk.memberId, revPub: mk.pub, revAt: futureAt, revSig,
+      },
+    });
+    hostilePeer(O).send(frame);
+    await flush();
+
+    // The future-dated revive is REJECTED: X stays deleted (not resurrected)...
+    expect((await cmd(O, plf('FO'))).files).toHaveLength(0);
+    // ...and no eternal guard was planted, so the owner can still delete X for good
+    // (here it's already gone; re-share as owner then delete to prove moderation).
+    const reshared = await cmd(O, { type: 'addFiles', roomId: ROOM3, paths: [sourceFile] });
+    expect(reshared.files.map((f: any) => f.fileId)).toEqual([fid]); // owner revived it (owner authority)
+    await flush();
+    await cmd(O, { type: 'removeFile', roomId: ROOM3, fileId: fid, at: Date.now() });
+    await flush();
+    expect((await cmd(O, plf('FO'))).files).toHaveLength(0); // owner deletion still works — not blocked
+  }, 30000);
 });

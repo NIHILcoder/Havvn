@@ -8,7 +8,7 @@ import { getTorrentManager } from './torrent';
 import { getSchedulerEngine } from './scheduler/scheduler-engine';
 import { setupIpcHandlers } from './ipc';
 import { logger, detectVPN, getAppIconPath } from './utils';
-import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getVpnWarningDismissed, setVpnWarningDismissed } from './db/store';
+import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getVpnWarningDismissed, setVpnWarningDismissed, migrateMemberIdToKeyDerived } from './db/store';
 import { getRSSService } from './services/rss-service';
 import { getIPBlocklistService } from './services/ip-blocklist';
 import { getWatchFolderService } from './torrent/watch-folder';
@@ -708,6 +708,11 @@ async function initializeApp(): Promise<void> {
   });
 
   logger.info('App', 'Havvn starting...');
+
+  // Upgrade this install's room memberId to the key-derived form (see the store).
+  // Runs here — after 'ready', before any room work — so the signing key is only
+  // (re)generated once safeStorage can encrypt it at rest.
+  try { migrateMemberIdToKeyDerived(); } catch (e) { logger.warn('App', 'room memberId migration failed', { error: String(e) }); }
 
   // Safety net: log async errors from native deps (e.g. utp-native socket
   // errors, networking hiccups) instead of letting Electron pop an endless

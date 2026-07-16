@@ -25,7 +25,7 @@ import { ipcRenderer } from 'electron';
 import fs from 'fs';
 import path from 'path';
 import WebTorrent from 'webtorrent';
-import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E } from './room-crypto';
+import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon } from '../../shared/room-folders';
@@ -75,6 +75,7 @@ const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync'
 // so the relayed copy is bounded too). Limits are far above any legitimate use.
 const MAX_FRAME_CHARS = 1_000_000;   // reject an encrypted frame larger than ~1 MB
 const MAX_ARRAY = 5000;              // have / files / tombs entries
+const MAX_TOMBSIGS = 500;            // signed tombstones per hello — each costs an Ed25519 verify, and the store caps at 500 anyway
 const MAX_STR = 1024;                // ids, names, seeds
 const MAX_MAGNET = 4096;             // a magnet URI
 const MAX_TEXT = 2000;               // a chat message body
@@ -82,17 +83,24 @@ const MAX_SECRET = 256;              // E2E content key (hex)
 
 function log(msg: string): void { try { ipcRenderer.send('room-log', msg); } catch { /* ignore */ } }
 
+// A deletion proof: the tombstone's timestamp plus the author/owner Ed25519
+// signature over delCanonical, so it re-verifies wherever it gossips.
+type TombProof = { at: number; by: string; pub: string; sig: string };
+
 // ── Gossip message shapes (post-decrypt) ───────────────────────────────────
 type Msg =
   // `tombs` lists deleted fileIds (legacy shape, kept so older peers converge);
   // `tombsAt` adds each deletion's timestamp so a LATER explicit re-share wins
-  // (revive) while anything older stays dead.
+  // (revive) while anything older stays dead. `tombSigs` upgrades those to
+  // AUTHENTICATED tombstones — each carries the author/owner signature so a
+  // receiver re-verifies authority instead of trusting a bare fileId (an
+  // unsigned tomb is otherwise a free "delete anyone's file" via the greet).
   // `cfg` is the room owner's SIGNED E2E config (see E2ECfg) — the authenticated
   // way to learn the flag+secret; the bare e2e/secret fields remain for rooms
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number> }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number> }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -103,16 +111,16 @@ type Msg =
   | { t: 'assign'; fileId: string; folderId: string; at: number; memberId: string }
   | { t: 'have'; memberId: string; fileId: string }
   | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string }
-  // Remove a shared file from the room (everyone drops it; the timestamped
-  // tombstone prevents resurrection until an explicitly newer re-share).
-  | { t: 'del'; fileId: string; memberId: string; at?: number }
-  // Owner kicked a member: rotate the room to a new code. Sent encrypted with the
-  // OLD key to everyone EXCEPT the kicked member, who never learns the new code.
-  | { t: 'rekey'; newCode: string; kickedId: string; kickedName: string; by: string }
-  // Explicit notice sent to the member being removed (under the CURRENT key,
-  // which they can still read) right before the room rotates away from them, so
-  // they get a clear "you were removed" instead of silently going stale.
-  | { t: 'kicked'; targetId: string; by: string; byName: string }
+  // Remove a shared file from the room. Signed by the actor; peers apply it only
+  // when the signer is the file's author or the owner (see 'del' handler).
+  | { t: 'del'; fileId: string; memberId: string; at: number; pub: string; sig: string }
+  // Owner kicked a member: rotate the room to a new code. OWNER-SIGNED (peers
+  // verify `by === ownerId` before rotating); relayed verbatim so multi-hop peers
+  // still verify the owner, not the relayer.
+  | { t: 'rekey'; newCode: string; kickedId: string; kickedName: string; by: string; pub: string; sig: string }
+  // Explicit notice to the member being removed, OWNER-SIGNED so it can't be
+  // spoofed to make a member think they were kicked.
+  | { t: 'kicked'; targetId: string; by: string; byName: string; pub: string; sig: string }
   // Sent when a member leaves voluntarily so peers drop them at once instead of
   // keeping a 45s offline ghost in the list.
   | { t: 'bye'; memberId: string }
@@ -160,6 +168,7 @@ interface Room {
   started: boolean;
   self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string };
   ownerId: string;                       // memberId of the owner ('' until learned)
+  ownerPin: string;                      // owner memberId pinned from the invite ('' = TOFU); only this identity may be adopted as owner
   e2e: boolean;                          // end-to-end encryption (ciphertext on the wire)
   secret: string;                        // E2E content key (32-byte hex; '' until learned)
   e2eCfg: E2ECfg | null;                 // owner-signed E2E config we hold + re-serve to joiners
@@ -172,6 +181,9 @@ interface Room {
   folderTombstones: Map<string, number>; // deleted folderId → deletedAt; a newer upsert revives it
   transfers: Map<string, RoomTransfer>;  // by fileId
   tombstones: Map<string, number>;       // deleted fileId → deletedAt; only a newer re-share revives it
+  tombSigs: Map<string, { by: string; pub: string; sig: string }>; // deletion proofs (author/owner-signed) so a tombstone re-verifies as it gossips
+  pendingTombs: Map<string, TombProof>;  // signed author-deletions for files we don't hold yet — applied if/when that file arrives (session-only, capped)
+  revives: Map<string, number>;          // fileId → revAt of a VERIFIED revive we accepted; guards the revived file from re-deletion by an equal/older re-gossiped tombstone (session-only)
   autoFetch: boolean;                    // auto-download peers' files; false = wait for an explicit fetchFile
   upKbps: number;                        // per-room upload ceiling, KB/s (0 = unlimited)
   downKbps: number;                      // per-room download ceiling, KB/s (0 = unlimited)
@@ -397,6 +409,9 @@ function buildState(room: Room): RoomState {
     roomId: room.roomId,
     name: room.name,
     code: room.code,
+    // The shareable invite pins the owner (when known) so joiners can't be tricked
+    // into adopting an impostor owner; the bare `code` stays the speakable fallback.
+    invite: buildInvite(room.code, room.ownerId),
     folder: room.folder,
     topicHash: room.topic,
     createdAt: 0,
@@ -483,10 +498,13 @@ function helloMsg(room: Room): Msg {
     memberId: room.self.memberId,
     name: room.self.name || 'You',
     avatarSeed: room.self.avatarSeed,
+    pub: room.self.pub, // our identity key — TOFU-bound by peers so they can verify our signed commands
+
     have: buildState(room).members[0].have,
     files: Array.from(room.files.values()),
-    tombs: Array.from(room.tombstones.keys()), // share deletions so peers converge
-    tombsAt: Object.fromEntries(room.tombstones), // timestamps let a newer re-share revive
+    tombs: Array.from(room.tombstones.keys()), // legacy: bare deletions so ≤2.15 peers converge
+    tombsAt: Object.fromEntries(room.tombstones), // legacy: timestamps let a newer re-share revive
+    ...(room.tombSigs.size ? { tombSigs: tombSigsToRecord(room) } : {}), // authenticated deletions (peers verify authority before applying)
     roomName: room.name, // so a joiner (who only knows the code) learns the name
     ownerId: room.ownerId, // so joiners learn who the owner is
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
@@ -546,6 +564,14 @@ function signE2ECfg(room: Room): E2ECfg | null {
 function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
   if (!cfg || typeof cfg !== 'object') return false;
   if (!cfg.ownerId || !cfg.pub || !cfg.sig || typeof cfg.e2e !== 'boolean' || typeof cfg.secret !== 'string') return false;
+  // Same crypto anchor as every other signed command: the ownerId must be the
+  // hash of the signing key, so a forged cfg can't poison the owner's binding
+  // (which would then reject the REAL owner's config and rekeys).
+  if (!idMatchesPub(cfg.ownerId, cfg.pub)) { log('e2e cfg id not derived from pub — dropped'); return false; }
+  // With an invite owner pin, ONLY the pinned owner's config counts — otherwise a
+  // hostile member reaching a fresh joiner first could plant a wrong E2E secret
+  // (a decrypt-DoS) even though the pin blocks it from being adopted as owner.
+  if (!ownerPinAllows(room, cfg.ownerId)) { log('e2e cfg owner not the pinned one — dropped'); return false; }
   // If a signed config already established the owner, only that same owner counts.
   if (room.e2eSigned && room.ownerId && cfg.ownerId !== room.ownerId) {
     log('e2e cfg from a different claimed owner — dropped'); return false;
@@ -556,7 +582,7 @@ function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
   try { ok = crypto.verify(null, e2eCanonical(room.topic, cfg), crypto.createPublicKey(cfg.pub), Buffer.from(cfg.sig, 'base64')); }
   catch (e) { log('e2e cfg verify error: ' + String(e)); return false; }
   if (!ok) { log('e2e cfg bad signature — dropped'); return false; }
-  if (!bound) { room.identities.set(cfg.ownerId, cfg.pub); try { ipcRenderer.send('room-identity-add', { roomId: room.roomId, memberId: cfg.ownerId, pub: cfg.pub }); } catch { /* ignore */ } }
+  bindIdentity(room, cfg.ownerId, cfg.pub);
   return true;
 }
 
@@ -587,7 +613,7 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
   if (cfg && verifyE2ECfg(room, cfg)) {
     // The signed claim also proves ownership — adopt/correct an ownerId that was
     // never backed by a signature (a bare HELLO field is just a claim).
-    if (room.ownerId !== cfg.ownerId && (!room.ownerId || !room.e2eSigned)) {
+    if (room.ownerId !== cfg.ownerId && (!room.ownerId || !room.e2eSigned) && ownerPinAllows(room, cfg.ownerId)) {
       room.ownerId = cfg.ownerId;
       try { ipcRenderer.send('room-owner', { roomId: room.roomId, ownerId: cfg.ownerId }); } catch { /* ignore */ }
       changed = true;
@@ -698,39 +724,109 @@ function addChat(room: Room, msg: RoomChatMessage): void {
 // each memberId is trust-on-first-use bound to one public key — so a keyholder
 // cannot post under someone else's identity.
 
+/* ── Authenticated commands (chat + the authority commands del/rekey/kicked) ──
+ * Every one is Ed25519-signed by its actor's identity key and bound to the room
+ * (via `topic`) and its type, so a signature can't be replayed into another room
+ * or as another command. Encryption proves only MEMBERSHIP (everyone holds the
+ * key) — these signatures prove AUTHORSHIP, which is what authority checks need.
+ */
+
+/** Sign canonical bytes with OUR identity key (base64), or '' on failure. */
+function signBytes(room: Room, canonical: Buffer): string {
+  try { return crypto.sign(null, canonical, crypto.createPrivateKey(room.self.priv)).toString('base64'); }
+  catch (e) { log('sign failed: ' + String(e)); return ''; }
+}
+
+/** Bind memberId→pub, but ONLY if the id is the hash of that pub (deriveMemberId).
+ *  This is the anchor of the whole authority model: a member cannot bind (and so
+ *  cannot later verify as) any id except the one its own key hashes to — so it can
+ *  neither impersonate the owner nor poison another member's binding. First
+ *  binding wins; a later mismatch is rejected at verify time. */
+function bindIdentity(room: Room, memberId: string, pub?: string): void {
+  if (!memberId || !pub || room.identities.has(memberId)) return;
+  if (deriveMemberId(pub) !== memberId) { log('id/pub mismatch for ' + memberId + ' — not bound'); return; }
+  room.identities.set(memberId, pub);
+  try { ipcRenderer.send('room-identity-add', { roomId: room.roomId, memberId, pub }); } catch { /* ignore */ }
+}
+
+/** True when `pub` is the key `memberId` was derived from — the cryptographic
+ *  proof that whoever holds this key legitimately owns this id. */
+function idMatchesPub(memberId: string, pub: string): boolean {
+  return !!memberId && !!pub && deriveMemberId(pub) === memberId;
+}
+
+/**
+ * Verify `sig` over `canonical` as coming from `memberId`, enforcing the
+ * memberId→pubkey TOFU binding: valid only if the signature checks out AND `pub`
+ * matches the one already bound to that memberId (binding it on first sight).
+ * Any mismatch is an impersonation attempt and is dropped.
+ */
+function verifySignedBy(room: Room, memberId: string, pub: string, sig: string, canonical: Buffer): boolean {
+  if (!memberId || !pub || !sig) return false;
+  if (!idMatchesPub(memberId, pub)) { log('id not derived from pub for ' + memberId + ' — dropped'); return false; } // the crypto anchor: pub must hash to the claimed id
+  const bound = room.identities.get(memberId);
+  if (bound && bound !== pub) { log('identity mismatch for ' + memberId + ' — dropped'); return false; }
+  let ok = false;
+  try { ok = crypto.verify(null, canonical, crypto.createPublicKey(pub), Buffer.from(sig, 'base64')); }
+  catch (e) { log('verify error: ' + String(e)); return false; }
+  if (!ok) { log('bad signature from ' + memberId + ' — dropped'); return false; }
+  bindIdentity(room, memberId, pub);
+  return true;
+}
+
 /** Stable bytes to sign/verify for a chat message. */
 function chatCanonical(topic: string, m: { id: string; at: number; memberId: string; text: string }): Buffer {
   return Buffer.from(JSON.stringify([topic, m.id, m.at, m.memberId, m.text]), 'utf8');
 }
-
 function signChat(room: Room, m: { id: string; at: number; memberId: string; text: string }): string {
-  try {
-    return crypto.sign(null, chatCanonical(room.topic, m), crypto.createPrivateKey(room.self.priv)).toString('base64');
-  } catch (e) { log('chat sign failed: ' + String(e)); return ''; }
+  return signBytes(room, chatCanonical(room.topic, m));
+}
+function verifyChat(room: Room, msg: { id: string; at: number; memberId: string; text: string; pub: string; sig: string }): boolean {
+  return verifySignedBy(room, msg.memberId, msg.pub, msg.sig, chatCanonical(room.topic, msg));
 }
 
-/**
- * Verify a chat message's signature and enforce the memberId→pubkey binding.
- * Returns true only if the signature is valid AND the sender's pubkey matches the
- * one already bound to that memberId (binding it on first sight). Drops on any
- * mismatch — that's an impersonation attempt.
- */
-function verifyChat(room: Room, msg: { id: string; at: number; memberId: string; text: string; pub: string; sig: string }): boolean {
-  if (!msg.pub || !msg.sig) return false;
-  const bound = room.identities.get(msg.memberId);
-  if (bound && bound !== msg.pub) { log('chat identity mismatch for ' + msg.memberId + ' — dropped'); return false; }
-  let ok = false;
-  try { ok = crypto.verify(null, chatCanonical(room.topic, msg), crypto.createPublicKey(msg.pub), Buffer.from(msg.sig, 'base64')); }
-  catch (e) { log('chat verify error: ' + String(e)); return false; }
-  if (!ok) { log('chat bad signature from ' + msg.memberId + ' — dropped'); return false; }
-  if (!bound) { room.identities.set(msg.memberId, msg.pub); try { ipcRenderer.send('room-identity-add', { roomId: room.roomId, memberId: msg.memberId, pub: msg.pub }); } catch { /* ignore */ } }
-  return true;
+/* Authority commands — the type tag in each canonical is domain separation so a
+ * signature for one can never be replayed as another. */
+function delCanonical(topic: string, m: { fileId: string; memberId: string; at: number }): Buffer {
+  return Buffer.from(JSON.stringify(['del', topic, m.fileId, m.memberId, m.at]), 'utf8');
+}
+function rekeyCanonical(topic: string, m: { newCode: string; kickedId: string; by: string }): Buffer {
+  return Buffer.from(JSON.stringify(['rekey', topic, m.newCode, m.kickedId, m.by]), 'utf8');
+}
+function kickedCanonical(topic: string, m: { targetId: string; by: string }): Buffer {
+  return Buffer.from(JSON.stringify(['kicked', topic, m.targetId, m.by]), 'utf8');
+}
+/** Bytes an owner/deleter signs to authorize lifting an authenticated tombstone.
+ *  Bound to `tombAt` — the deletion timestamp being lifted, a value every peer
+ *  agrees on (it rode the signed `del`) — NOT the reviving add's addedAt, which
+ *  each receiver clamps to its own clock and so can't be signed over reliably. */
+function reviveCanonical(topic: string, m: { fileId: string; tombAt: number; by: string }): Buffer {
+  return Buffer.from(JSON.stringify(['revive', topic, m.fileId, m.tombAt, m.by]), 'utf8');
+}
+
+/** Serialize our held deletion proofs (fileId → {at, by, pub, sig}) for a hello,
+ *  pairing each proof with its winning timestamp from the tombstone map. */
+function tombSigsToRecord(room: Room): Record<string, TombProof> {
+  const out: Record<string, TombProof> = {};
+  for (const [fileId, p] of room.tombSigs) {
+    const at = room.tombstones.get(fileId);
+    if (at === undefined) continue; // proof without a live tombstone (revived) — skip
+    out[fileId] = { at, by: p.by, pub: p.pub, sig: p.sig };
+  }
+  return out;
+}
+
+/** With an owner PIN from the invite, ONLY the pinned identity may be adopted as
+ *  owner — so a member can't self-declare owner to a fresh joiner. No pin → TOFU. */
+function ownerPinAllows(room: Room, id?: string): boolean {
+  return !room.ownerPin || id === room.ownerPin;
 }
 
 /** Learn who the room owner is from a peer (joiners start not knowing). First
- *  claim wins; persisted so the role survives restart. */
+ *  claim wins (gated by the invite's owner pin, if any); persisted so the role
+ *  survives restart. */
 function maybeAdoptOwner(room: Room, incoming?: string): void {
-  if (!incoming || room.ownerId) return;
+  if (!incoming || room.ownerId || !ownerPinAllows(room, incoming)) return;
   room.ownerId = incoming;
   try { ipcRenderer.send('room-owner', { roomId: room.roomId, ownerId: incoming }); } catch { /* ignore */ }
 }
@@ -799,8 +895,12 @@ function clampFile(f: any): RoomFile | null {
     magnetURI,
     addedBy: clampStr(f.addedBy, MAX_STR),
     addedByName: clampStr(f.addedByName, MAX_STR),
-    addedAt: Number.isFinite(f.addedAt) ? f.addedAt : Date.now(),
+    // Never from the future: a hostile far-future addedAt would otherwise outrank
+    // (and permanently defeat) every later deletion. Falls back to now if absent.
+    addedAt: Math.min(Number.isFinite(f.addedAt) ? f.addedAt : Date.now(), Date.now()),
     ...(f.enc ? { enc: true } : {}),
+    // Revive authorization (only on an add that lifts an authenticated tombstone).
+    ...(f.revBy && f.revPub && f.revSig && Number.isFinite(f.revAt) ? { revBy: clampStr(f.revBy, MAX_STR), revPub: clampStr(f.revPub, MAX_STR * 2), revAt: Number(f.revAt), revSig: clampStr(f.revSig, MAX_STR) } : {}),
     // Folder assignment MUST be copied explicitly or it is silently stripped on
     // receive — the same trap the enc/infoHash fields document above. folderAt is
     // clamped so a future timestamp can't lock the assignment (see clampAt).
@@ -858,7 +958,29 @@ function clampGossip(msg: any): void {
     }
     msg.tombsAt = out;
   }
-  if (Array.isArray(msg.files)) msg.files = msg.files.slice(0, MAX_ARRAY).map(clampFile).filter(Boolean);
+  if ('tombSigs' in msg) {
+    const out: Record<string, TombProof> = {};
+    if (msg.tombSigs && typeof msg.tombSigs === 'object' && !Array.isArray(msg.tombSigs)) {
+      for (const [k, v] of Object.entries(msg.tombSigs).slice(0, MAX_TOMBSIGS)) {
+        const p = v as any;
+        const at = Number(p?.at);
+        if (p && typeof p === 'object' && Number.isFinite(at)) {
+          out[clampStr(k, MAX_STR)] = { at, by: clampStr(p.by, MAX_STR), pub: clampStr(p.pub, MAX_STR * 2), sig: clampStr(p.sig, MAX_STR) };
+        }
+      }
+    }
+    msg.tombSigs = out;
+  }
+  if (Array.isArray(msg.files)) {
+    // Dedupe by fileId: a hello never needs the same file twice, and duplicates
+    // would let one frame trigger repeated per-file work (e.g. revive verifies).
+    const seen = new Set<string>();
+    msg.files = msg.files.slice(0, MAX_ARRAY).map(clampFile).filter((f: RoomFile | null) => {
+      if (!f || seen.has(f.fileId)) return false;
+      seen.add(f.fileId);
+      return true;
+    });
+  }
   if ('file' in msg) msg.file = clampFile(msg.file);
   // Folder gossip fields (folder/assign messages + folders/folderTombs in hello).
   if ('id' in msg) msg.id = clampStr(msg.id, MAX_STR);
@@ -924,6 +1046,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
   switch (msg.t) {
     case 'hello': {
       if (direct) wire.memberId = msg.memberId;
+      bindIdentity(room, msg.memberId, msg.pub); // TOFU their identity key from the greet, so we can verify their signed commands
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       m.have = Array.from(new Set(msg.have || []));
@@ -931,11 +1054,14 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       maybeAdoptOwner(room, msg.ownerId);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
-      // Apply peer deletions first so their HELLO file list can't re-add them.
-      // A tombstone without a timestamp came from an older build that can't
-      // express revives — treat it as fresh so its deletion still sticks.
-      for (const id of msg.tombs || []) applyTombstone(room, id, msg.tombsAt?.[id] ?? Date.now());
+      // Merge the peer's files first so an authenticated tombstone below can check
+      // authorship (addedBy) against the file, then re-suppress it. `tombSigs` are
+      // AUTHENTICATED deletions — each re-verifies (owner/author + signature)
+      // before it applies. Bare `tombs`/`tombsAt` from ≤2.15 peers are NOT trusted
+      // here (an unsigned tomb would be a free "delete anyone's file" over hello);
+      // they still ride our own hello outward so old peers keep converging.
       for (const f of msg.files || []) mergeFile(room, f);
+      for (const [id, p] of Object.entries(msg.tombSigs || {})) acceptRemoteTomb(room, id, Number(p?.at), String(p?.by || ''), String(p?.pub || ''), String(p?.sig || ''));
       // Reconcile the folder ASSIGNMENT of files we ALREADY hold: mergeFile is
       // add-only, so a reassignment made while we were offline rides the peer's
       // HELLO files but would otherwise be dropped. LWW by folderAt.
@@ -1015,27 +1141,32 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     }
     case 'del': {
       if (room.mutes.has(msg.memberId)) break; // ignore deletes from a muted member
-      const actor = room.members.get(msg.memberId);
-      const at = Number(msg.at) || Date.now(); // older builds don't stamp deletions
-      applyTombstone(room, msg.fileId, at, { id: msg.memberId, name: actor?.name || '?' });
-      try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId: msg.fileId, at }); } catch { /* ignore */ }
-      pushState(room, true);
+      // Authenticate + authorize (owner or the file's author) before applying;
+      // an unsigned/old-format or unauthorized del is dropped, not a local hide.
+      if (acceptRemoteTomb(room, msg.fileId, Number(msg.at), msg.memberId, msg.pub, msg.sig)) pushState(room, true);
       break;
     }
     case 'rekey': {
-      // Decryption already succeeded, so this came in under the CURRENT key.
       if (msg.kickedId === room.self.memberId) break; // we're the one being kicked — never adopt
       if (room.code === msg.newCode) break;            // already applied
+      // Authority: ONLY the owner may rotate the room. Encryption proves only that
+      // the sender holds the key (every member does) — verify the OWNER's actual
+      // signature, or a member could rotate the room onto a code they chose.
+      if (!room.ownerId || msg.by !== room.ownerId) { log('rekey from non-owner ' + msg.by + ' — dropped'); break; }
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, rekeyCanonical(room.topic, { newCode: msg.newCode, kickedId: msg.kickedId, by: msg.by }))) break;
       const oldKey = room.key;
-      // Relay to our other peers (still under the old key) so multi-hop rooms converge.
+      // Relay verbatim (still under the old key) so multi-hop rooms converge; the
+      // owner's signature rides along so downstream peers verify the owner too.
       sendRekey(room, oldKey, msg, msg.kickedId, wire.id);
       applyLocalRekey(room, msg.newCode, msg.kickedId, msg.kickedName);
       break;
     }
     case 'kicked': {
-      // The owner removed us. Decryption already succeeded, so it's authentic
-      // (came in under the room key we still hold). Only act if WE are the target.
+      // Only act if WE are the target AND it is genuinely OWNER-signed — a mere
+      // room member could otherwise spoof a "you were removed" notice.
       if (msg.targetId !== room.self.memberId) break;
+      if (!room.ownerId || msg.by !== room.ownerId) break;
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, kickedCanonical(room.topic, { targetId: msg.targetId, by: msg.by }))) break;
       markKicked(room, msg.byName || '?');
       break;
     }
@@ -1122,9 +1253,21 @@ function isTombstonedAt(room: Room, fileId: string, addedAt: number): boolean {
   return tombAt !== undefined && addedAt <= tombAt;
 }
 
+/** Record a VERIFIED revive (in memory + persisted) so its re-deletion guard
+ *  survives restart. newest-revAt wins. */
+function recordRevive(room: Room, fileId: string, revAt: number): void {
+  revAt = Math.min(revAt, Date.now() + 60_000); // defense in depth: the guard must never hold a future value (would block real deletions)
+  const cur = room.revives.get(fileId);
+  if (cur !== undefined && cur >= revAt) return;
+  room.revives.set(fileId, revAt);
+  try { ipcRenderer.send('room-revive', { roomId: room.roomId, fileId, revAt }); } catch { /* ignore */ }
+}
+
 /** Lift a tombstone here and in the persisted store (the file was revived). */
 function clearTombstone(room: Room, fileId: string): void {
-  if (!room.tombstones.delete(fileId)) return;
+  const had = room.tombstones.delete(fileId);
+  room.tombSigs.delete(fileId); // the deletion proof is stale once revived
+  if (!had) return;
   try { ipcRenderer.send('room-tomb-del', { roomId: room.roomId, fileId }); } catch { /* ignore */ }
 }
 
@@ -1138,6 +1281,13 @@ function clearTombstone(room: Room, fileId: string): void {
 function applyTombstone(room: Room, fileId: string, at: number, by?: { id: string; name: string }): void {
   const current = room.files.get(fileId);
   if (current && current.addedAt > at) return; // revived later — the newer add wins
+  // A revive we VERIFIED (room.revives, never the file's untrusted revAt field)
+  // that lifts a deletion at-or-after this one outranks it, independent of clock
+  // skew on addedAt — so a re-gossiped old tombstone can't silently re-delete a
+  // legitimately revived file. A strictly-newer deletion supersedes the revive.
+  const revAt = room.revives.get(fileId);
+  if (revAt !== undefined && revAt >= at) return;
+  if (room.revives.delete(fileId)) { try { ipcRenderer.send('room-revive-del', { roomId: room.roomId, fileId }); } catch { /* ignore */ } } // superseded by a newer deletion
   room.tombstones.set(fileId, Math.max(at, room.tombstones.get(fileId) ?? 0));
   // Drop it from the persisted manifest too so it isn't re-seeded next launch.
   try { ipcRenderer.send('room-manifest-del', { roomId: room.roomId, fileId }); } catch { /* ignore */ }
@@ -1168,6 +1318,100 @@ function applyTombstone(room: Room, fileId: string, at: number, by?: { id: strin
   } catch (e) { log('tombstone cipher unlink failed: ' + String(e)); }
 }
 
+/**
+ * Accept a deletion that arrived over the wire (a `del` message or a `tombSigs`
+ * entry in a hello) ONLY if it is authenticated and authorized:
+ *   - the signature verifies as `by` under its TOFU-bound identity key, AND
+ *   - `by` is the room OWNER, or the file's AUTHOR (`addedBy`).
+ * On success it applies the tombstone and records the proof so we can re-gossip
+ * it verifiably. Returns true iff the deletion was accepted room-wide. A rejected
+ * deletion is simply not applied (it never becomes a local hide for a bystander).
+ */
+function acceptRemoteTomb(room: Room, fileId: string, at: number, by: string, pub: string, sig: string): boolean {
+  if (!fileId || !by || !pub || !sig || !Number.isFinite(at)) return false;
+  if (at > Date.now() + 60_000) return false; // no future-dated tombstones (would suppress every later re-share)
+  // Idempotency: we already hold this deletion (with a proof) at least this new —
+  // nothing to do, and no need to pay for crypto. Defangs a flood of tombs we know.
+  const have = room.tombstones.get(fileId);
+  if (have !== undefined && have >= at && room.tombSigs.has(fileId)) return true;
+  // Cheap authority gate BEFORE the expensive signature verify: a tomb from a
+  // non-owner for a file we don't hold (or whose author isn't the signer) is
+  // dropped without running crypto.verify — resists a hello stuffed with forged
+  // tombSigs turning into thousands of Ed25519 verifications.
+  const file = room.files.get(fileId);
+  const authorized = (!!room.ownerId && by === room.ownerId) || (!!file && file.addedBy === by);
+  if (!authorized) {
+    // We can't authorize this yet — but a non-owner deletion of a file we simply
+    // DON'T HOLD may be a valid AUTHOR deletion we can't check without the file
+    // (authorship is only knowable from a held RoomFile). Keep the signed proof
+    // PENDING so that if that file later arrives (from a straggler still seeding
+    // it) we can verify + suppress it, instead of resurrecting a deleted file on
+    // a late joiner. Unverified + capped, so a flood is bounded; it's promoted
+    // (and only then trusted/gossiped) lazily in mergeFile.
+    if (!file && by !== room.ownerId) rememberPendingTomb(room, fileId, { at, by, pub, sig });
+    return false;
+  }
+  if (!verifySignedBy(room, by, pub, sig, delCanonical(room.topic, { fileId, memberId: by, at }))) return false;
+  const actor = room.members.get(by);
+  applyTombstone(room, fileId, at, { id: by, name: actor?.name || '?' });
+  // Keep the proof paired with whichever timestamp actually won, so our re-gossip
+  // verifies. (applyTombstone no-ops if the file was revived strictly later.)
+  if (room.tombstones.get(fileId) === at) {
+    room.tombSigs.set(fileId, { by, pub, sig });
+    try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId, at, by, pub, sig }); } catch { /* ignore */ }
+  }
+  room.pendingTombs.delete(fileId); // superseded — it's a live tombstone now
+  return true;
+}
+
+const MAX_PENDING_TOMBS = 500; // cap so an attacker can't grow the map unbounded
+
+/** Stash a signed deletion for a file we don't hold, newest-`at` wins, capped. */
+function rememberPendingTomb(room: Room, fileId: string, p: TombProof): void {
+  const cur = room.pendingTombs.get(fileId);
+  if (cur && cur.at >= p.at) return;
+  room.pendingTombs.set(fileId, p);
+  if (room.pendingTombs.size > MAX_PENDING_TOMBS) {
+    const oldest = room.pendingTombs.keys().next().value; // Map preserves insertion order
+    if (oldest !== undefined) room.pendingTombs.delete(oldest);
+  }
+}
+
+/** When a file is about to be added, apply any PENDING author-deletion for it: a
+ *  straggler may be re-seeding a file its author already deleted, and a late
+ *  joiner only learns the (author-signed) tombstone through this deferred check.
+ *  We can authorize now because the arriving `file` reveals its addedBy. Returns
+ *  true if the file was suppressed (deletion applied), so mergeFile drops the add. */
+function applyPendingTomb(room: Room, file: RoomFile): boolean {
+  const p = room.pendingTombs.get(file.fileId);
+  if (!p) return false;
+  // A revive on the arriving file that lifts a deletion at-or-after the pending one
+  // SUPERSEDES it — the pending proof is stale (a replayed, already-undone
+  // deletion). Only a valid owner/deleter-signed revive counts, so a member can't
+  // use this to force-revive someone else's deletion.
+  if (Number.isFinite(file.revAt) && (file.revAt as number) >= p.at && (file.revAt as number) <= Date.now() + 60_000 && file.revBy && file.revPub && file.revSig) {
+    const rby = file.revBy;
+    const revAuthorized = (!!room.ownerId && rby === room.ownerId) || rby === p.by;
+    if (revAuthorized && verifySignedBy(room, rby, file.revPub, file.revSig, reviveCanonical(room.topic, { fileId: file.fileId, tombAt: file.revAt as number, by: rby }))) {
+      room.pendingTombs.delete(file.fileId);
+      recordRevive(room, file.fileId, file.revAt as number); // VERIFIED revive — guards against re-deletion by the replayed tombstone
+      return false; // revive wins — let the add proceed
+    }
+  }
+  const authorized = (!!room.ownerId && p.by === room.ownerId) || p.by === file.addedBy;
+  if (!authorized) return false; // not the author/owner — keep it pending for a different candidate
+  room.pendingTombs.delete(file.fileId);
+  // Verify only now, on a real authorship match — bounds crypto to genuine candidates.
+  if (!verifySignedBy(room, p.by, p.pub, p.sig, delCanonical(room.topic, { fileId: file.fileId, memberId: p.by, at: p.at }))) return false;
+  const actor = room.members.get(p.by);
+  applyTombstone(room, file.fileId, p.at, { id: p.by, name: actor?.name || '?' });
+  if (room.tombstones.get(file.fileId) === p.at) {
+    room.tombSigs.set(file.fileId, { by: p.by, pub: p.pub, sig: p.sig });
+    try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId: file.fileId, at: p.at, by: p.by, pub: p.pub, sig: p.sig }); } catch { /* ignore */ }
+  }
+  return true;
+}
+
 function attachWire(room: Room, peer: any): void {
   const wire: Wire = { id: ++wireSeq, peer };
   room.wires.set(wire.id, wire);
@@ -1179,14 +1423,57 @@ function attachWire(room: Room, peer: any): void {
   pushState(room);
 }
 
+/**
+ * Verify an add's revive authorization against an authenticated tombstone: the
+ * signature must check out as `revBy`, and `revBy` must be the OWNER or the
+ * member who signed the deletion (the original deleter). On success it lifts the
+ * tombstone; on failure the tombstone stands and the resurrection is refused.
+ */
+function acceptRevive(room: Room, file: RoomFile): boolean {
+  const by = file.revBy, pub = file.revPub, sig = file.revSig, revAt = file.revAt;
+  if (!by || !pub || !sig || !Number.isFinite(revAt)) return false;
+  // A revive can only lift a deletion that could actually exist. Deletions are
+  // bounded to now+60s (acceptRemoteTomb), so a future-dated revAt is bogus —
+  // reject it, or it would enter room.revives and permanently outrank every real
+  // future deletion (the owner could never moderate the file again).
+  if ((revAt as number) > Date.now() + 60_000) { log('future-dated revive for ' + file.fileId.slice(0, 8) + ' — dropped'); return false; }
+  const tombAt = room.tombstones.get(file.fileId);
+  if (tombAt === undefined) return true;        // nothing to lift (already revived/absent)
+  if ((revAt as number) < tombAt) return false; // stale revive — it undoes an OLDER deletion than the one we hold
+  // Authorize BEFORE the expensive verify (same DoS guard as acceptRemoteTomb): a
+  // hello stuffed with revive-bearing files whose revBy is neither the owner nor
+  // the deleter is rejected without ever running crypto.verify.
+  const proof = room.tombSigs.get(file.fileId);
+  const authorized = (!!room.ownerId && by === room.ownerId) || (!!proof && proof.by === by);
+  if (!authorized) return false;
+  // The revive is self-describing: it is signed over the deletion it lifts (revAt),
+  // not over our locally-held tombAt, so it verifies regardless of clock skew.
+  if (!verifySignedBy(room, by, pub, sig, reviveCanonical(room.topic, { fileId: file.fileId, tombAt: revAt as number, by }))) return false;
+  clearTombstone(room, file.fileId);
+  recordRevive(room, file.fileId, revAt as number); // VERIFIED — guards against re-deletion by an equal/older tombstone
+  return true;
+}
+
 // ── File manifest + transfers ────────────────────────────────────────────────
 function mergeFile(room: Room, file: RoomFile): void {
   if (!file || !file.fileId) return;
-  if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't let a stale copy resurrect it
   if (room.mutes.has(file.addedBy)) return;     // muted member — ignore their shares locally
-  // An add newer than our tombstone means a member explicitly re-shared the
-  // file after its deletion — lift the tombstone and let it back in.
-  clearTombstone(room, file.fileId);
+  const tombAt = room.tombstones.get(file.fileId);
+  if (tombAt !== undefined) {
+    if (room.tombSigs.has(file.fileId)) {
+      // AUTHENTICATED deletion: lifted ONLY by a signed, authorized revive (owner
+      // or the deleter), regardless of addedAt — so neither a bumped addedAt can
+      // resurrect it unauthorized, NOR can clock skew (a receiver clamping addedAt
+      // below tombAt) block a legitimate revive. Non-revive adds are suppressed.
+      if (!acceptRevive(room, file)) return;
+    } else if (file.addedAt <= tombAt) {
+      return;                                   // legacy tombstone, older add — stays deleted
+    } else {
+      clearTombstone(room, file.fileId);        // legacy tombstone, newer add — any-newer-wins
+    }
+  } else if (applyPendingTomb(room, file)) {
+    return; // a pending author-deletion for this file just resolved — drop the re-seed
+  }
   if (!room.files.has(file.fileId)) {
     room.files.set(file.fileId, file);
     persistManifest(room, file); // localPath filled in once the download lands
@@ -1506,6 +1793,21 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
     room.e2eCfg = room.ownerId === room.self.memberId ? signE2ECfg(room) : null;
     persistE2E(room);
   }
+  // Tombstone proofs are bound to the topic, which just rotated — the OLD-topic
+  // signatures no longer verify, so a member joining on the new code couldn't
+  // converge pre-rekey deletions (they'd resurrect). The owner re-mints every
+  // live tombstone under the new topic (owner authority covers any file); other
+  // members self-heal by adopting these from the owner's re-greet below. Same
+  // reasoning as the e2eCfg re-mint above; the topic is never transmitted, so
+  // this leaks nothing.
+  if (room.ownerId === room.self.memberId) {
+    const by = room.self.memberId;
+    for (const [fileId, at] of room.tombstones) {
+      const sig = signBytes(room, delCanonical(room.topic, { fileId, memberId: by, at }));
+      room.tombSigs.set(fileId, { by, pub: room.self.pub, sig });
+      try { ipcRenderer.send('room-tomb', { roomId: room.roomId, fileId, at, by, pub: room.self.pub, sig }); } catch { /* ignore */ }
+    }
+  }
   restartTracker(room);
   const ownerName = room.ownerId === room.self.memberId
     ? (room.self.name || 'You')
@@ -1561,9 +1863,15 @@ function kickMember(room: Room, memberId: string): void {
   if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can remove members');
   if (memberId === room.self.memberId) throw new Error('You cannot remove yourself');
   const kickedName = room.members.get(memberId)?.name || '?';
+  const by = room.self.memberId;
   // 1. Tell the kicked member explicitly, under the CURRENT key they can still
-  //    read, on every wire we have to them — so they get a clear notice.
-  const notice: Msg = { t: 'kicked', targetId: memberId, by: room.self.memberId, byName: room.self.name || 'You' };
+  //    read, on every wire we have to them — so they get a clear notice. Signed
+  //    with our (the owner's) key so it can't be spoofed. Both signatures bind
+  //    the CURRENT topic (the room hasn't rotated yet).
+  const notice: Msg = {
+    t: 'kicked', targetId: memberId, by, byName: room.self.name || 'You',
+    pub: room.self.pub, sig: signBytes(room, kickedCanonical(room.topic, { targetId: memberId, by })),
+  };
   for (const wire of room.wires.values()) {
     if (wire.memberId === memberId) sendTo(room, wire, notice);
   }
@@ -1573,7 +1881,10 @@ function kickMember(room: Room, memberId: string): void {
   //    code must still know not to seed plaintext).
   const newCode = generateRoomCode(room.e2e);
   const oldKey = room.key;
-  const rekey: Msg = { t: 'rekey', newCode, kickedId: memberId, kickedName, by: room.self.memberId };
+  const rekey: Msg = {
+    t: 'rekey', newCode, kickedId: memberId, kickedName, by,
+    pub: room.self.pub, sig: signBytes(room, rekeyCanonical(room.topic, { newCode, kickedId: memberId, by })),
+  };
   setTimeout(() => {
     if (!rooms.get(room.roomId)) return; // room was left/destroyed meanwhile
     sendRekey(room, oldKey, rekey, memberId);
@@ -1583,7 +1894,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; upKbps?: number; downKbps?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -1611,7 +1922,10 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     tracker: null,
     started: false,
     self: p.self,
-    ownerId: p.ownerId || '',
+    // Honor the invite's owner pin: never trust a persisted ownerId that doesn't
+    // match it (it'd be a pre-pin or tampered value) — re-learn under the pin.
+    ownerId: (p.ownerPin && p.ownerId && p.ownerId !== p.ownerPin) ? '' : (p.ownerId || ''),
+    ownerPin: p.ownerPin || '',
     // The invite code is the E2E source of truth for new-format rooms: even if
     // the persisted flag is missing/stale, a "-e2e" code must never run plaintext.
     e2e: p.e2e || codeIsE2E(p.code),
@@ -1626,6 +1940,15 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     folderTombstones: new Map(Object.entries(p.folderTombs || {}).map(([k, v]) => [k, Number(v) || 0])),
     transfers: new Map(),
     tombstones: new Map(Object.entries(p.tombstones || {})),
+    // Only keep proofs whose tombstone is still live (defensive resync against any
+    // store drift): a proof without a tombstone is dead weight.
+    tombSigs: new Map(Object.entries(p.tombSigs || {}).filter(([fileId]) => p.tombstones && fileId in p.tombstones)),
+    pendingTombs: new Map(),
+    // A verified revive's guard must survive restart even though its tombstone was
+    // already lifted (that's the point — it blocks a re-gossiped OLD tombstone from
+    // re-deleting the file). Kept until a strictly-newer deletion supersedes it.
+    // Clamped to not-future so no persisted value can outrank a real later deletion.
+    revives: new Map(Object.entries(p.revives || {}).map(([k, v]) => [k, Math.min(Number(v) || 0, Date.now() + 60_000)])),
     autoFetch: p.autoFetch !== false, // absent = true (historical behavior)
     upKbps: Math.max(0, Number(p.upKbps) || 0),
     downKbps: Math.max(0, Number(p.downKbps) || 0),
@@ -1637,7 +1960,9 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     fileReacts: reactsFromRecord(p.reacts),
     memberProg: new Map(),
     progSent: new Map(),
-    identities: new Map(Object.entries(p.identities || {})),
+    // Only load bindings whose id is the hash of its key — drops any stale/legacy
+    // entry that predates the key-derived id, so a poisoned binding can't survive.
+    identities: new Map(Object.entries(p.identities || {}).filter(([id, pub]) => idMatchesPub(id, pub as string))),
     seenGids: new Set(),
     seenGidOrder: [],
     kicked: false,
@@ -1735,7 +2060,23 @@ async function addFiles(roomId: string, paths: string[], opts?: { folderId?: str
       // including peers currently offline, once they reconnect.
       const tombAt = room.tombstones.get(file.fileId);
       if (tombAt !== undefined) {
-        file.addedAt = Math.max(file.addedAt, tombAt + 1);
+        // Stamp strictly after the deletion so the revive ranks ahead of it, but
+        // never in the future (peers clamp addedAt to now). The revive SIGNATURE is
+        // over tombAt, not addedAt, so it stays valid regardless of this clamp.
+        file.addedAt = Math.min(Math.max(file.addedAt, tombAt + 1), Date.now());
+        const proof = room.tombSigs.get(file.fileId);
+        if (proof) {
+          // Authenticated deletion: only the owner or the member who deleted it may
+          // bring it back, and they sign the revive so peers accept the resurrection.
+          const by = room.self.memberId;
+          const authorized = (!!room.ownerId && by === room.ownerId) || proof.by === by;
+          if (!authorized) throw new Error('This file was removed and can only be restored by the room owner or whoever removed it.');
+          file.revBy = by;
+          file.revPub = room.self.pub;
+          file.revAt = tombAt; // the deletion this revive lifts — makes it self-describing
+          file.revSig = signBytes(room, reviveCanonical(room.topic, { fileId: file.fileId, tombAt, by }));
+          recordRevive(room, file.fileId, tombAt); // our own signed revive — trusted, guards re-deletion
+        }
         clearTombstone(room, file.fileId);
       }
       mergeFileLocal(room, file, p);
@@ -1942,8 +2283,21 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         // Reuse the manager's timestamp so the persisted tombstone and the
         // gossiped one agree on when the deletion happened.
         const at = Number(msg.at) || Date.now();
+        // Are WE allowed to delete this for everyone (owner, or the file's author)?
+        // If not, this is a purely local hide — applied here, dropped by peers.
+        const file = r.files.get(msg.fileId);
+        const authorized = (!!r.ownerId && r.self.memberId === r.ownerId) || (!!file && file.addedBy === r.self.memberId);
+        const sig = signBytes(r, delCanonical(r.topic, { fileId: msg.fileId, memberId: r.self.memberId, at }));
         applyTombstone(r, msg.fileId, at, { id: r.self.memberId, name: r.self.name || 'You' });
-        broadcast(r, { t: 'del', fileId: msg.fileId, memberId: r.self.memberId, at });
+        // Record + persist the proof only when authorized, so it re-gossips
+        // (and survives restart) as an AUTHENTICATED tombstone peers will honor.
+        if (authorized && r.tombstones.get(msg.fileId) === at) {
+          r.tombSigs.set(msg.fileId, { by: r.self.memberId, pub: r.self.pub, sig });
+          try { ipcRenderer.send('room-tomb', { roomId: r.roomId, fileId: msg.fileId, at, by: r.self.memberId, pub: r.self.pub, sig }); } catch { /* ignore */ }
+        }
+        // Signed with our key; peers apply it only if we're the file's author or
+        // the owner (a non-author delete is a local hide, not a room-wide one).
+        broadcast(r, { t: 'del', fileId: msg.fileId, memberId: r.self.memberId, at, pub: r.self.pub, sig });
         pushState(r, true);
       }
       data = { ok: true };

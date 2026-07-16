@@ -111,6 +111,18 @@ export interface RoomFile {
   // strips the field just shows the file in the flat list, never breaks.
   folderId?: string;
   folderAt?: number;     // last-writer-wins clock for the folder assignment (independent of addedAt)
+  // Revive authorization: present only when this add lifts an AUTHENTICATED
+  // tombstone (a file the owner/author had deleted). Signed by the owner or the
+  // original deleter; a peer that still holds the tombstone accepts the
+  // resurrection only if this verifies — so a member can't un-delete someone's
+  // file by re-adding it. `revAt` is the deletion timestamp this revive undoes,
+  // so the revive is self-describing (ordering doesn't depend on a receiver's
+  // clock or which deletion it happens to hold): a revive supersedes any tombstone
+  // whose `at` is <= revAt, and is stale against a newer one.
+  revBy?: string;        // memberId that authorized the revive (owner or original deleter)
+  revPub?: string;       // revBy's Ed25519 public key (PEM)
+  revAt?: number;        // the tombstone `at` this revive lifts
+  revSig?: string;       // signature over reviveCanonical(topic, {fileId, revAt, revBy})
 }
 
 /**
@@ -192,7 +204,8 @@ export interface RoomTransfer {
 export interface RoomState {
   roomId: string;        // local uuid
   name: string;
-  code: string;          // the secret invite code
+  code: string;          // the secret invite code (speakable; unpinned = trust-on-first-use owner)
+  invite: string;        // shareable invite that also PINS the owner ("<code>~<ownerId>") when known — prefer this for sharing
   folder: string;        // local shared folder path
   topicHash: string;     // internal signature domain separator, sha1(code) — NOT the tracker rendezvous (that is key-derived and never sent here)
   createdAt: number;

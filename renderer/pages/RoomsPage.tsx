@@ -534,12 +534,15 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           footer={<Button variant="primary" onClick={() => setDialog(null)}>{t('common.done')}</Button>}
         >
           <p className="rooms-modal-desc">{t('rooms.inviteDesc')}</p>
-          <div className="rooms-invite-code" onClick={() => copy(room.code, t('rooms.codeCopied'))} title={t('rooms.copyCode')}>
+          {/* Copy/QR carry the full invite, which PINS the owner so a joiner can't
+              be tricked into adopting an impostor owner. The chip shows the
+              speakable code for verbal sharing (verbal is trust-on-first-use). */}
+          <div className="rooms-invite-code" onClick={() => copy(room.invite || room.code, t('rooms.codeCopied'))} title={t('rooms.copyCode')}>
             <span>{room.code}</span>
             <Icon name="copy" size={16} />
           </div>
           <div className="rooms-invite-qr">
-            <QRCode data={room.code} size={168} />
+            <QRCode data={room.invite || room.code} size={168} />
           </div>
         </Modal>
       )}
