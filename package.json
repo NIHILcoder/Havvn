@@ -37,6 +37,7 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hot-toast": "^2.4.1",
+    "uiohook-napi": "^1.5.5",
     "uuid": "^9.0.1",
     "webtorrent": "^1.9.7",
     "zustand": "^4.5.0"
@@ -96,7 +97,8 @@
     ],
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
-      "**/node_modules/utp-native/**"
+      "**/node_modules/utp-native/**",
+      "**/node_modules/uiohook-napi/**"
     ],
     "fileAssociations": [
       {

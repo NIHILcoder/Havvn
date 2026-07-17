@@ -24,6 +24,9 @@ import {
   RoomProfile,
   RoomState,
   RoomSummary,
+  VoiceSettings,
+  VoiceDeviceInfo,
+  ScreenSourceInfo,
 } from '../shared/types';
 
 const api: IpcApi = {
@@ -630,13 +633,28 @@ const api: IpcApi = {
     setActiveRoom: (roomId: string | null): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setActiveRoom', roomId),
     voice: {
-      join: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceJoin', roomId),
+      join: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:voiceJoin', roomId),
       leave: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceLeave', roomId),
       mute: (roomId: string, muted: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMute', roomId, muted),
       deafen: (roomId: string, deafened: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceDeafen', roomId, deafened),
       volume: (roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceVolume', roomId, memberId, volume),
       inputMode: (roomId: string, mode: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceInputMode', roomId, mode),
       ptt: (roomId: string, active: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voicePtt', roomId, active),
+      settings: (settings: VoiceSettings): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceSettings', settings),
+      globalPtt: (enabled: boolean, code: string): Promise<{ ok: boolean; available: boolean; supported: boolean }> =>
+        ipcRenderer.invoke('rooms:voiceGlobalPtt', enabled, code),
+      devices: (): Promise<VoiceDeviceInfo[]> => ipcRenderer.invoke('rooms:voiceDevices'),
+      micTestStart: (settings: VoiceSettings): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMicTestStart', settings),
+      micTestStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMicTestStop'),
+    },
+    screen: {
+      sources: (): Promise<ScreenSourceInfo[]> => ipcRenderer.invoke('rooms:screenSources'),
+      shareStart: (roomId: string, sourceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenShareStart', roomId, sourceId),
+      shareStop: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenShareStop', roomId),
+      watchStart: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenWatchStart', roomId, memberId),
+      watchStop: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenWatchStop', roomId, memberId),
+      signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:screenSignal', roomId, memberId, kind, data),
     },
     createFolder: (roomId: string, name: string, icon: string, color: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color),
@@ -695,6 +713,34 @@ const api: IpcApi = {
     const handler = (_event: IpcRendererEvent, msg: { roomId: string }) => callback(msg?.roomId);
     ipcRenderer.on('rooms:open', handler);
     return () => { ipcRenderer.removeListener('rooms:open', handler); };
+  },
+
+  // Live mic level (0-255, post-gain) while a settings-modal mic test runs.
+  onVoiceMicLevel: (callback: (level: number) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, level: number) => callback(level);
+    ipcRenderer.on('rooms:micLevel', handler);
+    return () => { ipcRenderer.removeListener('rooms:micLevel', handler); };
+  },
+
+  // Audio hardware changed — refresh the device pickers.
+  onVoiceDevicesChanged: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('rooms:voiceDevicesChanged', handler);
+    return () => { ipcRenderer.removeListener('rooms:voiceDevicesChanged', handler); };
+  },
+
+  // Transient voice warning (e.g. a mid-call mic fell back to the default device).
+  onVoiceWarning: (callback: (msg: string) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, msg: string) => callback(msg);
+    ipcRenderer.on('rooms:voiceWarn', handler);
+    return () => { ipcRenderer.removeListener('rooms:voiceWarn', handler); };
+  },
+
+  // Screen-watch loopback signaling from the engine forwarder (offer/ice/end).
+  onRoomScreenSignal: (callback: (msg: { roomId: string; memberId: string; kind: 'offer' | 'ice' | 'end'; data?: unknown }) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, msg: any) => callback(msg);
+    ipcRenderer.on('rooms:screenSignal', handler);
+    return () => { ipcRenderer.removeListener('rooms:screenSignal', handler); };
   },
 
   // Priority 2: IP Blocklist

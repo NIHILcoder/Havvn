@@ -10,8 +10,9 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
-import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, VoiceInputMode } from '../../shared/types';
-import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm } from '../components';
+import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember } from '../../shared/types';
+import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenViewOverlay } from '../components';
+import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings } from '../utils/voicePrefs';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByFolder, FOLDER_ICONS } from '../../shared/room-folders';
 import { classifyMediaKind } from '../../shared/media';
@@ -1105,26 +1106,8 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
 };
 
 // ── Members list (rows with mute/kick controls) ───────────────────────────
-// ── Voice preferences (per install, localStorage — the engine is told the mode) ──
-type VoicePrefs = { inputMode: VoiceInputMode; pttKey: string };
-const VOICE_PREFS_KEY = 'voicePrefs';
-const VOICE_PREFS_EVENT = 'havvn:voice-prefs-changed';
-function loadVoicePrefs(): VoicePrefs {
-  try {
-    const p = JSON.parse(localStorage.getItem(VOICE_PREFS_KEY) || '{}');
-    const inputMode: VoiceInputMode = p.inputMode === 'vad' || p.inputMode === 'ptt' ? p.inputMode : 'always';
-    return { inputMode, pttKey: typeof p.pttKey === 'string' && p.pttKey ? p.pttKey : 'Backquote' };
-  } catch { return { inputMode: 'always', pttKey: 'Backquote' }; }
-}
-function saveVoicePrefs(p: VoicePrefs): void {
-  try { localStorage.setItem(VOICE_PREFS_KEY, JSON.stringify(p)); } catch { /* ignore */ }
-  window.dispatchEvent(new Event(VOICE_PREFS_EVENT));
-}
-const KEY_LABELS: Record<string, string> = {
-  Backquote: '`', Space: 'Space', Enter: 'Enter', Tab: 'Tab', ShiftLeft: 'L-Shift', ShiftRight: 'R-Shift',
-  ControlLeft: 'L-Ctrl', ControlRight: 'R-Ctrl', AltLeft: 'L-Alt', AltRight: 'R-Alt', CapsLock: 'Caps',
-};
-const keyLabel = (code: string): string => KEY_LABELS[code] || code.replace(/^Key|^Digit/, '');
+// Voice preferences live in renderer/utils/voicePrefs.ts (shared with the
+// settings modal); the panel below pushes the engine-side subset over IPC.
 // A short synthesized join/leave chime so we don't bundle audio assets.
 let chimeCtx: AudioContext | null = null;
 function playChime(rising: boolean): void {
@@ -1160,8 +1143,9 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [volumeFor, setVolumeFor] = useState<string | null>(null);
   const [vols, setVols] = useState<Record<string, number>>({}); // remembered per-peer volume (engine doesn't echo it back)
-  const [capturing, setCapturing] = useState(false);
   const [prefs, setPrefs] = useState(loadVoicePrefs);
+  const [pickerOpen, setPickerOpen] = useState(false);        // screenshare source picker
+  const [watching, setWatching] = useState<string | null>(null); // whose share the overlay is viewing (self = preview)
   const memberOf = (id: string) => room.members.find((m) => m.memberId === id);
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
   const nameOf = (id: string) => (id === selfId ? t('rooms.you') : (memberOf(id)?.name || '?'));
@@ -1175,12 +1159,52 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
     return () => window.removeEventListener(VOICE_PREFS_EVENT, h);
   }, []);
 
+  // Surface transient voice warnings from the engine (e.g. a mid-call mic fell back
+  // to the system default) as a toast.
+  useEffect(() => {
+    const off = window.api.onVoiceWarning((msg) => { if (msg) toast(msg, { icon: '⚠️' }); });
+    return off;
+  }, []);
+
   // Tell the engine our input mode whenever we're in voice (and when it changes).
   useEffect(() => { if (v.inVoice) window.api.rooms.voice.inputMode(roomId, prefs.inputMode).catch(() => { /* ignore */ }); }, [v.inVoice, prefs.inputMode, roomId]);
 
-  // Push-to-talk: hold the key to transmit (window-wide while a room is open).
+  // Push the GLOBAL hardware/processing settings to the engine on mount and on
+  // every prefs change (debounced — slider drags fire many events). The manager
+  // caches them and re-asserts after an engine respawn.
+  const prefsRef = useRef(prefs);
+  prefsRef.current = prefs;
   useEffect(() => {
-    if (!v.inVoice || prefs.inputMode !== 'ptt') return;
+    const timer = setTimeout(() => {
+      window.api.rooms.voice.settings(toVoiceSettings(prefs)).catch(() => { /* engine not up yet — readied() re-asserts */ });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [prefs]);
+  // Flush the latest settings on unmount so a change made within the 200ms debounce
+  // right before leaving the room page (which unmounts this panel — the only pusher)
+  // still reaches a live call and the manager's respawn cache.
+  useEffect(() => () => {
+    window.api.rooms.voice.settings(toVoiceSettings(prefsRef.current)).catch(() => { /* ignore */ });
+  }, []);
+
+  // Keep the main process's global-PTT config current (it runs the OS key hook
+  // only while some room is in voice in PTT mode). Track whether the hook is
+  // ACTUALLY usable — if the native module is missing or the key isn't globally
+  // expressible, the in-app listener below must stay on or PTT would go dead.
+  const [globalPttLive, setGlobalPttLive] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    window.api.rooms.voice.globalPtt(prefs.globalPtt, prefs.pttKey)
+      .then((r) => { if (!dead) setGlobalPttLive(prefs.globalPtt && r.available && r.supported); })
+      .catch(() => { if (!dead) setGlobalPttLive(false); });
+    return () => { dead = true; };
+  }, [prefs.globalPtt, prefs.pttKey]);
+
+  // Push-to-talk: hold the key to transmit (window-wide while a room is open).
+  // With GLOBAL PTT actually running, the OS hook covers the focused case too —
+  // skip this one (its blur-release would drop a held key on every focus change).
+  useEffect(() => {
+    if (!v.inVoice || prefs.inputMode !== 'ptt' || globalPttLive) return;
     let held = false;
     const set = (a: boolean) => { held = a; window.api.rooms.voice.ptt(roomId, a).catch(() => { /* ignore */ }); };
     const down = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && !held && !e.repeat && !isTypingTarget(e)) set(true); };
@@ -1195,35 +1219,39 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
       window.removeEventListener('blur', blur);
       if (held) window.api.rooms.voice.ptt(roomId, false).catch(() => { /* ignore */ });
     };
-  }, [v.inVoice, prefs.inputMode, prefs.pttKey, roomId]);
-
-  // Capture the next key press to set the push-to-talk key.
-  useEffect(() => {
-    if (!capturing) return;
-    const h = (e: KeyboardEvent) => {
-      e.preventDefault(); e.stopPropagation();
-      setCapturing(false);
-      if (e.code !== 'Escape') saveVoicePrefs({ ...loadVoicePrefs(), pttKey: e.code });
-    };
-    window.addEventListener('keydown', h, true);
-    return () => window.removeEventListener('keydown', h, true);
-  }, [capturing]);
+  }, [v.inVoice, prefs.inputMode, prefs.pttKey, globalPttLive, roomId]);
 
   // Join/leave chimes: rising when someone joins the call, falling when they go.
   const prevCount = useRef<number | null>(null);
   useEffect(() => {
     if (!v.inVoice) { prevCount.current = null; return; }
     const n = v.participants.length;
-    if (prevCount.current !== null && n !== prevCount.current) playChime(n > prevCount.current);
+    if (prevCount.current !== null && n !== prevCount.current && prefs.chimes) playChime(n > prevCount.current);
     prevCount.current = n;
-  }, [v.inVoice, v.participants.length]);
+  }, [v.inVoice, v.participants.length, prefs.chimes]);
 
-  const setMode = (mode: VoiceInputMode) => saveVoicePrefs({ ...loadVoicePrefs(), inputMode: mode });
-  const modes: { id: VoiceInputMode; label: string }[] = [
-    { id: 'always', label: t('rooms.voice.modeAlways') },
-    { id: 'vad', label: t('rooms.voice.modeVad') },
-    { id: 'ptt', label: t('rooms.voice.modePtt') },
-  ];
+  const join = wrap(async () => {
+    const res = await window.api.rooms.voice.join(roomId);
+    // e.g. the saved mic is unplugged — joined on the default one.
+    if (res?.warning) toast(res.warning, { icon: '⚠️' });
+  });
+
+  // Close the viewing overlay when its sharer stops (the engine also sends a
+  // loopback 'end' — this covers a state-push that beats it) or when we leave voice.
+  useEffect(() => {
+    if (!watching) return;
+    const still = v.inVoice && !!v.participants.find((p) => p.memberId === watching)?.sharing;
+    if (!still) setWatching(null);
+  }, [watching, v.inVoice, v.participants]);
+
+  const toggleShare = () => {
+    if (v.sharing) window.api.rooms.screen.shareStop(roomId).catch(fail);
+    else setPickerOpen(true);
+  };
+  const pickSource = (sourceId: string) => {
+    setPickerOpen(false);
+    window.api.rooms.screen.shareStart(roomId, sourceId).catch(fail);
+  };
 
   return (
     <div className="room-voice">
@@ -1240,6 +1268,9 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
             <button className={`room-voice-btn${v.deafened ? ' active' : ''}`} onClick={() => window.api.rooms.voice.deafen(roomId, !v.deafened).catch(fail)} title={v.deafened ? t('rooms.voice.undeafen') : t('rooms.voice.deafen')}>
               <Icon name={v.deafened ? 'volume-x' : 'headphones'} size={15} />
             </button>
+            <button className={`room-voice-btn${v.sharing ? ' active' : ''}`} onClick={toggleShare} title={v.sharing ? t('rooms.screen.stop') : t('rooms.screen.share')}>
+              <Icon name="screen-share" size={15} />
+            </button>
             <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
               <Icon name="settings" size={15} />
             </button>
@@ -1252,30 +1283,22 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
             <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
               <Icon name="settings" size={15} />
             </button>
-            <button className="room-voice-join" onClick={wrap(() => window.api.rooms.voice.join(roomId))} disabled={busy}>
+            <button className="room-voice-join" onClick={join} disabled={busy}>
               <Icon name="mic" size={14} /> {t('rooms.voice.join')}
             </button>
           </div>
         )}
       </div>
 
-      {settingsOpen && (
-        <div className="room-voice-settings">
-          <div className="room-voice-set-label">{t('rooms.voice.mode')}</div>
-          <div className="room-voice-modes">
-            {modes.map((m) => (
-              <button key={m.id} className={`room-voice-mode${prefs.inputMode === m.id ? ' active' : ''}`} onClick={() => setMode(m.id)}>{m.label}</button>
-            ))}
-          </div>
-          {prefs.inputMode === 'ptt' && (
-            <div className="room-voice-ptt-row">
-              <span className="room-voice-set-label">{t('rooms.voice.pttKey')}</span>
-              <button className={`room-voice-key${capturing ? ' capturing' : ''}`} onClick={() => setCapturing(true)}>
-                {capturing ? t('rooms.voice.pressKey') : keyLabel(prefs.pttKey)}
-              </button>
-            </div>
-          )}
-        </div>
+      {settingsOpen && <VoiceSettingsModal onClose={() => setSettingsOpen(false)} />}
+      {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} />}
+      {watching && (
+        <ScreenViewOverlay
+          roomId={roomId}
+          memberId={watching}
+          title={nameOf(watching)}
+          onClose={() => setWatching(null)}
+        />
       )}
 
       {v.participants.length > 0 && (
@@ -1294,6 +1317,15 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
                 </button>
                 <span className="room-voice-pname">{nameOf(p.memberId)}</span>
                 {p.muted && <Icon name="mic-off" size={12} className="room-voice-pmic" />}
+                {p.sharing && (
+                  <button
+                    className="room-voice-share-badge"
+                    onClick={() => setWatching(p.memberId)}
+                    title={self ? t('rooms.screen.preview') : t('rooms.screen.watch')}
+                  >
+                    <Icon name="screen-share" size={9} /> {t('rooms.screen.live')}
+                  </button>
+                )}
                 {volumeFor === p.memberId && !self && (
                   <input
                     type="range" min={0} max={100} value={vols[p.memberId] ?? 100} className="room-voice-vol"

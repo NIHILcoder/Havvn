@@ -27,7 +27,7 @@ import path from 'path';
 import WebTorrent from 'webtorrent';
 import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
 import { encryptFile, decryptFile } from './room-e2e';
-import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage } from '../../shared/types';
+import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon } from '../../shared/room-folders';
 import { safeBaseName, safeDirSegment } from '../../shared/path-safety';
 import crypto from 'crypto';
@@ -35,7 +35,7 @@ import crypto from 'crypto';
 import TrackerClient from 'bittorrent-tracker';
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
-import { VoiceSession, VoiceAdapter, SignalKind } from './room-voice';
+import { VoiceSession, VoiceAdapter, SignalKind, LoopbackKind, MicTester, defaultVoiceSettings, sanitizeVoiceSettings } from './room-voice';
 
 const ROOM_TRACKERS = RENDEZVOUS_TRACKERS;
 
@@ -66,7 +66,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'voice-state', 'voice-signal']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'voice-state', 'voice-signal', 'voice-share']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -158,7 +158,14 @@ type Msg =
   // Voice signaling (WebRTC offer/answer/ICE) from `memberId` to `to`. SIGNED so
   // signaling can't be spoofed; relayed+targeted so it reaches a peer we can only
   // reach through another member. The media itself is DTLS-SRTP peer-to-peer.
-  | { t: 'voice-signal'; memberId: string; to: string; kind: 'offer' | 'answer' | 'ice'; data: any; pub: string; sig: string };
+  | { t: 'voice-signal'; memberId: string; to: string; kind: 'offer' | 'answer' | 'ice'; data: any; pub: string; sig: string }
+  // Screenshare presence: the sender started/stopped sharing their screen over the
+  // voice mesh. A SEPARATE Msg (not a voice-state field) so the voice-state
+  // canonical stays byte-identical to 2.18 — extending it would break signature
+  // verification against older clients, while an unknown type is ignored (and
+  // still relayed) by them. `streamId` identifies the share's MediaStream (msid)
+  // for future multi-kind video; v1 receivers key on track.kind anyway.
+  | { t: 'voice-share'; memberId: string; sharing: boolean; streamId: string; at: number; pub: string; sig: string };
 
 interface Wire { id: number; peer: any; memberId?: string; }
 
@@ -236,6 +243,38 @@ const rooms = new Map<string, Room>();
 // serially, so once this is set, every later 'join' is refused until 'netResume'.
 let netSuspended = false;
 let wireSeq = 0;
+// Global (all-rooms) voice hardware settings. The renderer owns the source of
+// truth (localStorage) and re-sends on every change AND after an engine respawn
+// (the manager re-asserts its cache in readied()) — this store is session-only.
+let voiceSettings: VoiceSettings = defaultVoiceSettings();
+// Mic level meter for the settings UI (independent of any call).
+const micTester = new MicTester();
+// Tell the UI to refresh its device lists when hardware comes/goes.
+try {
+  navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+    try { ipcRenderer.send('room-voice-devices'); } catch { /* ignore */ }
+    // A device returning lets an active call retry its preferred (previously absent) mic.
+    for (const r of rooms.values()) { try { r.voice.onDevicesChanged(); } catch { /* ignore */ } }
+  });
+} catch { /* no mediaDevices (insecure context) — device pickers just stay empty */ }
+
+/** Enumerate audio devices IN THIS window (deviceId is salted per-origin, so the
+ *  ids the capture pipeline needs must come from here, not the main renderer).
+ *  Labels can be blank until a media grant in this context — a momentary capture
+ *  unlocks them. */
+async function listVoiceDevices(): Promise<VoiceDeviceInfo[]> {
+  if (!navigator.mediaDevices?.enumerateDevices) return [];
+  let devs = await navigator.mediaDevices.enumerateDevices();
+  const audio = (d: MediaDeviceInfo) => d.kind === 'audioinput' || d.kind === 'audiooutput';
+  if (!devs.some((d) => audio(d) && d.label)) {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
+      devs = await navigator.mediaDevices.enumerateDevices();
+    } catch { /* mic denied — return unlabeled ids, the UI shows generic names */ }
+  }
+  return devs.filter(audio).map((d) => ({ deviceId: d.deviceId, kind: d.kind as VoiceDeviceInfo['kind'], label: d.label || '' }));
+}
 // Debug handles for the hidden window's console/CDP — rooms and clients are
 // module-scoped and otherwise unreachable when diagnosing a live install.
 (globalThis as any).__rooms = rooms;
@@ -847,6 +886,11 @@ function voiceStateCanonical(topic: string, m: { memberId: string; inVoice: bool
 function voiceSignalCanonical(topic: string, m: { memberId: string; to: string; kind: string; data: unknown }): Buffer {
   return Buffer.from(JSON.stringify(['voice-signal', topic, m.memberId, m.to, m.kind, m.data]), 'utf8');
 }
+/** Bytes a member signs over a screenshare presence announcement (same `at`
+ *  anti-replay discipline as voice-state; field order mirrors it). */
+function voiceShareCanonical(topic: string, m: { memberId: string; sharing: boolean; streamId: string; at: number }): Buffer {
+  return Buffer.from(JSON.stringify(['voice-share', topic, m.memberId, m.at, m.sharing, m.streamId]), 'utf8');
+}
 
 /** Wire a room's VoiceSession to the room's signed, encrypted gossip. Presence and
  *  signaling are Ed25519-signed (so a member can't spoof another's voice), ride the
@@ -864,10 +908,44 @@ function createVoiceSession(room: Room): VoiceSession {
       const sig = signBytes(room, voiceStateCanonical(room.topic, { memberId: room.self.memberId, inVoice, muted, at }));
       broadcast(room, { t: 'voice-state', memberId: room.self.memberId, inVoice, muted, at, pub: room.self.pub, sig });
     },
+    announceShare(sharing: boolean, streamId: string, at: number): void {
+      const sig = signBytes(room, voiceShareCanonical(room.topic, { memberId: room.self.memberId, sharing, streamId, at }));
+      broadcast(room, { t: 'voice-share', memberId: room.self.memberId, sharing, streamId, at, pub: room.self.pub, sig });
+    },
+    sendLoopback(memberId: string, kind: LoopbackKind, data?: unknown): void {
+      // Screen-watch loopback signaling → main process → visible renderer.
+      try { ipcRenderer.send('room-screen-signal', { roomId: room.roomId, memberId, kind, data }); } catch { /* ignore */ }
+    },
+    warn(msg: string): void {
+      // Transient user-facing warning (e.g. a mid-call mic fallback) → renderer toast.
+      try { ipcRenderer.send('room-voice-warn', { msg }); } catch { /* ignore */ }
+    },
     onChange(): void { pushState(room, true); },
     log,
   };
-  return new VoiceSession(adapter);
+  return new VoiceSession(adapter, undefined, () => voiceSettings);
+}
+
+/** Capture a screen/window in THIS (hidden, secure-context) window via the legacy
+ *  chromeMediaSource path — unlike getDisplayMedia it needs NO user gesture, so it
+ *  works from the engine window; the permission handlers already allow 'media'.
+ *  `sourceId` comes from desktopCapturer.getSources in the main process. */
+async function captureScreen(sourceId: string): Promise<MediaStream> {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Screen capture unavailable (the room engine is not a secure context).');
+  }
+  return navigator.mediaDevices.getUserMedia({
+    audio: false, // v1 is video-only (system-audio loopback would echo the call back)
+    video: {
+      mandatory: {
+        chromeMediaSource: 'desktop',
+        chromeMediaSourceId: String(sourceId),
+        maxWidth: 1920,
+        maxHeight: 1080,
+        maxFrameRate: 15,
+      },
+    },
+  } as any);
 }
 
 /** Bytes an owner/deleter signs to authorize lifting an authenticated tombstone.
@@ -1010,6 +1088,8 @@ function clampGossip(msg: any): void {
   if ('ownerId' in msg) msg.ownerId = clampStr(msg.ownerId, MAX_STR);
   if ('to' in msg) msg.to = clampStr(msg.to, MAX_STR);       // voice-signal target
   if ('kind' in msg) msg.kind = clampStr(msg.kind, 16);      // voice-signal kind (offer/answer/ice)
+  if ('streamId' in msg) msg.streamId = clampStr(msg.streamId, MAX_STR); // voice-share stream id (msid)
+  if ('sharing' in msg) msg.sharing = msg.sharing === true;
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
   if ('secret' in msg) msg.secret = clampStr(msg.secret, MAX_SECRET);
   if ('text' in msg) msg.text = clampStr(msg.text, MAX_TEXT);
@@ -1138,7 +1218,11 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       }
       maybeAdoptOwner(room, msg.ownerId);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
-      if (isNew) { logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' }); room.voice.reannounce(); } // let a late joiner learn we're in voice
+      if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
+      // Re-announce voice presence on EVERY hello (not just a new member's): a
+      // hello doubles as a "who's in voice?" solicit — e.g. a peer that just
+      // un-muted us locally greets to re-learn the voice state it was dropping.
+      room.voice.reannounce();
       // Merge the peer's files first so an authenticated tombstone below can check
       // authorship (addedBy) against the file, then re-suppress it. `tombSigs` are
       // AUTHENTICATED deletions — each re-verifies (owner/author + signature)
@@ -1326,6 +1410,14 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice') break;
       if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceSignalCanonical(room.topic, { memberId: msg.memberId, to: msg.to, kind: msg.kind, data: msg.data }))) break;
       room.voice.onSignal(msg.memberId, msg.kind as SignalKind, msg.data);
+      break;
+    }
+    case 'voice-share': {
+      if (room.mutes.has(msg.memberId)) break; // locally-muted member — ignore their share too
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break; // reject unstamped / far-future
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceShareCanonical(room.topic, { memberId: msg.memberId, sharing: msg.sharing, streamId: msg.streamId, at }))) break;
+      room.voice.onPeerShare(msg.memberId, !!msg.sharing, String(msg.streamId || ''), at);
       break;
     }
     case 'sync': {
@@ -2172,6 +2264,14 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     const r = rooms.get(p.roomId);
     if (!r) { clearInterval(beat); return; }
     broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have, roomName: r.name, ownerId: r.ownerId });
+    // Voice-roster liveness: a member who dropped offline (crash/sleep — no 'bye',
+    // no voice-state) would otherwise linger in the voice panel with a stale mute
+    // badge, and their MediaPeer would never be reclaimed. onMemberGone is a cheap
+    // no-op for members with no voice footprint.
+    const cutoff = Date.now() - OFFLINE_AFTER;
+    for (const m of r.members.values()) {
+      if (m.lastSeen < cutoff) r.voice.onMemberGone(m.memberId);
+    }
     pushState(r);
   }, PING_INTERVAL);
 
@@ -2494,6 +2594,11 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       if (r) {
         const targetId = String(msg.memberId || '');
         if (msg.muted) r.mutes.add(targetId); else r.mutes.delete(targetId);
+        // The gossip handlers drop a muted member's voice-state/signal, but a live
+        // MediaPeer keeps playing their audio — so cut/restore their OUTPUT on our
+        // side WITHOUT tearing the peer connection down (a teardown can't be
+        // re-negotiated against the peer's surviving half). Reversible instantly.
+        r.voice.setLocallyMuted(r.mutes);
         pushState(r, true);
       }
       data = { ok: true };
@@ -2541,12 +2646,17 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');
       if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
-      await r.voice.join(); // getUserMedia — rejects (→ toast) if the mic is denied
+      const warning = await r.voice.join(); // getUserMedia — rejects (→ toast) if the mic is denied
       // The kill-switch may have tripped DURING getUserMedia (suspend can't tear
       // down a session that wasn't active yet) — re-check and undo, or the mic +
       // real-IP ICE would stay live for the whole outage.
-      if (netSuspended || !rooms.has(msg.roomId)) { r.voice.leave(); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
-      data = { ok: true };
+      if (netSuspended) { r.voice.leave(); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+      if (!rooms.has(msg.roomId)) { r.voice.leave(); throw new Error('The room session ended.'); }
+      // Solicit peers so a (re)joiner learns who is already in voice AND who is
+      // sharing a screen (presence/share are only gossiped on change — a hello makes
+      // everyone reannounce both). Fixes a missing LIVE badge after leave+rejoin.
+      broadcast(r, helloMsg(r));
+      data = { ok: true, ...(warning ? { warning } : {}) };
     }
     else if (type === 'voiceLeave') { rooms.get(msg.roomId)?.voice.leave(); data = { ok: true }; }
     else if (type === 'voiceMute') { rooms.get(msg.roomId)?.voice.setMuted(!!msg.muted); data = { ok: true }; }
@@ -2554,6 +2664,51 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'voiceVolume') { rooms.get(msg.roomId)?.voice.setVolume(String(msg.memberId || ''), Number(msg.volume)); data = { ok: true }; }
     else if (type === 'voiceInputMode') { rooms.get(msg.roomId)?.voice.setInputMode(msg.mode); data = { ok: true }; }
     else if (type === 'voicePtt') { rooms.get(msg.roomId)?.voice.setPtt(!!msg.active); data = { ok: true }; }
+    else if (type === 'voiceSettings') {
+      // Global (all-rooms): the renderer's voice prefs changed. Live knobs apply
+      // instantly; capture-affecting ones hot-swap the pipeline source per room.
+      voiceSettings = sanitizeVoiceSettings(msg.settings);
+      for (const r of rooms.values()) r.voice.applySettings();
+      data = { ok: true };
+    }
+    else if (type === 'voiceDevices') { data = await listVoiceDevices(); }
+    else if (type === 'voiceMicTestStart') {
+      // Meter with the settings the renderer sends explicitly — the module-level
+      // voiceSettings is debounced 200ms, so it would lag a just-made device change.
+      const s = msg.settings ? sanitizeVoiceSettings(msg.settings) : voiceSettings;
+      await micTester.start(
+        s,
+        (level) => { try { ipcRenderer.send('room-mic-level', { level }); } catch { /* ignore */ } },
+        () => { try { ipcRenderer.send('room-mic-level', { level: -1 }); } catch { /* ignore */ } }, // -1 = auto-stopped (60s)
+      );
+      data = { ok: true };
+    }
+    else if (type === 'voiceMicTestStop') { micTester.stop(); data = { ok: true }; }
+    else if (type === 'screenShareStart') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+      if (!r.voice.isActive()) throw new Error('Join the voice channel before sharing your screen.');
+      const stream = await captureScreen(String(msg.sourceId || ''));
+      // The kill-switch (or a leave/kick) may have tripped DURING capture — same
+      // re-check-and-undo pattern as voiceJoin, or the capture would leak.
+      if (netSuspended) { stream.getTracks().forEach((t) => t.stop()); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+      if (!rooms.has(msg.roomId) || !r.voice.isActive()) { stream.getTracks().forEach((t) => t.stop()); throw new Error('The voice session ended.'); }
+      r.voice.startShare(stream);
+      data = { ok: true };
+    }
+    else if (type === 'screenShareStop') { rooms.get(msg.roomId)?.voice.stopShare(); data = { ok: true }; }
+    else if (type === 'screenWatchStart') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      r.voice.watchStart(String(msg.memberId || ''));
+      data = { ok: true };
+    }
+    else if (type === 'screenWatchStop') { rooms.get(msg.roomId)?.voice.watchStop(String(msg.memberId || '')); data = { ok: true }; }
+    else if (type === 'screenSignal') {
+      rooms.get(msg.roomId)?.voice.onLoopbackSignal(String(msg.memberId || ''), String(msg.kind || ''), msg.data);
+      data = { ok: true };
+    }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
     else if (type === 'setAutoFetch') {
       const r = rooms.get(msg.roomId);

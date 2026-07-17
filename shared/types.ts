@@ -240,6 +240,16 @@ export interface RoomVoiceParticipant {
   memberId: string;
   muted: boolean;
   speaking: boolean;
+  /** This member is sharing their screen (click to watch). */
+  sharing: boolean;
+}
+
+/** A shareable screen/window from desktopCapturer (picker entry). */
+export interface ScreenSourceInfo {
+  id: string;
+  name: string;
+  thumbnail: string; // data URL
+  display: boolean;  // true = a whole screen, false = a single window
 }
 
 /** The room's voice channel as this install sees it. `inVoice`/`muted` are OUR own
@@ -255,7 +265,29 @@ export interface RoomVoiceState {
   deafened: boolean;
   transmitting: boolean;  // mic is live right now (for the mic-live indicator)
   inputMode: VoiceInputMode;
+  sharing: boolean;       // WE are sharing our screen
   participants: RoomVoiceParticipant[];
+}
+
+/** Global (all-rooms) voice hardware/processing settings, applied engine-side.
+ *  Device ids are from the ENGINE window's enumeration — deviceId is salted
+ *  per-origin, so ids from the main renderer would not match. */
+export interface VoiceSettings {
+  inputDeviceId: string | null;   // null = system default
+  outputDeviceId: string | null;  // null = system default
+  inputGain: number;              // mic gain multiplier, 0..2 (1 = unity)
+  masterVolume: number;           // output master, 0..1 (multiplied into per-user volume)
+  vadThreshold: number;           // voice-activity open threshold (0-255 avg magnitude)
+  echoCancellation: boolean;
+  noiseSuppression: boolean;
+  autoGainControl: boolean;
+}
+
+/** An audio device as enumerated inside the engine window. */
+export interface VoiceDeviceInfo {
+  deviceId: string;
+  kind: 'audioinput' | 'audiooutput';
+  label: string;
 }
 
 /** Lightweight room listing entry. */
@@ -1081,13 +1113,31 @@ export interface IpcApi {
     reactFile: (roomId: string, fileId: string, emoji: string) => Promise<void>;
     // Serverless mesh voice channel.
     voice: {
-      join: (roomId: string) => Promise<{ ok: boolean }>;
+      join: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;
       leave: (roomId: string) => Promise<{ ok: boolean }>;
       mute: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
       deafen: (roomId: string, deafened: boolean) => Promise<{ ok: boolean }>;
       volume: (roomId: string, memberId: string, volume: number) => Promise<{ ok: boolean }>;
       inputMode: (roomId: string, mode: VoiceInputMode) => Promise<{ ok: boolean }>;
       ptt: (roomId: string, active: boolean) => Promise<{ ok: boolean }>;
+      // Global voice settings (devices/gain/VAD/processing) + the settings modal helpers.
+      settings: (settings: VoiceSettings) => Promise<{ ok: boolean }>;
+      /** OS-level push-to-talk hook config. `available` = native hook loaded;
+       *  `supported` = the given key is expressible by the hook. */
+      globalPtt: (enabled: boolean, code: string) => Promise<{ ok: boolean; available: boolean; supported: boolean }>;
+      devices: () => Promise<VoiceDeviceInfo[]>;
+      micTestStart: (settings: VoiceSettings) => Promise<{ ok: boolean }>;
+      micTestStop: () => Promise<{ ok: boolean }>;
+    };
+    // Screenshare over the voice mesh (viewing rides a local loopback PC — see
+    // onRoomScreenSignal for the renderer side of its signaling).
+    screen: {
+      sources: () => Promise<ScreenSourceInfo[]>;
+      shareStart: (roomId: string, sourceId: string) => Promise<{ ok: boolean }>;
+      shareStop: (roomId: string) => Promise<{ ok: boolean }>;
+      watchStart: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+      watchStop: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+      signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown) => Promise<{ ok: boolean }>;
     };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;
@@ -1101,6 +1151,16 @@ export interface IpcApi {
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
   onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void) => () => void;
   onRoomOpen: (callback: (roomId: string) => void) => () => void;
+  /** Live mic level while a mic test runs: 0-255 avg magnitude (raw, pre-gain), or
+   *  -1 when the test auto-stopped on its 60s deadline (UI should exit testing). */
+  onVoiceMicLevel: (callback: (level: number) => void) => () => void;
+  /** An audio device was plugged/unplugged — re-fetch rooms.voice.devices(). */
+  onVoiceDevicesChanged: (callback: () => void) => () => void;
+  /** A transient voice warning to surface (e.g. a mid-call mic fell back to default). */
+  onVoiceWarning: (callback: (msg: string) => void) => () => void;
+  /** Screen-watch loopback signaling from the engine (offer/ice/end). The overlay
+   *  answers via rooms.screen.signal; 'end' means the stream is gone — close. */
+  onRoomScreenSignal: (callback: (msg: { roomId: string; memberId: string; kind: 'offer' | 'ice' | 'end'; data?: unknown }) => void) => () => void;
 
   // IP Blocklist
   blocklist: {

@@ -4,6 +4,36 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.19.0] - 2026-07-17
+
+Voice grows up: pick your devices, share your screen, and talk with a global
+push-to-talk key — all still serverless and end-to-end.
+
+### Added
+- **Voice settings.** A settings panel (the gear in the voice bar) to choose your
+  microphone and output device, set mic and output volume, tune voice-activity
+  sensitivity with a live mic-test meter, and toggle echo cancellation, noise
+  suppression, and automatic gain. Change your mic mid-call and it switches without
+  a hiccup; if a saved device is unplugged, voice falls back to your default and
+  tells you.
+- **Screen sharing.** Share a screen or a window to your room's voice channel — it
+  rides the same private peer-to-peer mesh (no server ever sees it). Others get a
+  "LIVE" badge and click to watch in a resizable, fullscreen-able viewer; the
+  stream only uses upload while someone is actually watching. Video only for now.
+- **Global push-to-talk.** Push-to-talk can now use a system-wide key, so it works
+  even when Havvn isn't the focused window. It only listens while you're in a voice
+  channel in push-to-talk mode, and never for anything but your chosen key.
+
+### Fixed
+- Members who drop offline no longer linger in the voice panel with a stale mute
+  badge. Locally muting a member now silences them immediately. A voice connection
+  that dies on one side now heals itself instead of going quiet.
+
+### Security
+- Screen-share presence is Ed25519-signed and replay-protected like the rest of
+  voice, and torn down by the VPN kill-switch. The signaling format is unchanged
+  for older clients, so 2.18 members keep working in the same room.
+
 ## [2.18.0] - 2026-07-17
 
 Voice chat for rooms — talk to your room, serverless and end-to-end.

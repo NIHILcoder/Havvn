@@ -16,9 +16,10 @@ import { BrowserWindow, ipcMain, app, shell } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
 import * as db from '../db/store';
-import { RoomState, RoomSummary, RoomProfile } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-crypto';
 import { generateRoomSecret } from './room-e2e';
+import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
 
 const log = logger.child('RoomManager');
 
@@ -46,6 +47,13 @@ export class RoomManager {
   // every lazy reactivation funnels through reactivate(), so gating it there
   // closes every re-leak path at once.
   private networkSuspended = false;
+  // Last global voice settings the renderer sent — re-asserted on engine respawn
+  // (the engine's own store is session-only and would reset to defaults).
+  private voiceSettingsCache: VoiceSettings | null = null;
+  // Global push-to-talk config (renderer prefs) + what the hook is currently
+  // tuned to. The OS key hook runs ONLY while some room is in voice in PTT mode.
+  private globalPtt: { enabled: boolean; keycode: number | null } = { enabled: false, keycode: null };
+  private globalPttTarget: { roomId: string; keycode: number } | null = null;
 
   // The room currently open on screen (reported by the renderer). Activity in this
   // room is not OS-notified (the user is already looking at it).
@@ -81,6 +89,7 @@ export class RoomManager {
     });
     ipcMain.on('room-update', (_e, state: RoomState) => {
       if (state?.roomId) this.cache.set(state.roomId, state);
+      this.reevalGlobalPtt(); // voice/inputMode may have changed — retune the OS key hook
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:update', state);
       }
@@ -90,6 +99,30 @@ export class RoomManager {
     ipcMain.on('room-sync', (_e, payload: any) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:sync', payload);
+      }
+    });
+    // Live mic level while a settings-modal mic test runs (≈10 Hz, fire-and-forget).
+    ipcMain.on('room-mic-level', (_e, payload: { level: number }) => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('rooms:micLevel', Number(payload?.level) || 0);
+      }
+    });
+    // Screen-watch loopback signaling: engine forwarder → visible renderer.
+    ipcMain.on('room-screen-signal', (_e, payload: { roomId: string; memberId: string; kind: string; data?: unknown }) => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('rooms:screenSignal', payload);
+      }
+    });
+    // Audio hardware changed in the engine window — the UI should refresh pickers.
+    ipcMain.on('room-voice-devices', () => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('rooms:voiceDevicesChanged');
+      }
+    });
+    // Transient voice warning from the engine (e.g. a mid-call mic fell back).
+    ipcMain.on('room-voice-warn', (_e, payload: { msg: string }) => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('rooms:voiceWarn', String(payload?.msg || ''));
       }
     });
     // A file was deleted — persist the tombstone so it stays gone after restart,
@@ -266,8 +299,15 @@ export class RoomManager {
       this.failAll('Room networking stopped unexpectedly (the engine crashed).');
       this.ready = false;
       if (this.win === win) this.win = null;
+      // The cached RoomStates are now stale (their engine is gone); leaving them
+      // would keep decideGlobalPtt seeing voice.inVoice=true and the OS key hook
+      // installed with no session behind it. Clear + re-evaluate so the hook stops.
+      this.cache.clear();
+      this.reevalGlobalPtt();
     });
-    win.on('closed', () => { if (this.win === win) { this.win = null; this.ready = false; } });
+    win.on('closed', () => {
+      if (this.win === win) { this.win = null; this.ready = false; this.cache.clear(); this.reevalGlobalPtt(); }
+    });
     this.win = win;
     // Load a blank file:// page, NOT about:blank: file:// is a SECURE CONTEXT, so
     // navigator.mediaDevices exists and the engine can capture the mic for voice
@@ -300,6 +340,11 @@ export class RoomManager {
    */
   private readied(win: BrowserWindow): BrowserWindow {
     if (this.networkSuspended) win.webContents.send('room-cmd', { type: 'netSuspend', reqId: ++this.reqSeq });
+    // Re-assert the user's voice settings: the engine store is session-only, so a
+    // respawned window would otherwise capture with defaults (wrong mic/gain).
+    if (this.voiceSettingsCache) {
+      win.webContents.send('room-cmd', { type: 'voiceSettings', reqId: ++this.reqSeq, settings: this.voiceSettingsCache });
+    }
     return win;
   }
 
@@ -480,6 +525,7 @@ export class RoomManager {
       catch (e) { log.warn('leaveRoom: could not delete room folder', { roomId, err: String(e) }); }
     }
     this.cache.delete(roomId);
+    this.reevalGlobalPtt(); // the left room may have been the PTT hook's target
     return { ok: true };
   }
 
@@ -613,6 +659,90 @@ export class RoomManager {
   voiceVolume(roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceVolume', { roomId, memberId, volume }); }
   voiceInputMode(roomId: string, mode: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceInputMode', { roomId, mode }); }
   voicePtt(roomId: string, active: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voicePtt', { roomId, active }); }
+  /** Global push-to-talk config from the renderer (OS-level key hook while in
+   *  voice + PTT mode). `code` is a DOM KeyboardEvent.code; `supported` tells the
+   *  UI whether that key is expressible by the hook. */
+  voiceGlobalPtt(enabled: boolean, code: string): { ok: boolean; available: boolean; supported: boolean } {
+    const available = isGlobalPttAvailable();
+    const keycode = resolveUiohookKeycode(String(code || ''));
+    this.globalPtt = { enabled: !!enabled && available, keycode };
+    this.reevalGlobalPtt();
+    return { ok: true, available, supported: keycode !== null };
+  }
+
+  /** Retune the OS key hook to the current decision (some room in voice + PTT +
+   *  toggle on). Idempotent and cheap — called on every room-state push. */
+  private reevalGlobalPtt(): void {
+    const rooms = Array.from(this.cache.values()).map((s) => ({
+      roomId: s.roomId,
+      inVoice: !!s.voice?.inVoice,
+      inputMode: String(s.voice?.inputMode || 'always'),
+    }));
+    const d = decideGlobalPtt(this.globalPtt, rooms);
+    if (!d.run) {
+      if (this.globalPttTarget) { this.globalPttTarget = null; stopGlobalPtt(); }
+      return;
+    }
+    if (this.globalPttTarget && this.globalPttTarget.roomId === d.roomId && this.globalPttTarget.keycode === d.keycode) return;
+    const roomId = d.roomId;
+    const ok = startGlobalPtt(
+      d.keycode,
+      () => { void this.voicePtt(roomId, true).catch(() => { /* engine gone — reeval will stop us */ }); },
+      () => { void this.voicePtt(roomId, false).catch(() => { /* ignore */ }); },
+    );
+    this.globalPttTarget = ok ? { roomId, keycode: d.keycode } : null;
+  }
+  /** Global voice settings (devices/gain/VAD/processing). Cached so a respawned
+   *  engine window starts from the user's config, not defaults (see readied()). */
+  voiceSettings(settings: VoiceSettings): Promise<{ ok: boolean }> {
+    this.voiceSettingsCache = settings;
+    return this.call<{ ok: boolean }>('voiceSettings', { settings });
+  }
+  /** Audio devices as the ENGINE window sees them (its deviceId space is the one
+   *  the capture pipeline uses — main-renderer ids would not match). */
+  voiceDevices(): Promise<VoiceDeviceInfo[]> { return this.call<VoiceDeviceInfo[]>('voiceDevices', {}, 15000); }
+  async voiceMicTestStart(settings: VoiceSettings): Promise<{ ok: boolean }> {
+    await this.ensureMicAccess(); // macOS TCC prompt, same as joining voice
+    return this.call<{ ok: boolean }>('voiceMicTestStart', { settings }, 15000);
+  }
+  voiceMicTestStop(): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceMicTestStop', {}); }
+
+  // ── Screenshare ───────────────────────────────────────────────────────────
+  /** Shareable screens/windows with picker thumbnails (data URLs). */
+  async screenSources(): Promise<Array<{ id: string; name: string; thumbnail: string; display: boolean }>> {
+    const { desktopCapturer } = await import('electron');
+    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
+    return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL(), display: s.id.startsWith('screen:') }));
+  }
+
+  async screenShareStart(roomId: string, sourceId: string): Promise<{ ok: boolean }> {
+    this.assertNotSuspended(); // a share leg leaks the real IP just like voice
+    await this.ensureScreenAccess();
+    return this.call<{ ok: boolean }>('screenShareStart', { roomId, sourceId }, 15000);
+  }
+  screenShareStop(roomId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenShareStop', { roomId }); }
+  screenWatchStart(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenWatchStart', { roomId, memberId }, 8000); }
+  screenWatchStop(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenWatchStop', { roomId, memberId }); }
+  /** The renderer's loopback answer/ICE back to the engine forwarder. */
+  screenSignal(roomId: string, memberId: string, kind: string, data: unknown): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('screenSignal', { roomId, memberId, kind, data });
+  }
+
+  /** macOS gates screen recording at TCC and it cannot be prompted from code —
+   *  surface a clear pointer at System Settings instead of a silent black frame.
+   *  No-op elsewhere (Windows needs nothing). */
+  private async ensureScreenAccess(): Promise<void> {
+    if (process.platform !== 'darwin') return;
+    try {
+      const { systemPreferences } = await import('electron');
+      if (systemPreferences.getMediaAccessStatus('screen') !== 'granted') {
+        throw new Error('Screen Recording permission is off — enable it for Havvn in System Settings › Privacy & Security.');
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('Screen Recording')) throw e;
+      /* getMediaAccessStatus unavailable — let capture surface its own error */
+    }
+  }
 
   /** macOS gates the microphone at the OS (TCC) level; prompt once from the main
    *  process before capture. No-op on Windows/Linux (handled by the OS/permission
@@ -798,6 +928,7 @@ export class RoomManager {
       try { await this.call('netSuspend', {}, 8000); } catch (e) { log.warn('netSuspend failed', { err: String(e) }); }
     }
     this.cache.clear();
+    this.reevalGlobalPtt(); // no rooms left in voice → the OS key hook must stop
     if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: true });
   }
 

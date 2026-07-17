@@ -552,6 +552,42 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:voicePtt', wrapHandler('rooms:voicePtt',
     async (_event, roomId: string, active: boolean) => roomManager.voicePtt(roomId, !!active)
   ));
+  ipcMain.handle('rooms:voiceSettings', wrapHandler('rooms:voiceSettings',
+    async (_event, settings: unknown) => roomManager.voiceSettings(settings as never)
+  ));
+  ipcMain.handle('rooms:voiceGlobalPtt', wrapHandler('rooms:voiceGlobalPtt',
+    async (_event, enabled: boolean, code: string) => roomManager.voiceGlobalPtt(!!enabled, String(code || ''))
+  ));
+  ipcMain.handle('rooms:voiceDevices', wrapHandler('rooms:voiceDevices',
+    async () => roomManager.voiceDevices()
+  ));
+  ipcMain.handle('rooms:voiceMicTestStart', wrapHandler('rooms:voiceMicTestStart',
+    async (_event, settings: unknown) => roomManager.voiceMicTestStart(settings as never)
+  ));
+  ipcMain.handle('rooms:voiceMicTestStop', wrapHandler('rooms:voiceMicTestStop',
+    async () => roomManager.voiceMicTestStop()
+  ));
+
+  // ── Screenshare ───────────────────────────────────────────────────────────
+  ipcMain.handle('rooms:screenSources', wrapHandler('rooms:screenSources',
+    async () => roomManager.screenSources()
+  ));
+  ipcMain.handle('rooms:screenShareStart', wrapHandler('rooms:screenShareStart',
+    async (_event, roomId: string, sourceId: string) => roomManager.screenShareStart(roomId, String(sourceId || ''))
+  ));
+  ipcMain.handle('rooms:screenShareStop', wrapHandler('rooms:screenShareStop',
+    async (_event, roomId: string) => roomManager.screenShareStop(roomId)
+  ));
+  ipcMain.handle('rooms:screenWatchStart', wrapHandler('rooms:screenWatchStart',
+    async (_event, roomId: string, memberId: string) => roomManager.screenWatchStart(roomId, String(memberId || ''))
+  ));
+  ipcMain.handle('rooms:screenWatchStop', wrapHandler('rooms:screenWatchStop',
+    async (_event, roomId: string, memberId: string) => roomManager.screenWatchStop(roomId, String(memberId || ''))
+  ));
+  ipcMain.handle('rooms:screenSignal', wrapHandler('rooms:screenSignal',
+    async (_event, roomId: string, memberId: string, kind: string, data: unknown) =>
+      roomManager.screenSignal(roomId, String(memberId || ''), String(kind || ''), data)
+  ));
 
   ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',
     async (_event, roomId: string | null) => roomManager.setActiveRoom(roomId ?? null)

@@ -1018,6 +1018,13 @@ async function cleanup(): Promise<void> {
   cleanupDone = true;
   logger.info('App', 'Cleaning up...');
 
+  // Stop the global PTT key hook FIRST — its native thread would otherwise keep
+  // the process alive past app.exit().
+  try {
+    const { shutdownGlobalPtt } = await import('./utils/global-ptt');
+    shutdownGlobalPtt();
+  } catch { /* never loaded — nothing to stop */ }
+
   // Check if clearDataOnExit is enabled
   try {
     const privacyConfig = (store.get('privacyConfig') as any) || {};

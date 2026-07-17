@@ -192,11 +192,49 @@ Controls flow main→engine as new `room-cmd`s: `voice-join`, `voice-leave`,
   transmitting); deafen now restores the prior mute on un-deafen. Key trick: VAD runs
   on an always-open CLONE of the mic track, so gating the SENT track (enabled=false)
   in 'vad' mode doesn't starve the detector. 322 tests, typecheck + build clean.
-- **Phase 3 — adversarial review + polish.** Signaling auth (spoofed offers,
-  cross-room replay), glare/renegotiation correctness, DoS (voice-offer flooding,
-  ICE flood), IP-leak / kill-switch teardown, echo/feedback. Then ship.
-- **Future** — screenshare/video via the same `MediaPeer` (add a video track + a
-  view surface); volunteer-forwarder for >8-person calls.
+- **Phase 3 — adversarial review + polish. ✅ DONE, shipped as 2.18.0.** Signaling
+  auth (spoofed offers, cross-room replay), glare/renegotiation correctness, DoS
+  (voice-offer flooding, ICE flood), IP-leak / kill-switch teardown, echo/feedback.
+- **2.19 — voice settings + screenshare + global PTT. ✅ IMPLEMENTED.**
+  - **Voice settings (Discord-parity, global, modal from the panel gear):** input/
+    output device pickers (enumerated in the ENGINE window — deviceId is salted
+    per-origin), mic gain + master output volume, VAD sensitivity slider with a
+    live mic-test meter, echo-cancellation/noise-suppression/auto-gain toggles,
+    chime toggle. Key trick: a permanent WebAudio capture pipeline (raw mic →
+    GainNode → MediaStreamDestination) — the SENT track is the destination's, so
+    hot mic/constraint changes just swap the source node (no replaceTrack, no
+    renegotiation). Unavailable saved device falls back to default WITHOUT
+    clearing the preference. Settings are re-asserted by the manager after an
+    engine respawn.
+  - **Screenshare:** video track over the SAME MediaPeers. New signed `voice-share`
+    presence Msg (own canonical + monotonic `at` — voice-state/voice-signal
+    canonicals untouched, 2.18-compatible: old clients ignore AND relay unknown
+    types). Capture via legacy `chromeMediaSource:'desktop'` getUserMedia in the
+    hidden engine window (no gesture needed); `desktopCapturer` sources picked in a
+    thumbnail modal. Watch-on-demand recv gating: viewers answer video m-lines
+    `inactive` until they click Watch (`recvonly`), so an unwatched share costs the
+    sharer no upstream. Display rides a LOCAL loopback RTCPeerConnection
+    (host-candidates only) into the visible renderer — MediaStreams can't cross
+    Electron windows; loopback signaling uses plain JSON shapes (structured clone
+    rejects RTCSessionDescription). Caps: 2.5 Mbps/15 fps mesh, 10 Mbps loopback,
+    contentHint 'detail'. Self-preview via the same forwarder. v1 is video-only
+    (system-audio loopback would echo the call back — no per-process capture in
+    Electron).
+  - **Global push-to-talk:** `uiohook-napi` (N-API prebuilds, asarUnpacked) — an
+    OS-level keydown/keyup hook (Electron's globalShortcut has no key-up). Privacy
+    contract: the hook runs ONLY while (toggle on && some room in voice && PTT
+    mode); RoomManager re-evaluates on every room-state push. DOM `code` →
+    UiohookKey mapping in shared/uiohook-keymap.ts; unsupported keys fall back to
+    the in-app listener. Hook MUST stop in cleanup() or its thread keeps the
+    process alive.
+  - **Fixes:** offline members (45 s liveness timeout) are pruned from the voice
+    roster by the heartbeat (stale mute badge / leaked MediaPeer); locally muting a
+    member now cuts the live media plane too (unmute re-greets to solicit their
+    reannounce; the hello handler reannounces unconditionally now); mute/deafen
+    persist across leave/rejoin (Discord convention).
+- **Future** — volunteer-forwarder for >8-person calls; webcam video (the
+  `voice-share` Msg already carries a streamId for multi-kind); screen-audio
+  share if a per-process capture path appears.
 
 ## Open questions / risks
 

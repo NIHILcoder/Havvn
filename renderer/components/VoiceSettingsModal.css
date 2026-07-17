@@ -1,0 +1,114 @@
+/* Voice settings modal — sections of label+control rows inside the shared Modal. */
+
+.vsm-body { display: flex; flex-direction: column; gap: 16px; }
+
+.vsm-section { display: flex; flex-direction: column; gap: 8px; }
+.vsm-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+}
+
+.vsm-row { display: flex; align-items: center; gap: 10px; min-height: 28px; }
+.vsm-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 42%;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+.vsm-row .toggle-container { margin-left: auto; }
+
+.vsm-select { flex: 1; min-width: 0; }
+
+/* Mic test */
+.vsm-test { gap: 12px; }
+.vsm-test-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.vsm-test-btn:hover { color: var(--color-text-primary); border-color: var(--color-accent-primary); }
+.vsm-test-btn.active { background: var(--color-accent-primary); border-color: var(--color-accent-primary); color: #fff; }
+
+.vsm-meter {
+  position: relative;
+  flex: 1;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--color-bg-tertiary);
+  overflow: hidden;
+}
+.vsm-meter-fill {
+  height: 100%;
+  border-radius: 5px;
+  background: var(--color-text-tertiary);
+  transition: width 90ms linear;
+}
+.vsm-meter-fill.hot { background: var(--color-accent-primary); }
+.vsm-meter-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--color-error);
+  border-radius: 1px;
+}
+
+/* Sliders */
+.vsm-range { flex: 1; min-width: 0; accent-color: var(--color-accent-primary); }
+.vsm-val {
+  flex: 0 0 44px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+
+/* Input mode chips + PTT key (mirrors the old voice-panel popover styling) */
+.vsm-modes { display: flex; gap: 6px; }
+.vsm-mode {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.vsm-mode:hover { color: var(--color-text-primary); }
+.vsm-mode.active {
+  background: var(--color-accent-primary);
+  border-color: var(--color-accent-primary);
+  color: #fff;
+}
+.vsm-key {
+  min-width: 72px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.vsm-key.capturing { border-color: var(--color-accent-primary); color: var(--color-accent-primary); }
+
+.vsm-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
