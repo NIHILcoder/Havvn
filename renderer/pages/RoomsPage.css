@@ -192,13 +192,9 @@
 }
 .room-rail-people-list .room-members { max-height: none; }
 
-/* Rail-width fit: 5 voice buttons must fit a 200-240px column — shrink them and
-   let the control row wrap under the title instead of clipping. */
+/* Voice card sits at the top of the rail as a rounded card (the panel's base
+   styles are rail-native now — actions live on their own row, nothing wraps). */
 .room-col-rail .room-voice { padding: var(--space-2); border-radius: var(--radius-md); }
-.room-col-rail .room-voice-head { flex-wrap: wrap; row-gap: 4px; }
-.room-col-rail .room-voice-btn { width: 26px; height: 26px; }
-.room-col-rail .room-voice-ctl { gap: 3px; }
-.room-col-rail .room-voice-join { padding: 4px 10px; font-size: 11px; }
 /* The member "have" count reads cryptic — give it a helper cursor (title attr). */
 .room-member-have { cursor: help; }
 
@@ -494,22 +490,33 @@
   gap: var(--space-3);
 }
 
-/* "New folder" button in the files card header */
-.room-newfolder-btn {
+/* ── The files-zone control archetype ────────────────────────────────────
+   Every control in the title row / toolbar / bulk bar (Вид, Запросить файл,
+   Новая папка, sort select, filter chips, Выбрать, bulk buttons) is the SAME
+   26px pill: one height, one radius, one type size. Individual rules below
+   add only their accent/danger specifics. */
+.room-newfolder-btn, .room-file-chip, .room-file-select, .room-file-select-btn, .room-file-bulk-del {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
-  font-size: 0.72rem;
-  font-weight: 600;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
   color: var(--color-text-secondary);
   background: transparent;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);
   cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast);
+  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 }
+
 .room-newfolder-btn:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+.room-newfolder-btn.active {
+  background: color-mix(in srgb, var(--color-accent-primary) 14%, transparent);
+  border-color: var(--color-accent-primary);
+  color: var(--color-accent-primary);
+}
 
 /* Folder sections (progressive: shown only once folders exist) */
 .room-folder-list { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -557,16 +564,6 @@
 /* ── Files: chips, view popover, compact density, type icons, hover actions ── */
 .room-files-total { font-weight: 500; letter-spacing: normal; text-transform: none; }
 .room-file-chips { display: inline-flex; gap: 4px; flex-wrap: wrap; }
-.room-file-chip {
-  padding: 3px 9px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
-  background: transparent;
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
-}
 .room-file-chip:hover { color: var(--color-text-primary); }
 .room-file-chip.active {
   background: color-mix(in srgb, var(--color-accent-primary) 14%, transparent);
@@ -922,44 +919,15 @@
   margin-bottom: var(--space-2);
   flex-wrap: wrap;
 }
-.room-file-select {
-  height: 28px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-}
-.room-file-select-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-secondary);
-  color: var(--color-text-secondary);
-  font-size: 12px;
-  cursor: pointer;
-}
+/* Specifics on top of the shared 26px pill (rule near .room-newfolder-btn). */
 .room-file-select-btn:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+.room-file-select-btn:disabled { opacity: 0.5; cursor: default; }
 .room-file-bulk-count { font-size: 12px; color: var(--color-text-tertiary); margin-right: auto; }
 .room-file-bulk-del {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
+  border-color: transparent;
   background: var(--color-danger, #ef4444);
   color: #fff;
-  font-size: 12px;
   font-weight: 600;
-  cursor: pointer;
 }
 .room-file-bulk-del:disabled { opacity: 0.5; cursor: default; }
 .room-file-check { margin-right: var(--space-2); flex-shrink: 0; cursor: pointer; }
@@ -1653,8 +1621,7 @@
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
-  border-bottom: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--color-border-subtle);
   background: var(--color-bg-secondary);
 }
 .room-voice-head {
@@ -1662,6 +1629,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  min-height: 24px;
 }
 .room-voice-title {
   display: inline-flex;
@@ -1673,13 +1641,32 @@
   letter-spacing: 0.04em;
   color: var(--color-text-tertiary);
 }
+/* Ghost gear in the header (accent only while the settings window is open). */
+.room-voice-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.room-voice-gear:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-voice-gear.active { color: var(--color-accent-primary); background: color-mix(in srgb, var(--color-accent-primary) 12%, transparent); }
+/* Full-width join bar on its own row under the header. */
 .room-voice-join {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  padding: 5px 12px;
+  width: 100%;
+  padding: 7px 10px;
   border: none;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: var(--color-accent-primary);
   color: #fff;
   font-size: 12px;
@@ -1689,15 +1676,17 @@
 }
 .room-voice-join:hover:not(:disabled) { filter: brightness(1.08); }
 .room-voice-join:disabled { opacity: 0.6; cursor: default; }
-.room-voice-ctl { display: inline-flex; align-items: center; gap: 4px; }
+/* In-voice control strip: equal-width buttons filling the card row. */
+.room-voice-ctl { display: flex; align-items: center; gap: 4px; }
 .room-voice-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
   cursor: pointer;

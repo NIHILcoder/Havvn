@@ -2,7 +2,11 @@
 
 .vsm-body { display: flex; flex-direction: column; gap: 16px; }
 
-.vsm-section { display: flex; flex-direction: column; gap: 8px; }
+/* flex-shrink: 0 — inside the pop-out the body is a DEFINITE-height flex chain
+   (100vh window). Shrinkable sections would squeeze their content instead of
+   letting the body scroll; docked, the modal body's height is indefinite and
+   this is a no-op. */
+.vsm-section { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
 .vsm-section-title {
   font-size: 11px;
   font-weight: 600;
@@ -114,8 +118,14 @@
 }
 
 /* A stacked field (label above a control) — used for the noise-suppression chips
-   inside the Processing section, which otherwise holds inline label+toggle rows. */
+   inside the Processing section, which otherwise holds inline label+toggle rows.
+   The label's row sizing (flex-basis 42%) is for HORIZONTAL rows; in this column
+   container the same basis would resolve against the field's HEIGHT once the
+   pop-out makes the flex chain definite — the label ballooned and the hint
+   overflowed onto the next row. Neutralize it. */
 .vsm-field { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.vsm-field > .vsm-label { flex: 0 0 auto; }
+.vsm-field > .vsm-hint { flex: 0 0 auto; }
 
 /* Detach button in the modal footer. */
 .vsm-detach {

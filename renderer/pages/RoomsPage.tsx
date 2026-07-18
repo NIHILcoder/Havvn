@@ -1518,40 +1518,37 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
 
   return (
     <div className="room-voice">
+      {/* Header: title left, ghost settings gear right. Actions live on their own
+          full-width row below — a 200-360px rail can't fit title + buttons inline. */}
       <div className="room-voice-head">
         <span className="room-voice-title">
           <Icon name="headphones" size={13} /> {t('rooms.voice.title')}
           {v.inVoice && v.transmitting && !v.muted && <span className="room-voice-live" title={t('rooms.voice.live')} />}
         </span>
-        {v.inVoice ? (
-          <div className="room-voice-ctl">
-            <button className={`room-voice-btn${v.muted ? ' active' : ''}`} onClick={() => window.api.rooms.voice.mute(roomId, !v.muted).catch(fail)} title={v.muted ? t('rooms.voice.unmute') : t('rooms.voice.mute')}>
-              <Icon name={v.muted ? 'mic-off' : 'mic'} size={15} />
-            </button>
-            <button className={`room-voice-btn${v.deafened ? ' active' : ''}`} onClick={() => window.api.rooms.voice.deafen(roomId, !v.deafened).catch(fail)} title={v.deafened ? t('rooms.voice.undeafen') : t('rooms.voice.deafen')}>
-              <Icon name={v.deafened ? 'volume-x' : 'headphones'} size={15} />
-            </button>
-            <button className={`room-voice-btn${v.sharing ? ' active' : ''}`} onClick={toggleShare} title={v.sharing ? t('rooms.screen.stop') : t('rooms.screen.share')}>
-              <Icon name="screen-share" size={15} />
-            </button>
-            <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
-              <Icon name="settings" size={15} />
-            </button>
-            <button className="room-voice-btn leave" onClick={wrap(() => window.api.rooms.voice.leave(roomId))} disabled={busy} title={t('rooms.voice.leave')}>
-              <Icon name="phone-off" size={15} />
-            </button>
-          </div>
-        ) : (
-          <div className="room-voice-ctl">
-            <button className={`room-voice-btn${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
-              <Icon name="settings" size={15} />
-            </button>
-            <button className="room-voice-join" onClick={join} disabled={busy}>
-              <Icon name="mic" size={14} /> {t('rooms.voice.join')}
-            </button>
-          </div>
-        )}
+        <button className={`room-voice-gear${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
+          <Icon name="settings" size={14} />
+        </button>
       </div>
+      {v.inVoice ? (
+        <div className="room-voice-ctl">
+          <button className={`room-voice-btn${v.muted ? ' active' : ''}`} onClick={() => window.api.rooms.voice.mute(roomId, !v.muted).catch(fail)} title={v.muted ? t('rooms.voice.unmute') : t('rooms.voice.mute')}>
+            <Icon name={v.muted ? 'mic-off' : 'mic'} size={15} />
+          </button>
+          <button className={`room-voice-btn${v.deafened ? ' active' : ''}`} onClick={() => window.api.rooms.voice.deafen(roomId, !v.deafened).catch(fail)} title={v.deafened ? t('rooms.voice.undeafen') : t('rooms.voice.deafen')}>
+            <Icon name={v.deafened ? 'volume-x' : 'headphones'} size={15} />
+          </button>
+          <button className={`room-voice-btn${v.sharing ? ' active' : ''}`} onClick={toggleShare} title={v.sharing ? t('rooms.screen.stop') : t('rooms.screen.share')}>
+            <Icon name="screen-share" size={15} />
+          </button>
+          <button className="room-voice-btn leave" onClick={wrap(() => window.api.rooms.voice.leave(roomId))} disabled={busy} title={t('rooms.voice.leave')}>
+            <Icon name="phone-off" size={15} />
+          </button>
+        </div>
+      ) : (
+        <button className="room-voice-join" onClick={join} disabled={busy}>
+          <Icon name="mic" size={14} /> {t('rooms.voice.join')}
+        </button>
+      )}
 
       {settingsOpen && <VoiceSettingsModal onClose={() => setSettingsOpen(false)} />}
       {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} />}
