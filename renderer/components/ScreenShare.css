@@ -81,6 +81,13 @@
   overflow: hidden;
   background: var(--color-bg-secondary);
 }
+/* Inline in the room Stage: fill the region instead of a centered overlay card. */
+.ssv-card.ssv-inline {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  border-radius: var(--radius-lg);
+}
 .ssv-head {
   display: flex;
   align-items: center;
@@ -121,10 +128,12 @@
   background: #000;
   min-height: 200px;
 }
+.ssv-inline .ssv-stage { flex: 1 1 auto; min-height: 0; }
 .ssv-video {
   width: 100%;
   max-height: calc(92vh - 45px);
   object-fit: contain;
   background: #000;
 }
+.ssv-inline .ssv-video { max-height: 100%; height: 100%; }
 .ssv-stage:fullscreen .ssv-video { max-height: 100vh; height: 100%; }

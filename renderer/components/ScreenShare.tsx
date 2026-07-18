@@ -9,8 +9,10 @@
  * (onRoomScreenSignal), we answer via rooms.screen.signal; 'end' means the
  * stream is gone and the overlay closes itself.
  *
- * Both components portal to <body>: their openers live inside the room's
- * container-query subtree, whose containment would trap a fixed backdrop.
+ * The picker portals to <body> (its opener lives inside the room's container-query
+ * subtree, whose containment would trap a fixed backdrop). ScreenView renders INLINE
+ * in the room Stage — no fixed backdrop to trap, and it still goes fullscreen via
+ * requestFullscreen() (the top layer escapes containment).
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -71,7 +73,7 @@ export const ScreenSourcePicker: React.FC<{
   );
 };
 
-export const ScreenViewOverlay: React.FC<{
+export const ScreenView: React.FC<{
   roomId: string;
   memberId: string;
   title: string;
@@ -147,27 +149,24 @@ export const ScreenViewOverlay: React.FC<{
     else void el.requestFullscreen().catch(() => { /* ignore */ });
   };
 
-  return createPortal(
-    <div className="ssv-backdrop" onClick={onClose}>
-      <div className="ssv-card" onClick={(e) => e.stopPropagation()}>
-        <div className="ssv-head">
-          <span className="ssv-title">
-            <Icon name="screen-share" size={14} /> {t('rooms.screen.watching')} · {title}
-          </span>
-          <span className="ssv-actions">
-            <button className="ssv-btn" onClick={fullscreen} title={t('rooms.screen.fullscreen')}>
-              <Icon name="maximize" size={14} />
-            </button>
-            <button className="ssv-btn" onClick={onClose} title={t('common.close')}>
-              <Icon name="x" size={14} />
-            </button>
-          </span>
-        </div>
-        <div className="ssv-stage" ref={stageRef} onDoubleClick={fullscreen}>
-          <video ref={videoRef} className="ssv-video" autoPlay playsInline />
-        </div>
+  return (
+    <div className="ssv-card ssv-inline">
+      <div className="ssv-head">
+        <span className="ssv-title">
+          <Icon name="screen-share" size={14} /> {t('rooms.screen.watching')} · {title}
+        </span>
+        <span className="ssv-actions">
+          <button className="ssv-btn" onClick={fullscreen} title={t('rooms.screen.fullscreen')}>
+            <Icon name="maximize" size={14} />
+          </button>
+          <button className="ssv-btn" onClick={onClose} title={t('common.close')}>
+            <Icon name="x" size={14} />
+          </button>
+        </span>
       </div>
-    </div>,
-    document.body,
+      <div className="ssv-stage" ref={stageRef} onDoubleClick={fullscreen}>
+        <video ref={videoRef} className="ssv-video" autoPlay playsInline />
+      </div>
+    </div>
   );
 };

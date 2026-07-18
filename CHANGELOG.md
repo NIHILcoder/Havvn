@@ -4,6 +4,25 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [2.21.0] - 2026-07-18
+
+The room, rearranged for everything it now does.
+
+### Changed
+- **Three-region room layout.** Rooms move from a files-and-chat split to three
+  side-by-side regions: a People + Voice rail on the left, an adaptive Stage in the
+  center, and Chat on the right — so a call, a watch party, files, and chat all
+  coexist instead of competing for one column.
+- **The Stage is adaptive.** It shows your shared files by default, and a shared
+  screen or a watch-together file now plays **inside** the room (with a tab to switch
+  back to Files) instead of taking over the whole window as an overlay. Fullscreen is
+  still one click away.
+- **Voice and members are their own region.** The voice panel and member list are no
+  longer squeezed into the chat card — they get the left rail, with room to grow.
+- **Drag to resize.** Drag the borders between the rail, Stage, and Chat to size them
+  how you like; your widths are remembered. Double-click the rail's border to collapse
+  it. Narrow windows stack the three regions into one scrolling column.
+
 ## [2.20.0] - 2026-07-17
 
 ### Added

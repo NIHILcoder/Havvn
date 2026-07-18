@@ -45,7 +45,7 @@ export { PlayerControls } from './PlayerControls';
 export { ShareLinkModal } from './ShareLinkModal';
 export { ShareToRoomModal, TransferPickerModal } from './RoomShareModals';
 export { VoiceSettingsModal } from './VoiceSettingsModal';
-export { ScreenSourcePicker, ScreenViewOverlay } from './ScreenShare';
+export { ScreenSourcePicker, ScreenView } from './ScreenShare';
 export { Identicon } from './Identicon';
 export { Modal, useEscape, useModalFocus } from './Modal';
 export type { ModalProps, ModalSize } from './Modal';

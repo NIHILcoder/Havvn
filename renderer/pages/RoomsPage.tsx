@@ -11,8 +11,9 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember } from '../../shared/types';
-import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenViewOverlay } from '../components';
+import { Button, Icon, IconName, EmptyState, Identicon, QRCode, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Tabs } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings } from '../utils/voicePrefs';
+import { loadRoomLayout, saveRoomLayout, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByFolder, FOLDER_ICONS } from '../../shared/room-folders';
 import { classifyMediaKind } from '../../shared/media';
@@ -78,9 +79,6 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const [room, setRoom] = useState<RoomState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-
-  // In-app room player (watch a downloaded shared file, optionally in sync)
-  const [watch, setWatch] = useState<{ file: RoomFile } | null>(null);
 
   // Lightweight inline dialogs
   const [dialog, setDialog] = useState<null | 'create' | 'join' | 'profile' | 'invite' | 'leave'>(null);
@@ -252,7 +250,6 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     const roomId = leaveTarget;
     if (!roomId) return;
     setDialog(null);
-    setWatch(null); // don't leave the player open on a room we're leaving
     setBusy(true);
     try {
       await window.api.rooms.leave(roomId, deleteFiles);
@@ -412,7 +409,6 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
                 onInvite={() => setDialog('invite')}
                 onLeave={() => requestLeave(room.roomId)}
                 onCopyCode={() => copy(room.code, t('rooms.codeCopied'))}
-                onWatch={(file) => setWatch({ file })}
                 onToggleAutoFetch={(v) => handleToggleAutoFetch(room.roomId, v)}
                 onSetLimits={(up, down) => handleSetLimits(room.roomId, up, down)}
                 onShared={(state) => {
@@ -547,17 +543,6 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           </div>
         </Modal>
       )}
-
-      {/* In-app player (watch a downloaded shared file, optionally in sync) */}
-      {watch && room && (
-        <RoomPlayer
-          room={room}
-          roomId={room.roomId}
-          file={watch.file}
-          self={room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' }}
-          onClose={() => setWatch(null)}
-        />
-      )}
     </div>
   );
 };
@@ -603,56 +588,36 @@ const RoomFolderEditor: React.FC<{
   );
 };
 
-// ── Room detail panel ─────────────────────────────────────────────────────
-interface DetailProps {
+// What the room's center Stage is showing. Files is the base; Watch/Screen add a
+// tab and auto-focus. Single-slot union — opening one supersedes the other.
+type StageView =
+  | { kind: 'files' }
+  | { kind: 'watch'; file: RoomFile }
+  | { kind: 'screen'; memberId: string };
+
+// ── Files panel (the Stage's default surface) ─────────────────────────────
+// The room's shared files: list/folders, search/sort/filter, bulk selection,
+// request-a-file, speed limits. Extracted from RoomDetail so the Stage can swap
+// it for the inline watch player or screen viewer. OS-file drag-drop stays on
+// RoomDetail's container; only the section-internal file→folder reassign is here.
+interface FilesPanelProps {
   room: RoomState;
-  /** Open the OS file picker; folderId assigns the added files to that section. */
   onAddFiles: (folderId?: string) => void;
-  /** Files were dropped onto the room — absolute paths, already resolved. */
-  onDropFiles: (paths: string[], folderId?: string) => void;
   onCreateFolder: (name: string, icon: string, color: string) => void;
   onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string }) => void;
   onDeleteFolder: (folderId: string) => void;
   onAssignFile: (fileId: string, folderId: string | null) => void;
-  onOpenFolder: () => void;
-  onInvite: () => void;
-  onLeave: () => void;
-  onCopyCode: () => void;
   onWatch: (file: RoomFile) => void;
-  /** A transfer was shared into this room — apply the returned state. */
   onShared: (state: RoomState) => void;
-  /** Flip the room's auto-download preference. */
   onToggleAutoFetch: (autoFetch: boolean) => void;
-  /** Set the room's speed ceilings (KB/s, 0 = unlimited). */
   onSetLimits: (upKbps: number, downKbps: number) => void;
   busy: boolean;
 }
 
-const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onWatch, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
-  // "Bring a file from Transfers" — pick a finished download to share here
   const [pickTransfer, setPickTransfer] = useState(false);
-  // Drag & drop files into the room. The depth counter survives child
-  // enter/leave churn; internalDrag suppresses drags that started on this page
-  // (text selections etc.) so only OS file drags light the overlay.
-  const [dropping, setDropping] = useState(false);
-  const dragDepth = useRef(0);
-  const internalDrag = useRef(false);
-  const isFileDrag = (e: React.DragEvent) =>
-    !internalDrag.current && !room.kicked && Array.from(e.dataTransfer?.types || []).includes('Files');
-  const handleDrop = (e: React.DragEvent) => {
-    internalDrag.current = false;
-    if (!isFileDrag(e)) return;
-    e.preventDefault();
-    dragDepth.current = 0;
-    setDropping(false);
-    const paths = Array.from(e.dataTransfer.files)
-      .map((f) => { try { return window.api.getPathForFile(f); } catch { return ''; } })
-      .filter(Boolean);
-    if (paths.length === 0) { toast.error(t('create.dropReadError')); return; }
-    onDropFiles(paths);
-  };
   // Client-side file filter/sort + bulk selection (all room-local, no engine calls).
   const [fileQuery, setFileQuery] = useState('');
   const [sortKey, setSortKey] = useState<'added' | 'name' | 'size' | 'status'>('added');
@@ -690,15 +655,6 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
       return next.size === prev.size ? prev : next;
     });
   }, [room.files]);
-  // Owner-only inline room rename (the engine gates + signs + gossips it).
-  const [renaming, setRenaming] = useState(false);
-  const [nameDraft, setNameDraft] = useState(room.name);
-  useEffect(() => { setRenaming(false); setNameDraft(room.name); }, [room.roomId, room.name]);
-  const submitRename = () => {
-    const n = nameDraft.trim();
-    setRenaming(false);
-    if (n && n !== room.name) window.api.rooms.rename(room.roomId, n).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-  };
   // Request-a-file: rides the signed chat pipeline (renders as a normal message).
   const [requesting, setRequesting] = useState(false);
   const [requestDraft, setRequestDraft] = useState('');
@@ -710,9 +666,6 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
       .then(() => toast.success(t('rooms.requestSent')))
       .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
   };
-  // Activity log lives in its own modal now (opened from the title bar) so it
-  // doesn't crowd the files column.
-  const [showActivity, setShowActivity] = useState(false);
   // Speed-limit drafts: commit on blur/Enter; re-seed only on room switch so
   // live state pushes don't stomp typing. 0/empty = unlimited.
   const [upDraft, setUpDraft] = useState(String(room.upKbps || ''));
@@ -770,6 +723,415 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
       />
     ))
   );
+
+  return (
+    <div className="room-section">
+      <div className="room-section-title-row">
+        <div className="room-section-title">{t('rooms.sharedFiles')} · {room.files.length}</div>
+        <div className="room-section-title-actions">
+          <button
+            type="button"
+            className="room-newfolder-btn"
+            title={t('rooms.requestFile')}
+            onClick={() => setRequesting((v) => !v)}
+          >
+            <Icon name="help-circle" size={13} /> {t('rooms.requestFile')}
+          </button>
+          <button
+            type="button"
+            className="room-newfolder-btn"
+            title={t('rooms.folder.new')}
+            onClick={() => { setEditFolderId(null); setNewFolderOpen((v) => !v); }}
+          >
+            <Icon name="plus" size={13} /> {t('rooms.folder.new')}
+          </button>
+          <div className="room-autofetch" title={t('rooms.autoFetchHint')}>
+            <Toggle size="small" checked={room.autoFetch} onChange={onToggleAutoFetch} label={t('rooms.autoFetch')} />
+          </div>
+        </div>
+      </div>
+
+      {room.files.length > 5 && (
+        <div className="room-file-search">
+          <Icon name="search" size={13} />
+          <input
+            type="text"
+            placeholder={t('rooms.fileSearch')}
+            value={fileQuery}
+            onChange={(e) => setFileQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Escape') setFileQuery(''); }}
+          />
+        </div>
+      )}
+
+      {room.files.length > 1 && !selecting && (
+        <div className="room-file-toolbar">
+          <select className="room-file-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as typeof sortKey)} title={t('rooms.sort.label')} aria-label={t('rooms.sort.label')}>
+            <option value="added">{t('rooms.sort.added')}</option>
+            <option value="name">{t('rooms.sort.name')}</option>
+            <option value="size">{t('rooms.sort.size')}</option>
+            <option value="status">{t('rooms.sort.status')}</option>
+          </select>
+          <select className="room-file-select" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)} aria-label={t('rooms.filter.all')}>
+            <option value="all">{t('rooms.filter.all')}</option>
+            <option value="video">{t('rooms.filter.video')}</option>
+            <option value="audio">{t('rooms.filter.audio')}</option>
+            <option value="other">{t('rooms.filter.other')}</option>
+          </select>
+          <button type="button" className="room-file-select-btn" onClick={() => setSelecting(true)}>
+            <Icon name="check-circle" size={13} /> {t('rooms.select')}
+          </button>
+        </div>
+      )}
+
+      {selecting && (
+        <div className="room-file-bulkbar">
+          <span className="room-file-bulk-count">{t('rooms.selectedCount').replace('{n}', String(selected.size))}</span>
+          <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set(visibleFiles.map((f) => f.fileId)))}>{t('rooms.selectAll')}</button>
+          <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set())}>{t('rooms.clearSelection')}</button>
+          <button
+            type="button" className="room-file-bulk-del" disabled={selected.size === 0}
+            onClick={async () => {
+              const ids = Array.from(selected);
+              if (!ids.length) return;
+              if (!(await confirm({ message: t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length)), danger: true }))) return;
+              window.api.rooms.removeFiles(room.roomId, ids).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+              setSelected(new Set()); setSelecting(false);
+            }}
+          >
+            <Icon name="trash" size={13} /> {t('rooms.deleteSelected')}
+          </button>
+          <button type="button" className="room-file-select-btn" onClick={() => { setSelecting(false); setSelected(new Set()); }}>{t('rooms.selectDone')}</button>
+        </div>
+      )}
+
+      {requesting && (
+        <div className="room-request-row">
+          <Icon name="help-circle" size={14} />
+          <input
+            type="text" autoFocus placeholder={t('rooms.requestPlaceholder')} value={requestDraft}
+            onChange={(e) => setRequestDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submitRequest(); if (e.key === 'Escape') { setRequesting(false); setRequestDraft(''); } }}
+          />
+          <Button variant="primary" size="sm" onClick={submitRequest} disabled={!requestDraft.trim()}>{t('rooms.requestFile')}</Button>
+        </div>
+      )}
+
+      {newFolderOpen && (
+        <RoomFolderEditor
+          onSubmit={(name, icon, color) => { setNewFolderOpen(false); onCreateFolder(name, icon, color); }}
+          onCancel={() => setNewFolderOpen(false)}
+        />
+      )}
+
+      <div className="room-files-scroll">
+      {!hasFolders ? (
+        room.files.length === 0 ? (
+          <div className="room-files-empty">{t('rooms.noFiles')}</div>
+        ) : visibleFiles.length === 0 ? (
+          <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
+        ) : (
+          <div className="room-files">{renderFolderFiles(visibleFiles)}</div>
+        )
+      ) : grouped.length === 0 ? (
+        <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
+      ) : (
+        <div className="room-folder-list">
+          {grouped.map((g) => {
+            const key = g.folder?.id ?? 'uncategorized';
+            const editing = !!g.folder && editFolderId === g.folder.id;
+            return (
+              <div key={key} className={`room-folder-section${dragOverKey === key ? ' dragover' : ''}`} {...sectionDropProps(g.folder?.id ?? null, key)}>
+                {editing && g.folder ? (
+                  <RoomFolderEditor
+                    initial={{ name: g.folder.name, icon: g.folder.icon, color: g.folder.color }}
+                    onSubmit={(name, icon, color) => { setEditFolderId(null); onUpdateFolder(g.folder!.id, { name, icon, color }); }}
+                    onCancel={() => setEditFolderId(null)}
+                  />
+                ) : (
+                  <div className="room-folder-header">
+                    <span className="room-folder-label">
+                      <FolderIcon folder={g.folder} />
+                      <span className="room-folder-title">{g.folder ? g.folder.name : t('rooms.folder.uncategorized')}</span>
+                      <span className="room-folder-count">{g.files.length}</span>
+                    </span>
+                    <span className="room-folder-acts">
+                      <button className="room-folder-act" title={t('rooms.folder.addHere')} onClick={() => onAddFiles(g.folder?.id)}>
+                        <Icon name="file-plus" size={13} />
+                      </button>
+                      {g.folder && (
+                        <>
+                          <button className="room-folder-act" title={t('rooms.folder.rename')} onClick={() => { setNewFolderOpen(false); setEditFolderId(g.folder!.id); }}>
+                            <Icon name="edit-2" size={13} />
+                          </button>
+                          <button
+                            className="room-folder-act danger"
+                            title={t('rooms.folder.delete')}
+                            onClick={async () => {
+                              if (g.files.length === 0 || await confirm({ message: t('rooms.folder.deleteConfirm'), danger: true })) onDeleteFolder(g.folder!.id);
+                            }}
+                          >
+                            <Icon name="trash" size={13} />
+                          </button>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                )}
+                {g.files.length > 0 ? (
+                  <div className="room-files">{renderFolderFiles(g.files)}</div>
+                ) : !editing ? (
+                  <div className="room-folder-empty">{t('rooms.folder.empty')}</div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      </div>
+
+      <div className="room-files-actions">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="room-add-files"
+          disabled={busy}
+          onClick={() => setPickTransfer(true)}
+          icon={<Icon name="download" size={14} />}
+        >
+          {t('rooms.fromTransfers')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="room-add-files"
+          onClick={() => onAddFiles()}
+          loading={busy}
+          icon={<Icon name="file-plus" size={14} />}
+        >
+          {t('rooms.addFiles')}
+        </Button>
+
+        <div className="room-limits" title={t('rooms.limitsHint')}>
+          <Icon name="gauge" size={13} />
+          <label className="room-limit">
+            ↑
+            <input
+              type="number"
+              min={0}
+              placeholder="∞"
+              value={upDraft}
+              onChange={(e) => setUpDraft(e.target.value)}
+              onBlur={commitLimits}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              aria-label={`${t('rooms.limits')} ↑ ${t('rooms.kbps')}`}
+            />
+            {t('rooms.kbps')}
+          </label>
+          <label className="room-limit">
+            ↓
+            <input
+              type="number"
+              min={0}
+              placeholder="∞"
+              value={downDraft}
+              onChange={(e) => setDownDraft(e.target.value)}
+              onBlur={commitLimits}
+              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+              aria-label={`${t('rooms.limits')} ↓ ${t('rooms.kbps')}`}
+            />
+            {t('rooms.kbps')}
+          </label>
+        </div>
+      </div>
+
+      {pickTransfer && (
+        <TransferPickerModal
+          roomId={room.roomId}
+          onClose={() => setPickTransfer(false)}
+          onShared={onShared}
+        />
+      )}
+    </div>
+  );
+};
+
+// ── People rail (left region: voice on top, members below) ────────────────
+const RoomPeopleRail: React.FC<{ room: RoomState; onWatchShare: (memberId: string) => void }> = ({ room, onWatchShare }) => {
+  const { t } = useTranslation();
+  const online = room.members.filter((m) => m.online);
+  return (
+    <div className="room-col-rail">
+      <RoomVoicePanel room={room} onWatchShare={onWatchShare} />
+      <div className="room-rail-people">
+        <div className="room-rail-people-head">
+          <span className="room-section-title">{t('rooms.people')}</span>
+          <span className="room-chat-online">{online.length}/{room.members.length}</span>
+        </div>
+        <div className="room-rail-people-list">
+          <RoomMembersList room={room} />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ── Stage (center region: files by default; inline watch / screen viewer) ──
+interface StageProps {
+  room: RoomState;
+  stageView: StageView;
+  onCloseStage: () => void;
+  onWatch: (file: RoomFile) => void;
+  onAddFiles: (folderId?: string) => void;
+  onCreateFolder: (name: string, icon: string, color: string) => void;
+  onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string }) => void;
+  onDeleteFolder: (folderId: string) => void;
+  onAssignFile: (fileId: string, folderId: string | null) => void;
+  onShared: (state: RoomState) => void;
+  onToggleAutoFetch: (autoFetch: boolean) => void;
+  onSetLimits: (upKbps: number, downKbps: number) => void;
+  busy: boolean;
+}
+const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatch, onAddFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+  const { t } = useTranslation();
+  const self = room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' };
+  const shareName = stageView.kind === 'screen'
+    ? (() => { const m = room.members.find((mm) => mm.memberId === stageView.memberId); return m?.isSelf ? t('rooms.you') : (m?.name || '?'); })()
+    : '';
+  const tabs = [{ id: 'files', label: t('rooms.stage.files'), icon: <Icon name="folder-open" size={13} /> }];
+  if (stageView.kind === 'watch') tabs.push({ id: 'watch', label: stageView.file.name, icon: <Icon name="film" size={13} /> });
+  if (stageView.kind === 'screen') tabs.push({ id: 'screen', label: shareName, icon: <Icon name="screen-share" size={13} /> });
+  return (
+    <div className="room-col-stage">
+      {tabs.length > 1 && (
+        <Tabs tabs={tabs} activeTab={stageView.kind} onTabChange={(id) => { if (id === 'files') onCloseStage(); }} />
+      )}
+      {/* Conditional render (never display:none) so the player/viewer unmounts on
+          tab switch and fires its presence leave / watchStop cleanup. */}
+      {stageView.kind === 'watch' ? (
+        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} onClose={onCloseStage} />
+      ) : stageView.kind === 'screen' ? (
+        <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
+      ) : (
+        <RoomFilesPanel
+          room={room} onWatch={onWatch} onAddFiles={onAddFiles} onCreateFolder={onCreateFolder}
+          onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
+          onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} onSetLimits={onSetLimits} busy={busy}
+        />
+      )}
+    </div>
+  );
+};
+
+// ── Room detail panel ─────────────────────────────────────────────────────
+interface DetailProps {
+  room: RoomState;
+  /** Open the OS file picker; folderId assigns the added files to that section. */
+  onAddFiles: (folderId?: string) => void;
+  /** Files were dropped onto the room — absolute paths, already resolved. */
+  onDropFiles: (paths: string[], folderId?: string) => void;
+  onCreateFolder: (name: string, icon: string, color: string) => void;
+  onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string }) => void;
+  onDeleteFolder: (folderId: string) => void;
+  onAssignFile: (fileId: string, folderId: string | null) => void;
+  onOpenFolder: () => void;
+  onInvite: () => void;
+  onLeave: () => void;
+  onCopyCode: () => void;
+  /** A transfer was shared into this room — apply the returned state. */
+  onShared: (state: RoomState) => void;
+  /** Flip the room's auto-download preference. */
+  onToggleAutoFetch: (autoFetch: boolean) => void;
+  /** Set the room's speed ceilings (KB/s, 0 = unlimited). */
+  onSetLimits: (upKbps: number, downKbps: number) => void;
+  busy: boolean;
+}
+
+const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+  const { t } = useTranslation();
+  // Drag & drop files into the room. The depth counter survives child
+  // enter/leave churn; internalDrag suppresses drags that started on this page
+  // (text selections etc.) so only OS file drags light the overlay. The OS drop
+  // target is the whole container, so this stays here (not in the files panel).
+  const [dropping, setDropping] = useState(false);
+  const dragDepth = useRef(0);
+  const internalDrag = useRef(false);
+  const isFileDrag = (e: React.DragEvent) =>
+    !internalDrag.current && !room.kicked && Array.from(e.dataTransfer?.types || []).includes('Files');
+  const handleDrop = (e: React.DragEvent) => {
+    internalDrag.current = false;
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDropping(false);
+    const paths = Array.from(e.dataTransfer.files)
+      .map((f) => { try { return window.api.getPathForFile(f); } catch { return ''; } })
+      .filter(Boolean);
+    if (paths.length === 0) { toast.error(t('create.dropReadError')); return; }
+    onDropFiles(paths);
+  };
+  // Owner-only inline room rename (the engine gates + signs + gossips it).
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState(room.name);
+  useEffect(() => { setRenaming(false); setNameDraft(room.name); }, [room.roomId, room.name]);
+  const submitRename = () => {
+    const n = nameDraft.trim();
+    setRenaming(false);
+    if (n && n !== room.name) window.api.rooms.rename(room.roomId, n).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+  };
+  // Activity log lives in its own modal (opened from the title bar).
+  const [showActivity, setShowActivity] = useState(false);
+  // The Stage shows Files by default and swaps to the inline watch player or
+  // screen viewer. Single-slot: opening one supersedes the other. Both the file-row
+  // Watch and the voice LIVE-badge feed this.
+  const [stageView, setStageView] = useState<StageView>({ kind: 'files' });
+  // Reset to Files SYNCHRONOUSLY when the open room changes (adjust-state-during-
+  // render, not a post-commit effect) — otherwise RoomStage would render the player/
+  // viewer for one frame against the NEW room but the PREVIOUS room's file/memberId
+  // (a cross-room presence broadcast / bad watchFile).
+  const [stageRoomId, setStageRoomId] = useState(room.roomId);
+  if (stageRoomId !== room.roomId) {
+    setStageRoomId(room.roomId);
+    setStageView({ kind: 'files' });
+  }
+  // Close the inline screen viewer when its sharer stops or we leave voice
+  // (lifted from the voice panel so the Stage owns the view).
+  useEffect(() => {
+    if (stageView.kind !== 'screen') return;
+    const v = room.voice;
+    const still = v.inVoice && !!v.participants.find((p) => p.memberId === stageView.memberId)?.sharing;
+    if (!still) setStageView({ kind: 'files' });
+  }, [stageView, room.voice]);
+
+  // Draggable three-region widths (persisted). The Stage (center) flexes; the rail
+  // and chat are set via CSS vars so the narrow-mode @container rule (which sets the
+  // grid-template-columns PROPERTY) still wins and stacks the columns.
+  const [layout, setLayout] = useState(loadRoomLayout);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const dragRef = useRef<null | { edge: 'rail' | 'chat'; startX: number; startW: number }>(null);
+  const onSplitDown = (edge: 'rail' | 'chat') => (e: React.PointerEvent) => {
+    e.preventDefault();
+    try { (e.target as HTMLElement).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    dragRef.current = { edge, startX: e.clientX, startW: edge === 'rail' ? layout.railW : layout.chatW };
+  };
+  const onSplitMove = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    if (d.edge === 'rail') {
+      const w = Math.max(RAIL_MIN, Math.min(RAIL_MAX, d.startW + dx));
+      setLayout((l) => ({ ...l, railW: w }));
+    } else {
+      const w = Math.max(CHAT_MIN, Math.min(CHAT_MAX, d.startW - dx)); // chat grows dragging left
+      setLayout((l) => ({ ...l, chatW: w }));
+    }
+  };
+  const onSplitUp = (e: React.PointerEvent) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    setLayout((l) => { saveRoomLayout(l); return l; });
+  };
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
   const connState = room.kicked ? 'removed' : !room.connected ? 'connecting' : room.peerCount > 0 ? 'online' : 'alone';
@@ -844,245 +1206,36 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
         </div>
       )}
 
-      {/* Two-column concept layout: files + activity | who's here + chat */}
-      <div className="room-detail-grid">
-        <div className="room-col-main">
-          {/* Files */}
-          <div className="room-section">
-            <div className="room-section-title-row">
-              <div className="room-section-title">{t('rooms.sharedFiles')} · {room.files.length}</div>
-              <div className="room-section-title-actions">
-                <button
-                  type="button"
-                  className="room-newfolder-btn"
-                  title={t('rooms.requestFile')}
-                  onClick={() => setRequesting((v) => !v)}
-                >
-                  <Icon name="help-circle" size={13} /> {t('rooms.requestFile')}
-                </button>
-                <button
-                  type="button"
-                  className="room-newfolder-btn"
-                  title={t('rooms.folder.new')}
-                  onClick={() => { setEditFolderId(null); setNewFolderOpen((v) => !v); }}
-                >
-                  <Icon name="plus" size={13} /> {t('rooms.folder.new')}
-                </button>
-                <div className="room-autofetch" title={t('rooms.autoFetchHint')}>
-                  <Toggle size="small" checked={room.autoFetch} onChange={onToggleAutoFetch} label={t('rooms.autoFetch')} />
-                </div>
-              </div>
-            </div>
-
-            {room.files.length > 5 && (
-              <div className="room-file-search">
-                <Icon name="search" size={13} />
-                <input
-                  type="text"
-                  placeholder={t('rooms.fileSearch')}
-                  value={fileQuery}
-                  onChange={(e) => setFileQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Escape') setFileQuery(''); }}
-                />
-              </div>
-            )}
-
-            {room.files.length > 1 && !selecting && (
-              <div className="room-file-toolbar">
-                <select className="room-file-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as typeof sortKey)} title={t('rooms.sort.label')} aria-label={t('rooms.sort.label')}>
-                  <option value="added">{t('rooms.sort.added')}</option>
-                  <option value="name">{t('rooms.sort.name')}</option>
-                  <option value="size">{t('rooms.sort.size')}</option>
-                  <option value="status">{t('rooms.sort.status')}</option>
-                </select>
-                <select className="room-file-select" value={typeFilter} onChange={(e) => setTypeFilter(e.target.value as typeof typeFilter)} aria-label={t('rooms.filter.all')}>
-                  <option value="all">{t('rooms.filter.all')}</option>
-                  <option value="video">{t('rooms.filter.video')}</option>
-                  <option value="audio">{t('rooms.filter.audio')}</option>
-                  <option value="other">{t('rooms.filter.other')}</option>
-                </select>
-                <button type="button" className="room-file-select-btn" onClick={() => setSelecting(true)}>
-                  <Icon name="check-circle" size={13} /> {t('rooms.select')}
-                </button>
-              </div>
-            )}
-
-            {selecting && (
-              <div className="room-file-bulkbar">
-                <span className="room-file-bulk-count">{t('rooms.selectedCount').replace('{n}', String(selected.size))}</span>
-                <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set(visibleFiles.map((f) => f.fileId)))}>{t('rooms.selectAll')}</button>
-                <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set())}>{t('rooms.clearSelection')}</button>
-                <button
-                  type="button" className="room-file-bulk-del" disabled={selected.size === 0}
-                  onClick={async () => {
-                    const ids = Array.from(selected);
-                    if (!ids.length) return;
-                    if (!(await confirm({ message: t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length)), danger: true }))) return;
-                    window.api.rooms.removeFiles(room.roomId, ids).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-                    setSelected(new Set()); setSelecting(false);
-                  }}
-                >
-                  <Icon name="trash" size={13} /> {t('rooms.deleteSelected')}
-                </button>
-                <button type="button" className="room-file-select-btn" onClick={() => { setSelecting(false); setSelected(new Set()); }}>{t('rooms.selectDone')}</button>
-              </div>
-            )}
-
-            {requesting && (
-              <div className="room-request-row">
-                <Icon name="help-circle" size={14} />
-                <input
-                  type="text" autoFocus placeholder={t('rooms.requestPlaceholder')} value={requestDraft}
-                  onChange={(e) => setRequestDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') submitRequest(); if (e.key === 'Escape') { setRequesting(false); setRequestDraft(''); } }}
-                />
-                <Button variant="primary" size="sm" onClick={submitRequest} disabled={!requestDraft.trim()}>{t('rooms.requestFile')}</Button>
-              </div>
-            )}
-
-            {newFolderOpen && (
-              <RoomFolderEditor
-                onSubmit={(name, icon, color) => { setNewFolderOpen(false); onCreateFolder(name, icon, color); }}
-                onCancel={() => setNewFolderOpen(false)}
-              />
-            )}
-
-            <div className="room-files-scroll">
-            {!hasFolders ? (
-              room.files.length === 0 ? (
-                <div className="room-files-empty">{t('rooms.noFiles')}</div>
-              ) : visibleFiles.length === 0 ? (
-                <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
-              ) : (
-                <div className="room-files">{renderFolderFiles(visibleFiles)}</div>
-              )
-            ) : grouped.length === 0 ? (
-              <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
-            ) : (
-              <div className="room-folder-list">
-                {grouped.map((g) => {
-                  const key = g.folder?.id ?? 'uncategorized';
-                  const editing = !!g.folder && editFolderId === g.folder.id;
-                  return (
-                    <div key={key} className={`room-folder-section${dragOverKey === key ? ' dragover' : ''}`} {...sectionDropProps(g.folder?.id ?? null, key)}>
-                      {editing && g.folder ? (
-                        <RoomFolderEditor
-                          initial={{ name: g.folder.name, icon: g.folder.icon, color: g.folder.color }}
-                          onSubmit={(name, icon, color) => { setEditFolderId(null); onUpdateFolder(g.folder!.id, { name, icon, color }); }}
-                          onCancel={() => setEditFolderId(null)}
-                        />
-                      ) : (
-                        <div className="room-folder-header">
-                          <span className="room-folder-label">
-                            <FolderIcon folder={g.folder} />
-                            <span className="room-folder-title">{g.folder ? g.folder.name : t('rooms.folder.uncategorized')}</span>
-                            <span className="room-folder-count">{g.files.length}</span>
-                          </span>
-                          <span className="room-folder-acts">
-                            <button className="room-folder-act" title={t('rooms.folder.addHere')} onClick={() => onAddFiles(g.folder?.id)}>
-                              <Icon name="file-plus" size={13} />
-                            </button>
-                            {g.folder && (
-                              <>
-                                <button className="room-folder-act" title={t('rooms.folder.rename')} onClick={() => { setNewFolderOpen(false); setEditFolderId(g.folder!.id); }}>
-                                  <Icon name="edit-2" size={13} />
-                                </button>
-                                <button
-                                  className="room-folder-act danger"
-                                  title={t('rooms.folder.delete')}
-                                  onClick={async () => {
-                                    if (g.files.length === 0 || await confirm({ message: t('rooms.folder.deleteConfirm'), danger: true })) onDeleteFolder(g.folder!.id);
-                                  }}
-                                >
-                                  <Icon name="trash" size={13} />
-                                </button>
-                              </>
-                            )}
-                          </span>
-                        </div>
-                      )}
-                      {g.files.length > 0 ? (
-                        <div className="room-files">{renderFolderFiles(g.files)}</div>
-                      ) : !editing ? (
-                        <div className="room-folder-empty">{t('rooms.folder.empty')}</div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            </div>
-
-            <div className="room-files-actions">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="room-add-files"
-                disabled={busy}
-                onClick={() => setPickTransfer(true)}
-                icon={<Icon name="download" size={14} />}
-              >
-                {t('rooms.fromTransfers')}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="room-add-files"
-                onClick={() => onAddFiles()}
-                loading={busy}
-                icon={<Icon name="file-plus" size={14} />}
-              >
-                {t('rooms.addFiles')}
-              </Button>
-
-              <div className="room-limits" title={t('rooms.limitsHint')}>
-                <Icon name="gauge" size={13} />
-                <label className="room-limit">
-                  ↑
-                  <input
-                    type="number"
-                    min={0}
-                    placeholder="∞"
-                    value={upDraft}
-                    onChange={(e) => setUpDraft(e.target.value)}
-                    onBlur={commitLimits}
-                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                    aria-label={`${t('rooms.limits')} ↑ ${t('rooms.kbps')}`}
-                  />
-                  {t('rooms.kbps')}
-                </label>
-                <label className="room-limit">
-                  ↓
-                  <input
-                    type="number"
-                    min={0}
-                    placeholder="∞"
-                    value={downDraft}
-                    onChange={(e) => setDownDraft(e.target.value)}
-                    onBlur={commitLimits}
-                    onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                    aria-label={`${t('rooms.limits')} ↓ ${t('rooms.kbps')}`}
-                  />
-                  {t('rooms.kbps')}
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="room-col-side">
-          {/* Chat card — the members list lives in a collapsible strip in its header */}
-          <RoomChat room={room} withMembers />
-        </div>
-      </div>
-
-      {pickTransfer && (
-        <TransferPickerModal
-          roomId={room.roomId}
-          onClose={() => setPickTransfer(false)}
-          onShared={onShared}
+      {/* Three-region layout: People+Voice rail | Stage (files/watch/screen) | Chat.
+          Rail/chat widths are draggable (set as CSS vars so the narrow-mode
+          @container rule, which sets the grid-template-columns PROPERTY, still wins). */}
+      <div
+        className={`room-detail-grid${railCollapsed ? ' rail-collapsed' : ''}`}
+        style={{ '--rail-w': `${railCollapsed ? 0 : layout.railW}px`, '--chat-w': `${layout.chatW}px` } as React.CSSProperties}
+      >
+        <RoomPeopleRail room={room} onWatchShare={(id) => setStageView({ kind: 'screen', memberId: id })} />
+        <div
+          className="room-splitter"
+          role="separator" aria-orientation="vertical" title={t('rooms.resize')}
+          onPointerDown={onSplitDown('rail')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
+          onDoubleClick={() => setRailCollapsed((c) => !c)}
         />
-      )}
+        <RoomStage
+          room={room}
+          stageView={stageView}
+          onCloseStage={() => setStageView({ kind: 'files' })}
+          onWatch={(file) => setStageView({ kind: 'watch', file })}
+          onAddFiles={onAddFiles} onCreateFolder={onCreateFolder} onUpdateFolder={onUpdateFolder}
+          onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile} onShared={onShared}
+          onToggleAutoFetch={onToggleAutoFetch} onSetLimits={onSetLimits} busy={busy}
+        />
+        <div
+          className="room-splitter"
+          role="separator" aria-orientation="vertical" title={t('rooms.resize')}
+          onPointerDown={onSplitDown('chat')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
+        />
+        <RoomChat room={room} />
+      </div>
 
       {showActivity && (
         <Modal title={t('rooms.history')} icon="activity" size="lg" onClose={() => setShowActivity(false)}>
@@ -1135,7 +1288,7 @@ const isTypingTarget = (e: KeyboardEvent): boolean => {
 // Serverless mesh voice channel: a live roster (glowing ring while talking), self
 // mute/deafen/leave, mic-live indicator, input-mode + push-to-talk settings, and
 // per-participant volume.
-const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
+const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: string) => void }> = ({ room, onWatchShare }) => {
   const { t } = useTranslation();
   const roomId = room.roomId;
   const v = room.voice;
@@ -1145,7 +1298,6 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
   const [vols, setVols] = useState<Record<string, number>>({}); // remembered per-peer volume (engine doesn't echo it back)
   const [prefs, setPrefs] = useState(loadVoicePrefs);
   const [pickerOpen, setPickerOpen] = useState(false);        // screenshare source picker
-  const [watching, setWatching] = useState<string | null>(null); // whose share the overlay is viewing (self = preview)
   const memberOf = (id: string) => room.members.find((m) => m.memberId === id);
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
   const nameOf = (id: string) => (id === selfId ? t('rooms.you') : (memberOf(id)?.name || '?'));
@@ -1236,14 +1388,6 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
     if (res?.warning) toast(res.warning, { icon: '⚠️' });
   });
 
-  // Close the viewing overlay when its sharer stops (the engine also sends a
-  // loopback 'end' — this covers a state-push that beats it) or when we leave voice.
-  useEffect(() => {
-    if (!watching) return;
-    const still = v.inVoice && !!v.participants.find((p) => p.memberId === watching)?.sharing;
-    if (!still) setWatching(null);
-  }, [watching, v.inVoice, v.participants]);
-
   const toggleShare = () => {
     if (v.sharing) window.api.rooms.screen.shareStop(roomId).catch(fail);
     else setPickerOpen(true);
@@ -1292,14 +1436,6 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
 
       {settingsOpen && <VoiceSettingsModal onClose={() => setSettingsOpen(false)} />}
       {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} />}
-      {watching && (
-        <ScreenViewOverlay
-          roomId={roomId}
-          memberId={watching}
-          title={nameOf(watching)}
-          onClose={() => setWatching(null)}
-        />
-      )}
 
       {v.participants.length > 0 && (
         <div className="room-voice-people">
@@ -1320,7 +1456,7 @@ const RoomVoicePanel: React.FC<{ room: RoomState }> = ({ room }) => {
                 {p.sharing && (
                   <button
                     className="room-voice-share-badge"
-                    onClick={() => setWatching(p.memberId)}
+                    onClick={() => onWatchShare(p.memberId)}
                     title={self ? t('rooms.screen.preview') : t('rooms.screen.watch')}
                   >
                     <Icon name="screen-share" size={9} /> {t('rooms.screen.live')}
@@ -1401,15 +1537,12 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
 };
 
 // ── Room chat panel ───────────────────────────────────────────────────────
-// `withMembers` (detail page) turns the card into the dominant side-column
-// element: header with an overlapping-avatar member strip that toggles a
-// collapsible members panel, then the log filling the remaining height.
-// Without it (floating player) the compact title-only layout is preserved.
-const RoomChat: React.FC<{ room: RoomState; withMembers?: boolean }> = ({ room, withMembers }) => {
+// Pure text chat — the room's persistent right region. People + voice live in the
+// left rail (RoomPeopleRail); this card is just log + typing indicator + composer.
+const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const [membersOpen, setMembersOpen] = useState(false);
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
   const messages = room.chat || [];
   const listRef = useRef<HTMLDivElement>(null);
@@ -1456,46 +1589,9 @@ const RoomChat: React.FC<{ room: RoomState; withMembers?: boolean }> = ({ room, 
     finally { setSending(false); }
   };
 
-  // Member strip: online members first (max 6 avatars + "+N" spillover).
-  const online = room.members.filter((m) => m.online);
-  const strip = online.slice(0, 6);
-  const stripExtra = online.length - strip.length;
-
   return (
-    <div className={`room-section${withMembers ? ' room-chat-section' : ''}`}>
-      {withMembers ? (
-        <>
-          <div className="room-chat-head">
-            <div className="room-section-title">{t('rooms.chat')}</div>
-            <button
-              type="button"
-              className={`room-chat-members-toggle${membersOpen ? ' open' : ''}`}
-              aria-expanded={membersOpen}
-              title={membersOpen ? t('rooms.hideMembers') : t('rooms.showMembers')}
-              onClick={() => setMembersOpen((v) => !v)}
-            >
-              <span className="room-avatar-strip">
-                {strip.map((m) => (
-                  <span key={m.memberId} className="room-avatar-strip-item">
-                    <Identicon seed={m.avatarSeed} size={22} />
-                  </span>
-                ))}
-                {stripExtra > 0 && <span className="room-avatar-strip-item room-avatar-more">+{stripExtra}</span>}
-              </span>
-              <span className="room-chat-online">{online.length}/{room.members.length}</span>
-              <Icon name="chevron-down" size={14} className="room-chat-members-chevron" />
-            </button>
-          </div>
-          <div className={`room-members-collapse${membersOpen ? ' open' : ''}`} aria-hidden={!membersOpen}>
-            <div className="room-members-collapse-inner">
-              <RoomMembersList room={room} />
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="room-section-title">{t('rooms.chat')}</div>
-      )}
-      <RoomVoicePanel room={room} />
+    <div className="room-section room-chat-section">
+      <div className="room-section-title">{t('rooms.chat')}</div>
       <div className="room-chat">
         <div className="room-chat-log" ref={listRef}>
           {messages.length === 0 ? (
@@ -2117,8 +2213,8 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   };
 
   return (
-    <div className="room-player-backdrop" onClick={onClose}>
-      <div className="room-player" onClick={(e) => e.stopPropagation()}>
+    <div className="room-player-inline">
+      <div className="room-player">
         <div className="room-player-top">
           <span className="room-player-name" title={current.name}>{current.name}</span>
           <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
@@ -2208,7 +2304,6 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
               </div>
               {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
             </div>
-            <div className="room-player-chat"><RoomChat room={room} /></div>
           </aside>
         </div>
       </div>
