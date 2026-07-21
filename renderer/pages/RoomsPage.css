@@ -1072,6 +1072,81 @@
 .room-zone-search + .room-zone-popout { margin-left: 0; }
 .room-zone-search.active { color: var(--color-accent-primary); }
 
+/* Chat-message reactions: pills under the bubble + a hover "+" palette. */
+.room-chat-reacts {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  min-height: 0;
+}
+.room-chat-msg.mine .room-chat-reacts { justify-content: flex-end; }
+.room-chat-react {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.room-chat-react.mine { border-color: var(--color-accent-primary); background: color-mix(in srgb, var(--color-accent-primary) 14%, transparent); }
+.room-chat-react-n { font-size: 10px; font-weight: 600; color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+/* The "+" trigger floats over the message (absolute — zero layout height). */
+.room-chat-msg { position: relative; }
+.room-chat-react-add {
+  position: absolute;
+  top: -6px;
+  right: 0;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.room-chat-msg.mine .room-chat-react-add { right: auto; left: 0; }
+.room-chat-msg:hover .room-chat-react-add,
+.room-chat-react-add:focus-visible { opacity: 1; }
+@media (hover: none) { .room-chat-react-add { opacity: 1; } }
+.room-chat-react-add:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+/* Position comes inline (fixed, portaled to the document body — the log clips
+   overflow and the chat column can be as narrow as 260px). */
+.room-chat-react-pop {
+  z-index: 1000;
+  display: flex;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+.room-chat-react-opt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 14px;
+  cursor: pointer;
+}
+.room-chat-react-opt:hover { background: var(--color-bg-hover); }
+
 /* Your name mentioned in a message. */
 .room-chat-mention {
   background: color-mix(in srgb, var(--color-accent-primary) 25%, transparent);
@@ -2163,6 +2238,10 @@
   accent-color: var(--color-accent-primary);
   cursor: pointer;
 }
+
+/* Status glyphs on a voice tile sit in ONE inline row (the tile is a narrow
+   flex column — bare siblings would stack vertically). */
+.room-voice-picons { display: inline-flex; align-items: center; gap: 2px; }
 
 /* Per-peer popover for a voice tile: local mute + persistent volume. Rendered
    ONCE under the whole tile row at full rail width — the rail clips overflow,

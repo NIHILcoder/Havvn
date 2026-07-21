@@ -247,6 +247,7 @@ export interface RoomState {
   kickedBy?: string;     // display name of who removed us
   typingMemberIds?: string[]; // members composing a chat message right now (self excluded, ~4s TTL)
   fileReacts?: Record<string, Record<string, string[]>>; // fileId → emoji → reacting memberIds
+  chatReacts?: Record<string, Record<string, string[]>>; // chat msgId → emoji → reacting memberIds
   memberProg?: Record<string, Record<string, number>>;   // memberId → fileId → coarse download % (0-100; a member's 'have' implies 100)
   voice: RoomVoiceState; // serverless mesh voice channel state (who's in the call, who's talking)
   /** Per-folder auto-fetch overrides (local pref): folderId → forced on/off;
@@ -1153,6 +1154,7 @@ export interface IpcApi {
     sendChat: (roomId: string, text: string) => Promise<{ ok: boolean }>;
     typing: (roomId: string) => void;
     reactFile: (roomId: string, fileId: string, emoji: string) => Promise<void>;
+    reactChat: (roomId: string, msgId: string, emoji: string) => Promise<void>;
     // Serverless mesh voice channel.
     voice: {
       join: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;

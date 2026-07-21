@@ -71,6 +71,8 @@ export class RoomManager {
     ipcMain.handle('rooms:typing', async (_e, roomId: string) => { this.typing(String(roomId || '')); return { ok: true }; });
     ipcMain.handle('rooms:reactFile', async (_e, roomId: string, fileId: string, emoji: string) =>
       this.reactFile(String(roomId || ''), String(fileId || ''), String(emoji || '')));
+    ipcMain.handle('rooms:reactChat', async (_e, roomId: string, msgId: string, emoji: string) =>
+      this.reactChat(String(roomId || ''), String(msgId || ''), String(emoji || '')));
   }
 
   setMainWindow(win: BrowserWindow): void { this.mainWindow = win; }
@@ -230,6 +232,9 @@ export class RoomManager {
     ipcMain.on('room-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
       try { if (payload?.roomId && payload?.reacts) db.setRoomReacts(payload.roomId, payload.reacts); } catch { /* ignore */ }
     });
+    ipcMain.on('room-chat-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
+      try { if (payload?.roomId && payload?.reacts) db.setRoomChatReacts(payload.roomId, payload.reacts); } catch { /* ignore */ }
+    });
     // The engine TOFU-bound a member's public key — persist so the binding (and
     // thus anti-impersonation) survives restarts.
     ipcMain.on('room-identity-add', (_e, payload: { roomId: string; memberId: string; pub: string }) => {
@@ -287,14 +292,19 @@ export class RoomManager {
       } catch { /* ignore */ }
     });
     // Topic changed (signed gossip / owner set / hello bootstrap) — persist it.
-    ipcMain.on('room-topic', (_e, payload: { roomId: string; text?: string; at?: number }) => {
+    ipcMain.on('room-topic', (_e, payload: { roomId: string; text?: string; at?: number; by?: string; pub?: string; sig?: string }) => {
       try {
         if (!payload?.roomId) return;
         const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
         const at = Math.min(Number(payload.at) || 0, Date.now() + 60_000); // never persist a future clock (LWW-wedge guard)
         const text = String(payload.text ?? '').slice(0, 300);
         if (r && (r.topic !== text || at > (r.topicAt ?? 0))) {
-          db.savePersistedRoom({ ...r, topic: text, ...(at ? { topicAt: at } : {}) });
+          db.savePersistedRoom({
+            ...r, topic: text, ...(at ? { topicAt: at } : {}),
+            // The signature travels with the topic so we can re-serve it in
+            // HELLOs after a restart (receivers re-verify — never trusted).
+            topicBy: String(payload.by ?? ''), topicPub: String(payload.pub ?? ''), topicSig: String(payload.sig ?? ''),
+          });
         }
       } catch { /* ignore */ }
     });
@@ -429,10 +439,14 @@ export class RoomManager {
         nameAt: persisted?.nameAt ?? 0,
         topicText: persisted?.topic ?? '',
         topicAt: persisted?.topicAt ?? 0,
+        topicMsg: persisted?.topicSig
+          ? { text: persisted.topic ?? '', at: persisted.topicAt ?? 0, by: persisted.topicBy ?? '', pub: persisted.topicPub ?? '', sig: persisted.topicSig }
+          : null,
         mutes: db.getRoomMutes(roomId),
         history: db.getRoomHistory(roomId),
         chat: db.getRoomChats(roomId),
         reacts: db.getRoomReacts(roomId),
+        chatReacts: db.getRoomChatReacts(roomId),
         identities: db.getRoomIdentities(roomId),
         e2e: e2e ?? false,
         secret: secret ?? '',
@@ -552,6 +566,7 @@ export class RoomManager {
     db.clearRoomChats(roomId);
     db.clearRoomLastRead(roomId);
     db.clearRoomReacts(roomId);
+    db.clearRoomChatReacts(roomId);
     db.clearRoomIdentities(roomId);
     try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
     // The engine's 'leave' above destroys the room's WebTorrent client, so the
@@ -1021,6 +1036,11 @@ export class RoomManager {
    *  the engine flips on/off from its current state and gossips the change). */
   async reactFile(roomId: string, fileId: string, emoji: string): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('reactFile', { roomId, fileId, emoji }, 8000);
+  }
+
+  /** Toggle our emoji reaction on a chat message (engine gossips the flip). */
+  async reactChat(roomId: string, msgId: string, emoji: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('reactChat', { roomId, msgId, emoji }, 8000);
   }
 
   /**

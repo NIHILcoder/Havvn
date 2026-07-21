@@ -303,6 +303,7 @@
   "rooms.today": "Today",
   "rooms.yesterday": "Yesterday",
   "rooms.chatSearch": "Search chat",
+  "rooms.chatReact": "React",
   "rooms.chatSearchEmpty": "No messages match",
   "rooms.request.title": "File request",
   "rooms.request.attach": "Attach a file",

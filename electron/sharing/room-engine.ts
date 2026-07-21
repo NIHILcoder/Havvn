@@ -31,6 +31,7 @@ import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoo
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon, wantAutoFetch } from '../../shared/room-folders';
 import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
 import { safeBaseName, safeDirSegment } from '../../shared/path-safety';
+import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import crypto from 'crypto';
 
 import TrackerClient from 'bittorrent-tracker';
@@ -57,6 +58,9 @@ const TYPING_MIN_INTERVAL = 2000; // min ms between OUR outgoing typing broadcas
 const PROG_STEP = 10;             // coarse progress granularity (%) — gossip only on crossing a step
 const REACTION_EMOJI = ['🔥', '👍', '❤️', '😂']; // the only file reactions accepted (whitelist)
 const REACTION_SET = new Set(REACTION_EMOJI);
+const CHAT_REACTION_EMOJI: string[] = [...CHAT_REACT_EMOJIS]; // chat-message reactions (whitelist)
+const CHAT_REACTION_SET = new Set(CHAT_REACTION_EMOJI);
+const MAX_REACT_MSGS = 200;       // chat-reaction map ceiling per room (kept + helloed)
 const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + helloed)
 
 // ── Peer-relay (gossip flooding) ──────────────────────────────────────────────
@@ -67,7 +71,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'voice-state', 'voice-signal', 'voice-share', 'profile']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -103,7 +107,7 @@ type Msg =
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicText?: string; topicAt?: number; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -159,6 +163,7 @@ type Msg =
   | { t: 'typing'; memberId: string }
   // Toggle an emoji reaction on a shared file (REACTION_EMOJI whitelist only).
   | { t: 'react-file'; memberId: string; fileId: string; emoji: string; on: boolean }
+  | { t: 'react-chat'; memberId: string; msgId: string; emoji: string; on: boolean }
   // Coarse download progress (0-100, PROG_STEP granularity) so peers see a
   // member's transfer move; completion is signalled by the normal 'have'.
   | { t: 'prog'; memberId: string; fileId: string; pct: number }
@@ -196,6 +201,7 @@ interface Room {
   nameAt: number;                        // last-writer-wins clock for the room name (owner rename)
   topicText: string;                     // owner-set room topic ('' = none)
   topicAt: number;                       // last-writer-wins clock for the topic
+  topicMsg: { text: string; at: number; by: string; pub: string; sig: string } | null; // the SIGNED topic (re-served in HELLOs)
   code: string;
   folder: string;
   key: Buffer;
@@ -233,6 +239,7 @@ interface Room {
   typing: Record<string, number>;        // memberId → last 'typing' gossip stamp (session-only)
   lastTypingSent: number;                // rate-limit for OUR outgoing typing broadcasts
   fileReacts: Map<string, Map<string, Set<string>>>; // fileId → emoji → reacting memberIds (persisted)
+  chatReacts: Map<string, Map<string, Set<string>>>; // chat msgId → emoji → reacting memberIds (persisted)
   memberProg: Map<string, Map<string, number>>;      // memberId → fileId → coarse download % (session-only)
   progSent: Map<string, number>;         // fileId → last PROG_STEP % WE gossiped (throttle)
   identities: Map<string, string>;       // memberId → Ed25519 public key (PEM), TOFU-bound
@@ -331,31 +338,37 @@ function ensureClient(room: Room): any {
 
 /** Serialize the reaction map (capped, whitelist order) for buildState, HELLOs
  *  and persistence. */
-function reactsToRecord(room: Room): Record<string, Record<string, string[]>> {
+function reactsMapToRecord(map: Map<string, Map<string, Set<string>>>, emojiList: string[], cap: number): Record<string, Record<string, string[]>> {
   const out: Record<string, Record<string, string[]>> = {};
-  let files = 0;
-  for (const [fileId, byEmoji] of room.fileReacts) {
-    if (files >= MAX_REACT_FILES) break;
+  let n = 0;
+  for (const [id, byEmoji] of map) {
+    if (n >= cap) break;
     const rec: Record<string, string[]> = {};
-    for (const emoji of REACTION_EMOJI) {
+    for (const emoji of emojiList) {
       const set = byEmoji.get(emoji);
       if (set && set.size) rec[emoji] = Array.from(set);
     }
-    if (Object.keys(rec).length) { out[fileId] = rec; files++; }
+    if (Object.keys(rec).length) { out[id] = rec; n++; }
   }
   return out;
+}
+function reactsToRecord(room: Room): Record<string, Record<string, string[]>> {
+  return reactsMapToRecord(room.fileReacts, REACTION_EMOJI, MAX_REACT_FILES);
+}
+function chatReactsToRecord(room: Room): Record<string, Record<string, string[]>> {
+  return reactsMapToRecord(room.chatReacts, CHAT_REACTION_EMOJI, MAX_REACT_MSGS);
 }
 
 /** Bound a reaction summary (peer-supplied or persisted): ≤MAX_REACT_FILES
  *  files, whitelisted emoji only, member lists deduped + capped. */
-function clampReactsRecord(rec: any): Record<string, Record<string, string[]>> {
+function clampReactsRecordIn(rec: any, emojiList: string[], cap: number): Record<string, Record<string, string[]>> {
   const out: Record<string, Record<string, string[]>> = {};
   if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return out;
-  for (const [rawId, byEmoji] of Object.entries(rec).slice(0, MAX_REACT_FILES)) {
+  for (const [rawId, byEmoji] of Object.entries(rec).slice(0, cap)) {
     const fileId = clampStr(rawId, MAX_STR);
     if (!fileId || !byEmoji || typeof byEmoji !== 'object' || Array.isArray(byEmoji)) continue;
     const inner: Record<string, string[]> = {};
-    for (const emoji of REACTION_EMOJI) {
+    for (const emoji of emojiList) {
       const members = (byEmoji as any)[emoji];
       if (!Array.isArray(members)) continue;
       const list = Array.from(new Set(members.slice(0, MAX_ARRAY).map((m: any) => clampStr(m, MAX_STR)).filter(Boolean))) as string[];
@@ -365,34 +378,43 @@ function clampReactsRecord(rec: any): Record<string, Record<string, string[]>> {
   }
   return out;
 }
+function clampReactsRecord(rec: any): Record<string, Record<string, string[]>> {
+  return clampReactsRecordIn(rec, REACTION_EMOJI, MAX_REACT_FILES);
+}
 
 /** Rehydrate a persisted (or clamped inbound) reaction record into live maps. */
-function reactsFromRecord(rec?: Record<string, Record<string, string[]>>): Map<string, Map<string, Set<string>>> {
+function reactsFromRecordIn(rec: Record<string, Record<string, string[]>> | undefined, emojiList: string[], cap: number): Map<string, Map<string, Set<string>>> {
   const map = new Map<string, Map<string, Set<string>>>();
-  for (const [fileId, byEmoji] of Object.entries(clampReactsRecord(rec))) {
+  for (const [id, byEmoji] of Object.entries(clampReactsRecordIn(rec, emojiList, cap))) {
     const inner = new Map<string, Set<string>>();
     for (const [emoji, members] of Object.entries(byEmoji)) inner.set(emoji, new Set(members));
-    map.set(fileId, inner);
+    map.set(id, inner);
   }
   return map;
+}
+function reactsFromRecord(rec?: Record<string, Record<string, string[]>>): Map<string, Map<string, Set<string>>> {
+  return reactsFromRecordIn(rec, REACTION_EMOJI, MAX_REACT_FILES);
 }
 
 /** Persist the room's reaction map via the main process (mirrors history/chat). */
 function persistReacts(room: Room): void {
   try { ipcRenderer.send('room-reacts', { roomId: room.roomId, reacts: reactsToRecord(room) }); } catch { /* ignore */ }
 }
+function persistChatReacts(room: Room): void {
+  try { ipcRenderer.send('room-chat-reacts', { roomId: room.roomId, reacts: chatReactsToRecord(room) }); } catch { /* ignore */ }
+}
 
 /** Toggle one member's emoji reaction on a file. Non-whitelisted emoji and
  *  over-cap growth are ignored. Returns true when anything actually changed —
  *  callers persist + push state on change. */
-function applyFileReact(room: Room, fileId: string, emoji: string, memberId: string, on: boolean): boolean {
-  if (!fileId || !memberId || !REACTION_SET.has(emoji)) return false;
-  let byEmoji = room.fileReacts.get(fileId);
+function applyReactIn(map: Map<string, Map<string, Set<string>>>, id: string, emoji: string, memberId: string, on: boolean, emojiSet: Set<string>, cap: number): boolean {
+  if (!id || !memberId || !emojiSet.has(emoji)) return false;
+  let byEmoji = map.get(id);
   if (on) {
     if (!byEmoji) {
-      if (room.fileReacts.size >= MAX_REACT_FILES) return false; // cap: no new files past the ceiling
+      if (map.size >= cap) return false; // cap: no new entries past the ceiling
       byEmoji = new Map();
-      room.fileReacts.set(fileId, byEmoji);
+      map.set(id, byEmoji);
     }
     let set = byEmoji.get(emoji);
     if (!set) { set = new Set(); byEmoji.set(emoji, set); }
@@ -402,9 +424,15 @@ function applyFileReact(room: Room, fileId: string, emoji: string, memberId: str
     const set = byEmoji?.get(emoji);
     if (!set || !set.delete(memberId)) return false;
     if (set.size === 0) byEmoji!.delete(emoji);
-    if (byEmoji && byEmoji.size === 0) room.fileReacts.delete(fileId);
+    if (byEmoji && byEmoji.size === 0) map.delete(id);
   }
   return true;
+}
+function applyFileReact(room: Room, fileId: string, emoji: string, memberId: string, on: boolean): boolean {
+  return applyReactIn(room.fileReacts, fileId, emoji, memberId, on, REACTION_SET, MAX_REACT_FILES);
+}
+function applyChatReact(room: Room, msgId: string, emoji: string, memberId: string, on: boolean): boolean {
+  return applyReactIn(room.chatReacts, msgId, emoji, memberId, on, CHAT_REACTION_SET, MAX_REACT_MSGS);
 }
 
 /** Union a peer's HELLO reaction summary into ours (late-join convergence).
@@ -416,6 +444,32 @@ function mergeReacts(room: Room, rec?: Record<string, Record<string, string[]>>)
     for (const [emoji, members] of Object.entries(byEmoji)) {
       for (const m of members) if (applyFileReact(room, fileId, emoji, m, true)) changed = true;
     }
+  }
+  return changed;
+}
+
+/** Union a peer's HELLO chat-reaction summary into ours (same union-only rule).
+ *  Filtered to messages we hold — unknown/pruned ids must not squat the cap. */
+function mergeChatReacts(room: Room, rec?: Record<string, Record<string, string[]>>): boolean {
+  let changed = false;
+  const known = new Set(room.chat.map((c) => c.id));
+  for (const [msgId, byEmoji] of Object.entries(clampReactsRecordIn(rec, CHAT_REACTION_EMOJI, MAX_REACT_MSGS))) {
+    if (!known.has(msgId)) continue;
+    for (const [emoji, members] of Object.entries(byEmoji)) {
+      for (const m of members) if (applyChatReact(room, msgId, emoji, m, true)) changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Drop reactions of messages that left the capped chat window (they render
+ *  nowhere and would otherwise permanently squat the reaction-map ceiling). */
+function pruneChatReacts(room: Room): boolean {
+  if (!room.chatReacts.size) return false;
+  const known = new Set(room.chat.map((c) => c.id));
+  let changed = false;
+  for (const id of Array.from(room.chatReacts.keys())) {
+    if (!known.has(id)) { room.chatReacts.delete(id); changed = true; }
   }
   return changed;
 }
@@ -530,6 +584,7 @@ function buildState(room: Room): RoomState {
     ...(room.kicked ? { kickedBy: room.kickedBy } : {}),
     typingMemberIds,
     fileReacts: reactsToRecord(room),
+    chatReacts: chatReactsToRecord(room),
     memberProg,
     voice: room.voice.getState(),
   };
@@ -602,12 +657,13 @@ function helloMsg(room: Room): Msg {
     ...(room.tombSigs.size ? { tombSigs: tombSigsToRecord(room) } : {}), // authenticated deletions (peers verify authority before applying)
     roomName: room.name, // so a joiner (who only knows the code) learns the name
     ...(room.nameAt ? { nameAt: room.nameAt } : {}), // the name's LWW clock, so a joiner won't later reject a newer rename
-    ...(room.topicAt ? { topicText: room.topicText, topicAt: room.topicAt } : {}), // topic bootstrap (same discipline)
+    ...(room.topicMsg ? { topicMsg: room.topicMsg } : {}), // the SIGNED topic — receivers re-verify
     ownerId: room.ownerId, // so joiners learn who the owner is
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
     secret: room.secret,
     ...(room.e2eCfg ? { cfg: room.e2eCfg } : {}), // owner-signed config, re-served for joiners
     ...(room.fileReacts.size ? { fileReacts: reactsToRecord(room) } : {}), // late joiners union this in
+    ...(room.chatReacts.size ? { chatReacts: chatReactsToRecord(room) } : {}),
     ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
     ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
     // How caught-up our chat is — a reconnecting peer replies with a chat-log of
@@ -812,7 +868,10 @@ function logEvent(room: Room, ev: Omit<RoomEvent, 'id' | 'at'>): void {
 function addChat(room: Room, msg: RoomChatMessage, backfill = false): void {
   if (room.chat.some((m) => m.id === msg.id)) return;
   room.chat.push(msg);
-  if (room.chat.length > 200) room.chat = room.chat.slice(-200);
+  if (room.chat.length > 200) {
+    room.chat = room.chat.slice(-200);
+    if (pruneChatReacts(room)) persistChatReacts(room); // aged-out msgs free their cap slots
+  }
   // `backfill` = historical catch-up (not live) — the main process persists + badges
   // it but does NOT fire an OS notification, so a reconnect can't detonate a toast storm.
   try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: msg, backfill }); } catch { /* ignore */ }
@@ -917,6 +976,26 @@ function renameCanonical(topic: string, m: { name: string; at: number; by: strin
 /** Bytes the owner signs over a topic change (same discipline as rename). */
 function topicCanonical(topic: string, m: { text: string; at: number; by: string }): Buffer {
   return Buffer.from(JSON.stringify(['topic', topic, m.text, m.at, m.by]), 'utf8');
+}
+
+/** Verify + apply a signed topic (live gossip or a HELLO re-serve). The HELLO
+ *  path runs the EXACT same checks — an unsigned bootstrap would let any
+ *  member plant an owner-labeled topic on rooms whose owner never set one. */
+function applySignedTopic(room: Room, m: { text?: unknown; at?: unknown; by?: unknown; pub?: unknown; sig?: unknown }): boolean {
+  const at = Number(m.at) || 0;
+  const text = String(m.text ?? '').slice(0, MAX_TOPIC).trim();
+  const by = clampStr(m.by, MAX_STR);
+  const pub = clampStr(m.pub, MAX_STR * 2);
+  const sig = clampStr(m.sig, MAX_STR * 2);
+  if (at <= room.topicAt) return false;                        // not newer — ignore
+  if (at > Date.now() + 60_000) return false;                  // no future-dated clock wedge
+  if (!room.ownerId || by !== room.ownerId) return false;      // only the owner sets the topic
+  if (!verifySignedBy(room, by, pub, sig, topicCanonical(room.topic, { text, at, by }))) return false;
+  room.topicText = text;
+  room.topicAt = at;
+  room.topicMsg = { text, at, by, pub, sig };
+  try { ipcRenderer.send('room-topic', { roomId: room.roomId, text, at, by, pub, sig }); } catch { /* ignore */ }
+  return true;
 }
 /** Bytes a member signs over a voice presence announcement. `at` is bound in so a
  *  replayed (older) presence can't resurrect a departed member or flip their mute. */
@@ -1183,6 +1262,7 @@ function clampGossip(msg: any): void {
   if ('streamId' in msg) msg.streamId = clampStr(msg.streamId, MAX_STR); // voice-share stream id (msid)
   if ('sharing' in msg) msg.sharing = msg.sharing === true;
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
+  if ('msgId' in msg) msg.msgId = clampStr(msg.msgId, MAX_STR);
   if ('secret' in msg) msg.secret = clampStr(msg.secret, MAX_SECRET);
   if ('text' in msg) msg.text = clampStr(msg.text, MAX_TEXT);
   if ('emoji' in msg) msg.emoji = clampStr(msg.emoji, 16);
@@ -1324,16 +1404,11 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
         const incoming = Math.min(Number(msg.nameAt) || 0, Date.now());
         if (incoming > room.nameAt) room.nameAt = incoming;
       }
-      // Topic bootstrap mirrors the name: HELLO is unsigned, so adopt the text
-      // only when we have none yet; the clamped clock always advances so a
-      // replayed OLD signed topic can't later roll us backwards.
-      if (msg.topicAt !== undefined) {
-        const incomingTopicAt = Math.min(Number(msg.topicAt) || 0, Date.now());
-        if (room.topicAt === 0 && incomingTopicAt > 0 && typeof msg.topicText === 'string') {
-          room.topicText = String(msg.topicText).slice(0, MAX_TOPIC).trim();
-          try { ipcRenderer.send('room-topic', { roomId: room.roomId, text: room.topicText, at: incomingTopicAt }); } catch { /* ignore */ }
-        }
-        if (incomingTopicAt > room.topicAt) room.topicAt = incomingTopicAt;
+      // Topic re-serve: the SIGNED topic rides HELLOs and is verified exactly
+      // like the live 'topic' gossip (owner + LWW + clock) — never adopted on
+      // trust, so a member can't plant an owner-labeled topic.
+      if (msg.topicMsg) {
+        applySignedTopic(room, msg.topicMsg);
       }
       maybeAdoptOwner(room, msg.ownerId);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
@@ -1397,6 +1472,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (folderPlaneChanged) recheckAutoFetch(room);
       // Union the peer's reaction view into ours (late-join convergence).
       if (mergeReacts(room, msg.fileReacts)) persistReacts(room);
+      if (mergeChatReacts(room, msg.chatReacts)) persistChatReacts(room);
       // Chat backfill: if this peer is behind our chat (or hasn't said how caught-up
       // it is), UNICAST it the messages it's missing — only ones we can re-serve with
       // a signature, so they self-authenticate on its side. Only on a DIRECT hello,
@@ -1547,16 +1623,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     }
     case 'topic': {
       // Same rules as rename; an EMPTY text is legal (clears the topic).
-      const at = Number(msg.at) || 0;
-      const text = String(msg.text || '').slice(0, MAX_TOPIC).trim();
-      if (at <= room.topicAt) break;                               // not newer — ignore
-      if (at > Date.now() + 60_000) break;                         // no future-dated clock wedge
-      if (!room.ownerId || msg.by !== room.ownerId) break;         // only the owner sets the topic
-      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, topicCanonical(room.topic, { text, at, by: msg.by }))) break;
-      room.topicText = text;
-      room.topicAt = at;
-      try { ipcRenderer.send('room-topic', { roomId: room.roomId, text, at }); } catch { /* ignore */ }
-      pushState(room, true);
+      if (applySignedTopic(room, msg)) pushState(room, true);
       break;
     }
     case 'bye': {
@@ -1677,6 +1744,18 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // applyFileReact enforces the emoji whitelist + caps; anything else is a no-op.
       if (applyFileReact(room, msg.fileId, msg.emoji, msg.memberId, msg.on === true)) {
         persistReacts(room);
+        pushState(room);
+      }
+      break;
+    }
+    case 'react-chat': {
+      if (room.mutes.has(msg.memberId)) break; // a muted member's reactions stay hidden
+      // Only for messages we actually hold: fabricated (or long-pruned) msgIds
+      // would squat the 200-entry cap forever. A race-lost react (the reaction
+      // beating its message through the flood) converges via the next HELLO.
+      if (!room.chat.some((c) => c.id === msg.msgId)) break;
+      if (applyChatReact(room, msg.msgId, msg.emoji, msg.memberId, msg.on === true)) {
+        persistChatReacts(room);
         pushState(room);
       }
       break;
@@ -2363,7 +2442,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; nameAt?: number; topicText?: string; topicAt?: number; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -2384,6 +2463,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     nameAt: Number(p.nameAt) || 0,
     topicText: String(p.topicText || '').slice(0, 300),
     topicAt: Number(p.topicAt) || 0,
+    topicMsg: p.topicMsg && typeof p.topicMsg === 'object' ? p.topicMsg : null,
     code: p.code,
     folder: p.folder,
     key,
@@ -2431,6 +2511,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     typing: {},
     lastTypingSent: 0,
     fileReacts: reactsFromRecord(p.reacts),
+    chatReacts: reactsFromRecordIn(p.chatReacts, CHAT_REACTION_EMOJI, MAX_REACT_MSGS),
     memberProg: new Map(),
     progSent: new Map(),
     // Only load bindings whose id is the hash of its key — drops any stale/legacy
@@ -2889,7 +2970,8 @@ function setRoomTopic(roomId: string, rawText: string): RoomState {
   const sig = signBytes(room, topicCanonical(room.topic, { text, at, by }));
   room.topicText = text;
   room.topicAt = at;
-  try { ipcRenderer.send('room-topic', { roomId: room.roomId, text, at }); } catch { /* ignore */ }
+  room.topicMsg = { text, at, by, pub: room.self.pub, sig };
+  try { ipcRenderer.send('room-topic', { roomId: room.roomId, text, at, by, pub: room.self.pub, sig }); } catch { /* ignore */ }
   broadcast(room, { t: 'topic', text, at, by, pub: room.self.pub, sig });
   pushState(room, true);
   return buildState(room);
@@ -3003,6 +3085,23 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       if (applyFileReact(r, fileId, emoji, r.self.memberId, on)) {
         persistReacts(r);
         broadcast(r, { t: 'react-file', memberId: r.self.memberId, fileId, emoji, on });
+        pushState(r, true);
+      }
+      data = { ok: true };
+    }
+    else if (type === 'reactChat') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      const msgId = String(msg.msgId || '');
+      const emoji = String(msg.emoji || '').slice(0, 16);
+      if (!CHAT_REACTION_SET.has(emoji)) throw new Error('Unsupported reaction');
+      if (!r.chat.some((c) => c.id === msgId)) throw new Error('Message not found in this room');
+      // Toggle from OUR current view; gossip the explicit on/off so peers
+      // converge without needing to know our previous state.
+      const on = !r.chatReacts.get(msgId)?.get(emoji)?.has(r.self.memberId);
+      if (applyChatReact(r, msgId, emoji, r.self.memberId, on)) {
+        persistChatReacts(r);
+        broadcast(r, { t: 'react-chat', memberId: r.self.memberId, msgId, emoji, on });
         pushState(r, true);
       }
       data = { ok: true };

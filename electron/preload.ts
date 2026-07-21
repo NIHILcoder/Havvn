@@ -699,6 +699,8 @@ const api: IpcApi = {
     },
     reactFile: (roomId: string, fileId: string, emoji: string): Promise<void> =>
       ipcRenderer.invoke('rooms:reactFile', roomId, fileId, emoji),
+    reactChat: (roomId: string, msgId: string, emoji: string): Promise<void> =>
+      ipcRenderer.invoke('rooms:reactChat', roomId, msgId, emoji),
     exportIdentity: (): Promise<{ success: boolean; path?: string }> =>
       ipcRenderer.invoke('rooms:exportIdentity'),
     importIdentity: (): Promise<{ success: boolean; rooms?: number }> =>

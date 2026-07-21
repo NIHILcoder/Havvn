@@ -81,6 +81,7 @@ interface RoomsSchema {
   roomFolderFetch: Record<string, Record<string, boolean>>; // roomId → (folderId → auto-fetch override; absent = inherit room autoFetch)
   roomChats: Record<string, RoomChatMessage[]>; // roomId → chat log (capped, text encrypted at rest)
   roomReacts: Record<string, Record<string, Record<string, string[]>>>; // roomId → fileId → emoji → memberIds (capped)
+  roomChatReacts: Record<string, Record<string, Record<string, string[]>>>; // roomId → chat msgId → emoji → memberIds (capped)
   roomIdentity: { pub: string; priv: string } | null; // this install's Ed25519 signing keypair (priv encrypted)
   roomIdentities: Record<string, Record<string, string>>; // roomId → (memberId → pubKey), TOFU binding
 }
@@ -110,6 +111,9 @@ export interface PersistedRoom {
   nameAt?: number;   // last-writer-wins clock for the room name (owner rename); absent/0 = never renamed
   topic?: string;    // owner-set room topic ('' / absent = none)
   topicAt?: number;  // last-writer-wins clock for the topic
+  topicBy?: string;  // signer (owner) memberId — re-served in HELLOs, re-verified by receivers
+  topicPub?: string;
+  topicSig?: string;
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
   // Owner-signed E2E config blob (Ed25519 over topic+ownerId+e2e+secret). Kept so
@@ -262,7 +266,7 @@ const searchStore = new Store<SearchSchema>({
 
 const roomsStore = new Store<RoomsSchema>({
   name: 'rooms',
-  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomFolderFetch: {}, roomChats: {}, roomReacts: {}, roomIdentity: null, roomIdentities: {} },
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomFolderFetch: {}, roomChats: {}, roomReacts: {}, roomChatReacts: {}, roomIdentity: null, roomIdentities: {} },
 });
 
 const reputationStore = new Store<ReputationSchema>({
@@ -679,10 +683,29 @@ export function setRoomReacts(roomId: string, reacts: Record<string, Record<stri
   roomsStore.set('roomReacts', all);
 }
 
+export function getRoomChatReacts(roomId: string): Record<string, Record<string, string[]>> {
+  return (roomsStore.get('roomChatReacts') ?? {})[roomId] ?? {};
+}
+
+/** Replace a room's chat-reaction map (same set-style rule as file reacts). */
+export function setRoomChatReacts(roomId: string, reacts: Record<string, Record<string, string[]>>): void {
+  const all = roomsStore.get('roomChatReacts') ?? {};
+  const capped: Record<string, Record<string, string[]>> = {};
+  for (const [msgId, byEmoji] of Object.entries(reacts ?? {}).slice(0, MAX_REACT_FILES)) capped[msgId] = byEmoji;
+  all[roomId] = capped;
+  roomsStore.set('roomChatReacts', all);
+}
+
 export function clearRoomReacts(roomId: string): void {
   const all = roomsStore.get('roomReacts') ?? {};
   delete all[roomId];
   roomsStore.set('roomReacts', all);
+}
+
+export function clearRoomChatReacts(roomId: string): void {
+  const all = roomsStore.get('roomChatReacts') ?? {};
+  delete all[roomId];
+  roomsStore.set('roomChatReacts', all);
 }
 
 // === Room identity (Ed25519 signing keypair + per-room TOFU pubkey roster) ===

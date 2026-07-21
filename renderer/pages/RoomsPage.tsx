@@ -22,6 +22,7 @@ import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
 import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
+import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
@@ -1706,7 +1707,9 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           ) : room.topic ? (
             <p
               className={`room-topic${room.canManage ? ' editable' : ''}`}
-              title={room.canManage ? t('rooms.topicHint') : undefined}
+              // Full text in the tooltip — the line ellipsizes and there is no
+              // other surface that shows a long topic whole.
+              title={room.canManage ? `${room.topic} — ${t('rooms.topicHint')}` : room.topic}
               onDoubleClick={room.canManage ? () => setTopicEditing(true) : undefined}
             >
               {room.topic}
@@ -2092,10 +2095,16 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
                   <Avatar seed={seedOf(p.memberId)} img={memberOf(p.memberId)?.avatarImg} size={30} />
                 </button>
                 <span className="room-voice-pname" style={memberOf(p.memberId)?.color ? { color: memberOf(p.memberId)?.color } : undefined}>{nameOf(p.memberId)}</span>
-                {p.muted && <Icon name="mic-off" size={12} className="room-voice-pmic" />}
-                {/* Their deafen (hears no one) vs MY local mute of them (slash). */}
-                {p.deafened && <Icon name="volume-x" size={12} className="room-voice-pmic" />}
-                {!self && pref.muted && <Icon name="slash" size={12} className="room-voice-pmic" />}
+                {/* One inline glyph row (a bare list would stack vertically in
+                    the 52px column tile). Deafen implies mute — show only the
+                    deafen glyph then; slash = MY local mute of them. */}
+                {(p.muted || p.deafened || (!self && pref.muted)) && (
+                  <span className="room-voice-picons">
+                    {p.muted && !p.deafened && <Icon name="mic-off" size={12} className="room-voice-pmic" />}
+                    {p.deafened && <Icon name="volume-x" size={12} className="room-voice-pmic" />}
+                    {!self && pref.muted && <Icon name="slash" size={12} className="room-voice-pmic" />}
+                  </span>
+                )}
                 {p.sharing && (
                   <button
                     className="room-voice-share-badge"
@@ -2284,6 +2293,14 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [zoneTab, setZoneTab] = useState<'chat' | 'history'>('chat');
+  // Per-message reaction palette — PORTALED to the chat's document at fixed
+  // coords (the log clips overflow, and the chat column can be 260px narrow).
+  const [reactFor, setReactFor] = useState<{ msgId: string; x: number; y: number } | null>(null);
+  useEffect(() => { setReactFor(null); }, [room.roomId]);
+  const toggleChatReact = (msgId: string, emoji: string) => {
+    window.api.rooms.reactChat(room.roomId, msgId, emoji)
+      .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+  };
   // Local chat search: filters the persisted log (no protocol involved).
   const [searchOpen, setSearchOpen] = useState(false);
   const [chatQuery, setChatQuery] = useState('');
@@ -2343,7 +2360,20 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
   }, [room.roomId, messages, selfId, scrollToNewest]);
   // Detach/reattach and tab switches REMOUNT the log DOM (fresh node,
   // scrollTop=0) without the messages changing — force a re-pin.
-  useEffect(() => { scrollToNewest(); }, [zoneTab, popout, scrollToNewest]);
+  useEffect(() => { scrollToNewest(); setReactFor(null); }, [zoneTab, popout, scrollToNewest]);
+
+  // The reaction palette closes on outside click — in the CHAT's document
+  // (the zone may live in the detached window).
+  useEffect(() => {
+    if (!reactFor) return;
+    const doc = listRef.current?.ownerDocument ?? document;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && !el.closest('.room-chat-react-pop') && !el.closest('.room-chat-react-add')) setReactFor(null);
+    };
+    doc.addEventListener('mousedown', onDown);
+    return () => doc.removeEventListener('mousedown', onDown);
+  }, [reactFor]);
 
   // Auto-grow the composer with its content (bounded by CSS max-height).
   const autosize = () => {
@@ -2579,8 +2609,55 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
                       ) : (
                         <RoomChatBody text={m.text} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={mine ? undefined : selfName} />
                       )}
+                      {/* Reaction pills — the row exists only when reactions do
+                          (an always-present row would pad EVERY message). */}
+                      {(() => {
+                        const reacts = room.chatReacts?.[m.id];
+                        const present = CHAT_REACT_EMOJIS.filter((e) => (reacts?.[e] || []).length > 0);
+                        if (!present.length) return null;
+                        return (
+                          <span className="room-chat-reacts">
+                            {present.map((emoji) => {
+                              const ids = reacts?.[emoji] || [];
+                              const own = !!selfId && ids.includes(selfId);
+                              return (
+                                <button
+                                  key={emoji}
+                                  type="button"
+                                  className={`room-chat-react${own ? ' mine' : ''}`}
+                                  aria-pressed={own}
+                                  title={ids.map((id) => room.members.find((mm) => mm.memberId === id)?.name || '?').join(', ')}
+                                  onClick={() => toggleChatReact(m.id, emoji)}
+                                >
+                                  {emoji}<span className="room-chat-react-n">{ids.length}</span>
+                                </button>
+                              );
+                            })}
+                          </span>
+                        );
+                      })()}
                       <span className="room-chat-time">{timeOnly(m.at)}</span>
                     </div>
+                    {/* Hover "+": absolutely positioned — costs no layout height. */}
+                    <button
+                      type="button"
+                      className="room-chat-react-add"
+                      title={t('rooms.chatReact')}
+                      onClick={(e) => {
+                        const btn = e.currentTarget as HTMLElement;
+                        const win = btn.ownerDocument.defaultView ?? window;
+                        const r = btn.getBoundingClientRect();
+                        setReactFor((cur) => {
+                          if (cur?.msgId === m.id) return null;
+                          const w = 8 * 26 + 12; // palette width approximation
+                          const x = Math.max(4, Math.min(r.left, win.innerWidth - w - 4));
+                          const y = r.top - 38 < 4 ? r.bottom + 4 : r.top - 38;
+                          return { msgId: m.id, x, y };
+                        });
+                      }}
+                    >
+                      <Icon name="plus" size={10} />
+                    </button>
                   </div>
                 </React.Fragment>
               );
@@ -2592,6 +2669,23 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
             </button>
           )}
         </div>
+        {reactFor && createPortal(
+          <span className="room-chat-react-pop" style={{ position: 'fixed', left: reactFor.x, top: reactFor.y }}>
+            {CHAT_REACT_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                className="room-chat-react-opt"
+                // mousedown-preventDefault: keep composer focus intact.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { const id = reactFor.msgId; setReactFor(null); toggleChatReact(id, emoji); }}
+              >
+                {emoji}
+              </button>
+            ))}
+          </span>,
+          (listRef.current?.ownerDocument ?? document).body,
+        )}
         <div className={`room-chat-typing${typingNames.length > 0 ? ' on' : ''}`} aria-live="polite">
           {typingNames.length > 0 && (
             <>
