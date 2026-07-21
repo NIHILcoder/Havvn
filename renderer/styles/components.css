@@ -790,3 +790,19 @@
   border: 1px solid var(--color-border-subtle);
   padding: 2px;
 }
+
+/* ── Logo glint: a light band sweeping inside the mark's silhouette ─────────
+   Parked off-canvas; any :hover on the mark (or a .logo-glint-loop wrapper,
+   e.g. the About header) runs one sweep. [data-reduce-motion] zeroes all
+   animation durations globally, so this degrades to invisible automatically. */
+.logo-glint { transform: translateX(-190px) skewX(-16deg); }
+.logo-mark:hover .logo-glint {
+  animation: logo-glint-sweep 0.9s cubic-bezier(0.4, 0, 0.2, 1);
+}
+@keyframes logo-glint-sweep {
+  from { transform: translateX(-190px) skewX(-16deg); }
+  to   { transform: translateX(880px) skewX(-16deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-mark .logo-glint { animation: none !important; }
+}

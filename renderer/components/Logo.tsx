@@ -29,11 +29,12 @@ interface LogoMarkProps {
 
 export const LogoMark: React.FC<LogoMarkProps> = ({ size = 22, mono = false, className }) => {
   const h = Math.round(size * (VB_H / VB_W) * 10) / 10;
-  // Below ~36px the glare swooshes read as noise — flat face only.
-  const detailed = !mono && size >= 36;
+  // SVG defs ids are document-global — several marks render at once (sidebar,
+  // settings nav, About), so each instance mints its own.
+  const uid = React.useId().replace(/[^a-zA-Z0-9]/g, '');
   return (
     <svg
-      className={className}
+      className={`logo-mark${className ? ` ${className}` : ''}`}
       width={size}
       height={h}
       viewBox={`0 0 ${VB_W} ${VB_H}`}
@@ -44,9 +45,21 @@ export const LogoMark: React.FC<LogoMarkProps> = ({ size = 22, mono = false, cla
         <path className="logo-mark-path" d={MARK_OUTLINE} fill="currentColor" />
       ) : (
         <>
+          <defs>
+            <clipPath id={`lgc${uid}`}><path d={MARK_OUTLINE} /></clipPath>
+            <linearGradient id={`lgg${uid}`} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0" stopColor="#fff" stopOpacity="0" />
+              <stop offset="0.5" stopColor="#fff" stopOpacity="0.5" />
+              <stop offset="1" stopColor="#fff" stopOpacity="0" />
+            </linearGradient>
+          </defs>
           <path d={MARK_OUTLINE} fill="#161311" />
           <path d={MARK_FACE} fill="#e25117" />
-          {detailed && MARK_GLARES.map((d, i) => <path key={i} d={d} fill="#f4c1b0" />)}
+          {MARK_GLARES.map((d, i) => <path key={i} d={d} fill="#f4c1b0" />)}
+          {/* The glint: a light band sweeping INSIDE the silhouette on hover. */}
+          <g clipPath={`url(#lgc${uid})`}>
+            <rect className="logo-glint" x="-180" y="-30" width="180" height={VB_H + 60} fill={`url(#lgg${uid})`} />
+          </g>
         </>
       )}
     </svg>
