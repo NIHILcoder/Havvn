@@ -69,16 +69,27 @@ export async function decryptFile(src: string, dst: string, secretHex: string): 
     decipher.setAuthTag(tag);
 
     // The ciphertext body sits between the IV and the trailing tag (end inclusive).
+    // Decrypt into a sibling temp file and rename only after the GCM tag
+    // verifies — a wrong key (routine now that the keyring makes multi-key
+    // attempts normal) must never leave unauthenticated garbage at the real
+    // path, nor collide with a concurrent attempt's stream.
+    const tmp = dst + '.decrypt-tmp';
     const rs = fs.createReadStream(src, { start: IV_LEN, end: stat.size - TAG_LEN - 1 });
-    const ws = fs.createWriteStream(dst);
-    await new Promise<void>((resolve, reject) => {
-      const fail = (e: unknown) => { try { rs.destroy(); } catch { /* ignore */ } try { ws.destroy(); } catch { /* ignore */ } reject(e instanceof Error ? e : new Error(String(e))); };
-      rs.on('error', fail);
-      ws.on('error', fail);
-      decipher.on('error', fail);
-      ws.on('finish', () => resolve());
-      rs.pipe(decipher).pipe(ws);
-    });
+    const ws = fs.createWriteStream(tmp);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const fail = (e: unknown) => { try { rs.destroy(); } catch { /* ignore */ } try { ws.destroy(); } catch { /* ignore */ } reject(e instanceof Error ? e : new Error(String(e))); };
+        rs.on('error', fail);
+        ws.on('error', fail);
+        decipher.on('error', fail);
+        ws.on('finish', () => resolve());
+        rs.pipe(decipher).pipe(ws);
+      });
+      fs.renameSync(tmp, dst);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+      throw e;
+    }
   } finally {
     await fd.close();
   }

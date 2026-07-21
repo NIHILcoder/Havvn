@@ -425,6 +425,7 @@ describe('owner-signed E2E config', () => {
     expect(rekey?.code).toBeTruthy();
     expect(rekey.code).not.toBe(code);
     expect(codeIsE2E(rekey.code)).toBe(true); // the replacement code keeps the marker
+    expect(rekey.banId).toBe('member-M');     // the survivor bans the kicked identity
 
     // The survivor ends up holding a config re-signed over the NEW topic with
     // a ROTATED secret (the kicked member never receives it); the outgoing

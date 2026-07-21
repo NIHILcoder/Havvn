@@ -183,7 +183,7 @@ type Msg =
   // for future multi-kind video; v1 receivers key on track.kind anyway.
   | { t: 'voice-share'; memberId: string; sharing: boolean; streamId: string; at: number; pub: string; sig: string };
 
-interface Wire { id: number; peer: any; memberId?: string; }
+interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean; }
 
 /**
  * The room's E2E config as a self-contained, owner-signed claim: `sig` is an
@@ -635,6 +635,7 @@ function forwardRelay(room: Room, msg: any, fromWireId: number): void {
   const fwd = { ...msg, _t: msg._t - 1 };
   for (const wire of room.wires.values()) {
     if (wire.id === fromWireId) continue;
+    if (!wire.memberId || room.bans.has(wire.memberId)) continue; // same gate as broadcast
     sendTo(room, wire, fwd as Msg);
   }
 }
@@ -648,11 +649,16 @@ function broadcast(room: Room, msg: Msg): void {
     m._t = RELAY_TTL;
     markSeen(room, m._g);
   }
-  for (const wire of room.wires.values()) sendTo(room, wire, msg);
+  for (const wire of room.wires.values()) {
+    // Nothing beyond the slim greet flows to a wire that hasn't identified
+    // itself, or that identified as a banned member.
+    if (!wire.memberId || room.bans.has(wire.memberId)) continue;
+    sendTo(room, wire, msg);
+  }
 }
 
-function helloMsg(room: Room): Msg {
-  return {
+function helloMsg(room: Room, full = true): Msg {
+  const m: any = {
     t: 'hello',
     memberId: room.self.memberId,
     name: room.self.name || 'You',
@@ -679,6 +685,17 @@ function helloMsg(room: Room): Msg {
     // anything newer that it holds, so messages said while we were offline arrive.
     ...(room.chat.length ? { chatAt: room.chat[room.chat.length - 1].at } : {}),
   };
+  if (!full) {
+    // Slim greet for a wire we haven't identified yet: NO content secret,
+    // keyring, manifest, tombstones or reactions until the peer's hello proves
+    // a known, non-banned identity (a kicked member on a leaked code must not
+    // receive the rotated secret just by connecting). The full hello follows
+    // as a reply once the peer identifies (see case 'hello').
+    m.secret = ''; m.files = []; m.have = []; m.tombs = [];
+    delete m.tombsAt; delete m.tombSigs; delete m.cfg; delete m.fileReacts;
+    delete m.chatReacts; delete m.folders; delete m.folderTombs; delete m.chatAt;
+  }
+  return m as Msg;
 }
 
 /** Persist a folder create/edit to main so it (and the grouping) survives restart. */
@@ -813,7 +830,13 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
     }
     if (cfg.e2e && !room.e2e) { room.e2e = true; changed = true; }
     if (cfg.secret && cfg.secret !== room.secret) {
-      if (room.secret) log('e2e secret corrected by owner-signed config');
+      if (room.secret) {
+        log('e2e secret corrected by owner-signed config');
+        // Keep the secret we legitimately held: the cfg's keyring rides outside
+        // the v1 signature and can be stripped in transit (or by an old relay's
+        // clamp) — a key we already trusted needs no signature to stay usable.
+        room.prevSecrets = [room.secret, ...room.prevSecrets.filter((x) => x !== room.secret)].slice(0, MAX_PREV_SECRETS);
+      }
       room.secret = cfg.secret;
       changed = true;
     }
@@ -821,9 +844,13 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
     // own signature — see verifiedPrevSecrets; a stripped/forged part only
     // costs OLD-file reads, never the current secret above).
     const prev = verifiedPrevSecrets(room, cfg);
-    if (prev.length && JSON.stringify(prev) !== JSON.stringify(room.prevSecrets)) {
-      room.prevSecrets = prev;
-      changed = true;
+    if (prev.length) {
+      // Verified list first (owner order), then any locally-held keys it lacks.
+      const merged = [...prev, ...room.prevSecrets.filter((x) => !prev.includes(x))].slice(0, MAX_PREV_SECRETS);
+      if (JSON.stringify(merged) !== JSON.stringify(room.prevSecrets)) {
+        room.prevSecrets = merged;
+        changed = true;
+      }
     }
     if (!room.e2eSigned || room.e2eCfg?.sig !== cfg.sig) { room.e2eCfg = cfg; room.e2eSigned = true; changed = true; }
   } else if (!room.e2eSigned) {
@@ -1419,12 +1446,23 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     return;
   }
   clampGossip(msg);
-  // Banned identities (owner-signed rekey victims) are dead to this room: no
-  // frame of theirs is processed, so a hello can't resurrect them even if the
-  // rotated code leaked to them. ('rekey' itself carries `by`, not memberId,
-  // and is owner-gated separately.)
-  if ((msg as any).memberId && room.bans.has((msg as any).memberId)) return;
   const meta = msg as any;
+  // Banned identities (owner-signed rekey victims) are dead to this room: drop
+  // every frame that NAMES one — as sender (memberId), actor (`by`) or file
+  // author ('add' carries only file.addedBy). A DIRECT frame also identifies
+  // the wire's peer as the banned member: cut the wire so our broadcasts stop
+  // reaching them too.
+  if (room.bans.size > 0 && (
+    (meta.memberId && room.bans.has(meta.memberId)) ||
+    (meta.by && room.bans.has(meta.by)) ||
+    (meta.file && meta.file.addedBy && room.bans.has(meta.file.addedBy))
+  )) {
+    if (typeof meta._t !== 'number' || meta._t >= RELAY_TTL) {
+      try { wire.peer.destroy(); } catch { /* ignore */ }
+      room.wires.delete(wire.id);
+    }
+    return;
+  }
   // `direct` = arrived straight from its author (undecremented hop count), vs a
   // relayed copy forwarded by another member. Only direct messages identify the
   // wire's peer; relayed ones must not mislabel the relaying wire.
@@ -1454,6 +1492,12 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // session-only profile cache, so the announce gate below must not skip them.
       const freshWire = direct && !wire.memberId;
       if (direct) wire.memberId = msg.memberId;
+      // The peer just identified (and passed the ban gate above) — hand it the
+      // FULL hello the slim greet withheld (secret/cfg/manifest). Once per wire.
+      if (direct && !wire.greetedFull) {
+        wire.greetedFull = true;
+        sendTo(room, wire, helloMsg(room));
+      }
       bindIdentity(room, msg.memberId, msg.pub); // TOFU their identity key from the greet, so we can verify their signed commands
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
@@ -1556,7 +1600,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
         const memberId = String(c?.memberId || '');
         const id = String(c?.id || '');
         const at = Number(c?.at) || 0;
-        if (!id || !text || !memberId || room.mutes.has(memberId)) continue;
+        if (!id || !text || !memberId || room.mutes.has(memberId) || room.bans.has(memberId)) continue;
         if (at > Date.now() + 60_000) continue;             // no future-dated chat (would sit unread forever)
         if (room.chat.some((m) => m.id === id)) continue;   // already have it — skip the verify
         const cm = { id, at, memberId, text, pub: String(c.pub || ''), sig: String(c.sig || '') };
@@ -2008,7 +2052,7 @@ function applyPendingTomb(room: Room, file: RoomFile): boolean {
 function attachWire(room: Room, peer: any): void {
   const wire: Wire = { id: ++wireSeq, peer };
   room.wires.set(wire.id, wire);
-  const greet = () => sendTo(room, wire, helloMsg(room));
+  const greet = () => sendTo(room, wire, helloMsg(room, false)); // slim until the peer identifies
   if (peer.connected) greet(); else peer.once('connect', greet);
   peer.on('data', (d: any) => onMessage(room, wire, d));
   peer.on('close', () => { room.wires.delete(wire.id); pushState(room); });
@@ -2050,7 +2094,7 @@ function acceptRevive(room: Room, file: RoomFile): boolean {
 // ── File manifest + transfers ────────────────────────────────────────────────
 function mergeFile(room: Room, file: RoomFile): void {
   if (!file || !file.fileId) return;
-  if (room.mutes.has(file.addedBy)) return;     // muted member — ignore their shares locally
+  if (room.mutes.has(file.addedBy) || room.bans.has(file.addedBy)) return; // muted locally / banned by rekey
   const tombAt = room.tombstones.get(file.fileId);
   if (tombAt !== undefined) {
     if (room.tombSigs.has(file.fileId)) {
