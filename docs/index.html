@@ -9,7 +9,7 @@
 <meta property="og:description" content="Stream torrents anywhere, watch and listen together in end-to-end-encrypted rooms, and beam files into a friend's browser. Peer-to-peer, no servers, free." />
 <meta property="og:type" content="website" />
 <meta name="theme-color" content="#141519" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M4 9 L10.5 21 L16 12 L21.5 21 L28 9' stroke='%23F2913F' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 295.8'%3E%3Cpath fill='%23161311' d='M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z'/%3E%3Cpath fill='%23e25117' d='M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <!-- Non-blocking: paint instantly on the system-font fallback, swap Inter in when ready
@@ -49,13 +49,11 @@
   .btn-o:hover{background:var(--ember-bg);border-color:var(--ember-ring)}
   svg.icn{width:1em;height:1em;vertical-align:-.12em;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 
-  /* Brand mark — the Double-V (the "vv" of Havvn) */
-  .mark{width:1em;height:1em}
-  .mark path{stroke:var(--ember);stroke-width:2.3;fill:none;stroke-linecap:round;stroke-linejoin:round}
-  .mark circle{fill:var(--ember-h)}
-  .logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:16px;letter-spacing:-.01em}
-  .logo .mark{width:22px;height:22px}
-  .logo b{color:var(--ember);font-weight:600}
+  /* Brand — the W-wings mark + the HAVVN lettermark (self-colored SVGs) */
+  .mark{width:26px;height:auto}
+  .logo{display:flex;align-items:center;gap:10px}
+  .logo .mark{width:30px}
+  .logo .wm{height:14px;width:auto;display:block}
 
   header{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);background:rgba(20,21,25,.72);border-bottom:1px solid var(--line)}
   nav{display:flex;align-items:center;justify-content:space-between;height:62px}
@@ -189,8 +187,8 @@
 <header>
   <nav class="wrap">
     <div class="logo">
-      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M4 9 L10.5 21 L16 12 L21.5 21 L28 9"/></svg>
-      Ha<b>vv</b>n
+      <svg class="mark" viewBox="0 0 512 295.8" aria-hidden="true"><path fill="#161311" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/><path fill="#e25117" d="M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z"/><g fill="#f4c1b0"><path d="M478.6 34.2C478.6 34.2 402.4 153.1 402.4 153.1C402.4 153.1 407.5 139.6 409.5 132.9C411.6 126.2 413.4 118.7 414.7 112.9C415.9 107.1 416.7 102.4 417 98.2C417.4 93.9 417.1 89.8 416.7 87.5C416.4 85.3 415.6 85.1 414.9 84.6C414.2 84.1 417.3 82.5 412.6 84.5C407.8 86.5 386.5 96.6 386.5 96.6C386.5 96.6 478.6 34.2 478.6 34.2Z"/><path d="M186.4 137.3C186.4 137.3 176.1 145.7 171.4 150.5C166.6 155.2 161 162 157.7 165.8C154.5 169.7 153.4 171.2 151.6 173.6C149.9 176.1 148.4 178.6 147.3 180.7C146.1 182.8 145.5 184.1 144.8 186.2C144 188.3 143.3 190.6 142.7 193.2C142.2 195.9 141.4 202.1 141.4 202.1C141.4 202.1 117.8 165.3 117.8 165.3C117.8 165.3 123.9 164.1 127.6 162.6C131.3 161.1 134.3 159.6 139.8 156.5C145.4 153.4 154.7 148.3 161 144.1C167.2 140 177.6 131.4 177.6 131.4C177.6 131.4 186.4 137.3 186.4 137.3Z"/><path d="M361.5 113.3C361.5 113.3 360.4 116.8 359.1 119.6C357.8 122.5 358.1 122.8 353.6 130.4C349.1 138.1 337.5 155.9 332.2 165.7C326.9 175.4 324.7 181.5 321.7 189.1C318.6 196.8 316 204.9 313.9 211.7C311.7 218.5 309.8 225.6 308.7 230.2C307.6 234.7 307.6 236.6 307.4 239.1C307.2 241.6 307.3 243 307.4 245.2C307.6 247.4 308.3 252.3 308.3 252.3C308.3 252.3 274.7 213.7 274.7 213.7C274.7 213.7 278.7 212.3 280.9 211.1C283 210 284.2 209.3 287.6 206.6C291.1 203.9 297.7 198.4 301.6 194.9C305.4 191.3 307.6 189.3 310.9 185.4C314.2 181.5 318.1 176.3 321.2 171.6C324.3 166.9 326.8 162.6 329.5 157.4C332.2 152.2 335.4 145.5 337.3 140.4C339.3 135.4 337.2 131.4 341.3 126.8C345.3 122.3 361.5 113.3 361.5 113.3Z"/></g></svg>
+      <svg class="wm" viewBox="0 0 440 100" role="img" aria-label="Havvn"><path fill="#ecebe6" d="M11.5 18.0L40.0 0.0L26.0 100.0L0.0 100.0ZM60.0 0.0L86.0 0.0L74.5 82.0L46.0 100.0ZM28.7 38.0L60.7 38.0L57.5 61.0L25.5 61.0ZM138.0 0.0L133.8 30.0L111.0 100.0L85.0 100.0ZM138.0 0.0L163.0 100.0L137.0 100.0L133.8 30.0ZM110.3 62.0L148.3 62.0L145.2 84.0L107.2 84.0ZM364.0 0.0L390.0 0.0L376.0 100.0L350.0 100.0ZM411.5 18.0L440.0 0.0L426.0 100.0L400.0 100.0ZM364.0 0.0L390.0 0.0L426.0 100.0L400.0 100.0Z"/><path fill="#F2913F" d="M190.0 0.0L218.0 0.0L218.9 72.0L215.0 100.0ZM268.0 0.0L240.0 0.0L218.9 72.0L215.0 100.0ZM273.0 0.0L301.0 0.0L301.9 72.0L298.0 100.0ZM351.0 0.0L323.0 0.0L301.9 72.0L298.0 100.0Z"/></svg>
     </div>
     <div class="navlinks">
       <a href="#features">Features</a>
@@ -405,8 +403,8 @@
     <div class="foot">
       <div class="fcol" style="max-width:300px">
         <div class="logo" style="margin-bottom:12px">
-          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M4 9 L10.5 21 L16 12 L21.5 21 L28 9"/></svg>
-          Ha<b>vv</b>n
+          <svg class="mark" viewBox="0 0 512 295.8" aria-hidden="true"><path fill="#161311" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/><path fill="#e25117" d="M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z"/><g fill="#f4c1b0"><path d="M478.6 34.2C478.6 34.2 402.4 153.1 402.4 153.1C402.4 153.1 407.5 139.6 409.5 132.9C411.6 126.2 413.4 118.7 414.7 112.9C415.9 107.1 416.7 102.4 417 98.2C417.4 93.9 417.1 89.8 416.7 87.5C416.4 85.3 415.6 85.1 414.9 84.6C414.2 84.1 417.3 82.5 412.6 84.5C407.8 86.5 386.5 96.6 386.5 96.6C386.5 96.6 478.6 34.2 478.6 34.2Z"/><path d="M186.4 137.3C186.4 137.3 176.1 145.7 171.4 150.5C166.6 155.2 161 162 157.7 165.8C154.5 169.7 153.4 171.2 151.6 173.6C149.9 176.1 148.4 178.6 147.3 180.7C146.1 182.8 145.5 184.1 144.8 186.2C144 188.3 143.3 190.6 142.7 193.2C142.2 195.9 141.4 202.1 141.4 202.1C141.4 202.1 117.8 165.3 117.8 165.3C117.8 165.3 123.9 164.1 127.6 162.6C131.3 161.1 134.3 159.6 139.8 156.5C145.4 153.4 154.7 148.3 161 144.1C167.2 140 177.6 131.4 177.6 131.4C177.6 131.4 186.4 137.3 186.4 137.3Z"/><path d="M361.5 113.3C361.5 113.3 360.4 116.8 359.1 119.6C357.8 122.5 358.1 122.8 353.6 130.4C349.1 138.1 337.5 155.9 332.2 165.7C326.9 175.4 324.7 181.5 321.7 189.1C318.6 196.8 316 204.9 313.9 211.7C311.7 218.5 309.8 225.6 308.7 230.2C307.6 234.7 307.6 236.6 307.4 239.1C307.2 241.6 307.3 243 307.4 245.2C307.6 247.4 308.3 252.3 308.3 252.3C308.3 252.3 274.7 213.7 274.7 213.7C274.7 213.7 278.7 212.3 280.9 211.1C283 210 284.2 209.3 287.6 206.6C291.1 203.9 297.7 198.4 301.6 194.9C305.4 191.3 307.6 189.3 310.9 185.4C314.2 181.5 318.1 176.3 321.2 171.6C324.3 166.9 326.8 162.6 329.5 157.4C332.2 152.2 335.4 145.5 337.3 140.4C339.3 135.4 337.2 131.4 341.3 126.8C345.3 122.3 361.5 113.3 361.5 113.3Z"/></g></svg>
+          <svg class="wm" viewBox="0 0 440 100" role="img" aria-label="Havvn"><path fill="#ecebe6" d="M11.5 18.0L40.0 0.0L26.0 100.0L0.0 100.0ZM60.0 0.0L86.0 0.0L74.5 82.0L46.0 100.0ZM28.7 38.0L60.7 38.0L57.5 61.0L25.5 61.0ZM138.0 0.0L133.8 30.0L111.0 100.0L85.0 100.0ZM138.0 0.0L163.0 100.0L137.0 100.0L133.8 30.0ZM110.3 62.0L148.3 62.0L145.2 84.0L107.2 84.0ZM364.0 0.0L390.0 0.0L376.0 100.0L350.0 100.0ZM411.5 18.0L440.0 0.0L426.0 100.0L400.0 100.0ZM364.0 0.0L390.0 0.0L426.0 100.0L400.0 100.0Z"/><path fill="#F2913F" d="M190.0 0.0L218.0 0.0L218.9 72.0L215.0 100.0ZM268.0 0.0L240.0 0.0L218.9 72.0L215.0 100.0ZM273.0 0.0L301.0 0.0L301.9 72.0L298.0 100.0ZM351.0 0.0L323.0 0.0L301.9 72.0L298.0 100.0Z"/></svg>
         </div>
         <p style="color:var(--muted);font-size:13.5px">A private, serverless P2P hub. Built with Electron, React, Transmission and WebTorrent.</p>
       </div>
