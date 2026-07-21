@@ -253,27 +253,32 @@ export class RoomManager {
     });
     // The room was rekeyed (a member was kicked) — persist the new invite code so
     // reconnecting/restarting lands on the new swarm, not the abandoned one.
-    ipcMain.on('room-rekey', (_e, payload: { roomId: string; code: string }) => {
+    ipcMain.on('room-rekey', (_e, payload: { roomId: string; code: string; banId?: string }) => {
       try {
         if (!payload?.roomId || !payload?.code) return;
         const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
-        if (r && r.code !== payload.code) {
-          db.savePersistedRoom({ ...r, code: payload.code });
-          log.info('Room rekeyed', { roomId: payload.roomId });
+        if (!r) return;
+        const banId = String(payload.banId || '');
+        const bans = banId && !(r.bans || []).includes(banId) ? [...(r.bans || []), banId] : r.bans;
+        if (r.code !== payload.code || bans !== r.bans) {
+          db.savePersistedRoom({ ...r, code: payload.code, ...(bans ? { bans } : {}) });
+          log.info('Room rekeyed', { roomId: payload.roomId, banned: !!banId });
         }
       } catch { /* ignore */ }
     });
     // A joiner learned the room's E2E mode + content secret from a peer — persist
     // them (with the owner-signed config blob, so it can be re-verified and
     // re-served after restart) so encrypted files keep decrypting.
-    ipcMain.on('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string; cfg?: db.PersistedRoom['e2eCfg'] }) => {
+    ipcMain.on('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string; prevSecrets?: string[]; cfg?: db.PersistedRoom['e2eCfg'] }) => {
       try {
         if (!payload?.roomId) return;
         const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
         const cfg = payload.cfg || undefined;
-        if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret || r.e2eCfg?.sig !== cfg?.sig)) {
-          db.savePersistedRoom({ ...r, e2e: payload.e2e, secret: payload.secret, e2eCfg: cfg });
-          log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e, signed: !!cfg });
+        const prev = Array.isArray(payload.prevSecrets) ? payload.prevSecrets.slice(0, 8) : [];
+        if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret || r.e2eCfg?.sig !== cfg?.sig
+          || JSON.stringify(r.prevSecrets || []) !== JSON.stringify(prev))) {
+          db.savePersistedRoom({ ...r, e2e: payload.e2e, secret: payload.secret, prevSecrets: prev, e2eCfg: cfg });
+          log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e, signed: !!cfg, keyring: prev.length });
         }
       } catch { /* ignore */ }
     });
@@ -450,6 +455,8 @@ export class RoomManager {
         identities: db.getRoomIdentities(roomId),
         e2e: e2e ?? false,
         secret: secret ?? '',
+        prevSecrets: persisted?.prevSecrets ?? [],
+        bans: persisted?.bans ?? [],
         e2eCfg: e2eCfg ?? null,
         cacheDir: this.encCacheDir(roomId),
         // Per-room preferences (absent → auto-download on, no speed limits).

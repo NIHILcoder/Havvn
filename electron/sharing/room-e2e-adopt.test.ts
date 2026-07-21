@@ -16,7 +16,8 @@
  *   • legacy rooms (old codes, unsigned config) still work: monotonic flag,
  *     adopt-once secret — and the owner's signed config RECOVERS a member that
  *     a hostile peer got to first;
- *   • kick/rekey keeps the marker and re-signs the config for the new topic.
+ *   • kick/rekey keeps the marker, ROTATES the content secret (the outgoing
+ *     one joins the signed decrypt-only keyring) and re-signs for the new topic.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
@@ -399,7 +400,7 @@ describe('owner-signed E2E config', () => {
     expect((await cmd(J, { type: 'snapshot', roomId })).ownerId).toBe(OWNER);
   });
 
-  it('kick/rekey keeps the E2E marker and re-signs the config for the new topic', async () => {
+  it('kick/rekey keeps the marker, rotates the secret and keyrings the old one', async () => {
     const code = generateRoomCode(true);
     const roomId = 'r-rekey';
     const O = await makeEngine();
@@ -425,12 +426,17 @@ describe('owner-signed E2E config', () => {
     expect(rekey.code).not.toBe(code);
     expect(codeIsE2E(rekey.code)).toBe(true); // the replacement code keeps the marker
 
-    // The survivor ends up holding a config re-signed over the NEW topic,
-    // with the same secret (content access survives the rotation).
+    // The survivor ends up holding a config re-signed over the NEW topic with
+    // a ROTATED secret (the kicked member never receives it); the outgoing
+    // secret lands in the decrypt-only keyring so old files stay readable.
     const persisted = e2ePersists(J).at(-1);
-    expect(persisted?.secret).toBe(S);
+    expect(persisted?.secret).toBeTruthy();
+    expect(persisted?.secret).not.toBe(S);
+    expect(persisted?.prevSecrets).toContain(S);
     expect(persisted?.cfg).toBeTruthy();
     expect(cfgVerifies(persisted.cfg, topicHash(rekey.code), ownerKeys.pub)).toBe(true);
+    expect(persisted.cfg.prevSecrets).toContain(S);          // keyring rides the cfg…
+    expect(typeof persisted.cfg.prevSig).toBe('string');     // …under its own signature
   });
 });
 

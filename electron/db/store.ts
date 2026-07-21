@@ -116,6 +116,8 @@ export interface PersistedRoom {
   topicSig?: string;
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
+  prevSecrets?: string[]; // decrypt-only keyring: secrets rotated out by kicks (newest first, capped)
+  bans?: string[];   // memberIds cut by an owner-signed rekey — their gossip is dropped
   // Owner-signed E2E config blob (Ed25519 over topic+ownerId+e2e+secret). Kept so
   // the engine can re-verify the secret's provenance and re-serve it to joiners
   // after a restart; the engine always re-verifies before trusting it.

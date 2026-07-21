@@ -26,7 +26,7 @@ import fs from 'fs';
 import path from 'path';
 import WebTorrent from 'webtorrent';
 import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
-import { encryptFile, decryptFile } from './room-e2e';
+import { encryptFile, decryptFile, generateRoomSecret } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon, wantAutoFetch } from '../../shared/room-folders';
 import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
@@ -193,7 +193,14 @@ interface Wire { id: number; peer: any; memberId?: string; }
  * in their HELLOs, so a joiner can authenticate the secret even while the owner
  * is offline. Binding to the CURRENT topic means the owner re-signs on rekey.
  */
-interface E2ECfg { ownerId: string; e2e: boolean; secret: string; pub: string; sig: string; }
+interface E2ECfg {
+  ownerId: string; e2e: boolean; secret: string; pub: string; sig: string;
+  // Keyring: PREVIOUS secrets (decrypt-only), under their OWN signature so the
+  // v1 canonical (and with it <=2.24 verification) stays intact. Optional —
+  // absent/invalid prev parts degrade to "current secret only", never reject
+  // the whole config.
+  prevSecrets?: string[]; prevSig?: string;
+}
 
 interface Room {
   roomId: string;
@@ -217,6 +224,8 @@ interface Room {
   e2e: boolean;                          // end-to-end encryption (ciphertext on the wire)
   secret: string;                        // E2E content key (32-byte hex; '' until learned)
   e2eCfg: E2ECfg | null;                 // owner-signed E2E config we hold + re-serve to joiners
+  prevSecrets: string[];                 // decrypt-only keyring (rotated-out secrets, newest first)
+  bans: Set<string>;                     // memberIds cut by an owner-signed rekey — their gossip is dropped
   e2eSigned: boolean;                    // e2e/secret/owner were established by a VERIFIED owner signature
   cacheDir: string;                      // where ciphertext copies live (outside the room folder)
   wires: Map<number, Wire>;
@@ -699,13 +708,41 @@ function e2eCanonical(topic: string, cfg: { ownerId: string; e2e: boolean; secre
   return Buffer.from(JSON.stringify(['th-room-e2e:v1', topic, cfg.ownerId, cfg.e2e, cfg.secret]), 'utf8');
 }
 
+/** Bytes the owner signs over the keyring (separate from the v1 canonical —
+ *  extending THAT would fail verification on <=2.24 peers and lose them the
+ *  current secret too). */
+function e2ePrevCanonical(topic: string, ownerId: string, prevSecrets: string[]): Buffer {
+  return Buffer.from(JSON.stringify(['th-room-e2e-prev:v1', topic, ownerId, prevSecrets]), 'utf8');
+}
+
+const MAX_PREV_SECRETS = 8;
+
 /** Owner only: mint the signed E2E config for the room's CURRENT topic. */
 function signE2ECfg(room: Room): E2ECfg | null {
   const body = { ownerId: room.self.memberId, e2e: room.e2e, secret: room.secret };
   try {
-    const sig = crypto.sign(null, e2eCanonical(room.topic, body), crypto.createPrivateKey(room.self.priv)).toString('base64');
-    return { ...body, pub: room.self.pub, sig };
+    const key = crypto.createPrivateKey(room.self.priv);
+    const sig = crypto.sign(null, e2eCanonical(room.topic, body), key).toString('base64');
+    const cfg: E2ECfg = { ...body, pub: room.self.pub, sig };
+    if (room.prevSecrets.length) {
+      const prev = room.prevSecrets.slice(0, MAX_PREV_SECRETS);
+      cfg.prevSecrets = prev;
+      cfg.prevSig = crypto.sign(null, e2ePrevCanonical(room.topic, room.self.memberId, prev), key).toString('base64');
+    }
+    return cfg;
   } catch (e) { log('e2e cfg sign failed: ' + String(e)); return null; }
+}
+
+/** Validate a cfg's OPTIONAL keyring part; [] when absent or unverifiable. */
+function verifiedPrevSecrets(room: Room, cfg: E2ECfg): string[] {
+  if (!Array.isArray(cfg.prevSecrets) || !cfg.prevSecrets.length || typeof cfg.prevSig !== 'string') return [];
+  const prev = cfg.prevSecrets.slice(0, MAX_PREV_SECRETS).map((x) => clampStr(x, MAX_SECRET)).filter(Boolean);
+  if (!prev.length) return [];
+  try {
+    const ok = crypto.verify(null, e2ePrevCanonical(room.topic, cfg.ownerId, prev), crypto.createPublicKey(cfg.pub), Buffer.from(cfg.prevSig, 'base64'));
+    if (!ok) { log('e2e keyring bad signature — ignored (current secret still adopted)'); return []; }
+  } catch { return []; }
+  return prev;
 }
 
 /**
@@ -744,7 +781,7 @@ function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
 
 /** Persist the current E2E view (flag, secret, signed blob) via the main process. */
 function persistE2E(room: Room): void {
-  try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret, cfg: room.e2eCfg }); } catch { /* ignore */ }
+  try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret, prevSecrets: room.prevSecrets, cfg: room.e2eCfg }); } catch { /* ignore */ }
 }
 
 /**
@@ -778,6 +815,14 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
     if (cfg.secret && cfg.secret !== room.secret) {
       if (room.secret) log('e2e secret corrected by owner-signed config');
       room.secret = cfg.secret;
+      changed = true;
+    }
+    // Keyring is owner-authoritative: replace ours with the verified list (its
+    // own signature — see verifiedPrevSecrets; a stripped/forged part only
+    // costs OLD-file reads, never the current secret above).
+    const prev = verifiedPrevSecrets(room, cfg);
+    if (prev.length && JSON.stringify(prev) !== JSON.stringify(room.prevSecrets)) {
+      room.prevSecrets = prev;
       changed = true;
     }
     if (!room.e2eSigned || room.e2eCfg?.sig !== cfg.sig) { room.e2eCfg = cfg; room.e2eSigned = true; changed = true; }
@@ -823,12 +868,20 @@ function folderDirFor(room: Room, file: RoomFile): string {
   return room.folder;
 }
 
-/** Decrypt one E2E file's cached ciphertext into the room folder (plaintext). */
+/** Decrypt one E2E file's cached ciphertext into the room folder (plaintext).
+ *  Tries the current secret, then the keyring (GCM rejects wrong keys). */
 async function decryptOne(room: Room, file: RoomFile, cipherPath: string): Promise<void> {
   if (!room.secret) return;
   const plain = path.join(folderDirFor(room, file), file.name);
   try {
-    await decryptFile(cipherPath, plain, room.secret);
+    const candidates = [room.secret, ...room.prevSecrets];
+    let done = false;
+    let lastErr: unknown = null;
+    for (const sec of candidates) {
+      try { await decryptFile(cipherPath, plain, sec); done = true; break; }
+      catch (err) { lastErr = err; }
+    }
+    if (!done) throw lastErr ?? new Error('no matching key');
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: plain, cipherPath });
     persistManifest(room, file, plain, cipherPath);
     broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
@@ -1271,7 +1324,13 @@ function clampGossip(msg: any): void {
   if ('cfg' in msg) {
     const c = msg.cfg;
     msg.cfg = (c && typeof c === 'object' && !Array.isArray(c))
-      ? { ownerId: clampStr(c.ownerId, MAX_STR), e2e: c.e2e === true, secret: clampStr(c.secret, MAX_SECRET), pub: clampStr(c.pub, MAX_STR * 2), sig: clampStr(c.sig, MAX_STR) }
+      ? {
+          ownerId: clampStr(c.ownerId, MAX_STR), e2e: c.e2e === true, secret: clampStr(c.secret, MAX_SECRET), pub: clampStr(c.pub, MAX_STR * 2), sig: clampStr(c.sig, MAX_STR),
+          // The optional signed keyring rides along (verified separately).
+          ...(Array.isArray(c.prevSecrets) && typeof c.prevSig === 'string'
+            ? { prevSecrets: c.prevSecrets.slice(0, MAX_PREV_SECRETS).map((x: any) => clampStr(x, MAX_SECRET)).filter(Boolean), prevSig: clampStr(c.prevSig, MAX_STR) }
+            : {}),
+        }
       : undefined;
   }
   if (Array.isArray(msg.have)) msg.have = msg.have.slice(0, MAX_ARRAY).map((x: any) => clampStr(x, MAX_STR));
@@ -1360,6 +1419,11 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     return;
   }
   clampGossip(msg);
+  // Banned identities (owner-signed rekey victims) are dead to this room: no
+  // frame of theirs is processed, so a hello can't resurrect them even if the
+  // rotated code leaked to them. ('rekey' itself carries `by`, not memberId,
+  // and is owner-gated separately.)
+  if ((msg as any).memberId && room.bans.has((msg as any).memberId)) return;
   const meta = msg as any;
   // `direct` = arrived straight from its author (undecremented hop count), vs a
   // relayed copy forwarded by another member. Only direct messages identify the
@@ -2335,9 +2399,23 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   // fresh one (broadcast in the re-greet below); members drop the now-stale blob
   // and pick the owner's new one from its HELLO. Flag/secret themselves persist
   // (that's the point of the secret being separate from the code).
+  if (room.e2e && room.ownerId === room.self.memberId) {
+    // Rotate the CONTENT key too: files shared after the kick use a secret the
+    // kicked member never receives. The outgoing secret joins the decrypt-only
+    // keyring (old files stay readable; they were already in their hands).
+    room.prevSecrets = [room.secret, ...room.prevSecrets].slice(0, MAX_PREV_SECRETS);
+    room.secret = generateRoomSecret();
+  }
   if (room.e2e) {
     room.e2eCfg = room.ownerId === room.self.memberId ? signE2ECfg(room) : null;
     persistE2E(room);
+  }
+  // Ban the kicked identity: the rekey we just verified is owner-signed, so
+  // every member independently records it. Their gossip is dropped from now
+  // on — a leaked new code alone no longer readmits them.
+  if (kickedId) {
+    room.bans.add(kickedId);
+    try { ipcRenderer.send('room-rekey', { roomId: room.roomId, code: newCode, banId: kickedId }); } catch { /* ignore */ }
   }
   // Tombstone proofs are bound to the topic, which just rotated — the OLD-topic
   // signatures no longer verify, so a member joining on the new code couldn't
@@ -2442,7 +2520,7 @@ function kickMember(room: Room, memberId: string): void {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -2482,6 +2560,8 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     // the persisted flag is missing/stale, a "-e2e" code must never run plaintext.
     e2e: p.e2e || codeIsE2E(p.code),
     secret: p.secret || '',
+    prevSecrets: Array.isArray(p.prevSecrets) ? p.prevSecrets.map((x) => clampStr(x, MAX_SECRET)).filter(Boolean).slice(0, MAX_PREV_SECRETS) : [],
+    bans: new Set(Array.isArray(p.bans) ? p.bans.map((x) => clampStr(x, MAX_STR)).filter(Boolean) : []),
     e2eCfg: null,
     e2eSigned: false,
     cacheDir: p.cacheDir || '',

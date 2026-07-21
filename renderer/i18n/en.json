@@ -217,7 +217,7 @@
   "rooms.muteConfirm": "Hide this member on your device? Their files, chat messages and voice will be ignored. You can undo this anytime.",
   "rooms.kick": "Remove from room",
   "rooms.kickConfirm": "Remove this member? The room gets a new invite code that everyone else keeps automatically — the removed member can’t rejoin with the old one.",
-  "rooms.kickConfirmE2E": "Note: encrypted files they already downloaded remain readable for them.",
+  "rooms.kickConfirmE2E": "Encrypted files they already downloaded stay readable for them, but everything shared after the removal uses a fresh key they never receive.",
   "rooms.kicked": "Member removed; room code rotated",
   "rooms.kickedBanner": "You were removed from this room. You can no longer see new activity or files — leave to clear it.",
   "rooms.e2e": "End-to-end encryption",
