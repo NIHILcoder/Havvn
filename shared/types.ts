@@ -328,6 +328,8 @@ export interface RoomSummary {
   suspended?: boolean;
   /** Unread chat messages from others since the room was last viewed. */
   unread?: number;
+  /** OS notifications silenced for this room (per-install preference). */
+  notifyMuted?: boolean;
 }
 
 /** This install's identity in rooms. */
@@ -1119,6 +1121,10 @@ export interface IpcApi {
     openFile: (roomId: string, fileId: string) => Promise<void>;
     revealFile: (roomId: string, fileId: string) => Promise<void>;
     watchFile: (roomId: string, fileId: string) => Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }>;
+    subtitleList: (roomId: string, fileId: string) => Promise<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>>;
+    subtitleGet: (roomId: string, fileId: string, key: string) => Promise<string>;
+    releaseFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
+    reseedFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     removeFiles: (roomId: string, fileIds: string[]) => Promise<{ ok: boolean }>;
@@ -1135,6 +1141,7 @@ export interface IpcApi {
     setFolderAutoFetch: (roomId: string, folderId: string, mode: boolean | null) => Promise<RoomState>;
     setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<{ ok: boolean }>;
     setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<{ ok: boolean }>;
+    setNotifyMuted: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
     fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
     setLimits: (roomId: string, upKbps: number, downKbps: number) => Promise<{ ok: boolean }>;
     kick: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;

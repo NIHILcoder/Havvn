@@ -619,6 +619,14 @@ const api: IpcApi = {
     revealFile: (roomId: string, fileId: string): Promise<void> => ipcRenderer.invoke('rooms:revealFile', roomId, fileId),
     watchFile: (roomId: string, fileId: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }> =>
       ipcRenderer.invoke('rooms:watchFile', roomId, fileId),
+    subtitleList: (roomId: string, fileId: string): Promise<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>> =>
+      ipcRenderer.invoke('rooms:subtitleList', roomId, fileId),
+    subtitleGet: (roomId: string, fileId: string, key: string): Promise<string> =>
+      ipcRenderer.invoke('rooms:subtitleGet', roomId, fileId, key),
+    releaseFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:releaseFile', roomId, fileId),
+    reseedFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:reseedFile', roomId, fileId),
     broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:broadcastSync', roomId, payload),
     removeFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
@@ -673,6 +681,8 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:setMuted', roomId, memberId, muted),
     setAutoFetch: (roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setAutoFetch', roomId, autoFetch),
+    setNotifyMuted: (roomId: string, muted: boolean): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:setNotifyMuted', roomId, muted),
     fetchFile: (roomId: string, fileId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:fetchFile', roomId, fileId),
     setLimits: (roomId: string, upKbps: number, downKbps: number): Promise<{ ok: boolean }> =>

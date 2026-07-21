@@ -525,6 +525,22 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, fileId: string) => roomManager.watchFile(roomId, fileId)
   ));
 
+  ipcMain.handle('rooms:subtitleList', wrapHandler('rooms:subtitleList',
+    async (_event, roomId: string, fileId: string) => roomManager.subtitleList(roomId, fileId)
+  ));
+
+  ipcMain.handle('rooms:subtitleGet', wrapHandler('rooms:subtitleGet',
+    async (_event, roomId: string, fileId: string, key: string) => roomManager.subtitleGet(roomId, fileId, String(key))
+  ));
+
+  ipcMain.handle('rooms:releaseFile', wrapHandler('rooms:releaseFile',
+    async (_event, roomId: string, fileId: string) => roomManager.releaseFile(roomId, fileId)
+  ));
+
+  ipcMain.handle('rooms:reseedFile', wrapHandler('rooms:reseedFile',
+    async (_event, roomId: string, fileId: string) => roomManager.reseedFile(roomId, fileId)
+  ));
+
   ipcMain.handle('rooms:broadcastSync', wrapHandler('rooms:broadcastSync',
     async (_event, roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean }) => {
       roomManager.broadcastSync(roomId, payload);
@@ -641,6 +657,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('rooms:setAutoFetch', wrapHandler('rooms:setAutoFetch',
     async (_event, roomId: string, autoFetch: boolean) => roomManager.setAutoFetch(roomId, !!autoFetch)
+  ));
+
+  ipcMain.handle('rooms:setNotifyMuted', wrapHandler('rooms:setNotifyMuted',
+    async (_event, roomId: string, muted: boolean) => roomManager.setNotifyMuted(roomId, !!muted)
   ));
 
   ipcMain.handle('rooms:fetchFile', wrapHandler('rooms:fetchFile',

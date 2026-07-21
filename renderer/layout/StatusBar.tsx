@@ -20,6 +20,14 @@ export interface RoomPresence {
   watching: boolean;    // a watch-together sync happened recently
 }
 
+/** The active voice call (audio keeps running when the Rooms page unmounts). */
+export interface VoiceCallInfo {
+  roomId: string;
+  name: string;
+  muted: boolean;
+  deafened: boolean;
+}
+
 interface StatusBarProps {
   totalDownSpeed?: number;
   totalUpSpeed?: number;
@@ -27,6 +35,11 @@ interface StatusBarProps {
   connectedPeers?: number;
   roomPresence?: RoomPresence | null;
   onJoinRoom?: () => void;
+  voiceCall?: VoiceCallInfo | null;
+  onOpenVoiceRoom?: () => void;
+  onVoiceMute?: () => void;
+  onVoiceDeafen?: () => void;
+  onVoiceLeave?: () => void;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -36,6 +49,11 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   connectedPeers = 0,
   roomPresence = null,
   onJoinRoom,
+  voiceCall = null,
+  onOpenVoiceRoom,
+  onVoiceMute,
+  onVoiceDeafen,
+  onVoiceLeave,
 }) => {
   const { t } = useTranslation();
   const [showGraph, setShowGraph] = useState(false);
@@ -67,7 +85,35 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           </div>
         </div>
 
-        {roomPresence && (
+        {/* The live call cluster — audio continues on every page, so its
+            controls must too: room name (jump), mic, deafen, hang up. */}
+        {voiceCall && (
+          <div className="status-bar-section status-voice-call">
+            <span className={`status-voice-dot${voiceCall.muted ? ' muted' : ''}`} />
+            <button className="status-voice-name" onClick={onOpenVoiceRoom} title={t('statusbar.openCall')}>
+              <Icon name="headphones" size={12} /> {voiceCall.name}
+            </button>
+            <button
+              className={`status-voice-btn${voiceCall.muted ? ' active' : ''}`}
+              onClick={onVoiceMute}
+              title={voiceCall.muted ? t('rooms.voice.unmute') : t('rooms.voice.mute')}
+            >
+              <Icon name={voiceCall.muted ? 'mic-off' : 'mic'} size={12} />
+            </button>
+            <button
+              className={`status-voice-btn${voiceCall.deafened ? ' active' : ''}`}
+              onClick={onVoiceDeafen}
+              title={voiceCall.deafened ? t('rooms.voice.undeafen') : t('rooms.voice.deafen')}
+            >
+              <Icon name={voiceCall.deafened ? 'volume-x' : 'headphones'} size={12} />
+            </button>
+            <button className="status-voice-btn leave" onClick={onVoiceLeave} title={t('rooms.voice.leave')}>
+              <Icon name="phone-off" size={12} />
+            </button>
+          </div>
+        )}
+
+        {roomPresence && !voiceCall && (
           <div className="status-bar-section status-presence" title={`${roomPresence.name} — ${t('statusbar.openRooms')}`}>
             <span className="presence-dot" />
             <span className="presence-text">

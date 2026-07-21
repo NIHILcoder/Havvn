@@ -8,7 +8,7 @@ import { getTorrentManager } from './torrent';
 import { getSchedulerEngine } from './scheduler/scheduler-engine';
 import { setupIpcHandlers } from './ipc';
 import { logger, detectVPN, getAppIconPath } from './utils';
-import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getVpnWarningDismissed, setVpnWarningDismissed, migrateMemberIdToKeyDerived } from './db/store';
+import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getPopoutBounds, savePopoutBounds, getVpnWarningDismissed, setVpnWarningDismissed, migrateMemberIdToKeyDerived } from './db/store';
 import { getRSSService } from './services/rss-service';
 import { getIPBlocklistService } from './services/ip-blocklist';
 import { getWatchFolderService } from './torrent/watch-folder';
@@ -529,6 +529,26 @@ async function createWindow(): Promise<void> {
     'havvn-room-chat': { width: 420, height: 640, minWidth: 320, minHeight: 420 },
     'havvn-voice-settings': { width: 540, height: 760, minWidth: 420, minHeight: 520 },
   };
+  // Saved pop-out bounds, clamped: reject undersized ones, keep the position
+  // only while it still lands on a connected display (same rule as the main
+  // window's restoredBounds — a detached monitor must not strand the window).
+  const savedPopoutBounds = (frameName: string): Partial<Electron.Rectangle> => {
+    try {
+      const opts = POPOUTS[frameName];
+      const b = getPopoutBounds(frameName);
+      if (!opts || !b || b.width < (opts.minWidth ?? 200) || b.height < (opts.minHeight ?? 200)) return {};
+      if (typeof b.x === 'number' && typeof b.y === 'number') {
+        const visible = screen.getAllDisplays().some((d) => {
+          const wa = d.workArea;
+          return (b.x as number) >= wa.x - 50 && (b.y as number) >= wa.y - 50
+            && (b.x as number) < wa.x + wa.width && (b.y as number) < wa.y + wa.height;
+        });
+        if (visible) return { width: b.width, height: b.height, x: b.x, y: b.y };
+      }
+      return { width: b.width, height: b.height };
+    } catch { return {}; }
+  };
+
   mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
     const opts = POPOUTS[frameName];
     if (opts && (url === 'about:blank' || url === '')) {
@@ -536,6 +556,7 @@ async function createWindow(): Promise<void> {
         action: 'allow',
         overrideBrowserWindowOptions: {
           ...opts,
+          ...savedPopoutBounds(frameName),
           autoHideMenuBar: true,
           backgroundColor: '#141519',
           title: 'Havvn',
@@ -554,8 +575,14 @@ async function createWindow(): Promise<void> {
   // of its own — and never let it outlive the window that scripts it (an
   // orphaned child would also keep 'window-all-closed' from ever firing).
   const ownerWindow = mainWindow; // non-null capture for the closures below
-  ownerWindow.webContents.on('did-create-window', (child) => {
+  ownerWindow.webContents.on('did-create-window', (child, details) => {
     child.removeMenu(); // no app menu → no Ctrl+R accelerator reloading the child
+    // Remember where the user parked this pop-out (per frameName).
+    if (POPOUTS[details.frameName]) {
+      child.on('close', () => {
+        try { savePopoutBounds(details.frameName, child.getNormalBounds()); } catch { /* ignore */ }
+      });
+    }
     child.webContents.setWindowOpenHandler(({ url: childUrl }) => {
       if (childUrl.startsWith('https://') || childUrl.startsWith('http://')) {
         void shell.openExternal(childUrl);

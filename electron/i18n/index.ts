@@ -78,6 +78,10 @@ const en: Dict = {
   'notify.onDone.sleepBody': 'The computer will go to sleep in 15 seconds. Open Havvn to cancel.',
   'notify.onDone.quitTitle': 'Downloads finished — quitting',
   'notify.onDone.quitBody': 'Havvn will quit in 15 seconds. Open it to cancel.',
+  'notify.room.someone': 'Someone',
+  'notify.room.sharedFile': 'shared {file}',
+  'notify.room.aFile': 'a file',
+  'notify.room.fallbackName': 'Room',
 
   // Shared
   'common.ok': 'OK',
@@ -165,6 +169,10 @@ const ru: Dict = {
   'notify.onDone.sleepBody': 'Компьютер уснёт через 15 секунд. Откройте Havvn, чтобы отменить.',
   'notify.onDone.quitTitle': 'Загрузки завершены — выход',
   'notify.onDone.quitBody': 'Havvn закроется через 15 секунд. Откройте окно, чтобы отменить.',
+  'notify.room.someone': 'Кто-то',
+  'notify.room.sharedFile': 'поделился(-ась) {file}',
+  'notify.room.aFile': 'файлом',
+  'notify.room.fallbackName': 'Комната',
 
   // Shared
   'common.ok': 'OK',

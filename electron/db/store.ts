@@ -36,6 +36,7 @@ interface ConfigSchema {
   scheduler: SchedulerConfig;
   privacyConfig: PrivacyConfig;
   windowBounds: WindowBounds | null;
+  popoutBounds: Record<string, WindowBounds> | null; // per-frameName pop-out window bounds
   defaultsSeeded: boolean;               // First-run seeding marker
   suggestedFeedSeeded: boolean;          // One-time seeding/migration of the working FOSS Torrents feed
   collaborativeSeedingEnabled: boolean;  // Collaborative Seeding Network opt-in (persisted)
@@ -116,6 +117,7 @@ export interface PersistedRoom {
   autoFetch?: boolean; // auto-download files peers share (absent = true, the historical behavior)
   upKbps?: number;     // per-room upload ceiling, KB/s (absent/0 = unlimited)
   downKbps?: number;   // per-room download ceiling, KB/s (absent/0 = unlimited)
+  notifyMuted?: boolean; // OS notifications silenced for this room (absent = notify)
 }
 
 const defaultCategories: Category[] = [
@@ -229,6 +231,7 @@ const configStore = new Store<ConfigSchema>({
       vpnBindEngine: false,
     },
     windowBounds: null,
+    popoutBounds: null,
     defaultsSeeded: false,
     suggestedFeedSeeded: false,
     collaborativeSeedingEnabled: false,
@@ -890,6 +893,17 @@ export function getWindowBounds(): WindowBounds | null {
 
 export function saveWindowBounds(bounds: WindowBounds): void {
   configStore.set('windowBounds', bounds);
+}
+
+/** Saved bounds of a pop-out window (chat / voice settings / theme editor). */
+export function getPopoutBounds(frameName: string): WindowBounds | null {
+  const all = configStore.get('popoutBounds') ?? null;
+  return all?.[frameName] ?? null;
+}
+
+export function savePopoutBounds(frameName: string, bounds: WindowBounds): void {
+  const all = configStore.get('popoutBounds') ?? {};
+  configStore.set('popoutBounds', { ...all, [frameName]: bounds });
 }
 
 
@@ -1652,6 +1666,15 @@ export function setRoomAutoFetch(roomId: string, autoFetch: boolean): void {
   const room = rooms[roomId];
   if (!room) return;
   rooms[roomId] = { ...room, autoFetch };
+  roomsStore.set('rooms', rooms);
+}
+
+/** Per-room OS-notification mute (absent = notify). */
+export function setRoomNotifyMuted(roomId: string, notifyMuted: boolean): void {
+  const rooms = roomsStore.get('rooms') ?? {};
+  const room = rooms[roomId];
+  if (!room) return;
+  rooms[roomId] = { ...room, notifyMuted };
   roomsStore.set('rooms', rooms);
 }
 

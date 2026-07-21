@@ -57,6 +57,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
   const categoryLabels: Record<string, string> = {
     Navigation: t('hotkeys.categoryNavigation'),
     Torrents: t('hotkeys.categoryTorrents'),
+    Voice: t('hotkeys.categoryVoice'),
   };
   const hotkeyLabels: Record<string, string> = {
     'open-downloads': t('hotkeys.openDownloads'),
@@ -65,6 +66,8 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     'create-torrent': t('nav.create'),
     'pause-all': t('hotkeys.pauseAll'),
     'resume-all': t('hotkeys.resumeAll'),
+    'voice-mute': t('hotkeys.voiceMute'),
+    'voice-deafen': t('hotkeys.voiceDeafen'),
   };
   const hotkeyDescriptions: Record<string, string> = {
     'open-downloads': t('hotkeys.openDownloadsDesc'),
@@ -73,6 +76,8 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     'create-torrent': t('hotkeys.createTorrentDesc'),
     'pause-all': t('hotkeys.pauseAllDesc'),
     'resume-all': t('hotkeys.resumeAllDesc'),
+    'voice-mute': t('hotkeys.voiceMuteDesc'),
+    'voice-deafen': t('hotkeys.voiceDeafenDesc'),
   };
 
   const handleStartRecording = (hotkeyId: string) => {

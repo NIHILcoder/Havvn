@@ -1976,6 +1976,11 @@ function ensureLocal(room: Room, file: RoomFile): void {
   if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't fetch it again
   const c = ensureClient(room);
   if (c.get(file.infoHash)) return; // already adding/seeding
+  // The transfer may already know where the bytes live (a file shared from its
+  // ORIGINAL location, or a sharer's ciphertext in a non-canonical cache dir) —
+  // prefer those paths over the canonical slots so a reseed never re-downloads
+  // what is already on disk.
+  const known = room.transfers.get(file.fileId);
 
   // E2E: the swarm carries ciphertext. Download it into the cache (never the
   // room folder), then decrypt the plaintext into the folder for watch/open.
@@ -1989,7 +1994,10 @@ function ensureLocal(room: Room, file: RoomFile): void {
     // fall back to their hash so they can't traverse out of the cache dir.
     const idDir = /^[0-9a-f]{40}$/i.test(file.fileId) ? file.fileId : crypto.createHash('sha1').update(file.fileId).digest('hex');
     const cipherDir = path.join(room.cacheDir, idDir);
-    const cachedCipher = path.join(cipherDir, cipherName);
+    // A transfer-known ciphertext (the sharer's own, in a timestamp-keyed cache
+    // dir) beats the fileId-keyed slot — same bytes, different location.
+    const knownCipher = known?.cipherPath && fs.existsSync(known.cipherPath) ? known.cipherPath : null;
+    const cachedCipher = knownCipher ?? path.join(cipherDir, cipherName);
     try { fs.mkdirSync(cipherDir, { recursive: true }); } catch { /* ignore */ }
     if (fs.existsSync(cachedCipher)) {
       // Already have the ciphertext — re-seed it and (re)derive the plaintext.
@@ -2019,7 +2027,10 @@ function ensureLocal(room: Room, file: RoomFile): void {
   // mirroring the UI grouping. The same dir is used for the seed-from-disk check
   // and the download target so a reseed finds what a prior download left.
   const dir = folderDirFor(room, file);
-  const onDisk = path.join(dir, file.name);
+  // A transfer-known path (a share seeded from its original location) beats
+  // the room-folder slot.
+  const knownPlain = known?.localPath && fs.existsSync(known.localPath) ? known.localPath : null;
+  const onDisk = knownPlain ?? path.join(dir, file.name);
   if (fs.existsSync(onDisk)) {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: onDisk });
     persistManifest(room, file, onDisk);
@@ -2758,6 +2769,18 @@ function releaseFile(roomId: string, fileId: string): void {
   pushState(room, true);
 }
 
+/** Resume seeding a released file (the row's "Seed again"). */
+function reseedFile(roomId: string, fileId: string): void {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const file = room.files.get(fileId);
+  if (!file) return;
+  const tr = room.transfers.get(fileId);
+  if (tr) tr.released = false;
+  ensureLocal(room, file); // idempotent — re-seeds from disk or re-downloads
+  pushState(room, true);
+}
+
 /** Broadcast a chat message to the room and record it locally (so we see our own). */
 function sendChat(roomId: string, rawText: string): void {
   const room = rooms.get(roomId);
@@ -2847,6 +2870,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'netResume') { netSuspended = false; data = { ok: true }; }
     else if (type === 'profile') { updateProfile(msg.payload || {}); data = { ok: true }; }
     else if (type === 'releaseFile') { releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }
+    else if (type === 'reseedFile') { reseedFile(msg.roomId, msg.fileId); data = { ok: true }; }
     else if (type === 'removeFile') {
       const r = rooms.get(msg.roomId);
       if (r) { broadcastDelete(r, msg.fileId, Number(msg.at) || Date.now()); pushState(r, true); }
@@ -2927,6 +2951,12 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');
       if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+      // One call at a time: joining here hangs up any other room's voice. The
+      // shell-level call surface (StatusBar cluster, mute/deafen hotkeys)
+      // binds to THE active call — two live mics would make it ambiguous.
+      for (const [otherId, other] of rooms) {
+        if (otherId !== msg.roomId && other.voice.getState().inVoice) other.voice.leave();
+      }
       const warning = await r.voice.join(); // getUserMedia — rejects (→ toast) if the mic is denied
       // The kill-switch may have tripped DURING getUserMedia (suspend can't tear
       // down a session that wasn't active yet) — re-check and undo, or the mic +

@@ -2,6 +2,9 @@
 
 .vsm-body { display: flex; flex-direction: column; gap: 16px; }
 
+/* Scope reminder at the top: these settings are global, not per-room. */
+.vsm-global-hint { margin: 0; font-size: 11px; color: var(--color-text-tertiary); flex-shrink: 0; }
+
 /* flex-shrink: 0 — inside the pop-out the body is a DEFINITE-height flex chain
    (100vh window). Shrinkable sections would squeeze their content instead of
    letting the body scroll; docked, the modal body's height is indefinite and

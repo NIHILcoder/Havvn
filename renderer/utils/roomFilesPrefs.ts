@@ -36,6 +36,12 @@ export function saveRoomFilesPrefs(p: RoomFilesPrefs): void {
 }
 
 export type RoomFilesSortKey = 'added' | 'name' | 'size' | 'status';
+export type RoomFilesSortDir = 'asc' | 'desc';
+
+/** Each key's natural direction — what the pre-direction UI always showed. */
+export const SORT_NATURAL_DIR: Record<RoomFilesSortKey, RoomFilesSortDir> = {
+  added: 'desc', name: 'asc', size: 'desc', status: 'asc',
+};
 
 export function loadRoomSort(roomId: string): RoomFilesSortKey {
   const all = readJson(SORT_KEY);
@@ -47,6 +53,21 @@ export function saveRoomSort(roomId: string, sort: RoomFilesSortKey): void {
   const all = readJson(SORT_KEY);
   all[roomId] = sort;
   try { localStorage.setItem(SORT_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+}
+
+const SORT_DIR_KEY = 'roomFilesSortDir';
+
+/** Per-room direction; defaults to the current sort key's natural direction. */
+export function loadRoomSortDir(roomId: string, key: RoomFilesSortKey): RoomFilesSortDir {
+  const all = readJson(SORT_DIR_KEY);
+  const v = all[roomId];
+  return v === 'asc' || v === 'desc' ? v : SORT_NATURAL_DIR[key];
+}
+
+export function saveRoomSortDir(roomId: string, dir: RoomFilesSortDir): void {
+  const all = readJson(SORT_DIR_KEY);
+  all[roomId] = dir;
+  try { localStorage.setItem(SORT_DIR_KEY, JSON.stringify(all)); } catch { /* ignore */ }
 }
 
 export function loadCollapsedFolders(roomId: string): Set<string> {
@@ -61,9 +82,9 @@ export function saveCollapsedFolders(roomId: string, collapsed: Set<string>): vo
   try { localStorage.setItem(COLLAPSED_KEY, JSON.stringify(all)); } catch { /* ignore */ }
 }
 
-/** Drop a left room's entries from both per-room maps (they'd accrue forever). */
+/** Drop a left room's entries from the per-room maps (they'd accrue forever). */
 export function clearRoomFilesPrefs(roomId: string): void {
-  for (const key of [SORT_KEY, COLLAPSED_KEY]) {
+  for (const key of [SORT_KEY, SORT_DIR_KEY, COLLAPSED_KEY]) {
     const all = readJson(key);
     if (roomId in all) {
       delete all[roomId];

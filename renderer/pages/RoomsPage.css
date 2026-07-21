@@ -78,23 +78,36 @@
   container-name: room;
 }
 
-/* Drop-files-here overlay (shown while an OS file drag hovers the room) */
+/* Drop-files-here banner (shown while an OS file drag hovers the room).
+   A slim top pill, NOT a full-cover sheet — the section drop targets stay
+   visible and their own dragover highlight can be seen underneath. */
 .room-drop-overlay {
   position: absolute;
-  inset: var(--space-3);
+  top: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 40;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: var(--space-2);
-  background: rgba(var(--color-accent-rgb), 0.08);
-  border: 2px dashed var(--color-accent-primary);
-  border-radius: var(--radius-lg);
+  max-width: calc(100% - var(--space-6));
+  padding: 8px 16px;
+  background: var(--color-bg-secondary);
+  border: 1px dashed var(--color-accent-primary);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
   color: var(--color-accent-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   pointer-events: none; /* drag events must keep hitting the container below */
+}
+/* Ellipsis must live on the text node itself — on the flex container it's a
+   no-op and the hint would hard-clip at narrow widths. */
+.room-drop-overlay span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .room-detail-head {
@@ -125,6 +138,155 @@
 @keyframes room-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
 .room-detail-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+/* Badges under the room name sit on ONE row (the title column would other-
+   wise stack each inline chip on its own line). */
+.room-detail-badges { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+/* Members-at-a-glance chip; also the visible collapse/expand for the rail. */
+.room-people-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-people-chip:hover { color: var(--color-text-primary); border-color: var(--color-border-hover); }
+.room-people-chip.collapsed { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+
+/* Suspended (VPN kill-switch) connection state + inline banner. */
+.room-conn.suspended { color: var(--color-warning); }
+.room-conn.suspended .dot { background: var(--color-warning); }
+.room-suspended-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 10%, transparent);
+  color: var(--color-warning);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ── Room-settings popover (auto-download / limits / code / rename / leave) ── */
+.room-settings-wrap { position: relative; }
+.room-settings-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+.room-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  min-height: 24px;
+}
+.room-settings-limits-label { display: inline-flex; align-items: center; gap: 5px; }
+.room-settings-limits { display: inline-flex; align-items: center; gap: 6px; }
+.room-settings-limits .room-limit { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--color-text-tertiary); }
+.room-settings-limits input {
+  width: 54px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 11px;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+}
+.room-settings-kbps { font-size: 10px; color: var(--color-text-tertiary); }
+.room-settings-sep { height: 1px; background: var(--color-border-subtle); margin: 2px 0; }
+.room-settings-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.room-settings-item:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-settings-item.danger:hover { background: color-mix(in srgb, var(--color-error) 12%, transparent); color: var(--color-error); }
+
+/* ── Empty-room onboarding (the files zone's first-run face) ─────────────── */
+.room-onboard {
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-md);
+}
+.room-onboard-desc { margin: 0; font-size: 13px; color: var(--color-text-tertiary); text-align: center; }
+.room-onboard-steps { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: center; }
+.room-onboard-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-onboard-step:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
+
+/* "N watching" live badge on a file row — click joins the session in sync. */
+.room-file-watching {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 16px;
+  padding: 0 6px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-accent-primary) 18%, transparent);
+  color: var(--color-accent-primary);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.room-file-watching:hover { background: color-mix(in srgb, var(--color-accent-primary) 30%, transparent); }
+/* Indicator-only when the file isn't joinable yet (downloading via auto mode). */
+.room-file-watching.passive { cursor: default; opacity: 0.75; }
+.room-file-watching.passive:hover { background: color-mix(in srgb, var(--color-accent-primary) 18%, transparent); }
+
+/* Released (on disk, seeding stopped) status glyph. */
+.room-status.released { color: var(--color-text-tertiary); }
 
 /* ── Three-region layout: People+Voice rail | Stage | Chat ─────────────────
    Rail/chat widths come from CSS vars (set inline, draggable via .room-splitter);
@@ -338,6 +500,9 @@
   /* Single column: the page scrolls as one flow again, chat gets a capped log. */
   .room-detail { overflow-y: auto; }
   .room-detail-inner { height: auto; }
+  /* The page scrolls here, so an absolutely-anchored banner could sit far
+     above the viewport — stick it to the scroller's visible top instead. */
+  .room-drop-overlay { position: sticky; top: var(--space-3); left: auto; transform: none; align-self: center; }
   .room-detail-grid, .room-detail-grid.rail-collapsed { grid-template-columns: 1fr; flex: initial; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   .room-splitter { display: none; }
@@ -356,85 +521,8 @@
 .room-chat-popped, .room-chat-popped .room-chat { flex: 1 1 auto; min-height: 0; }
 .room-chat-popped .room-chat-log { flex: 1; max-height: none; min-height: 0; }
 
-/* ── Chat header: title + member strip toggle ──────────────────────────── */
-.room-chat-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-.room-chat-members-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 3px 8px 3px 4px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  color: var(--color-text-tertiary);
-  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
-}
-.room-chat-members-toggle:hover,
-.room-chat-members-toggle.open {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-subtle);
-  color: var(--color-text-secondary);
-}
-.room-avatar-strip { display: inline-flex; align-items: center; }
-/* The separation ring is an in-flow border (an outline paints OUTSIDE the box
-   and bled over the chip edge), and the radius matches the identicon's
-   rounded-square shape so no corner pokes out of the ring. */
-.room-avatar-strip-item {
-  display: inline-flex;
-  border-radius: 7px;
-  border: 2px solid var(--color-bg-secondary);
-  overflow: hidden;
-  background: var(--color-bg-secondary);
-}
-.room-avatar-strip-item + .room-avatar-strip-item { margin-left: -7px; }
-.room-avatar-more {
-  width: 22px;
-  height: 22px;
-  align-items: center;
-  justify-content: center;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border-subtle);
-}
+/* The online-count chip (People rail head). */
 .room-chat-online { font-size: 11px; font-variant-numeric: tabular-nums; }
-.room-chat-members-chevron { transition: transform var(--transition-fast); flex-shrink: 0; }
-.room-chat-members-toggle.open .room-chat-members-chevron { transform: rotate(180deg); }
-
-/* ── Collapsible members panel (0fr→1fr grid trick) ────────────────────────
-   [data-reduce-motion] in base.css zeroes all transition durations, so the
-   height animation collapses to an instant there for free. `visibility`
-   removes the hidden rows from the tab order while collapsed. */
-.room-members-collapse {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-.room-members-collapse.open { grid-template-rows: 1fr; }
-.room-members-collapse-inner {
-  overflow: hidden;
-  min-height: 0;
-  visibility: hidden;
-  transition: visibility 220ms;
-}
-.room-members-collapse.open .room-members-collapse-inner { visibility: visible; }
-.room-members-collapse .room-members {
-  overflow-y: auto;
-  max-height: 240px;
-  /* 5px side gutters: the avatar's accent ring is a box-shadow painted 4px
-     OUTSIDE the box, and the collapse wrapper clips with overflow:hidden —
-     without the gutter the ring gets cut at the panel's left edge. */
-  padding: 0 5px var(--space-2);
-  margin-bottom: var(--space-3);
-  border-bottom: 1px solid var(--color-border-subtle);
-}
 
 /* Sections are flat cards (concept .roomcard) */
 .room-section {
@@ -852,6 +940,161 @@
   border-bottom-right-radius: 4px;
 }
 .room-chat-time { font-size: 10px; color: var(--color-text-tertiary); padding: 0 var(--space-1); font-variant-numeric: tabular-nums; }
+
+/* Day separator: a centered label between hairlines. */
+.room-chat-day {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 2px 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-tertiary);
+}
+.room-chat-day::before,
+.room-chat-day::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+/* Continuation of the same author within 5 min: no avatar/name, tighter gap
+   (the log's flex gap can't be selectively shrunk — pull the row up instead). */
+.room-chat-msg.cont { margin-top: calc(-1 * var(--space-2) + 3px); }
+.room-chat-gutter { width: 28px; flex-shrink: 0; }
+
+/* Links inside a bubble. `.mine` bubbles invert to bg-primary text on an
+   accent ground — an accent-colored link would vanish there, so inherit. */
+.room-chat-link { color: var(--color-accent-primary); text-decoration: underline; overflow-wrap: anywhere; }
+.room-chat-link:hover { text-decoration: none; }
+.room-chat-msg.mine .room-chat-link { color: inherit; }
+
+/* "N new ↓" pill: stuck to the log's visible bottom edge while scrolled up. */
+.room-chat-newpill {
+  position: sticky;
+  bottom: 2px;
+  align-self: center;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-bg-primary);
+  background: var(--color-accent-primary);
+  border: none;
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+  cursor: pointer;
+}
+
+/* Near-limit character counter at the right edge of the typing row. */
+.room-chat-count { margin-left: auto; font-size: 10px; font-variant-numeric: tabular-nums; }
+.room-chat-count.warn { color: var(--color-warning); font-weight: 600; }
+
+/* Chat search: the pill row above the log (same face as the file search). */
+.room-chat-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: 6px var(--space-3);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  color: var(--color-text-tertiary);
+}
+.room-chat-search:focus-within { border-color: var(--color-border-focus); }
+.room-chat-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: none;
+  padding: 0;
+  color: var(--color-text-primary);
+  font-size: 12.5px;
+  font-family: var(--font-family);
+}
+/* The search toggle takes the tab row's right side; the pop-out follows it. */
+.room-zone-search { margin-left: auto; }
+.room-zone-search + .room-zone-popout { margin-left: 0; }
+.room-zone-search.active { color: var(--color-accent-primary); }
+
+/* Your name mentioned in a message. */
+.room-chat-mention {
+  background: color-mix(in srgb, var(--color-accent-primary) 25%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+/* @mention autocomplete over the composer. */
+.room-chat-compose { position: relative; }
+.room-chat-mention-pop {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: var(--space-2);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+.room-chat-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.room-chat-mention-item:hover,
+.room-chat-mention-item.active { background: var(--color-bg-hover); }
+
+/* File-request card inside a bubble. */
+.room-chat-request { display: flex; flex-direction: column; gap: 4px; }
+.room-chat-request-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.8;
+}
+.room-chat-request-text { font-size: 13px; }
+.room-chat-request-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.room-chat-request-attach:hover { color: var(--color-accent-primary); border-color: var(--color-accent-primary); }
 
 /* Typing liveness line, pinned above the composer. The row is always in the
    layout (fixed min-height) so appearing/disappearing never shifts the log. */
@@ -1873,6 +2116,86 @@
   accent-color: var(--color-accent-primary);
   cursor: pointer;
 }
+
+/* Per-peer popover for a voice tile: local mute + persistent volume. Rendered
+   ONCE under the whole tile row at full rail width — the rail clips overflow,
+   so an in-tile 150px popover would be cut at the rail's right edge. */
+.room-voice-people { position: relative; }
+.room-voice-pop {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+.room-voice-pop-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-voice-pop-mute {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.room-voice-pop-mute:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-voice-pop-mute.on { color: var(--color-warning); }
+
+/* Subtitle picker in the room player's top bar. */
+.room-sub-wrap { position: relative; display: inline-flex; }
+.room-sub-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 170px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
+}
+.room-sub-item {
+  display: block;
+  padding: 5px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.room-sub-item:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-sub-item.active { color: var(--color-accent-primary); font-weight: 600; }
 /* "LIVE" chip on a participant tile while they share their screen (click = watch). */
 .room-voice-share-badge {
   display: inline-flex;

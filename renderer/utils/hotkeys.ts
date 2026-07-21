@@ -67,6 +67,20 @@ export const defaultHotkeys: Hotkey[] = [
     keys: ['Ctrl', 'Shift', 'KeyR'],
     category: 'Torrents',
   },
+  {
+    id: 'voice-mute',
+    label: 'Toggle Microphone',
+    description: 'Mute or unmute your mic in the active voice call',
+    keys: ['Ctrl', 'Shift', 'KeyM'],
+    category: 'Voice',
+  },
+  {
+    id: 'voice-deafen',
+    label: 'Toggle Deafen',
+    description: 'Silence or restore all voice audio in the active call',
+    keys: ['Ctrl', 'Shift', 'KeyD'],
+    category: 'Voice',
+  },
 ];
 
 const cloneDefaults = (): Hotkey[] => defaultHotkeys.map((h) => ({ ...h, keys: [...h.keys] }));

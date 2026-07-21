@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence, OnlinePerson } from './layout';
+import { Sidebar, StatusBar, PageId, FilterMode, RoomPresence, VoiceCallInfo, OnlinePerson } from './layout';
 import { CompletionPending, DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
 // their own chunks so the initial bundle is smaller and the app (and the startup
@@ -70,6 +70,11 @@ const AppContent: React.FC = () => {
   const [diskAlert, setDiskAlert] = useState<{ paused: number; freeBytes: number; thresholdBytes: number } | null>(null);
   // The most-alive room right now — feeds the status-bar presence bridge
   const [roomPresence, setRoomPresence] = useState<RoomPresence | null>(null);
+  // The active voice call (at most one room can be in voice) — mirrored from
+  // room pushes so the StatusBar can show call controls on every page.
+  const [voiceCall, setVoiceCall] = useState<VoiceCallInfo | null>(null);
+  const voiceCallRef = useRef<VoiceCallInfo | null>(null);
+  voiceCallRef.current = voiceCall;
   // roomId → timestamp of the last watch-together sync with playing=true
   const lastPlayingSync = useRef<Map<string, number>>(new Map());
   // Rooms context for the sidebar's rooms pillar
@@ -295,7 +300,7 @@ const AppContent: React.FC = () => {
         for (const k of Array.from(roomStates.current.keys())) {
           if (!liveIds.has(k)) { roomStates.current.delete(k); pruned = true; }
         }
-        if (pruned) rebuildPeople();
+        if (pruned) { rebuildPeople(); rebuildVoiceCall(); }
         const now = Date.now();
         let best: RoomPresence | null = null;
         let bestScore = 0;
@@ -325,11 +330,27 @@ const AppContent: React.FC = () => {
       }
       setOnlinePeople(out.slice(0, 6));
     };
+    // Mirror the (single) in-voice room's call state for the StatusBar.
+    const rebuildVoiceCall = () => {
+      let call: VoiceCallInfo | null = null;
+      for (const s of roomStates.current.values()) {
+        if (s.voice?.inVoice) {
+          call = { roomId: s.roomId, name: s.name, muted: s.voice.muted, deafened: s.voice.deafened };
+          break;
+        }
+      }
+      setVoiceCall((prev) => {
+        if (!call) return prev === null ? prev : null;
+        if (prev && prev.roomId === call.roomId && prev.name === call.name && prev.muted === call.muted && prev.deafened === call.deafened) return prev;
+        return call;
+      });
+    };
     void compute();
     const interval = setInterval(compute, 10_000);
     const offUpdate = window.api.onRoomUpdate((state) => {
       roomStates.current.set(state.roomId, state);
       rebuildPeople();
+      rebuildVoiceCall();
       void compute();
     });
     const offSync = window.api.onRoomSync((msg) => {
@@ -405,6 +426,16 @@ const AppContent: React.FC = () => {
           case 'resume-all':
             void window.api.resumeAll().catch(() => { /* engine unavailable */ });
             break;
+          case 'voice-mute': {
+            const call = voiceCallRef.current;
+            if (call) void window.api.rooms.voice.mute(call.roomId, !call.muted).catch(() => { /* ignore */ });
+            break;
+          }
+          case 'voice-deafen': {
+            const call = voiceCallRef.current;
+            if (call) void window.api.rooms.voice.deafen(call.roomId, !call.deafened).catch(() => { /* ignore */ });
+            break;
+          }
         }
         break;
       }
@@ -546,6 +577,11 @@ const AppContent: React.FC = () => {
             connectedPeers={totalPeers}
             roomPresence={roomPresence}
             onJoinRoom={() => (roomPresence ? openRoom(roomPresence.roomId) : setCurrentPage('rooms'))}
+            voiceCall={voiceCall}
+            onOpenVoiceRoom={() => { if (voiceCall) openRoom(voiceCall.roomId); }}
+            onVoiceMute={() => { if (voiceCall) void window.api.rooms.voice.mute(voiceCall.roomId, !voiceCall.muted).catch(() => { /* ignore */ }); }}
+            onVoiceDeafen={() => { if (voiceCall) void window.api.rooms.voice.deafen(voiceCall.roomId, !voiceCall.deafened).catch(() => { /* ignore */ }); }}
+            onVoiceLeave={() => { if (voiceCall) void window.api.rooms.voice.leave(voiceCall.roomId).catch(() => { /* ignore */ }); }}
           />
         </main>
       </div>

@@ -15,9 +15,11 @@ import fs from 'fs';
 import { BrowserWindow, ipcMain, app, shell } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
+import { t } from '../i18n';
 import * as db from '../db/store';
 import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-crypto';
+import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torrent/subtitle-probe';
 import { generateRoomSecret } from './room-e2e';
 import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
 
@@ -192,7 +194,7 @@ export class RoomManager {
         // Notify when SOMEONE ELSE adds a file to a room you're not looking at.
         const ev = payload.event;
         if (ev.type === 'file-added' && ev.actorId && ev.actorId !== db.getRoomProfile().memberId) {
-          this.notifyRoomActivity(payload.roomId, ev.actorName || 'Someone', `shared ${ev.fileName || 'a file'}`);
+          this.notifyRoomActivity(payload.roomId, ev.actorName || t('notify.room.someone'), t('notify.room.sharedFile', { file: ev.fileName || t('notify.room.aFile') }));
         }
       } catch { /* ignore */ }
     });
@@ -207,7 +209,19 @@ export class RoomManager {
           // If you're looking at this room (and the window is focused), the message
           // is already read — no badge; else notify (rate-limited per room).
           if (payload.roomId === this.activeRoomId && this.mainWindowFocused()) db.setRoomLastRead(payload.roomId, Date.now());
-          this.notifyRoomActivity(payload.roomId, m.name || 'Someone', m.text || '');
+          // A message naming the user is a mention — it may bypass the normal
+          // per-room notification cooldown (but never a muted room). Word-
+          // boundary match: a short name must not fire inside ordinary words
+          // ("Ann" in "channel"), and the text is peer-controlled.
+          const selfName = (db.getRoomProfile().name || '').trim();
+          let mentioned = false;
+          if (selfName.length >= 2) {
+            try {
+              const esc = selfName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              mentioned = new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}($|[^\\p{L}\\p{N}_])`, 'iu').test(m.text || '');
+            } catch { /* exotic name — fall back to no bypass */ }
+          }
+          this.notifyRoomActivity(payload.roomId, m.name || t('notify.room.someone'), m.text || '', mentioned);
         }
       } catch { /* ignore */ }
     });
@@ -556,6 +570,7 @@ export class RoomManager {
         e2e: r.e2e ?? false,
         suspended: this.networkSuspended,
         unread,
+        notifyMuted: r.notifyMuted === true,
       };
     });
   }
@@ -623,19 +638,52 @@ export class RoomManager {
    * returning ready media URLs for the in-app player.
    */
   async watchFile(roomId: string, fileId: string): Promise<{ directUrl: string; hlsUrl: string; playerUrl: string; coverUrl?: string; direct: boolean; kind: string; name: string }> {
+    const abs = this.resolveLocalPath(roomId, fileId);
+    // The cast server runs in the torrent host; publish the room file there.
+    const { getTorrentManager } = await import('../torrent');
+    return getTorrentManager().castPublishDiskFile(abs);
+  }
+
+  /**
+   * Resolve a room file's absolute on-disk path. Prefers the engine-known
+   * path: a *shared* file is seeded from its original location (not the room
+   * folder), while a *downloaded* one lives in the room folder.
+   */
+  private resolveLocalPath(roomId: string, fileId: string): string {
     const state = this.cache.get(roomId);
     const file = state?.files.find((f) => f.fileId === fileId);
     const folder = this.folderOf(roomId);
     if (!file || !folder) throw new Error('File not available in this room');
-    // Prefer the engine-known on-disk path: a *shared* file is seeded from its
-    // original location (not the room folder), while a *downloaded* one lives in
-    // the room folder. Fall back to the room folder for older state.
     const tr = state?.transfers?.[fileId];
     const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath : path.join(folder, file.name);
     if (!fs.existsSync(abs)) throw new Error('This file is not fully downloaded yet');
-    // The cast server runs in the torrent host; publish the room file there.
+    return abs;
+  }
+
+  /** Subtitle tracks for a downloaded room file (embedded text + sidecars). */
+  async subtitleList(roomId: string, fileId: string): Promise<SubtitleTrackItem[]> {
+    const abs = this.resolveLocalPath(roomId, fileId);
     const { getTorrentManager } = await import('../torrent');
-    return getTorrentManager().castPublishDiskFile(abs);
+    return listSubtitleTracks(getTorrentManager().ffmpegBinary, abs);
+  }
+
+  /** A chosen subtitle track as WebVTT text (renderer wraps it in a blob URL). */
+  async subtitleGet(roomId: string, fileId: string, key: string): Promise<string> {
+    const abs = this.resolveLocalPath(roomId, fileId);
+    const { getTorrentManager } = await import('../torrent');
+    return getSubtitleVtt(getTorrentManager().ffmpegBinary, abs, key);
+  }
+
+  /** Stop seeding one room file (keeps the local copy; reversible). */
+  async releaseFile(roomId: string, fileId: string): Promise<{ ok: boolean }> {
+    await this.call('releaseFile', { roomId, fileId }, 8000);
+    return { ok: true };
+  }
+
+  /** Resume seeding a released room file. */
+  async reseedFile(roomId: string, fileId: string): Promise<{ ok: boolean }> {
+    await this.call('reseedFile', { roomId, fileId }, 8000);
+    return { ok: true };
   }
 
   // ── Folders / sections ──────────────────────────────────────────────────────
@@ -840,19 +888,25 @@ export class RoomManager {
     return !!this.mainWindow && !this.mainWindow.isDestroyed() && this.mainWindow.isFocused();
   }
 
-  /** OS-notify activity in a room that isn't the one on screen (best-effort). */
-  private async notifyRoomActivity(roomId: string, who: string, body: string): Promise<void> {
+  /** OS-notify activity in a room that isn't the one on screen (best-effort).
+   *  `urgent` (an @-mention of the user) bypasses the per-room cooldown, but
+   *  NOT the per-room mute — an explicitly silenced room stays silent. */
+  private async notifyRoomActivity(roomId: string, who: string, body: string, urgent = false): Promise<void> {
     try {
       // Looking right at it (and the app is focused)? No notification.
       if (roomId === this.activeRoomId && this.mainWindowFocused()) return;
-      // Rate-limit: one toast per room per cooldown, so a burst/backfill can't spam.
-      const NOTIFY_COOLDOWN_MS = 8000;
+      const rec = db.getPersistedRooms().find((r) => r.roomId === roomId);
+      if (rec?.notifyMuted) return;
+      // Rate-limit: one toast per room per cooldown, so a burst/backfill can't
+      // spam. Mentions shorten the window but keep a floor — the text is
+      // peer-controlled, and a mention-per-message flood must still be bounded.
+      const cooldown = urgent ? 2000 : 8000;
       const now = Date.now();
-      if (now - (this.lastNotify.get(roomId) ?? 0) < NOTIFY_COOLDOWN_MS) return;
+      if (now - (this.lastNotify.get(roomId) ?? 0) < cooldown) return;
       const settings = await db.getSettings();
       if (settings.enableNotifications === false) return;
       this.lastNotify.set(roomId, now);
-      const roomName = db.getPersistedRooms().find((r) => r.roomId === roomId)?.name || 'Room';
+      const roomName = rec?.name || t('notify.room.fallbackName');
       const preview = body.length > 140 ? body.slice(0, 140) + '…' : body;
       showOsNotification(`${who} · ${roomName}`, preview, { onClick: () => this.focusAndOpenRoom(roomId) });
     } catch { /* best-effort */ }
@@ -890,6 +944,12 @@ export class RoomManager {
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'setAutoFetch', reqId: ++this.reqSeq, roomId, autoFetch });
     }
+    return { ok: true };
+  }
+
+  /** Per-room OS-notification mute (db-only — the engine isn't involved). */
+  async setNotifyMuted(roomId: string, muted: boolean): Promise<{ ok: boolean }> {
+    db.setRoomNotifyMuted(roomId, muted);
     return { ok: true };
   }
 

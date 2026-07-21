@@ -14,6 +14,8 @@ export interface DropdownMenuItem {
   key: string;
   label: React.ReactNode;
   icon?: React.ReactNode;
+  /** Destructive action — appends the shared `.danger` item skin. */
+  danger?: boolean;
   onSelect: () => void;
 }
 
@@ -94,7 +96,7 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
         <button
           key={item.key}
           type="button"
-          className={itemClassName || undefined}
+          className={`${itemClassName}${item.danger ? ' danger' : ''}`.trim() || undefined}
           role="menuitem"
           onClick={() => {
             setOpen(false);

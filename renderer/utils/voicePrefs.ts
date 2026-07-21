@@ -77,6 +77,48 @@ export function toVoiceSettings(p: VoicePrefs): VoiceSettings {
   };
 }
 
+// ── Per-peer voice adjustments ────────────────────────────────────────────
+// Volume (0..100) and a local voice-mute per member, keyed by memberId.
+// Deliberately OUTSIDE VoicePrefs: that object is pushed to the engine on every
+// change (debounced), and per-peer tweaks must not re-trigger the capture
+// pipeline. Applied by the voice panel via voice.volume() when a participant
+// appears. Capped so a long life of rooms can't grow the map unboundedly.
+export type PeerVoicePref = { volume: number; muted: boolean };
+
+const PEER_PREFS_KEY = 'voicePeerPrefs';
+const PEER_PREFS_MAX = 200;
+
+export function loadPeerVoicePrefs(): Record<string, PeerVoicePref> {
+  let raw: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PEER_PREFS_KEY) || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) raw = parsed;
+  } catch { /* empty */ }
+  const out: Record<string, PeerVoicePref> = {};
+  for (const [id, v] of Object.entries(raw)) {
+    if (!v || typeof v !== 'object') continue;
+    const o = v as Record<string, unknown>;
+    out[id] = { volume: clamp(o.volume, 0, 100, 100), muted: o.muted === true };
+  }
+  return out;
+}
+
+export function savePeerVoicePref(memberId: string, pref: PeerVoicePref): void {
+  const all = loadPeerVoicePrefs();
+  // A default entry (full volume, unmuted) carries no information — drop it.
+  if (pref.volume === 100 && !pref.muted) delete all[memberId];
+  else all[memberId] = { volume: clamp(pref.volume, 0, 100, 100), muted: pref.muted };
+  const ids = Object.keys(all);
+  if (ids.length > PEER_PREFS_MAX) for (const id of ids.slice(0, ids.length - PEER_PREFS_MAX)) delete all[id];
+  try { localStorage.setItem(PEER_PREFS_KEY, JSON.stringify(all)); } catch { /* ignore */ }
+}
+
+/** The gain the engine should apply for a peer (0..1), mute folded in. */
+export function effectivePeerGain(pref: PeerVoicePref | undefined): number {
+  if (!pref) return 1;
+  return pref.muted ? 0 : pref.volume / 100;
+}
+
 export const KEY_LABELS: Record<string, string> = {
   Backquote: '`', Space: 'Space', Enter: 'Enter', Tab: 'Tab', ShiftLeft: 'L-Shift', ShiftRight: 'R-Shift',
   ControlLeft: 'L-Ctrl', ControlRight: 'R-Ctrl', AltLeft: 'L-Alt', AltRight: 'R-Alt', CapsLock: 'Caps',

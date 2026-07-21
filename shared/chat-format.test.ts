@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseChatSegments, isCopyworthy } from './chat-format';
+import { parseChatSegments, isCopyworthy, splitLinks } from './chat-format';
 
 describe('parseChatSegments', () => {
   it('plain text passes through as one segment', () => {
@@ -61,5 +61,61 @@ describe('isCopyworthy', () => {
     expect(isCopyworthy('```\nx\n```')).toBe(true);
     expect(isCopyworthy('line1\nline2')).toBe(true);
     expect(isCopyworthy('short message')).toBe(false);
+  });
+});
+
+describe('splitLinks', () => {
+  it('plain text stays one plain run', () => {
+    expect(splitLinks('no links here')).toEqual([{ kind: 'plain', text: 'no links here' }]);
+  });
+
+  it('empty input yields no runs', () => {
+    expect(splitLinks('')).toEqual([]);
+  });
+
+  it('finds an http(s) url with surrounding text', () => {
+    expect(splitLinks('see https://example.com/a?b=1 ok')).toEqual([
+      { kind: 'plain', text: 'see ' },
+      { kind: 'link', text: 'https://example.com/a?b=1', href: 'https://example.com/a?b=1' },
+      { kind: 'plain', text: ' ok' },
+    ]);
+  });
+
+  it('finds several urls', () => {
+    const runs = splitLinks('http://a.io and https://b.io');
+    expect(runs.filter((r) => r.kind === 'link').map((r) => r.text)).toEqual(['http://a.io', 'https://b.io']);
+  });
+
+  it('trims trailing punctuation', () => {
+    expect(splitLinks('go to https://a.io/x.')).toEqual([
+      { kind: 'plain', text: 'go to ' },
+      { kind: 'link', text: 'https://a.io/x', href: 'https://a.io/x' },
+      { kind: 'plain', text: '.' },
+    ]);
+    expect(splitLinks('really? https://a.io/x?!')[1]).toEqual(
+      { kind: 'link', text: 'https://a.io/x', href: 'https://a.io/x' });
+  });
+
+  it('keeps balanced parens, peels an unbalanced closer', () => {
+    expect(splitLinks('https://en.wikipedia.org/wiki/Bug_(film)')[0]).toEqual(
+      { kind: 'link', text: 'https://en.wikipedia.org/wiki/Bug_(film)', href: 'https://en.wikipedia.org/wiki/Bug_(film)' });
+    expect(splitLinks('(see https://a.io/x).')).toEqual([
+      { kind: 'plain', text: '(see ' },
+      { kind: 'link', text: 'https://a.io/x', href: 'https://a.io/x' },
+      { kind: 'plain', text: ').' },
+    ]);
+  });
+
+  it('never links non-http schemes', () => {
+    for (const s of ['javascript:alert(1)', 'file:///c:/x', 'ftp://a.io', 'magnet:?xt=urn:btih:x']) {
+      expect(splitLinks(`try ${s} now`)).toEqual([{ kind: 'plain', text: `try ${s} now` }]);
+    }
+  });
+
+  it('ignores a bare scheme with no host', () => {
+    expect(splitLinks('https:// is a prefix')).toEqual([{ kind: 'plain', text: 'https:// is a prefix' }]);
+    // Punctuation right after the scheme trims down to a bare scheme — still no link.
+    expect(splitLinks('see https://, ok')).toEqual([{ kind: 'plain', text: 'see https://, ok' }]);
+    expect(splitLinks('check http://.')).toEqual([{ kind: 'plain', text: 'check http://.' }]);
   });
 });

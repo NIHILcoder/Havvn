@@ -53,3 +53,49 @@ export function isCopyworthy(body: string): boolean {
   const s = String(body ?? '');
   return s.includes('```') || s.includes('\n');
 }
+
+/** A run of plain text or a clickable link inside a TEXT chat segment. */
+export type TextRun =
+  | { kind: 'plain'; text: string }
+  | { kind: 'link'; text: string; href: string };
+
+// http(s) only — the scheme allow-list IS the safety gate (no javascript:,
+// file:, etc. can ever match). Applied to TEXT segments only, never to code.
+const URL_RE = /https?:\/\/[^\s<>"']+/gi;
+// Punctuation people type right after a URL ("see https://x.com, ok") — not
+// part of the link. A ')' is kept only while the URL has an unmatched '('.
+const TRAIL_RE = /[.,;:!?…»›"']+$/;
+
+/**
+ * Split a plain-text run into text/link runs for rendering. Pure and
+ * DOM-free; the renderer decides what a link run becomes (an <a> that the
+ * main process routes to the system browser).
+ */
+export function splitLinks(text: string): TextRun[] {
+  const src = String(text ?? '');
+  const runs: TextRun[] = [];
+  let last = 0;
+  URL_RE.lastIndex = 0;
+  for (let m = URL_RE.exec(src); m; m = URL_RE.exec(src)) {
+    let url = m[0];
+    // Trim trailing punctuation, then unbalanced closing parens, repeatedly —
+    // "(see https://a.b/c)." peels ')' then '.'.
+    for (;;) {
+      const trimmed = url.replace(TRAIL_RE, '');
+      if (trimmed !== url) { url = trimmed; continue; }
+      if (url.endsWith(')')) {
+        const opens = (url.match(/\(/g) || []).length;
+        const closes = (url.match(/\)/g) || []).length;
+        if (closes > opens) { url = url.slice(0, -1); continue; }
+      }
+      break;
+    }
+    if (/^https?:\/\/$/i.test(url)) continue; // a bare scheme is not a link
+    if (m.index > last) runs.push({ kind: 'plain', text: src.slice(last, m.index) });
+    runs.push({ kind: 'link', text: url, href: url });
+    last = m.index + url.length;
+  }
+  if (last < src.length) runs.push({ kind: 'plain', text: src.slice(last) });
+  if (runs.length === 0 && src) runs.push({ kind: 'plain', text: src });
+  return runs;
+}

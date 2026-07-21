@@ -13,15 +13,15 @@ import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
-import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings } from '../utils/voicePrefs';
+import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { usePopout } from '../utils/popout';
-import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
+import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
-import { parseChatSegments, isCopyworthy } from '../../shared/chat-format';
+import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
 import { classifyMediaKind } from '../../shared/media';
 import { formatBytes, formatSpeed } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
@@ -31,6 +31,9 @@ const isPlayable = (name: string): boolean => classifyMediaKind(name) !== 'other
 
 /** The compact per-file reaction set (mirrors the engine's allow-list). */
 const FILE_REACT_EMOJIS = ['🔥', '👍', '❤️', '😂'] as const;
+
+/** Mirrors MAX_VOICE_PEERS in electron/sharing/room-voice.ts (serverless mesh cap). */
+const VOICE_MESH_LIMIT = 8;
 
 /** Colors for a room folder (icons come from the shared FOLDER_ICONS list). */
 const FOLDER_COLORS = ['#e8792b', '#3b82f6', '#22c55e', '#a855f7', '#ef4444', '#eab308', '#14b8a6', '#94a3b8'];
@@ -67,6 +70,28 @@ function eventText(t: RoomsTFn, ev: import('../../shared/types').RoomEvent): str
 function shortTime(at: number): string {
   try { return new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
   catch { return ''; }
+}
+
+/** Time-of-day only — chat messages carry the date via the day separators. */
+function timeOnly(at: number): string {
+  try { return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
+  catch { return ''; }
+}
+
+/** Label for a chat day separator: Today / Yesterday / a locale date. */
+function dayLabel(at: number, t: RoomsTFn): string {
+  const d = new Date(at);
+  const now = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((startOf(now) - startOf(d)) / 86_400_000);
+  if (diffDays === 0) return t('rooms.today');
+  if (diffDays === 1) return t('rooms.yesterday');
+  try {
+    return d.toLocaleDateString(undefined, {
+      month: 'long', day: 'numeric',
+      year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+    });
+  } catch { return ''; }
 }
 
 interface RoomsPageProps {
@@ -234,6 +259,19 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
 
   const handleJoin = async () => {
     if (!joinCode.trim()) return;
+    // A shape check up front beats the engine's generic failure: an incomplete
+    // paste would otherwise just announce into the void (wrong code = empty
+    // rendezvous, indistinguishable from a sleeping room). Mirror the engine's
+    // forgiveness (room-crypto normalizeCode + parseInvite): whitespace around
+    // the ~pin is trimmed, runs of spaces/dashes collapse to one dash.
+    const normalized = joinCode.trim().toLowerCase()
+      .replace(/\s*~\s*/g, '~')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-');
+    if (!INVITE_SHAPE_RE.test(normalized)) {
+      toast.error(t('rooms.joinBadFormat'));
+      return;
+    }
     setBusy(true);
     try {
       const state = await window.api.rooms.join(joinCode.trim());
@@ -416,6 +454,13 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
             ) : (
               <RoomDetail
                 room={room}
+                suspended={rooms.find((r) => r.roomId === room.roomId)?.suspended === true}
+                notifyMuted={rooms.find((r) => r.roomId === room.roomId)?.notifyMuted === true}
+                onToggleNotifyMuted={(muted) => {
+                  window.api.rooms.setNotifyMuted(room.roomId, muted)
+                    .then(() => refreshList())
+                    .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+                }}
                 onAddFiles={(folderId) => handleAddFiles(room.roomId, folderId)}
                 onDropFiles={(paths, folderId) => handleDropPaths(room.roomId, paths, folderId)}
                 onCreateFolder={(name, icon, color, parentId) => handleCreateFolder(room.roomId, name, icon, color, parentId)}
@@ -485,6 +530,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
             onChange={(e) => setJoinCode(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
           />
+          <p className="rooms-join-hint">{t('rooms.joinServerlessHint')}</p>
         </Modal>
       )}
 
@@ -683,10 +729,17 @@ const RoomFolderEditor: React.FC<{
 
 // What the room's center Stage is showing. Files is the base; Watch/Screen add a
 // tab and auto-focus. Single-slot union — opening one supersedes the other.
+// `together` seeds the player's sync toggle ON (joining an ongoing session).
 type StageView =
   | { kind: 'files' }
-  | { kind: 'watch'; file: RoomFile }
+  | { kind: 'watch'; file: RoomFile; together?: boolean }
   | { kind: 'screen'; memberId: string };
+
+/** Loose shape check for an invite code: word-word-word-word-NNNN, optional
+ *  legacy "-e2e" suffix, optional "~<32-hex ownerPin>" (see room-crypto.ts).
+ *  Format-only on purpose — wordlist membership isn't checked, so older or
+ *  hand-typed codes with unknown words still pass. */
+const INVITE_SHAPE_RE = /^[a-z]+-[a-z]+-[a-z]+-[a-z]+-\d{4}(-e2e)?(~[0-9a-f]{32})?$/i;
 
 // ── Files panel (the Stage's default surface) ─────────────────────────────
 // The room's shared files: list/folders, search/sort/filter, bulk selection,
@@ -696,25 +749,41 @@ type StageView =
 interface FilesPanelProps {
   room: RoomState;
   onAddFiles: (folderId?: string) => void;
+  /** OS files dropped onto a specific section/subfolder (paths resolved). */
+  onDropFiles: (paths: string[], folderId?: string) => void;
   onCreateFolder: (name: string, icon: string, color: string, parentId?: string) => void;
   onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string; parentId?: string | null }) => void;
   onDeleteFolder: (folderId: string) => void;
   onAssignFile: (fileId: string, folderId: string | null) => void;
   onWatch: (file: RoomFile) => void;
+  /** Join an ongoing watch session on this file (sync pre-enabled). */
+  onWatchJoin: (file: RoomFile) => void;
+  /** Live watch-session member counts per fileId (row badges). */
+  watchCounts: Record<string, number>;
+  /** Open the invite dialog (the empty-room onboarding CTA). */
+  onInvite: () => void;
   onShared: (state: RoomState) => void;
   onToggleAutoFetch: (autoFetch: boolean) => void;
-  onSetLimits: (upKbps: number, downKbps: number) => void;
   busy: boolean;
 }
 
-const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const [pickTransfer, setPickTransfer] = useState(false);
   // Client-side file filter/sort + bulk selection (all room-local, no engine calls).
   const [fileQuery, setFileQuery] = useState('');
   const [sortKey, setSortKeyRaw] = useState<'added' | 'name' | 'size' | 'status'>(() => loadRoomSort(room.roomId));
-  const setSortKey = (k: typeof sortKey) => { setSortKeyRaw(k); saveRoomSort(room.roomId, k); };
+  const [sortDir, setSortDirRaw] = useState<RoomFilesSortDir>(() => loadRoomSortDir(room.roomId, loadRoomSort(room.roomId)));
+  // Switching the sort key resets the direction to that key's natural one.
+  const setSortKey = (k: typeof sortKey) => {
+    setSortKeyRaw(k); saveRoomSort(room.roomId, k);
+    setSortDirRaw(SORT_NATURAL_DIR[k]); saveRoomSortDir(room.roomId, SORT_NATURAL_DIR[k]);
+  };
+  const toggleSortDir = () => {
+    const d: RoomFilesSortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    setSortDirRaw(d); saveRoomSortDir(room.roomId, d);
+  };
   const [typeFilter, setTypeFilter] = useState<'all' | 'video' | 'audio' | 'other'>('all');
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyMissing, setOnlyMissing] = useState(false);
@@ -762,13 +831,17 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
     if (typeFilter !== 'all') arr = arr.filter((f) => classifyMediaKind(f.name) === typeFilter);
     if (onlyMine) arr = arr.filter((f) => f.addedBy === selfId);
     if (onlyMissing) arr = arr.filter((f) => !room.transfers?.[f.fileId]?.haveLocally);
-    return [...arr].sort((a, b) => {
+    // Ascending comparators; the direction toggle flips the whole order.
+    const cmp = (a: RoomFile, b: RoomFile): number => {
       if (sortKey === 'name') return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-      if (sortKey === 'size') return (b.size || 0) - (a.size || 0);
+      if (sortKey === 'size') return (a.size || 0) - (b.size || 0);
+      // Status keeps its historical newest-first tiebreak WITHIN a rank (the
+      // direction toggle flips ranks; equal-rank recency reads better fixed).
       if (sortKey === 'status') return statusRank(a) - statusRank(b) || (b.addedAt || 0) - (a.addedAt || 0);
-      return (b.addedAt || 0) - (a.addedAt || 0); // 'added' = newest first
-    });
-  }, [room.files, room.transfers, fileQuery, typeFilter, onlyMine, onlyMissing, selfId, sortKey, statusRank]);
+      return (a.addedAt || 0) - (b.addedAt || 0);
+    };
+    return [...arr].sort((a, b) => (sortDir === 'asc' ? cmp(a, b) : -cmp(a, b)));
+  }, [room.files, room.transfers, fileQuery, typeFilter, onlyMine, onlyMissing, selfId, sortKey, sortDir, statusRank]);
   const toggleSelect = useCallback((fileId: string) => {
     setSelected((prev) => { const next = new Set(prev); if (next.has(fileId)) next.delete(fileId); else next.add(fileId); return next; });
   }, []);
@@ -792,26 +865,16 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
       .then(() => toast.success(t('rooms.requestSent')))
       .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
   };
-  // Speed-limit drafts: commit on blur/Enter; re-seed only on room switch so
-  // live state pushes don't stomp typing. 0/empty = unlimited.
-  const [upDraft, setUpDraft] = useState(String(room.upKbps || ''));
-  const [downDraft, setDownDraft] = useState(String(room.downKbps || ''));
   useEffect(() => {
-    setUpDraft(String(room.upKbps || ''));
-    setDownDraft(String(room.downKbps || ''));
     setFileQuery(''); // the filter belongs to one room's list, not the next
     setSortKeyRaw(loadRoomSort(room.roomId)); // per-room remembered sort
+    setSortDirRaw(loadRoomSortDir(room.roomId, loadRoomSort(room.roomId)));
     setTypeFilter('all'); setOnlyMine(false); setOnlyMissing(false);
     setSelecting(false); setSelected(new Set());
     setCollapsed(loadCollapsedFolders(room.roomId));
     setViewOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room.roomId]);
-  const commitLimits = () => {
-    const up = Math.max(0, Math.floor(Number(upDraft) || 0));
-    const down = Math.max(0, Math.floor(Number(downDraft) || 0));
-    if (up !== room.upKbps || down !== room.downKbps) onSetLimits(up, down);
-  };
   // Folders/sections overlay. `hasFolders` gates progressive disclosure: with
   // none, the file list renders flat exactly as before.
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -841,27 +904,46 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
     return parent && parent.id !== f.id ? `${parent.name} / ${f.name}` : f.name;
   }, [folders]);
 
-  // Drop an internal file-row drag onto a section → reassign it there
-  // (folderId null = Uncategorized). OS-file drops fall through to the room
-  // overlay and land in Uncategorized; use a section's "+" to add into one.
+  // Drop targets on a section: an internal file-row drag reassigns the file(s)
+  // there (folderId null = Uncategorized); an OS-file drag shares straight into
+  // that section. An OS drop anywhere else still falls through to the room
+  // overlay and lands in Uncategorized.
   const sectionDropProps = (folderId: string | null, key: string) => ({
     onDragOver: (e: React.DragEvent) => {
-      if (!Array.from(e.dataTransfer.types).includes(FILE_DND_TYPE)) return;
+      const types = Array.from(e.dataTransfer.types);
+      const internal = types.includes(FILE_DND_TYPE);
+      const osFiles = types.includes('Files') && !room.kicked;
+      if (!internal && !osFiles) return;
       e.preventDefault(); e.stopPropagation();
       if (dragOverKey !== key) setDragOverKey(key);
     },
     onDragLeave: () => setDragOverKey((k) => (k === key ? null : k)),
     onDrop: (e: React.DragEvent) => {
-      if (!Array.from(e.dataTransfer.types).includes(FILE_DND_TYPE)) return;
-      e.preventDefault(); e.stopPropagation();
-      setDragOverKey(null);
-      // Payload is one-or-more fileIds ('\n'-joined — a multi-selection drag).
-      // Skip files already in the target folder (a same-section drop is a no-op).
-      const target = folderId || null;
-      const ids = e.dataTransfer.getData(FILE_DND_TYPE).split('\n').filter(Boolean)
-        .filter((id) => (room.files.find((f) => f.fileId === id)?.folderId ?? null) !== target);
-      if (ids.length > 1) assignMany(ids, folderId);
-      else if (ids[0]) onAssignFile(ids[0], folderId);
+      const types = Array.from(e.dataTransfer.types);
+      if (types.includes(FILE_DND_TYPE)) {
+        e.preventDefault(); e.stopPropagation();
+        setDragOverKey(null);
+        // Payload is one-or-more fileIds ('\n'-joined — a multi-selection drag).
+        // Skip files already in the target folder (a same-section drop is a no-op).
+        const target = folderId || null;
+        const ids = e.dataTransfer.getData(FILE_DND_TYPE).split('\n').filter(Boolean)
+          .filter((id) => (room.files.find((f) => f.fileId === id)?.folderId ?? null) !== target);
+        if (ids.length > 1) assignMany(ids, folderId);
+        else if (ids[0]) onAssignFile(ids[0], folderId);
+        return;
+      }
+      if (types.includes('Files') && !room.kicked) {
+        e.preventDefault(); e.stopPropagation();
+        setDragOverKey(null);
+        const paths = Array.from(e.dataTransfer.files)
+          .map((f) => { try { return window.api.getPathForFile(f); } catch { return ''; } })
+          .filter(Boolean);
+        // Virtual files (mail attachments, images dragged from a browser)
+        // resolve to no path — surface the same error the room-level drop
+        // shows instead of silently eating the consumed drop.
+        if (paths.length) onDropFiles(paths, folderId || undefined);
+        else toast.error(t('create.dropReadError'));
+      }
     },
   });
 
@@ -879,7 +961,8 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
   const renderFolderFiles = (files: RoomFile[]) => (
     files.map((f) => (
       <RoomFileRow
-        key={f.fileId} file={f} room={room} onWatch={onWatch} onAssignFile={onAssignFile}
+        key={f.fileId} file={f} room={room} onWatch={onWatch} onWatchJoin={onWatchJoin}
+        watchCount={watchCounts[f.fileId] || 0} onAssignFile={onAssignFile}
         selecting={selecting} selected={selected.has(f.fileId)} onToggleSelect={toggleSelect}
         getDragIds={getDragIds} viewPrefs={viewPrefs} highlightQuery={fileQuery}
       />
@@ -989,7 +1072,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
               aria-label={t('rooms.view')}
               onClick={() => setViewOpen((v) => !v)}
             >
-              <Icon name="filter" size={14} />
+              <Icon name="sliders" size={14} />
             </button>
             {viewOpen && (
               <div className="room-view-pop">
@@ -1015,7 +1098,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
             aria-label={t('rooms.requestFile')}
             onClick={() => setRequesting((v) => !v)}
           >
-            <Icon name="help-circle" size={14} />
+            <Icon name="file-question" size={14} />
           </button>
           <button
             type="button"
@@ -1032,7 +1115,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
         </div>
       </div>
 
-      {room.files.length > 5 && (
+      {room.files.length > 0 && (
         <div className="room-file-search">
           <Icon name="search" size={13} />
           <input
@@ -1058,6 +1141,15 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
               { value: 'status', label: t('rooms.sort.status') },
             ]}
           />
+          <button
+            type="button"
+            className="room-newfolder-btn icon-only"
+            title={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
+            aria-label={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
+            onClick={toggleSortDir}
+          >
+            <Icon name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={13} />
+          </button>
           <span className="room-file-chips">
             {([['all', t('rooms.filter.all')], ['video', t('rooms.filter.video')], ['audio', t('rooms.filter.audio')], ['other', t('rooms.filter.other')]] as const).map(([k, label]) => (
               <button
@@ -1106,7 +1198,17 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
             onClick={async () => {
               const ids = Array.from(selected);
               if (!ids.length) return;
-              if (!(await confirm({ message: t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length)), danger: true }))) return;
+              // The engine only tombstones files we're authorized to delete
+              // (ours, or any as owner); the rest degrade to a local hide —
+              // say so up front instead of promising a room-wide delete.
+              const others = room.canManage ? 0 : ids.filter((id) => room.files.find((f) => f.fileId === id)?.addedBy !== selfId).length;
+              const own = ids.length - others;
+              const message = others === 0
+                ? t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length))
+                : own === 0
+                  ? t('rooms.hideSelectedConfirm').replace('{n}', String(ids.length))
+                  : t('rooms.deleteSelectedMixed').replace('{own}', String(own)).replace('{other}', String(others));
+              if (!(await confirm({ message, danger: own > 0 }))) return;
               window.api.rooms.removeFiles(room.roomId, ids).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
               setSelected(new Set()); setSelecting(false);
             }}
@@ -1119,7 +1221,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
 
       {requesting && (
         <div className="room-request-row">
-          <Icon name="help-circle" size={14} />
+          <Icon name="file-question" size={14} />
           <input
             type="text" autoFocus placeholder={t('rooms.requestPlaceholder')} value={requestDraft}
             onChange={(e) => setRequestDraft(e.target.value)}
@@ -1139,7 +1241,31 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
       <div className="room-files-scroll">
       {!hasFolders ? (
         room.files.length === 0 ? (
-          <div className="room-files-empty">{t('rooms.noFiles')}</div>
+          // Empty-room onboarding: the three steps that bring a room to life.
+          <div className="room-onboard">
+            <p className="room-onboard-desc">{t('rooms.onboard.desc')}</p>
+            <div className="room-onboard-steps">
+              <button type="button" className="room-onboard-step" onClick={onInvite}>
+                <Icon name="share-2" size={16} /> {t('rooms.onboard.invite')}
+              </button>
+              <button type="button" className="room-onboard-step" onClick={() => onAddFiles()}>
+                <Icon name="file-plus" size={16} /> {t('rooms.onboard.add')}
+              </button>
+              {!room.voice.inVoice && (
+                <button
+                  type="button"
+                  className="room-onboard-step"
+                  onClick={() => {
+                    window.api.rooms.voice.join(room.roomId)
+                      .then((r) => { if (r?.warning) toast(r.warning, { icon: '⚠️' }); })
+                      .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+                  }}
+                >
+                  <Icon name="mic" size={16} /> {t('rooms.onboard.voice')}
+                </button>
+              )}
+            </div>
+          </div>
         ) : visibleFiles.length === 0 ? (
           <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
         ) : (
@@ -1218,37 +1344,6 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onCreateF
           {t('rooms.addFiles')}
         </Button>
 
-        <div className="room-limits" title={t('rooms.limitsHint')}>
-          <Icon name="gauge" size={13} />
-          <label className="room-limit">
-            ↑
-            <input
-              type="number"
-              min={0}
-              placeholder="∞"
-              value={upDraft}
-              onChange={(e) => setUpDraft(e.target.value)}
-              onBlur={commitLimits}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              aria-label={`${t('rooms.limits')} ↑ ${t('rooms.kbps')}`}
-            />
-            {t('rooms.kbps')}
-          </label>
-          <label className="room-limit">
-            ↓
-            <input
-              type="number"
-              min={0}
-              placeholder="∞"
-              value={downDraft}
-              onChange={(e) => setDownDraft(e.target.value)}
-              onBlur={commitLimits}
-              onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-              aria-label={`${t('rooms.limits')} ↓ ${t('rooms.kbps')}`}
-            />
-            {t('rooms.kbps')}
-          </label>
-        </div>
       </div>
 
       {pickTransfer && (
@@ -1288,17 +1383,20 @@ interface StageProps {
   stageView: StageView;
   onCloseStage: () => void;
   onWatch: (file: RoomFile) => void;
+  onWatchJoin: (file: RoomFile) => void;
+  watchCounts: Record<string, number>;
+  onInvite: () => void;
   onAddFiles: (folderId?: string) => void;
+  onDropFiles: (paths: string[], folderId?: string) => void;
   onCreateFolder: (name: string, icon: string, color: string, parentId?: string) => void;
   onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string; parentId?: string | null }) => void;
   onDeleteFolder: (folderId: string) => void;
   onAssignFile: (fileId: string, folderId: string | null) => void;
   onShared: (state: RoomState) => void;
   onToggleAutoFetch: (autoFetch: boolean) => void;
-  onSetLimits: (upKbps: number, downKbps: number) => void;
   busy: boolean;
 }
-const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatch, onAddFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatch, onWatchJoin, watchCounts, onInvite, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onShared, onToggleAutoFetch, busy }) => {
   const { t } = useTranslation();
   const self = room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' };
   const shareName = stageView.kind === 'screen'
@@ -1315,14 +1413,15 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatc
       {/* Conditional render (never display:none) so the player/viewer unmounts on
           tab switch and fires its presence leave / watchStop cleanup. */}
       {stageView.kind === 'watch' ? (
-        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} onClose={onCloseStage} />
+        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} />
       ) : stageView.kind === 'screen' ? (
         <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
       ) : (
         <RoomFilesPanel
-          room={room} onWatch={onWatch} onAddFiles={onAddFiles} onCreateFolder={onCreateFolder}
+          room={room} onWatch={onWatch} onWatchJoin={onWatchJoin} watchCounts={watchCounts} onInvite={onInvite}
+          onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
           onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
-          onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} onSetLimits={onSetLimits} busy={busy}
+          onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} busy={busy}
         />
       )}
     </div>
@@ -1332,6 +1431,11 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatc
 // ── Room detail panel ─────────────────────────────────────────────────────
 interface DetailProps {
   room: RoomState;
+  /** The VPN kill-switch has this room's networking paused (from the summary). */
+  suspended?: boolean;
+  /** OS notifications silenced for this room (from the summary). */
+  notifyMuted?: boolean;
+  onToggleNotifyMuted?: (muted: boolean) => void;
   /** Open the OS file picker; folderId assigns the added files to that section. */
   onAddFiles: (folderId?: string) => void;
   /** Files were dropped onto the room — absolute paths, already resolved. */
@@ -1353,7 +1457,7 @@ interface DetailProps {
   busy: boolean;
 }
 
-const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onToggleNotifyMuted, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
   const { t } = useTranslation();
   // Drag & drop files into the room. The depth counter survives child
   // enter/leave churn; internalDrag suppresses drags that started on this page
@@ -1407,6 +1511,92 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
     if (!still) setStageView({ kind: 'files' });
   }, [stageView, room.voice]);
 
+  // Live watch-session presence per file — fed by the same sync gossip the
+  // player uses (join/beat/track add a watcher, leave removes, TTL prunes) so
+  // the file rows can show a "N watching · join" badge without a player open.
+  const [watchersByFile, setWatchersByFile] = useState<Record<string, Record<string, number>>>({});
+  useEffect(() => { setWatchersByFile({}); }, [room.roomId]);
+  useEffect(() => {
+    const off = window.api.onRoomSync((msg) => {
+      if (msg.roomId !== room.roomId || !msg.fileId || !msg.memberId) return;
+      if (msg.action === 'leave') {
+        setWatchersByFile((w) => {
+          const cur = w[msg.fileId];
+          if (!cur || !(msg.memberId in cur)) return w;
+          const nextFile = { ...cur };
+          delete nextFile[msg.memberId];
+          const next = { ...w };
+          if (Object.keys(nextFile).length) next[msg.fileId] = nextFile; else delete next[msg.fileId];
+          return next;
+        });
+      } else if (msg.action === 'join' || msg.action === 'beat' || msg.action === 'track') {
+        setWatchersByFile((w) => ({ ...w, [msg.fileId]: { ...w[msg.fileId], [msg.memberId]: Date.now() } }));
+      }
+    });
+    const prune = setInterval(() => {
+      setWatchersByFile((w) => {
+        const now = Date.now();
+        let changed = false;
+        const next: typeof w = {};
+        for (const [fid, members] of Object.entries(w)) {
+          const kept: Record<string, number> = {};
+          for (const [mid, at] of Object.entries(members)) {
+            if (now - at < 16_000) kept[mid] = at; else changed = true;
+          }
+          if (Object.keys(kept).length) next[fid] = kept; else changed = true;
+        }
+        return changed ? next : w;
+      });
+    }, 5000);
+    return () => { off(); clearInterval(prune); };
+  }, [room.roomId]);
+  const watchCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const [fid, members] of Object.entries(watchersByFile)) {
+      const n = Object.keys(members).length;
+      if (n > 0) m[fid] = n;
+    }
+    return m;
+  }, [watchersByFile]);
+
+  // Room-settings popover (auto-download, speed limits, code/rename/leave) —
+  // the room's ONE settings point; closes like every floating surface.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsWrapRef = useRef<HTMLDivElement>(null);
+  // Closing by outside-click/Escape unmounts a focused limit input WITHOUT a
+  // blur event — commit through a ref first, or the typed value is silently
+  // lost while the draft keeps showing it on reopen.
+  const commitLimitsRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (settingsWrapRef.current && !settingsWrapRef.current.contains(e.target as Node)) {
+        commitLimitsRef.current();
+        setSettingsOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { commitLimitsRef.current(); setSettingsOpen(false); } };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [settingsOpen]);
+  // Speed-limit drafts: commit on blur/Enter; re-seed only on room switch so
+  // live state pushes don't stomp typing. 0/empty = unlimited.
+  const [upDraft, setUpDraft] = useState(String(room.upKbps || ''));
+  const [downDraft, setDownDraft] = useState(String(room.downKbps || ''));
+  useEffect(() => {
+    setUpDraft(String(room.upKbps || ''));
+    setDownDraft(String(room.downKbps || ''));
+    setSettingsOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room.roomId]);
+  const commitLimits = () => {
+    const up = Math.max(0, Math.floor(Number(upDraft) || 0));
+    const down = Math.max(0, Math.floor(Number(downDraft) || 0));
+    if (up !== room.upKbps || down !== room.downKbps) onSetLimits(up, down);
+  };
+  commitLimitsRef.current = commitLimits;
+
   // Draggable three-region widths (persisted). The Stage (center) flexes; the rail
   // and chat are set via CSS vars so the narrow-mode @container rule (which sets the
   // grid-template-columns PROPERTY) still wins and stacks the columns.
@@ -1438,27 +1628,38 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
   };
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
-  const connState = room.kicked ? 'removed' : !room.connected ? 'connecting' : room.peerCount > 0 ? 'online' : 'alone';
+  // The label talks about STATE only; the transport peer count (wires, not
+  // people) moved into the tooltip so it can't be misread as a member count.
+  const connState = room.kicked ? 'removed' : suspended ? 'suspended' : !room.connected ? 'connecting' : room.peerCount > 0 ? 'online' : 'alone';
   const connLabel = room.kicked
     ? t('rooms.removed')
-    : !room.connected
-      ? t('rooms.connecting')
-      : room.peerCount > 0
-        ? `${t('rooms.connected')} · ${room.peerCount}`
-        : t('rooms.alone');
+    : suspended
+      ? t('rooms.suspendedBadge')
+      : !room.connected
+        ? t('rooms.connecting')
+        : room.peerCount > 0
+          ? t('rooms.connected')
+          : t('rooms.alone');
+  const onlineCount = room.members.filter((m) => m.online).length;
   return (
     <div
       className="room-detail-inner"
       onDragStartCapture={() => { internalDrag.current = true; }}
       onDragEndCapture={() => { internalDrag.current = false; }}
+      // Capture-phase reset: a section's own drop handler stops the bubble
+      // (so the room-level add can't double-fire), which would strand the
+      // overlay open — capture runs regardless and clears it.
+      onDropCapture={() => { dragDepth.current = 0; setDropping(false); }}
       onDragEnter={(e) => { if (!isFileDrag(e)) return; e.preventDefault(); dragDepth.current += 1; setDropping(true); }}
       onDragOver={(e) => { if (!isFileDrag(e)) return; e.preventDefault(); }}
       onDragLeave={(e) => { if (!isFileDrag(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDropping(false); }}
       onDrop={handleDrop}
     >
+      {/* A slim banner, not a full-cover sheet — the section drop targets
+          underneath must stay visible and highlightable during an OS drag. */}
       {dropping && (
         <div className="room-drop-overlay" aria-hidden="true">
-          <Icon name="file-plus" size={28} />
+          <Icon name="file-plus" size={16} />
           <span>{t('rooms.dropHint')}</span>
         </div>
       )}
@@ -1482,21 +1683,94 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
               )}
             </h2>
           )}
-          {room.e2e && (
-            <span className="room-e2e-badge" title={t('rooms.e2eHint')}>
-              <Icon name="lock" size={12} /> {t('rooms.encrypted')}
+          <div className="room-detail-badges">
+            {room.e2e && (
+              <span className="room-e2e-badge" title={t('rooms.e2eHint')}>
+                <Icon name="lock" size={12} /> {t('rooms.encrypted')}
+              </span>
+            )}
+            <span
+              className={`room-conn ${connState}`}
+              title={!room.kicked && !suspended && room.connected ? t('rooms.connPeersHint').replace('{n}', String(room.peerCount)) : undefined}
+            >
+              <span className="dot" />
+              {connLabel}
             </span>
-          )}
-          <span className={`room-conn ${connState}`}>
-            <span className="dot" />
-            {connLabel}
-          </span>
+            {/* People at a glance; also the visible way in/out of a collapsed
+                rail (the splitter's double-click stays as the shortcut). */}
+            <button
+              type="button"
+              className={`room-people-chip${railCollapsed ? ' collapsed' : ''}`}
+              onClick={() => setRailCollapsed((c) => !c)}
+              title={t('rooms.peopleChipHint')}
+            >
+              <Icon name="users" size={12} /> {onlineCount}/{room.members.length}
+            </button>
+          </div>
         </div>
         <div className="room-detail-actions">
-          <Button variant="ghost" size="sm" onClick={onCopyCode} icon={<Icon name="copy" size={14} />}>{t('rooms.code')}</Button>
           <Button variant="ghost" size="sm" onClick={onInvite} icon={<Icon name="share-2" size={14} />}>{t('rooms.invite')}</Button>
           <Button variant="ghost" size="sm" onClick={onOpenFolder} icon={<Icon name="folder-open" size={14} />}>{t('rooms.folder')}</Button>
-          <Button variant="danger" size="sm" onClick={onLeave} disabled={busy} icon={<Icon name="x" size={14} />}>{t('rooms.leave')}</Button>
+          {/* THE room-settings point: auto-download, speed limits, code,
+              rename, leave — secondary + destructive actions live here, not as
+              a permanent red button beside the everyday pair. */}
+          <div className="room-settings-wrap" ref={settingsWrapRef}>
+            <Button
+              variant="ghost" size="sm" iconOnly onClick={() => setSettingsOpen((o) => !o)}
+              icon={<Icon name="settings" size={14} />}
+              aria-label={t('rooms.roomSettings')} title={t('rooms.roomSettings')}
+            />
+            {settingsOpen && (
+              <div className="room-settings-pop">
+                <div className="room-settings-row" title={t('rooms.autoFetchHint')}>
+                  <span>{t('rooms.autoFetch')}</span>
+                  <Toggle size="small" checked={room.autoFetch} onChange={onToggleAutoFetch} ariaLabel={t('rooms.autoFetch')} />
+                </div>
+                <div className="room-settings-row">
+                  <span>{t('rooms.notifyToggle')}</span>
+                  <Toggle size="small" checked={!notifyMuted} onChange={(v) => onToggleNotifyMuted?.(!v)} ariaLabel={t('rooms.notifyToggle')} />
+                </div>
+                <div className="room-settings-row" title={t('rooms.limitsHint')}>
+                  <span className="room-settings-limits-label"><Icon name="gauge" size={13} /> {t('rooms.limits')}</span>
+                  <span className="room-settings-limits">
+                    <label className="room-limit">
+                      ↑
+                      <input
+                        type="number" min={0} placeholder="∞" value={upDraft}
+                        onChange={(e) => setUpDraft(e.target.value)}
+                        onBlur={commitLimits}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        aria-label={`${t('rooms.limits')} ↑ ${t('rooms.kbps')}`}
+                      />
+                    </label>
+                    <label className="room-limit">
+                      ↓
+                      <input
+                        type="number" min={0} placeholder="∞" value={downDraft}
+                        onChange={(e) => setDownDraft(e.target.value)}
+                        onBlur={commitLimits}
+                        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                        aria-label={`${t('rooms.limits')} ↓ ${t('rooms.kbps')}`}
+                      />
+                    </label>
+                    <span className="room-settings-kbps">{t('rooms.kbps')}</span>
+                  </span>
+                </div>
+                <div className="room-settings-sep" />
+                <button type="button" className="room-settings-item" onClick={onCopyCode}>
+                  <Icon name="copy" size={13} /> {t('rooms.copyCodeAction')}
+                </button>
+                {room.canManage && (
+                  <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); setRenaming(true); }}>
+                    <Icon name="edit-2" size={13} /> {t('rooms.rename')}
+                  </button>
+                )}
+                <button type="button" className="room-settings-item danger" onClick={() => { setSettingsOpen(false); onLeave(); }}>
+                  <Icon name="x" size={13} /> {t('rooms.leave')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1506,6 +1780,14 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
           <Icon name="alert-triangle" size={16} />
           <span>{room.kickedBy ? `${t('rooms.kickedBanner')} (${room.kickedBy})` : t('rooms.kickedBanner')}</span>
           <Button variant="danger" size="sm" onClick={onLeave} disabled={busy} icon={<Icon name="x" size={14} />}>{t('rooms.leave')}</Button>
+        </div>
+      )}
+
+      {/* VPN kill-switch banner — otherwise the pause reads as a stuck "Connecting…" */}
+      {suspended && !room.kicked && (
+        <div className="room-suspended-inline">
+          <Icon name="shield" size={16} />
+          <span>{t('rooms.suspended.body')}</span>
         </div>
       )}
 
@@ -1528,16 +1810,18 @@ const RoomDetail: React.FC<DetailProps> = ({ room, onAddFiles, onDropFiles, onCr
           stageView={stageView}
           onCloseStage={() => setStageView({ kind: 'files' })}
           onWatch={(file) => setStageView({ kind: 'watch', file })}
-          onAddFiles={onAddFiles} onCreateFolder={onCreateFolder} onUpdateFolder={onUpdateFolder}
+          onWatchJoin={(file) => setStageView({ kind: 'watch', file, together: true })}
+          watchCounts={watchCounts} onInvite={onInvite}
+          onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder} onUpdateFolder={onUpdateFolder}
           onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile} onShared={onShared}
-          onToggleAutoFetch={onToggleAutoFetch} onSetLimits={onSetLimits} busy={busy}
+          onToggleAutoFetch={onToggleAutoFetch} busy={busy}
         />
         <div
           className="room-splitter"
           role="separator" aria-orientation="vertical" title={t('rooms.resize')}
           onPointerDown={onSplitDown('chat')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
         />
-        <RoomChat room={room} />
+        <RoomChat room={room} onAttachRequest={() => onAddFiles()} />
       </div>
     </div>
   );
@@ -1579,8 +1863,9 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
   const v = room.voice;
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [volumeFor, setVolumeFor] = useState<string | null>(null);
-  const [vols, setVols] = useState<Record<string, number>>({}); // remembered per-peer volume (engine doesn't echo it back)
+  // Per-peer volume/mute popover (persisted — the engine doesn't echo gains back).
+  const [peerFor, setPeerFor] = useState<string | null>(null);
+  const [peerPrefs, setPeerPrefs] = useState<Record<string, PeerVoicePref>>(loadPeerVoicePrefs);
   const [prefs, setPrefs] = useState(loadVoicePrefs);
   const [pickerOpen, setPickerOpen] = useState(false);        // screenshare source picker
   const memberOf = (id: string) => room.members.find((m) => m.memberId === id);
@@ -1595,6 +1880,41 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
     window.addEventListener(VOICE_PREFS_EVENT, h);
     return () => window.removeEventListener(VOICE_PREFS_EVENT, h);
   }, []);
+
+  // Change a peer's local volume/mute: persist + apply to the live call.
+  const setPeerPref = (memberId: string, patch: Partial<PeerVoicePref>) => {
+    const cur = peerPrefs[memberId] || { volume: 100, muted: false };
+    const next = { ...cur, ...patch };
+    savePeerVoicePref(memberId, next);
+    window.api.rooms.voice.volume(roomId, memberId, effectivePeerGain(next)).catch(() => { /* not in voice */ });
+    setPeerPrefs((prev) => ({ ...prev, [memberId]: next }));
+  };
+
+  // Re-assert the remembered per-peer gains whenever the roster changes (a peer
+  // (re)joining starts at the engine's default full volume).
+  const rosterKey = v.participants.map((p) => p.memberId).sort().join(',');
+  useEffect(() => {
+    if (!v.inVoice) return;
+    for (const p of v.participants) {
+      if (p.memberId === selfId) continue;
+      const pref = peerPrefs[p.memberId];
+      if (pref && (pref.muted || pref.volume !== 100)) {
+        window.api.rooms.voice.volume(roomId, p.memberId, effectivePeerGain(pref)).catch(() => { /* ignore */ });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v.inVoice, rosterKey, roomId]);
+
+  // The peer popover closes like every floating surface: outside click.
+  useEffect(() => {
+    if (!peerFor) return;
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && !el.closest('.room-voice-pop') && !el.closest('.room-voice-ring')) setPeerFor(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [peerFor]);
 
   // Surface transient voice warnings from the engine (e.g. a mid-call mic fell back
   // to the system default) as a toast.
@@ -1710,11 +2030,15 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
             <Icon name="phone-off" size={15} />
           </button>
         </div>
-      ) : (
-        <button className="room-voice-join" onClick={join} disabled={busy}>
-          <Icon name="mic" size={14} /> {t('rooms.voice.join')}
-        </button>
-      )}
+      ) : (() => {
+        // The serverless mesh tops out — say so instead of failing the join.
+        const full = v.participants.length >= VOICE_MESH_LIMIT;
+        return (
+          <button className="room-voice-join" onClick={join} disabled={busy || full} title={full ? t('rooms.voice.full') : undefined}>
+            <Icon name="mic" size={14} /> {t('rooms.voice.join')}
+          </button>
+        );
+      })()}
 
       {settingsOpen && <VoiceSettingsModal onClose={() => setSettingsOpen(false)} />}
       {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} />}
@@ -1724,17 +2048,19 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
           {v.participants.map((p) => {
             const self = p.memberId === selfId;
             const live = self && v.transmitting && !v.muted;
+            const pref = peerPrefs[p.memberId] || { volume: 100, muted: false };
             return (
               <div key={p.memberId} className={`room-voice-person${p.speaking ? ' speaking' : ''}${p.muted ? ' muted' : ''}${live ? ' live' : ''}`} title={nameOf(p.memberId)}>
                 <button
                   className="room-voice-ring"
-                  onClick={() => { if (!self) setVolumeFor((cur) => (cur === p.memberId ? null : p.memberId)); }}
+                  onClick={() => { if (!self) setPeerFor((cur) => (cur === p.memberId ? null : p.memberId)); }}
                   title={self ? nameOf(p.memberId) : t('rooms.voice.volume')}
                 >
                   <Avatar seed={seedOf(p.memberId)} img={memberOf(p.memberId)?.avatarImg} size={30} />
                 </button>
                 <span className="room-voice-pname" style={memberOf(p.memberId)?.color ? { color: memberOf(p.memberId)?.color } : undefined}>{nameOf(p.memberId)}</span>
                 {p.muted && <Icon name="mic-off" size={12} className="room-voice-pmic" />}
+                {!self && pref.muted && <Icon name="volume-x" size={12} className="room-voice-pmic" />}
                 {p.sharing && (
                   <button
                     className="room-voice-share-badge"
@@ -1744,20 +2070,35 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
                     <Icon name="screen-share" size={9} /> {t('rooms.screen.live')}
                   </button>
                 )}
-                {volumeFor === p.memberId && !self && (
-                  <input
-                    type="range" min={0} max={100} value={vols[p.memberId] ?? 100} className="room-voice-vol"
-                    onChange={(e) => {
-                      const val = Number(e.target.value);
-                      setVols((m) => ({ ...m, [p.memberId]: val }));
-                      window.api.rooms.voice.volume(roomId, p.memberId, val / 100).catch(() => { /* ignore */ });
-                    }}
-                    title={t('rooms.voice.volume')}
-                  />
-                )}
               </div>
             );
           })}
+          {/* One shared popover UNDER the tile row (full rail width) — an
+              in-tile popover would be clipped by the rail's overflow:hidden. */}
+          {(() => {
+            if (!peerFor) return null;
+            const p = v.participants.find((x) => x.memberId === peerFor);
+            if (!p || p.memberId === selfId) return null;
+            const pref = peerPrefs[p.memberId] || { volume: 100, muted: false };
+            return (
+              <div className="room-voice-pop">
+                <span className="room-voice-pop-name">{nameOf(p.memberId)}</span>
+                <button
+                  type="button"
+                  className={`room-voice-pop-mute${pref.muted ? ' on' : ''}`}
+                  onClick={() => setPeerPref(p.memberId, { muted: !pref.muted })}
+                >
+                  <Icon name={pref.muted ? 'volume-x' : 'headphones'} size={13} />
+                  {pref.muted ? t('rooms.voice.peerUnmute') : t('rooms.voice.peerMute')}
+                </button>
+                <input
+                  type="range" min={0} max={100} value={pref.muted ? 0 : pref.volume} className="room-voice-vol"
+                  onChange={(e) => setPeerPref(p.memberId, { volume: Number(e.target.value), muted: false })}
+                  title={t('rooms.voice.volume')}
+                />
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
@@ -1781,7 +2122,11 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
     }
   };
   const kick = (m: RoomMember) => async () => {
-    if (await confirm({ message: t('rooms.kickConfirm'), danger: true })) {
+    // Be honest about the model: the rekey cuts them off going forward, but in
+    // an E2E room the content secret is not rotated — what they already
+    // downloaded stays readable for them.
+    const message = room.e2e ? `${t('rooms.kickConfirm')} ${t('rooms.kickConfirmE2E')}` : t('rooms.kickConfirm');
+    if (await confirm({ message, danger: true })) {
       window.api.rooms.kick(room.roomId, m.memberId)
         .then(() => toast.success(t('rooms.kicked')))
         .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
@@ -1822,13 +2167,7 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
             <button
               className="room-member-mute"
               title={m.muted ? t('rooms.unmute') : t('rooms.mute')}
-              onClick={async () => {
-                if (m.muted) {
-                  window.api.rooms.setMuted(room.roomId, m.memberId, false).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-                } else if (await confirm({ message: t('rooms.muteConfirm') })) {
-                  window.api.rooms.setMuted(room.roomId, m.memberId, true).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-                }
-              }}
+              onClick={muteToggle(m)}
             >
               <Icon name={m.muted ? 'eye' : 'eye-off'} size={13} />
             </button>
@@ -1837,13 +2176,7 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
             <button
               className="room-member-kick"
               title={t('rooms.kick')}
-              onClick={async () => {
-                if (await confirm({ message: t('rooms.kickConfirm'), danger: true })) {
-                  window.api.rooms.kick(room.roomId, m.memberId)
-                    .then(() => toast.success(t('rooms.kicked')))
-                    .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-                }
-              }}
+              onClick={kick(m)}
             >
               <Icon name="x-circle" size={13} />
             </button>
@@ -1857,9 +2190,28 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
 // ── Room chat panel ───────────────────────────────────────────────────────
 // Pure text chat — the room's persistent right region. People + voice live in the
 // left rail (RoomPeopleRail); this card is just log + typing indicator + composer.
+// Highlight the current user's name inside a plain-text run (@-less mention).
+const renderWithMention = (text: string, selfName?: string): React.ReactNode => {
+  if (!selfName || selfName.length < 2) return text;
+  const lower = text.toLowerCase();
+  const needle = selfName.toLowerCase();
+  let hit = lower.indexOf(needle);
+  if (hit < 0) return text;
+  const parts: React.ReactNode[] = [];
+  let i = 0, k = 0;
+  while (hit >= 0) {
+    if (hit > i) parts.push(text.slice(i, hit));
+    parts.push(<mark key={k++} className="room-chat-mention">{text.slice(hit, hit + needle.length)}</mark>);
+    i = hit + needle.length;
+    hit = lower.indexOf(needle, i);
+  }
+  if (i < text.length) parts.push(text.slice(i));
+  return parts;
+};
+
 // One chat message body, split into text / fenced-code segments, with a copy
 // button for anything multiline (pasted scripts etc.).
-const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string }> = ({ text, copyLabel, copiedLabel }) => {
+const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string; selfName?: string }> = ({ text, copyLabel, copiedLabel, selfName }) => {
   const segments = useMemo(() => parseChatSegments(text), [text]);
   const copy = (e: React.MouseEvent) => {
     // Use the clicked element's OWN realm: in the detached chat window the main
@@ -1874,7 +2226,15 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
     <span className="room-chat-bubble">
       {segments.map((s, i) => s.kind === 'code'
         ? <pre key={i} className="room-chat-code">{s.text}</pre>
-        : <span key={i} className="room-chat-text">{s.text}</span>)}
+        : (
+          <span key={i} className="room-chat-text">
+            {/* http(s)-only linkify; main routes target=_blank to the system
+                browser (setWindowOpenHandler), incl. from the detached window. */}
+            {splitLinks(s.text).map((r, j) => r.kind === 'link'
+              ? <a key={j} className="room-chat-link" href={r.href} target="_blank" rel="noreferrer" title={r.href}>{r.text}</a>
+              : <React.Fragment key={j}>{renderWithMention(r.text, selfName)}</React.Fragment>)}
+          </span>
+        ))}
       {isCopyworthy(text) && (
         <button type="button" className="room-chat-copy" onClick={copy} title={copyLabel}>
           <Icon name="copy" size={12} />
@@ -1884,11 +2244,17 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
   );
 };
 
-const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
+const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({ room, onAttachRequest }) => {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [zoneTab, setZoneTab] = useState<'chat' | 'history'>('chat');
+  // Local chat search: filters the persisted log (no protocol involved).
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [chatQuery, setChatQuery] = useState('');
+  const chatQueryRef = useRef('');
+  chatQueryRef.current = chatQuery.trim().toLowerCase();
+  useEffect(() => { setSearchOpen(false); setChatQuery(''); }, [room.roomId]);
   // Author avatar click → info-only profile card (actions live in the rail).
   // Reset on room switch AND on detach/reattach — the card's anchor element
   // belongs to the previous document and dies with it.
@@ -1900,17 +2266,49 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
   // element is gone, so a surviving card would pin to the window corner.
   useEffect(() => { setChatCardFor(null); }, [popout, zoneTab]);
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
+  const selfName = room.members.find((m) => m.isSelf)?.name;
   const messages = room.chat || [];
   const listRef = useRef<HTMLDivElement>(null);
   const composeRef = useRef<HTMLTextAreaElement>(null);
 
-  // Keep the view pinned to the newest message as the log grows. `popout` is a
-  // dep because detach/reattach REMOUNTS the log DOM in the other document
-  // (fresh node, scrollTop=0) without messages.length changing.
-  useEffect(() => {
+  // Pin to the newest message only while the user is already near the bottom —
+  // reading older history must not be yanked down by new arrivals (those feed
+  // the "N new ↓" pill instead). The log window is capped (slice(-100)), so
+  // arrivals are counted by the previous last-id's position, not length delta.
+  const atBottomRef = useRef(true);
+  const [newCount, setNewCount] = useState(0);
+  const prevLogRef = useRef<{ room: string; lastId: string | null }>({ room: room.roomId, lastId: null });
+  const scrollToNewest = useCallback(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, zoneTab, popout]);
+    atBottomRef.current = true;
+    setNewCount(0);
+  }, []);
+  const onLogScroll = () => {
+    const el = listRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    atBottomRef.current = nearBottom;
+    if (nearBottom) setNewCount(0);
+  };
+  useEffect(() => {
+    const prev = prevLogRef.current;
+    const last = messages.length ? messages[messages.length - 1] : null;
+    prevLogRef.current = { room: room.roomId, lastId: last?.id ?? null };
+    // Room switch FIRST: the reset effect clears the query only on the next
+    // commit, and skipping here would eat the one-shot room-change evidence
+    // (prevLogRef already advanced) — the new room would keep the old scroll.
+    if (prev.room !== room.roomId) { scrollToNewest(); return; } // fresh log
+    if (chatQueryRef.current) return; // a filtered view scrolls freely
+    if (!last || last.id === prev.lastId) return; // state push without new chat
+    const idx = prev.lastId ? messages.findIndex((m) => m.id === prev.lastId) : -1;
+    const arrived = idx >= 0 ? messages.length - 1 - idx : messages.length;
+    if (atBottomRef.current || last.memberId === selfId) scrollToNewest();
+    else setNewCount((c) => c + arrived);
+  }, [room.roomId, messages, selfId, scrollToNewest]);
+  // Detach/reattach and tab switches REMOUNT the log DOM (fresh node,
+  // scrollTop=0) without the messages changing — force a re-pin.
+  useEffect(() => { scrollToNewest(); }, [zoneTab, popout, scrollToNewest]);
 
   // Auto-grow the composer with its content (bounded by CSS max-height).
   const autosize = () => {
@@ -1957,9 +2355,54 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
     finally { setSending(false); }
   };
 
+  // @mention autocomplete: track a trailing "@word" at the caret; the popup
+  // intercepts Enter/Tab/arrows while open (send/indent resume when closed).
+  const [mention, setMention] = useState<null | { query: string; start: number; caret: number }>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
+  useEffect(() => { setMention(null); }, [room.roomId, popout, zoneTab]);
+  const mentionCandidates = useMemo(() => {
+    if (!mention) return [];
+    const seen = new Set<string>();
+    return room.members.filter((m) => {
+      if (m.isSelf || !m.name) return false;
+      const k = m.name.toLowerCase();
+      if (!k.startsWith(mention.query) || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    }).slice(0, 6);
+  }, [mention, room.members]);
+  // The candidate list recomputes on every room push — a stale index must
+  // clamp, not dereference past the end.
+  const mentionActiveIdx = Math.min(mentionIdx, Math.max(0, mentionCandidates.length - 1));
+  const insertMention = (name: string) => {
+    if (!mention) return;
+    const next = `${text.slice(0, mention.start)}@${name} ${text.slice(mention.caret)}`;
+    setMention(null);
+    if (next.length > 2000) return;
+    setText(next);
+    const el = composeRef.current;
+    if (el) {
+      const pos = mention.start + name.length + 2;
+      const win = el.ownerDocument.defaultView ?? window;
+      win.requestAnimationFrame(() => { el.focus(); el.selectionStart = el.selectionEnd = pos; });
+    }
+  };
+  const trackMention = (value: string, caret: number) => {
+    const upto = value.slice(0, caret);
+    const mm = /(^|\s)@([\p{L}\p{N}_-]{0,24})$/u.exec(upto);
+    setMention(mm ? { query: mm[2].toLowerCase(), start: caret - mm[2].length - 1, caret } : null);
+    setMentionIdx(0);
+  };
+
   // Tab inserts an indent at the caret (scripts!) instead of moving focus.
   const onComposeKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return; // IME: Enter confirms the composition, not send
+    if (mention && mentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionCandidates.length); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionCandidates[mentionActiveIdx].name); return; }
+      if (e.key === 'Escape') { setMention(null); return; }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); return; }
     if (e.key === 'Tab') {
       e.preventDefault();
@@ -1989,6 +2432,14 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
             {tab === 'chat' ? t('rooms.chat') : t('rooms.history')}
           </button>
         ))}
+        <button
+          type="button"
+          className={`room-zone-popout room-zone-search${searchOpen ? ' active' : ''}`}
+          title={t('rooms.chatSearch')}
+          onClick={() => { setZoneTab('chat'); setSearchOpen((o) => { if (o) setChatQuery(''); return !o; }); }}
+        >
+          <Icon name="search" size={13} />
+        </button>
         <button
           type="button"
           className="room-zone-popout"
@@ -2025,38 +2476,85 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
             onClose={() => setChatCardFor(null)}
           />
         )}
-        <div className="room-chat-log" ref={listRef}>
+        {searchOpen && (
+          <div className="room-chat-search">
+            <Icon name="search" size={13} />
+            <input
+              type="text" autoFocus placeholder={t('rooms.chatSearch')} value={chatQuery}
+              onChange={(e) => setChatQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Escape') { setChatQuery(''); setSearchOpen(false); } }}
+            />
+          </div>
+        )}
+        <div className="room-chat-log" ref={listRef} onScroll={onLogScroll}>
           {messages.length === 0 ? (
             <div className="room-files-empty">{t('rooms.chatEmpty')}</div>
-          ) : (
-            messages.slice(-100).map((m) => {
+          ) : (() => {
+            const q = chatQuery.trim().toLowerCase();
+            const shown = (q
+              ? messages.filter((m) => m.text.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q))
+              : messages
+            ).slice(-100);
+            if (q && shown.length === 0) return <div className="room-files-empty">{t('rooms.chatSearchEmpty')}</div>;
+            return shown.map((m, i) => {
               const mine = m.memberId === selfId;
               // Live member (if still around) carries the rich profile: custom
               // avatar, name color, and the click-through card. The message's
               // own name/seed snapshot is the fallback for departed members.
               const live = room.members.find((mm) => mm.memberId === m.memberId);
+              const prev = i > 0 ? shown[i - 1] : null;
+              const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
+              // Continuation: same author within 5 min on the same day —
+              // collapse the avatar/name so bursts read as one block.
+              const cont = !!prev && !newDay && prev.memberId === m.memberId && m.at - prev.at < 5 * 60_000;
               return (
-                <div key={m.id} className={`room-chat-msg ${mine ? 'mine' : ''}`}>
-                  {!mine && (live ? (
-                    <button
-                      type="button"
-                      className="room-member-open"
-                      title={t('rooms.profileCardHint')}
-                      onClick={(e) => setChatCardFor((cur) => (cur?.memberId === m.memberId ? null : { memberId: m.memberId, anchor: e.currentTarget }))}
-                    >
-                      <Avatar seed={live.avatarSeed} img={live.avatarImg} size={28} />
-                    </button>
-                  ) : (
-                    <Identicon seed={m.avatarSeed} size={28} />
-                  ))}
-                  <div className="room-chat-bubble-wrap">
-                    {!mine && <span className="room-chat-author" style={live?.color ? { color: live.color } : undefined}>{live?.name || m.name || '?'}</span>}
-                    <RoomChatBody text={m.text} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} />
-                    <span className="room-chat-time">{shortTime(m.at)}</span>
+                <React.Fragment key={m.id}>
+                  {newDay && (
+                    <div className="room-chat-day" aria-hidden="true"><span>{dayLabel(m.at, t)}</span></div>
+                  )}
+                  <div className={`room-chat-msg ${mine ? 'mine' : ''}${cont ? ' cont' : ''}`}>
+                    {!mine && (cont ? (
+                      <span className="room-chat-gutter" aria-hidden="true" />
+                    ) : live ? (
+                      <button
+                        type="button"
+                        className="room-member-open"
+                        title={t('rooms.profileCardHint')}
+                        onClick={(e) => setChatCardFor((cur) => (cur?.memberId === m.memberId ? null : { memberId: m.memberId, anchor: e.currentTarget }))}
+                      >
+                        <Avatar seed={live.avatarSeed} img={live.avatarImg} size={28} />
+                      </button>
+                    ) : (
+                      <Identicon seed={m.avatarSeed} size={28} />
+                    ))}
+                    <div className="room-chat-bubble-wrap">
+                      {!mine && !cont && <span className="room-chat-author" style={live?.color ? { color: live.color } : undefined}>{live?.name || m.name || '?'}</span>}
+                      {m.text.startsWith('🙋') ? (
+                        // A file request (the 🙋 prefix rides the plain chat
+                        // pipeline) — render as a card with an attach shortcut.
+                        <span className="room-chat-request">
+                          <span className="room-chat-request-head"><Icon name="file-question" size={12} /> {t('rooms.request.title')}</span>
+                          <span className="room-chat-request-text">{m.text.replace(/^🙋\s*/, '')}</span>
+                          {!mine && onAttachRequest && (
+                            <button type="button" className="room-chat-request-attach" onClick={onAttachRequest}>
+                              <Icon name="file-plus" size={12} /> {t('rooms.request.attach')}
+                            </button>
+                          )}
+                        </span>
+                      ) : (
+                        <RoomChatBody text={m.text} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={mine ? undefined : selfName} />
+                      )}
+                      <span className="room-chat-time">{timeOnly(m.at)}</span>
+                    </div>
                   </div>
-                </div>
+                </React.Fragment>
               );
-            })
+            });
+          })()}
+          {newCount > 0 && !chatQuery.trim() && (
+            <button type="button" className="room-chat-newpill" onClick={scrollToNewest}>
+              <Icon name="arrow-down" size={12} /> {t('rooms.newMsgs').replace('{n}', String(newCount))}
+            </button>
           )}
         </div>
         <div className={`room-chat-typing${typingNames.length > 0 ? ' on' : ''}`} aria-live="polite">
@@ -2070,8 +2568,30 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
               <span className="room-chat-typing-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
             </>
           )}
+          {/* Near-limit counter only — silence until 1800 keeps the row calm.
+              aria-hidden: this sits inside the typing row's polite live region,
+              and a per-keystroke announcement would bury the screen reader. */}
+          {text.length >= 1800 && (
+            <span className={`room-chat-count${text.length >= 1950 ? ' warn' : ''}`} aria-hidden="true">{text.length}/2000</span>
+          )}
         </div>
         <div className="room-chat-compose">
+          {mention && mentionCandidates.length > 0 && (
+            <div className="room-chat-mention-pop">
+              {mentionCandidates.map((m, i) => (
+                <button
+                  key={m.memberId}
+                  type="button"
+                  className={`room-chat-mention-item${i === mentionActiveIdx ? ' active' : ''}`}
+                  // mousedown, not click — a click would blur the textarea first.
+                  onMouseDown={(e) => { e.preventDefault(); insertMention(m.name); }}
+                >
+                  <Identicon seed={m.avatarSeed} size={18} />
+                  <span style={m.color ? { color: m.color } : undefined}>{m.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <textarea
             ref={composeRef}
             className="rooms-input room-chat-input"
@@ -2079,7 +2599,11 @@ const RoomChat: React.FC<{ room: RoomState }> = ({ room }) => {
             value={text}
             maxLength={2000}
             rows={1}
-            onChange={(e) => { setText(e.target.value); pingTyping(e.target.value); }}
+            onChange={(e) => {
+              setText(e.target.value);
+              pingTyping(e.target.value);
+              trackMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+            }}
             onKeyDown={onComposeKeyDown}
           />
           <Button variant="primary" size="sm" onClick={send} loading={sending} disabled={!text.trim()} icon={<Icon name="send" size={14} />}>
@@ -2127,7 +2651,7 @@ const highlightName = (name: string, query: string): React.ReactNode => {
   );
 };
 
-const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string) => void; getDragIds?: (fileId: string) => string[]; viewPrefs?: RoomFilesPrefs; highlightQuery?: string }> = ({ file, room, onWatch, onAssignFile, selecting = false, selected = false, onToggleSelect, getDragIds, viewPrefs, highlightQuery }) => {
+const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onWatchJoin?: (file: RoomFile) => void; watchCount?: number; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string) => void; getDragIds?: (fileId: string) => string[]; viewPrefs?: RoomFilesPrefs; highlightQuery?: string }> = ({ file, room, onWatch, onWatchJoin, watchCount = 0, onAssignFile, selecting = false, selected = false, onToggleSelect, getDragIds, viewPrefs, highlightQuery }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -2169,6 +2693,17 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
         e.dataTransfer.effectAllowed = 'move';
       }}
       onClick={selecting ? () => onToggleSelect?.(file.fileId) : undefined}
+      // Double-click does the row's most useful thing: watch when playable,
+      // open when merely local, fetch when it hasn't been pulled yet.
+      onDoubleClick={selecting ? undefined : (e) => {
+        // dblclick bubbles from the row's inner controls too (their handlers
+        // only stop CLICK propagation) — two fast clicks on a reaction or a
+        // hover action must not also open/watch the file.
+        if ((e.target as HTMLElement).closest('button, input, a')) return;
+        if (canWatch) onWatch(file);
+        else if (haveLocally) window.api.rooms.openFile(room.roomId, file.fileId);
+        else if (awaitingFetch) window.api.rooms.fetchFile(room.roomId, file.fileId).catch((err) => toast.error(String(err instanceof Error ? err.message : err)));
+      }}
       onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}
     >
       {selecting && (
@@ -2196,6 +2731,25 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           <span className="room-file-have">
             <Icon name="users" size={12} /> {haveCount}/{room.members.length}
           </span>
+          {/* Live watch session on this file. Joining needs the file locally —
+              without it the click fetches (manual mode) or stays an indicator. */}
+          {watchCount > 0 && isPlayable(file.name) && (
+            <button
+              type="button"
+              className={`room-file-watching${canWatch || awaitingFetch ? '' : ' passive'}`}
+              title={(canWatch
+                ? t('rooms.watchingBadge')
+                : awaitingFetch ? t('rooms.watchingBadgeFetch') : t('rooms.watchingBadgeN')
+              ).replace('{n}', String(watchCount))}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (canWatch) (onWatchJoin ?? onWatch)(file);
+                else if (awaitingFetch) window.api.rooms.fetchFile(room.roomId, file.fileId).catch((err) => toast.error(String(err instanceof Error ? err.message : err)));
+              }}
+            >
+              <Icon name="play" size={10} /> {watchCount}
+            </button>
+          )}
           {(holdersShown.length > 0 || fetching.length > 0) && (
             <span className="room-file-peers">
               {holdersShown.length > 0 && (
@@ -2295,7 +2849,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
       {menu && createPortal(
         // The wrapper stops clicks reaching the row's select-toggle through the
         // React tree (portals propagate events by COMPONENT hierarchy, not DOM).
-        <div onClick={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+        <div onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
         <ContextMenu
           x={menu.x}
           y={menu.y}
@@ -2304,6 +2858,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
             ...(canWatch ? [{ label: t('rooms.watch'), icon: 'play' as IconName, onClick: () => onWatch(file) }] : []),
             ...(haveLocally ? [{ label: t('rooms.openFile'), icon: 'external-link' as IconName, onClick: () => { window.api.rooms.openFile(room.roomId, file.fileId); } }] : []),
             ...(haveLocally ? [{ label: t('rooms.revealFile'), icon: 'folder' as IconName, onClick: () => { window.api.rooms.revealFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
+            ...(haveLocally && !tr?.released ? [{ label: t('rooms.stopSeeding'), icon: 'pause' as IconName, onClick: () => { window.api.rooms.releaseFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
+            ...(haveLocally && tr?.released ? [{ label: t('rooms.seedAgain'), icon: 'upload' as IconName, onClick: () => { window.api.rooms.reseedFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
             ...(awaitingFetch ? [{ label: t('rooms.fetch'), icon: 'download' as IconName, onClick: () => { window.api.rooms.fetchFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
             { label: t('rooms.copyName'), icon: 'copy' as IconName, onClick: () => { navigator.clipboard.writeText(file.name).catch(() => { /* ignore */ }); } },
             ...(folders.length > 0 ? [
@@ -2318,20 +2874,30 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
               ...(file.folderId ? [{ label: `${t('rooms.folder.moveTo')}: ${t('rooms.folder.uncategorized')}`, icon: 'folder' as IconName, onClick: () => onAssignFile(file.fileId, null) }] : []),
             ] : []),
             { label: '', onClick: () => { /* divider */ }, divider: true },
-            {
-              label: t('rooms.deleteHint'), icon: 'trash' as IconName, danger: true,
-              onClick: async () => {
-                if (await confirm({ message: t('rooms.deleteConfirm'), danger: true }))
-                  window.api.rooms.removeFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-              },
-            },
+            // The engine authorizes a room-wide delete only for the file's
+            // author or the room owner; for anyone else the same call degrades
+            // to a local hide — label the item as what it actually does.
+            (() => {
+              const canDeleteAll = room.canManage || file.addedBy === selfId;
+              return {
+                label: canDeleteAll ? t('rooms.deleteForAll') : t('rooms.hideForMe'),
+                icon: (canDeleteAll ? 'trash' : 'eye-off') as IconName,
+                danger: canDeleteAll,
+                onClick: async () => {
+                  if (await confirm({ message: canDeleteAll ? t('rooms.deleteConfirm') : t('rooms.hideConfirm'), danger: canDeleteAll }))
+                    window.api.rooms.removeFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
+                },
+              };
+            })(),
           ]}
         />
         </div>,
         document.body,
       )}
       <div className="room-file-status">
-        {haveLocally ? (
+        {haveLocally && tr?.released ? (
+          <span className="room-status released" title={t('rooms.releasedHint')}><Icon name="pause" size={16} /></span>
+        ) : haveLocally ? (
           <span className="room-status seeding" title={t('rooms.haveLocal')}><Icon name="check-circle" size={16} /></span>
         ) : downloading ? (
           <span className="room-status downloading">{Math.round((tr.progress || 0) * 100)}%</span>
@@ -2353,7 +2919,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // queue with auto-advance, and track changes broadcast so everyone advances.
 interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
 
-const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; onClose: () => void }> = ({ room, roomId, file, self, onClose }) => {
+const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; initialTogether?: boolean; onClose: () => void }> = ({ room, roomId, file, self, initialTogether = false, onClose }) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -2375,8 +2941,11 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     setMediaEl(null);
   }, []);
   const applyingRemote = useRef(false); // suppress echo while applying a remote action
-  const togetherRef = useRef(false);
-  const [together, setTogether] = useState(false);
+  // `initialTogether` = joining an ongoing session from a row badge — sync
+  // starts ON, so the first presence('join') already carries it and incoming
+  // beats converge us onto the session immediately.
+  const togetherRef = useRef(initialTogether);
+  const [together, setTogether] = useState(initialTogether);
   const [controller, setController] = useState<string | null>(null); // name we're synced to (display only)
   const watchersRef = useRef<Record<string, Watcher>>({});
   const [error, setError] = useState<string | null>(null);
@@ -2398,6 +2967,51 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const roomRef = useRef(room);
   roomRef.current = room;
   const isAudio = classifyMediaKind(current.name) === 'audio';
+
+  // Subtitles: embedded text tracks + sidecar files (listed per track); the
+  // chosen one arrives as VTT text and attaches as a same-origin blob <track>
+  // (immune to the video's crossOrigin). Selection is local — not synced.
+  const [subTracks, setSubTracks] = useState<Array<{ key: string; label: string }>>([]);
+  const [subOpen, setSubOpen] = useState(false);
+  const [subActiveKey, setSubActiveKey] = useState<string | null>(null);
+  const [subUrl, setSubUrl] = useState<string | null>(null);
+  const subUrlRef = useRef<string | null>(null);
+  const applySubUrl = useCallback((u: string | null) => {
+    if (subUrlRef.current) URL.revokeObjectURL(subUrlRef.current);
+    subUrlRef.current = u;
+    setSubUrl(u);
+  }, []);
+  useEffect(() => () => { if (subUrlRef.current) URL.revokeObjectURL(subUrlRef.current); }, []);
+  // Monotonic token: a slow ffmpeg extraction must not override a LATER
+  // choice (including Off) when it finally resolves.
+  const subReqRef = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    subReqRef.current++;
+    setSubTracks([]); setSubOpen(false); setSubActiveKey(null); applySubUrl(null);
+    if (classifyMediaKind(current.name) !== 'video') return;
+    window.api.rooms.subtitleList(roomId, current.fileId)
+      .then((tracks) => { if (alive) setSubTracks(tracks.map((s) => ({ key: s.key, label: s.label }))); })
+      .catch(() => { /* no subtitles — the button just doesn't render */ });
+    return () => { alive = false; };
+  }, [roomId, current.fileId, current.name, applySubUrl]);
+  const selectSubtitle = (key: string | null) => {
+    setSubOpen(false);
+    setSubActiveKey(key);
+    const req = ++subReqRef.current;
+    if (!key) { applySubUrl(null); return; }
+    window.api.rooms.subtitleGet(roomId, current.fileId, key)
+      .then((vtt) => {
+        if (subReqRef.current !== req) return; // superseded by a later pick
+        if (!vtt || !vtt.trim()) { setSubActiveKey((k) => (k === key ? null : k)); return; } // dead track
+        applySubUrl(URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' })));
+      })
+      .catch((e) => {
+        if (subReqRef.current !== req) return;
+        setSubActiveKey(null);
+        toast.error(String(e instanceof Error ? e.message : e));
+      });
+  };
   // The queue: every locally-available audio file of the room, in room order.
   const playlist = useMemo(
     () => room.files.filter((f) => classifyMediaKind(f.name) === 'audio' && room.transfers[f.fileId]?.haveLocally),
@@ -2733,6 +3347,21 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       <div className="room-player">
         <div className="room-player-top">
           <span className="room-player-name" title={current.name}>{current.name}</span>
+          {!isAudio && subTracks.length > 0 && (
+            <span className="room-sub-wrap">
+              <button className={`room-player-sync room-sub-btn${subActiveKey ? ' on' : ''}`} onClick={() => setSubOpen((o) => !o)} title={t('rooms.subtitles')}>
+                <Icon name="type" size={14} /> CC
+              </button>
+              {subOpen && (
+                <span className="room-sub-pop">
+                  <button type="button" className={`room-sub-item${!subActiveKey ? ' active' : ''}`} onClick={() => selectSubtitle(null)}>{t('rooms.subtitlesOff')}</button>
+                  {subTracks.map((s) => (
+                    <button key={s.key} type="button" className={`room-sub-item${subActiveKey === s.key ? ' active' : ''}`} onClick={() => selectSubtitle(s.key)}>{s.label}</button>
+                  ))}
+                </span>
+              )}
+            </span>
+          )}
           <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
             <Icon name="users" size={14} /> {together ? t('rooms.together.on') : t('rooms.together.off')}
           </button>
@@ -2748,7 +3377,9 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                 playsInline
                 crossOrigin="anonymous"
                 onClick={() => { const v = videoRef.current; if (v) { if (v.paused) void v.play().catch(() => {}); else v.pause(); } }}
-              />
+              >
+                {subUrl && <track kind="subtitles" src={subUrl} srcLang="und" default />}
+              </video>
               {isAudio && (
                 <div
                   className="room-audio-stage"

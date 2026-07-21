@@ -146,6 +146,8 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
 
   const content = (
     <>
+      {/* Opened from inside a room, but the scope is global — say so. */}
+      <p className="vsm-global-hint">{t('rooms.voice.globalHint')}</p>
       {/* Devices */}
       <div className="vsm-section">
         <div className="vsm-section-title">{t('rooms.voice.devices')}</div>
