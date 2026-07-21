@@ -316,6 +316,7 @@
   "rooms.suspendedBadge": "Приостановлено (VPN)",
   "rooms.voice.peerMute": "Заглушить у себя",
   "rooms.voice.peerUnmute": "Включить звук",
+  "rooms.joinFromClipboard": "Код приглашения подставлен из буфера обмена",
   "rooms.joinBadFormat": "Не похоже на приглашение — формат: слово-слово-слово-слово-1234.",
   "rooms.joinServerlessHint": "Комнаты бессерверные: вход сработает, только пока кто-то из участников онлайн.",
   "rooms.onboard.desc": "Комната готова — три шага, чтобы она ожила:",

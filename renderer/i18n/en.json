@@ -316,6 +316,7 @@
   "rooms.suspendedBadge": "Paused (VPN)",
   "rooms.voice.peerMute": "Mute for me",
   "rooms.voice.peerUnmute": "Unmute for me",
+  "rooms.joinFromClipboard": "Invite code pasted from your clipboard",
   "rooms.joinBadFormat": "That doesn't look like an invite — the format is word-word-word-word-1234.",
   "rooms.joinServerlessHint": "Rooms are serverless: joining works only while another member is online.",
   "rooms.onboard.desc": "The room is ready — three steps to bring it to life:",

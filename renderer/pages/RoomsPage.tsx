@@ -258,6 +258,23 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     finally { setBusy(false); }
   };
 
+  // Opening the Join dialog peeks at the clipboard ONCE (an explicit user
+  // action, never a background watcher) — a copied invite pre-fills the field.
+  useEffect(() => {
+    if (dialog !== 'join') return;
+    let alive = true;
+    navigator.clipboard.readText().then((text) => {
+      const candidate = (text || '').trim();
+      if (!alive || !candidate || candidate.length > 200) return;
+      const normalized = candidate.toLowerCase().replace(/\s*~\s*/g, '~').replace(/\s+/g, '-').replace(/-+/g, '-');
+      if (!INVITE_SHAPE_RE.test(normalized)) return;
+      setJoinCode((cur) => cur || candidate);
+      toast(t('rooms.joinFromClipboard'), { icon: '📋' });
+    }).catch(() => { /* clipboard unavailable — type it in */ });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dialog]);
+
   const handleJoin = async () => {
     if (!joinCode.trim()) return;
     // A shape check up front beats the engine's generic failure: an incomplete
