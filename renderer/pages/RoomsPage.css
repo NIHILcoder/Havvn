@@ -118,7 +118,7 @@
   flex-wrap: wrap;
 }
 .room-detail-title { display: flex; flex-direction: column; gap: var(--space-2); }
-.room-detail-title h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.015em; color: var(--color-text-primary); }
+.room-detail-title h2 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: 0; color: var(--color-text-primary); }
 
 .room-conn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
 .room-conn .dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -191,7 +191,8 @@
   color: var(--color-text-secondary);
   background: var(--color-bg-tertiary);
   border: 1px solid transparent;
-  border-radius: var(--radius-full);
+  border-radius: 0;
+  clip-path: var(--clip-cut-sm);
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
@@ -584,6 +585,7 @@
 
 /* Sections are flat cards (concept .roomcard) */
 .room-section {
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;          /* fill the left column so the list scrolls, not the card */
@@ -591,9 +593,22 @@
   gap: var(--space-3);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: 0;  /* squared HUD module (no clip-path — sticky headers live inside) */
   padding: var(--space-4);
 }
+/* Corner brackets frame each zone as a console module. Pointer-through so they
+   never intercept clicks; drawn inside the padding so scroll content clears them. */
+.room-section::before,
+.room-section::after {
+  content: "";
+  position: absolute;
+  width: 10px; height: 10px;
+  border-color: color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+.room-section::before { top: -1px; left: -1px; border-top: 1.5px solid; border-left: 1.5px solid; }
+.room-section::after { bottom: -1px; right: -1px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
 
 /* Pinned header pieces (never scroll away). */
 .room-section-title-row,
@@ -656,7 +671,8 @@
   color: var(--color-text-secondary);
   background: transparent;
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
+  border-radius: 0;
+  clip-path: var(--clip-cut-sm);
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 }
@@ -991,12 +1007,16 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-sm);
-  padding: 2px 8px;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-status-seeding);
+  background: color-mix(in srgb, var(--color-status-seeding) 15%, transparent);
+  border-radius: 0;
+  clip-path: var(--clip-cut-sm);
+  padding: 3px 8px;
 }
 
 /* ── Activity log ──────────────────────────────────────────────────────── */
@@ -1537,7 +1557,7 @@
 .room-file-owner { flex-shrink: 0; display: flex; }
 .room-file-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .room-file-name { font-size: 13px; font-weight: 600; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.room-file-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--color-text-tertiary); flex-wrap: wrap; min-height: 20px; }
+.room-file-sub { display: flex; align-items: center; gap: 6px; font-family: var(--font-family-mono); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; font-size: 11px; color: var(--color-text-tertiary); flex-wrap: wrap; min-height: 20px; }
 .room-file-have { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
 .room-file-dot { opacity: 0.5; }
 .room-file-speed { color: var(--color-accent-primary); font-variant-numeric: tabular-nums; }
