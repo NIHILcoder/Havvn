@@ -178,7 +178,7 @@ body.te-resizing { cursor: ew-resize; user-select: none; }
   font-size: var(--font-size-sm);
   text-align: left;
 }
-.te-swatch-dot { width: 12px; height: 12px; border-radius: 0; border: 1px solid var(--color-border-strong); flex-shrink: 0; } /* squared HUD swatch */
+.te-swatch-dot { width: 12px; height: 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-border-strong); flex-shrink: 0; } /* squared HUD swatch */
 .te-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .te-badge {
   margin-left: auto;
@@ -187,7 +187,7 @@ body.te-resizing { cursor: ew-resize; user-select: none; }
   color: var(--color-accent-primary);
   background: var(--color-accent-bg);
   padding: 1px 6px;
-  border-radius: 0; /* squared HUD badge */
+  border-radius: var(--radius-sm); /* squared HUD badge */
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -296,7 +296,7 @@ body.te-resizing { cursor: ew-resize; user-select: none; }
   padding: 4px 10px;
   background: var(--color-bg-tertiary);
   border: 1px solid transparent;
-  border-radius: 0; /* squared HUD tab */
+  border-radius: var(--radius-sm); /* squared HUD tab */
   color: var(--color-text-secondary);
   font-family: var(--font-family);
   font-size: var(--font-size-xs);
@@ -500,7 +500,7 @@ body.te-inspecting, body.te-inspecting * { cursor: crosshair !important; }
   padding: 3px 4px 3px 9px;
   background: var(--color-accent-bg);
   color: var(--color-accent-primary);
-  border-radius: 0; /* squared HUD chip */
+  border-radius: var(--radius-sm); /* squared HUD chip */
   font-size: var(--font-size-xs);
   max-width: 100%;
 }
@@ -512,7 +512,7 @@ body.te-inspecting, body.te-inspecting * { cursor: crosshair !important; }
   background: transparent;
   color: inherit;
   cursor: pointer;
-  border-radius: 0; /* squared to follow the chip */
+  border-radius: var(--radius-sm); /* squared to follow the chip */
 }
 .te-font-remove:hover { background: color-mix(in srgb, currentColor 20%, transparent); }
 
@@ -575,7 +575,7 @@ body.te-inspecting, body.te-inspecting * { cursor: crosshair !important; }
 .te-contrast-pair { font-size: 11px; color: var(--color-text-secondary); font-family: var(--font-family-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .te-contrast-on { color: var(--color-text-tertiary); }
 .te-contrast-ratio { font-size: 11px; color: var(--color-text-primary); font-variant-numeric: tabular-nums; }
-.te-contrast-badge { font-size: 10px; font-weight: var(--font-weight-bold); padding: 1px 6px; border-radius: 0; text-transform: uppercase; letter-spacing: 0.03em; } /* squared HUD badge */
+.te-contrast-badge { font-size: 10px; font-weight: var(--font-weight-bold); padding: 1px 6px; border-radius: var(--radius-sm); text-transform: uppercase; letter-spacing: 0.03em; } /* squared HUD badge */
 .te-contrast-badge.lvl-AAA, .te-contrast-badge.lvl-AA { background: var(--color-success-bg); color: var(--color-success); }
 .te-contrast-badge.lvl-AA-large { background: var(--color-warning-bg); color: var(--color-warning); }
 .te-contrast-badge.lvl-fail { background: var(--color-error-bg); color: var(--color-error); }

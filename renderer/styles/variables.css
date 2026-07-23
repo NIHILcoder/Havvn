@@ -162,16 +162,19 @@
   --line-height-normal: 1.5;
   --line-height-relaxed: 1.75;
 
-  /* === Border Radius — the app is STRICT SQUARE. Every card/panel/button/input
-     radius collapses to 0 (kept as tokens so it's a single switch, and so the
-     scale-ordering stays legible). --radius-full is the ONE exception: it keeps
-     round status dots, level meters and progress tracks circular — square panels
-     with round indicators is the tactical-HUD idiom, not an inconsistency. === */
-  --radius-sm: 0;
-  --radius-md: 0;
-  --radius-lg: 0;
-  --radius-xl: 0;
-  --radius-2xl: 0;
+  /* === Border Radius — fully theme-controllable "roundness". ===
+     `--radius-scale` is the master knob (a length): the whole UI is strict SQUARE
+     at the default 0px, and a theme can round every card/panel/button/chip/modal
+     by raising it — the scale steps below derive from it, so ONE value rounds the
+     app proportionally (small controls least, big surfaces most). Advanced themes
+     can still override any individual step directly. --radius-full stays a real
+     9999px so genuine round indicators (status dots, level meters) never square. */
+  --radius-scale: 0px;
+  --radius-sm:  calc(var(--radius-scale) * 0.55);
+  --radius-md:  var(--radius-scale);
+  --radius-lg:  calc(var(--radius-scale) * 1.55);
+  --radius-xl:  calc(var(--radius-scale) * 2.15);
+  --radius-2xl: calc(var(--radius-scale) * 2.8);
   --radius-full: 9999px;
 
   /* === Shadows — neutral depth; "glow" is now a hairline ember ring === */

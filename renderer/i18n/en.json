@@ -494,6 +494,7 @@
   "settings.theme.token.statusSeeding": "Seeding",
   "settings.theme.token.statusPaused": "Paused",
   "settings.theme.token.statusError": "Error",
+  "settings.theme.token.roundness": "Roundness (rounds the whole UI)",
   "settings.theme.token.radiusSm": "Small",
   "settings.theme.token.radiusMd": "Medium",
   "settings.theme.token.radiusLg": "Large",

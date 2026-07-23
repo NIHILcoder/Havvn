@@ -9,8 +9,8 @@
  */
 
 /* ── Chamfer utilities ─────────────────────────────────────────── */
-.hud-cut { clip-path: var(--clip-cut); border-radius: 0; }
-.hud-cut-sm { clip-path: var(--clip-cut-sm); border-radius: 0; }
+.hud-cut { clip-path: var(--clip-cut); border-radius: var(--radius-md); }
+.hud-cut-sm { clip-path: var(--clip-cut-sm); border-radius: var(--radius-sm); }
 
 /* ── Module panel ──────────────────────────────────────────────── */
 /* A framed technical module: chamfered corners + hairline border. `--st` (a
@@ -42,8 +42,8 @@
   opacity: 0.85;
   pointer-events: none;
 }
-.hud-bracket::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; }
-.hud-bracket::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+.hud-bracket::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
+.hud-bracket::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
 
 /* ── Eyebrow / mono data ───────────────────────────────────────── */
 .hud-eyebrow {

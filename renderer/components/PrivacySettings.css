@@ -21,7 +21,7 @@
   width: 40px;
   height: 40px;
   flex: none;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   display: grid;
   place-items: center;
   background: var(--color-bg-tertiary);
@@ -58,7 +58,7 @@
 .pv-cell {
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   padding: 11px 13px;
   min-width: 0;
 }
@@ -97,7 +97,7 @@
 .pv-icon-btn {
   width: 26px; height: 26px;
   display: grid; place-items: center;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   border: 1px solid var(--color-border-default);
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
@@ -108,7 +108,7 @@
 
 .pv-badge {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 3px 10px; border-radius: 0; /* squared HUD */
+  padding: 3px 10px; border-radius: var(--radius-sm); /* squared HUD */
   font-size: 12px; font-weight: 600;
 }
 .pv-badge--ok { background: rgba(var(--color-success-rgb), 0.12); color: var(--color-success); border: 1px solid rgba(var(--color-success-rgb), 0.25); }
@@ -120,7 +120,7 @@
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 11.5px;
   padding: 2px 9px;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
   color: var(--color-text-secondary);
@@ -130,7 +130,7 @@
 .pv-leak {
   display: flex; align-items: center; gap: 10px;
   margin-top: 10px; padding: 11px 13px;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   background: rgba(var(--color-error-rgb), 0.08);
   border: 1px solid rgba(var(--color-error-rgb), 0.25);
   color: var(--color-error);
@@ -147,7 +147,7 @@
 /* ── Status pills reused by ConnectionSection ──────────────────────────── */
 .privacy-status {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 0; /* squared HUD */
+  padding: 4px 10px; border-radius: var(--radius-sm); /* squared HUD */
   font-size: 12px; font-weight: 600; white-space: nowrap;
 }
 .privacy-status.on { background: rgba(var(--color-success-rgb), 0.12); color: var(--color-success); border: 1px solid rgba(var(--color-success-rgb), 0.25); }

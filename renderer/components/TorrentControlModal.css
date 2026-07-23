@@ -124,7 +124,7 @@
   position: relative;
   width: 44px;
   height: 24px;
-  border-radius: 0; /* squared HUD track */
+  border-radius: var(--radius-sm); /* squared HUD track */
   border: none;
   cursor: pointer;
   transition: background 0.2s ease;
@@ -139,7 +139,7 @@
   top: 2px;
   width: 20px;
   height: 20px;
-  border-radius: 0; /* squared HUD knob */
+  border-radius: var(--radius-sm); /* squared HUD knob */
   background: white;
   box-shadow: 0 1px 3px rgba(0,0,0,0.25);
   transition: left 0.2s ease;

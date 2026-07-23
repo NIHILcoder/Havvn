@@ -104,7 +104,7 @@
   font-family: var(--font-family);
   font-size: 13px;
   font-weight: var(--font-weight-medium);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   cursor: pointer;
   text-align: left;

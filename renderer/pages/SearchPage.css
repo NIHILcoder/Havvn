@@ -91,7 +91,7 @@
 .search-input {
   width: 100%;
   padding: 0.6rem 0.75rem 0.6rem 2.5rem;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut);
   border: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
@@ -110,7 +110,7 @@
 .search-category {
   padding: 0.6rem 0.75rem;
   padding-right: 26px; /* room for the custom chevron */
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   border: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
@@ -186,7 +186,7 @@
 
 .results-table {
   border: 1px solid var(--color-border);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
@@ -389,7 +389,7 @@
   display: inline-block;
   font-size: 0.7rem;
   padding: 0.15rem 0.5rem;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   margin-top: 0.3rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -611,7 +611,7 @@
 .added-badge {
   background: var(--color-success-bg);
   padding: 0.25rem 0.6rem;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
 }
 
 .provider-badge {

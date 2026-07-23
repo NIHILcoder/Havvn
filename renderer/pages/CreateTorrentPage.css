@@ -281,7 +281,7 @@
   width: 80px;
   height: 80px;
   background: linear-gradient(135deg, var(--color-accent-primary), var(--color-accent-secondary));
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   color: white;
   box-shadow: 0 8px 24px rgba(var(--color-accent-rgb), 0.3);
 }
@@ -910,7 +910,7 @@
   width: 80px;
   height: 80px;
   background: linear-gradient(135deg, rgba(var(--color-success-rgb), 0.2) 0%, rgba(var(--color-success-rgb), 0.1) 100%);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   color: var(--color-success);
   animation: successPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
@@ -1348,7 +1348,7 @@
 .tracker-count {
   padding: 4px 10px;
   background: var(--color-accent-bg);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   font-size: 11px;
   font-weight: var(--font-weight-semibold);
   color: var(--color-accent-primary);
@@ -1450,7 +1450,7 @@
   inset: 0;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD track */
+  border-radius: var(--radius-sm); /* squared HUD track */
   transition: all 0.25s ease;
   cursor: pointer;
 }
@@ -1463,7 +1463,7 @@
   width: 18px;
   height: 18px;
   background: var(--color-text-tertiary);
-  border-radius: 0; /* squared HUD knob */
+  border-radius: var(--radius-sm); /* squared HUD knob */
   transition: all 0.25s ease;
 }
 
@@ -1544,7 +1544,7 @@
   padding: 6px 12px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -1569,7 +1569,7 @@
   padding: 8px 16px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   font-size: 13px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -1594,7 +1594,7 @@
   padding: 20px;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
 }
 
 .qr-hint {

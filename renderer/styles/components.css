@@ -49,7 +49,7 @@
   font-family: var(--font-display);
   letter-spacing: 0.03em;
   /* HUD chamfer — overrides the base radius. */
-  border-radius: 0;
+  border-radius: var(--radius-md);
   clip-path: var(--clip-cut);
   position: relative;
   z-index: 1;
@@ -235,7 +235,7 @@ input[type="radio"] {
   position: relative;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-strong);
-  border-radius: 0;               /* square checkbox */
+  border-radius: var(--radius-sm);               /* square checkbox */
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 }
@@ -300,14 +300,14 @@ input[type="range"] {
 input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   background: var(--color-border-default);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
 }
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   margin-top: -4px;               /* centre the 12px nub on the 4px rail */
   width: 12px; height: 12px;
-  border-radius: 0;               /* square nub */
+  border-radius: var(--radius-sm);               /* square nub */
   background: var(--color-accent-primary);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
   transition: transform 120ms ease, box-shadow 120ms ease;
@@ -319,10 +319,10 @@ input[type="range"]:active::-webkit-slider-thumb {
 input[type="range"]:focus-visible { outline: none; }
 input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--color-accent-primary); }
 /* Firefox parity (harmless in Chromium/Electron). */
-input[type="range"]::-moz-range-track { height: 4px; background: var(--color-border-default); border-radius: 0; }
+input[type="range"]::-moz-range-track { height: 4px; background: var(--color-border-default); border-radius: var(--radius-sm); }
 input[type="range"]::-moz-range-thumb {
   width: 12px; height: 12px;
-  border: none; border-radius: 0;
+  border: none; border-radius: var(--radius-sm);
   background: var(--color-accent-primary);
 }
 
@@ -337,7 +337,7 @@ input[type="range"]::-moz-range-thumb {
   width: 100%;
   height: 6px;
   background: var(--color-bg-tertiary);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm); /* chamfered HUD track */
   overflow: hidden;
   position: relative;
@@ -386,7 +386,7 @@ input[type="range"]::-moz-range-thumb {
   padding: 2px 8px;
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
-  border-radius: 0;                 /* squared HUD badge, not a pill */
+  border-radius: var(--radius-sm);                 /* squared HUD badge, not a pill */
   line-height: 1.4;
   white-space: nowrap;
 }
@@ -412,7 +412,7 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 700;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   line-height: 1.2;
 }
@@ -587,7 +587,7 @@ input[type="range"]::-moz-range-thumb {
   justify-content: center;
   background: color-mix(in srgb, var(--color-accent-primary) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-accent-primary) 40%, transparent);
-  border-radius: 0;
+  border-radius: var(--radius-lg);
   color: var(--color-accent-primary);
   box-shadow: 0 0 28px color-mix(in srgb, var(--color-accent-primary) 20%, transparent);
   margin-bottom: var(--space-5);
@@ -602,8 +602,8 @@ input[type="range"]::-moz-range-thumb {
   border-color: var(--color-accent-primary);
   pointer-events: none;
 }
-.empty-state-icon::before { top: -5px; left: -5px; border-top: 1.5px solid; border-left: 1.5px solid; }
-.empty-state-icon::after { bottom: -5px; right: -5px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+.empty-state-icon::before { top: -5px; left: -5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-lg); }
+.empty-state-icon::after { bottom: -5px; right: -5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-lg); }
 
 .empty-state-title {
   font-size: var(--font-size-lg);

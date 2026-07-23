@@ -18,7 +18,7 @@
   flex-shrink: 0;
   background: transparent;
   border: none;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -153,7 +153,7 @@
   padding: 4px;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: 30;
 }
@@ -162,7 +162,7 @@
   padding: 6px 10px;
   background: transparent;
   border: none;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   color: var(--color-text-secondary);
   font-family: var(--font-family-mono);

@@ -193,7 +193,7 @@ body.te-resizing .app-container { transition: none; }
   text-align: center;
   color: var(--color-bg-primary);
   background: var(--color-accent-primary);
-  border-radius: 0; /* squared HUD counter */
+  border-radius: var(--radius-sm); /* squared HUD counter */
 }
 
 /* Rooms context — the rail's middle when the Rooms pillar is active */
@@ -284,7 +284,7 @@ body.te-resizing .app-container { transition: none; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0; /* squared HUD counter */
+  border-radius: var(--radius-sm); /* squared HUD counter */
   background: var(--color-accent-primary);
   color: #fff;
   font-size: 11px;
@@ -412,7 +412,7 @@ body.te-resizing .app-container { transition: none; }
   font-weight: var(--font-weight-semibold);
   background: var(--color-bg-tertiary);
   color: var(--color-text-disabled);
-  border-radius: 0; /* squared HUD counter */
+  border-radius: var(--radius-sm); /* squared HUD counter */
   transition: all var(--transition-fast);
   line-height: 1;
 }
@@ -714,7 +714,7 @@ body.te-resizing .app-container { transition: none; }
   color: var(--color-accent-primary);
   background: var(--color-accent-bg);
   border: 1px solid rgba(var(--color-accent-rgb), 0.3);
-  border-radius: 0; /* squared HUD button */
+  border-radius: var(--radius-sm); /* squared HUD button */
   padding: 2px 10px;
   cursor: pointer;
   transition: all var(--transition-fast);

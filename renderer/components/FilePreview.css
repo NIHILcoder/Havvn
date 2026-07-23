@@ -40,7 +40,7 @@
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border-subtle);
   color: var(--color-text-tertiary);
@@ -106,7 +106,7 @@
   width: 100%;
   height: 4px;
   background: var(--color-bg-tertiary);
-  border-radius: 0; /* squared HUD progress bar */
+  border-radius: var(--radius-sm); /* squared HUD progress bar */
   overflow: hidden;
 }
 
@@ -157,7 +157,7 @@
   padding: 14px 16px 12px;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
@@ -253,7 +253,7 @@
   font-family: var(--font-family-mono);
   background: var(--color-bg-elevated);
   padding: 2px 8px;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   border: 1px solid var(--color-border-subtle);
   white-space: nowrap;
   flex-shrink: 0;
@@ -293,7 +293,7 @@
 .fp-item-progress-track {
   height: 6px;
   background: var(--color-bg-elevated);
-  border-radius: 0; /* squared HUD progress bar */
+  border-radius: var(--radius-sm); /* squared HUD progress bar */
   overflow: hidden;
   position: relative;
   flex-shrink: 0;
@@ -393,7 +393,7 @@
   justify-content: center;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-lg); /* squared HUD */
   color: var(--color-text-disabled);
 }
 

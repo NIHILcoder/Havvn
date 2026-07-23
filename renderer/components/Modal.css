@@ -25,7 +25,7 @@
   max-height: calc(100vh - 2 * var(--space-6));
   background: var(--color-bg-elevated);
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD dialog */
+  border-radius: var(--radius-lg); /* squared HUD dialog */
   box-shadow: var(--shadow-xl);
   overflow: hidden;
   animation: um-rise 200ms cubic-bezier(0.16, 1, 0.3, 1);
@@ -79,7 +79,7 @@
   height: 30px;
   flex-shrink: 0;
   border: 1px solid var(--color-border);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   background: transparent;
   color: var(--color-text-tertiary);

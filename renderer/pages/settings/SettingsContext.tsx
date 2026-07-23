@@ -17,12 +17,17 @@ import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from '../../utils/i18nContext';
 import { getActiveTheme, applyThemeObject } from '../../utils/theme-library';
 import { restoreThemePrefs } from '../../utils/theme-prefs';
+import { useThemeEditor } from '../../components/ThemeEditorContext';
 
 export type Theme = 'light' | 'dark' | 'system';
 
 // eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
 function useSettingsController() {
   const { t, language } = useTranslation();
+  // While the theme editor is open it OWNS :root (its live draft preview). Settings
+  // must not re-apply the saved active theme over it, or an unsaved change — e.g. a
+  // Roundness value being previewed — gets wiped when you open Settings.
+  const { open: themeEditorOpen } = useThemeEditor();
 
   const [activeCategory, setActiveCategory] = useState('general');
 
@@ -149,7 +154,8 @@ function useSettingsController() {
     // Settings doesn't reset data-theme to the base (App.tsx already applied
     // them at boot; this keeps them when the lazy Settings tree mounts).
     const activeCustom = getActiveTheme();
-    if (activeCustom) applyThemeObject(activeCustom); else restoreThemePrefs();
+    // Skip when the theme editor is open — it already owns :root with its live draft.
+    if (!themeEditorOpen) { if (activeCustom) applyThemeObject(activeCustom); else restoreThemePrefs(); }
 
     window.api.getAutoLaunch().then(setAutoLaunch).catch(console.error);
     window.api.isDefaultClient().then(setIsDefaultClient).catch(console.error);
@@ -272,7 +278,8 @@ function useSettingsController() {
     // The dark/light selector now switches MODE, not theme: an active custom
     // theme stays active and re-applies its matching variant on top.
     const active = getActiveTheme();
-    if (active) applyThemeObject(active); else restoreThemePrefs();
+    // Defer to the theme editor's live preview while it's open (don't clobber an unsaved draft).
+    if (!themeEditorOpen) { if (active) applyThemeObject(active); else restoreThemePrefs(); }
   };
 
   const loadSettings = async () => {

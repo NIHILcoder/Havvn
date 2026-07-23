@@ -79,7 +79,7 @@
   gap: 0.25rem;
   flex-shrink: 0;
   padding: 0.15rem 0.5rem;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   border: 1px solid var(--color-border);
   background: var(--color-bg-tertiary, var(--color-bg-primary));
   color: var(--color-text-secondary);
@@ -228,7 +228,7 @@
   max-width: 280px;
   padding: 0.38rem 0.7rem;
   border: 1px solid var(--color-border);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: transparent;
   color: var(--color-text-secondary);
   font-size: 0.78rem;

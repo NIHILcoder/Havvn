@@ -494,6 +494,7 @@
   "settings.theme.token.statusSeeding": "Раздача",
   "settings.theme.token.statusPaused": "Пауза",
   "settings.theme.token.statusError": "Ошибка",
+  "settings.theme.token.roundness": "Скругление (всего интерфейса)",
   "settings.theme.token.radiusSm": "Малое",
   "settings.theme.token.radiusMd": "Среднее",
   "settings.theme.token.radiusLg": "Большое",

@@ -20,7 +20,7 @@
   padding: 0.5rem 1rem;
   background: rgba(var(--color-error-rgb), 0.1);
   border: 1px solid rgba(var(--color-error-rgb), 0.3);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   color: var(--color-error);
   font-size: 0.875rem;
   font-weight: 600;
@@ -48,7 +48,7 @@
   padding: 1rem 1.5rem;
   background: linear-gradient(135deg, rgba(var(--color-accent-rgb), 0.15) 0%, rgba(var(--color-accent-rgb), 0.1) 100%);
   border-left: 4px solid var(--color-accent-primary);
-  border-radius: 0; /* squared HUD (keep border-left accent) */
+  border-radius: var(--radius-md); /* squared HUD (keep border-left accent) */
   letter-spacing: 0.02em;
 }
 
@@ -65,7 +65,7 @@
   padding: 1.75rem 2rem;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   gap: 1rem 3rem;
   flex-wrap: wrap;
   transition: all 0.2s ease;
@@ -121,7 +121,7 @@
   padding: 1rem 1.25rem;
   background: var(--color-bg-tertiary);
   border: 2px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   cursor: pointer;
   transition: all 0.2s ease;
   min-height: 50px;
@@ -148,7 +148,7 @@
   min-height: 36px;
   background: var(--color-bg-primary);
   border: 2px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD keycap */
+  border-radius: var(--radius-sm); /* squared HUD keycap */
   font-family: var(--font-family-mono);
   font-size: 0.9375rem;
   font-weight: 700;
@@ -178,7 +178,7 @@
   padding: 1rem 1.25rem;
   background: linear-gradient(135deg, rgba(var(--color-accent-rgb), 0.15) 0%, rgba(var(--color-accent-rgb), 0.1) 100%);
   border: 2px solid var(--color-accent-primary);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   min-height: 50px;
   animation: pulseGlow 2s infinite;
   outline: none;
@@ -214,7 +214,7 @@
   padding: 0;
   background: rgba(var(--color-error-rgb), 0.1);
   border: 2px solid rgba(var(--color-error-rgb), 0.3);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   color: var(--color-error);
   cursor: pointer;
   transition: all 0.2s ease;

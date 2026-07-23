@@ -128,7 +128,7 @@
   width: 22px;
   height: 22px;
   background: var(--color-accent-primary);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   display: flex;
   align-items: center;
   justify-content: center;

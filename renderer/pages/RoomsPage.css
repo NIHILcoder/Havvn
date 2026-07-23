@@ -40,7 +40,7 @@
   padding: var(--space-1) var(--space-3) var(--space-1) var(--space-1);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   color: var(--color-text-primary);
   font-size: 13px;
   font-weight: 500;
@@ -94,7 +94,7 @@
   padding: 8px 16px;
   background: var(--color-bg-secondary);
   border: 1px dashed var(--color-accent-primary);
-  border-radius: 0; /* squared HUD (dashed accent border stays) */
+  border-radius: var(--radius-md); /* squared HUD (dashed accent border stays) */
   box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
   color: var(--color-accent-primary);
   font-size: 13px;
@@ -191,7 +191,7 @@
   color: var(--color-text-secondary);
   background: var(--color-bg-tertiary);
   border: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast);
@@ -306,7 +306,7 @@
   gap: 6px;
   padding: 8px 14px;
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   font-size: 12px;
@@ -324,7 +324,7 @@
   height: 16px;
   padding: 0 6px;
   border: none;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: color-mix(in srgb, var(--color-accent-primary) 18%, transparent);
   color: var(--color-accent-primary);
   font-size: 10px;
@@ -380,8 +380,8 @@
   pointer-events: none;
   z-index: 2;
 }
-.room-col-rail::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; }
-.room-col-rail::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+.room-col-rail::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
+.room-col-rail::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
 .room-col-stage { overflow: hidden; }  /* files list / player scroll internally */
 
 /* Draggable region borders — a 6px grab track with a centered hairline. */
@@ -478,7 +478,7 @@
   align-items: center;
   justify-content: center;
   width: 24px; height: 24px;
-  border: none; border-radius: 0; /* squared HUD */
+  border: none; border-radius: var(--radius-sm); /* squared HUD */
   background: transparent;
   color: var(--color-text-tertiary);
   cursor: pointer;
@@ -519,7 +519,7 @@
   display: block;
   margin: 4px 0;
   padding: 6px 8px;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-subtle);
   color: var(--color-text-primary);
@@ -539,7 +539,7 @@
   justify-content: center;
   width: 22px; height: 22px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-secondary);
   color: var(--color-text-tertiary);
   cursor: pointer;
@@ -605,7 +605,7 @@
   gap: var(--space-3);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0;  /* squared HUD module (no clip-path — sticky headers live inside) */
+  border-radius: var(--radius-md);  /* squared HUD module (no clip-path — sticky headers live inside) */
   padding: var(--space-4);
 }
 /* Corner brackets frame each zone as a console module. Pointer-through so they
@@ -619,8 +619,8 @@
   pointer-events: none;
   z-index: 2;
 }
-.room-section::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; }
-.room-section::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+.room-section::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
+.room-section::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
 
 /* Pinned header pieces (never scroll away). */
 .room-section-title-row,
@@ -683,7 +683,7 @@
   color: var(--color-text-secondary);
   background: transparent;
   border: 1px solid var(--color-border-default);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
@@ -703,7 +703,7 @@
 .room-folder-list { display: flex; flex-direction: column; gap: var(--space-3); }
 .room-folder-section {
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   padding: 6px;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
@@ -724,7 +724,7 @@
   margin: 2px 0 6px 14px;
   padding: 4px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 .room-subfolder.dragover {
@@ -744,7 +744,7 @@
 .room-folder-count {
   flex-shrink: 0; font-family: var(--font-family-mono); font-variant-numeric: tabular-nums;
   font-size: 0.68rem; color: var(--color-text-tertiary);
-  background: var(--color-bg-secondary); border-radius: 0; clip-path: var(--clip-cut-sm);
+  background: var(--color-bg-secondary); border-radius: var(--radius-sm); clip-path: var(--clip-cut-sm);
   padding: 1px 7px; min-width: 18px; text-align: center;
 }
 .room-folder-acts { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
@@ -792,7 +792,7 @@
   width: 24px;
   height: 24px;
   margin-right: 6px;
-  border-radius: 0;
+  border-radius: var(--radius-md);
   clip-path: var(--clip-cut-sm);
   object-fit: cover;
   vertical-align: middle;
@@ -1026,7 +1026,7 @@
   text-transform: uppercase;
   color: var(--color-status-seeding);
   background: color-mix(in srgb, var(--color-status-seeding) 15%, transparent);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   clip-path: var(--clip-cut-sm);
   padding: 3px 8px;
 }
@@ -1077,7 +1077,7 @@
   padding: 6px 10px;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   clip-path: var(--clip-cut-sm);
   font-size: 13px;
   line-height: 1.45;
@@ -1138,7 +1138,7 @@
   color: var(--color-bg-primary);
   background: var(--color-accent-primary);
   border: none;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
   cursor: pointer;
 }
@@ -1193,7 +1193,7 @@
   height: 18px;
   padding: 0 6px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-secondary);
   font-size: 11px;
   cursor: pointer;
@@ -1225,7 +1225,7 @@
   width: 20px;
   height: 20px;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-secondary);
   color: var(--color-text-tertiary);
   cursor: pointer;
@@ -1242,7 +1242,7 @@
   margin-bottom: 3px;
   padding: 2px 8px;
   border-left: 2px solid var(--color-accent-primary);
-  border-radius: 0; /* squared HUD (accent left rule stays) */
+  border-radius: var(--radius-sm); /* squared HUD (accent left rule stays) */
   background: color-mix(in srgb, var(--color-accent-primary) 8%, transparent);
   font-size: 11px;
   line-height: 1.3;
@@ -1261,7 +1261,7 @@
   margin-bottom: 6px;
   padding: 4px 8px;
   border-left: 2px solid var(--color-accent-primary);
-  border-radius: 0; /* squared HUD (accent left rule stays) */
+  border-radius: var(--radius-sm); /* squared HUD (accent left rule stays) */
   background: var(--color-bg-tertiary);
   font-size: 12px;
   color: var(--color-text-secondary);
@@ -1285,7 +1285,7 @@
   gap: 2px;
   padding: 4px;
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-md); /* squared HUD */
   background: var(--color-bg-secondary);
   box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.35));
 }
@@ -1374,7 +1374,7 @@
   margin-top: 2px;
   padding: 3px 10px;
   border: 1px solid var(--color-border-default);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   font-size: 11px;
@@ -1467,7 +1467,7 @@
   height: 26px;
   min-height: 26px;
   padding: 0 10px;
-  border-radius: 0; /* squared HUD (match the file chip row) */
+  border-radius: var(--radius-sm); /* squared HUD (match the file chip row) */
   font-size: 12px;
 }
 .room-file-select .custom-select-value { font-size: 12px; }
@@ -1582,7 +1582,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 0; /* squared HUD (inner avatar keeps its chamfer) */
+  border-radius: var(--radius-md); /* squared HUD (inner avatar keeps its chamfer) */
   overflow: hidden;
   outline: 2px solid var(--color-bg-secondary);
 }
@@ -1622,7 +1622,7 @@
   gap: 3px;
   padding: 1px 5px;
   border: 1px solid transparent;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: transparent;
   font-size: 12px;
   line-height: 1.4;
@@ -1717,7 +1717,7 @@
   padding: 3px 7px;
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-default);
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
   color: var(--color-text-primary);
   font-family: var(--font-family-mono);
@@ -1747,7 +1747,7 @@
 .identicon { position: relative; display: inline-flex; flex-shrink: 0; line-height: 0; }
 /* Avatars take the HUD chamfer (on the image/svg only, so the status dot — a
    sibling — is never clipped). Matches the chamfered chips and tiles. */
-.identicon > svg, .avatar-img { display: block; clip-path: var(--clip-cut-sm); border-radius: 0; }
+.identicon > svg, .avatar-img { display: block; clip-path: var(--clip-cut-sm); border-radius: var(--radius-md); }
 .avatar-img { object-fit: cover; background: var(--color-bg-tertiary); }
 /* Borderless button wrapper that makes an avatar clickable (profile card). */
 .room-member-open {
@@ -1757,10 +1757,10 @@
   border: none;
   background: transparent;
   cursor: pointer;
-  border-radius: 0;
+  border-radius: var(--radius-md);
 }
 .room-member-open:hover { filter: brightness(1.12); }
-.identicon-ring { box-shadow: 0 0 0 2px var(--color-bg-primary), 0 0 0 4px var(--color-accent); border-radius: 0; }
+.identicon-ring { box-shadow: 0 0 0 2px var(--color-bg-primary), 0 0 0 4px var(--color-accent); border-radius: var(--radius-md); }
 .identicon-status {
   position: absolute;
   right: -2px;
@@ -1824,7 +1824,7 @@
   width: 24px;
   height: 24px;
   border: 2px solid transparent;
-  border-radius: 0; /* squared HUD (matches the free-pick well) */
+  border-radius: var(--radius-sm); /* squared HUD (matches the free-pick well) */
   cursor: pointer;
   color: #fff;
   padding: 0;
@@ -2025,7 +2025,7 @@
 }
 .room-player-sync {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 12px; border-radius: 0; /* squared HUD */
+  padding: 6px 12px; border-radius: var(--radius-sm); /* squared HUD */
   border: 1px solid var(--color-border-strong);
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
@@ -2241,7 +2241,7 @@
   font-size: 12px; font-weight: 600; color: var(--color-text-secondary);
 }
 .room-player-avatars { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.room-watcher { position: relative; line-height: 0; border-radius: 0; } /* squared HUD (dot stays round) */
+.room-watcher { position: relative; line-height: 0; border-radius: var(--radius-md); } /* squared HUD (dot stays round) */
 .room-watcher .room-watcher-dot {
   position: absolute; right: -1px; bottom: -1px;
   width: 9px; height: 9px; border-radius: 50%;
@@ -2383,7 +2383,7 @@
 }
 .room-voice-ring {
   display: inline-flex;
-  border-radius: 0; /* squared HUD (speaking glow follows the square) */
+  border-radius: var(--radius-md); /* squared HUD (speaking glow follows the square) */
   padding: 2px;
   box-shadow: 0 0 0 2px transparent;
   transition: box-shadow 120ms ease-out;
@@ -2553,7 +2553,7 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   border: 1px solid var(--color-error);
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   background: color-mix(in srgb, var(--color-error) 16%, transparent);
   color: var(--color-error);
   cursor: pointer;

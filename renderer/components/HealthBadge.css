@@ -3,7 +3,7 @@
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
-  border-radius: 0; /* squared HUD badge (dot stays round) */
+  border-radius: var(--radius-sm); /* squared HUD badge (dot stays round) */
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;

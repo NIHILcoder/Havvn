@@ -291,7 +291,7 @@
   justify-content: center;
   background: var(--color-accent-primary);
   color: white;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   box-shadow: var(--shadow-sm);
 }
 

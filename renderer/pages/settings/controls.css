@@ -9,7 +9,7 @@
 .stg-card {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 0; /* squared HUD panel — no clip-path (it would clip Select dropdowns) */
+  border-radius: var(--radius-md); /* squared HUD panel — no clip-path (it would clip Select dropdowns) */
 }
 .stg-card + .stg-card { margin-top: var(--space-5); }
 
@@ -185,7 +185,7 @@
   font-size: 10.5px;
   font-weight: var(--font-weight-semibold);
   padding: 3px 8px;
-  border-radius: 0; /* squared HUD pill */
+  border-radius: var(--radius-sm); /* squared HUD pill */
   white-space: nowrap;
 }
 .stg-pill-ok { background: var(--color-success-bg); color: var(--color-success); }
@@ -355,7 +355,7 @@
   flex: 1 1 auto;
   display: flex;
   height: 10px;
-  border-radius: 0; /* squared HUD bar */
+  border-radius: var(--radius-sm); /* squared HUD bar */
   background: var(--color-bg-tertiary);
   overflow: hidden;
 }

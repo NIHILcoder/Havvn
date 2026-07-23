@@ -31,8 +31,8 @@ function fakeRoot() {
 }
 
 describe('TOKEN_WHITELIST', () => {
-  it('contains exactly the 126 :root tokens', () => {
-    expect(TOKEN_WHITELIST.size).toBe(126);
+  it('contains exactly the 127 :root tokens', () => {
+    expect(TOKEN_WHITELIST.size).toBe(127);
   });
   it('includes representative real tokens', () => {
     for (const t of ['--color-bg-primary', '--color-accent-primary', '--color-logo', '--font-family', '--radius-lg', '--shadow-glow', '--z-modal']) {

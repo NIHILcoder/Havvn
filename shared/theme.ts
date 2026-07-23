@@ -103,6 +103,7 @@ const TOKEN_NAMES: readonly string[] = [
   '--font-weight-bold',
   '--line-height-tight', '--line-height-normal', '--line-height-relaxed',
   // radius
+  '--radius-scale',
   '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-2xl',
   '--radius-full',
   // shadows
@@ -438,10 +439,9 @@ export const EDITABLE_TOKENS: readonly EditableGroup[] = [
     { token: '--font-size-3xl', labelKey: 'settings.theme.token.fs3xl' },
   ] },
   { id: 'radius', labelKey: 'settings.theme.group.radius', kind: 'length', tokens: [
-    { token: '--radius-sm', labelKey: 'settings.theme.token.radiusSm' },
-    { token: '--radius-md', labelKey: 'settings.theme.token.radiusMd' },
-    { token: '--radius-lg', labelKey: 'settings.theme.token.radiusLg' },
-    { token: '--radius-xl', labelKey: 'settings.theme.token.radiusXl' },
+    // One master knob rounds the whole UI; the per-step tokens (sm/md/lg/xl) live
+    // in Advanced for fine control and derive from this by default.
+    { token: '--radius-scale', labelKey: 'settings.theme.token.roundness' },
   ] },
 ];
 

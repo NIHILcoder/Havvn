@@ -769,7 +769,7 @@
   font-size: 13px; font-weight: 600; color: var(--color-text-primary);
 }
 .adaptive-bar {
-  position: relative; height: 6px; border-radius: 0; /* squared HUD bar */
+  position: relative; height: 6px; border-radius: var(--radius-sm); /* squared HUD bar */
   background: var(--color-bg-secondary, rgba(255, 255, 255, 0.06));
   overflow: hidden; margin-bottom: 10px;
 }
@@ -812,7 +812,7 @@
 .doh-resolver-name { font-size: 13px; font-weight: 600; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
 .doh-badge {
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-  padding: 1px 6px; border-radius: 0; color: var(--color-info); background: rgba(var(--color-info-rgb), 0.15); /* squared HUD badge */
+  padding: 1px 6px; border-radius: var(--radius-sm); color: var(--color-info); background: rgba(var(--color-info-rgb), 0.15); /* squared HUD badge */
 }
 .doh-resolver-url {
   font-family: var(--font-family-mono, ui-monospace, monospace);
@@ -825,7 +825,7 @@
 .doh-resolver-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .doh-mini-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 0; cursor: pointer; /* squared HUD */
+  width: 28px; height: 28px; border-radius: var(--radius-sm); cursor: pointer; /* squared HUD */
   background: transparent; border: 1px solid var(--color-border-default); color: var(--color-text-secondary);
 }
 .doh-mini-btn:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
@@ -864,7 +864,7 @@
 .np-item.active { border-color: var(--color-success); box-shadow: 0 0 0 1px rgba(var(--color-success-rgb), 0.35); }
 .np-item-head { display: flex; align-items: center; gap: 10px; }
 .np-item-name { font-size: 13px; font-weight: 600; color: var(--color-text-primary); display: flex; align-items: center; gap: 8px; }
-.np-here { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: 0; color: var(--color-success); background: rgba(var(--color-success-rgb), 0.15); } /* squared HUD badge */
+.np-here { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 6px; border-radius: var(--radius-sm); color: var(--color-success); background: rgba(var(--color-success-rgb), 0.15); } /* squared HUD badge */
 .np-item-summary { flex: 1; font-size: 11px; color: var(--color-text-tertiary); font-family: var(--font-family-mono, ui-monospace, monospace); }
 .np-item-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .np-editor { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--color-border-subtle); display: flex; flex-direction: column; gap: 10px; }

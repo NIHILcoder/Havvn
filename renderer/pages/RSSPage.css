@@ -85,7 +85,7 @@
   padding: 0.85rem 1rem;
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
-  border-radius: 0;
+  border-radius: var(--radius-md);
   clip-path: var(--clip-cut);
   transition: all 0.15s ease;
 }
@@ -194,7 +194,7 @@
 
 .filter-chip {
   padding: 0.3rem 0.75rem;
-  border-radius: 0; /* squared HUD */
+  border-radius: var(--radius-sm); /* squared HUD */
   border: 1px solid var(--color-border);
   background: transparent;
   color: var(--color-text-secondary);
