@@ -1916,6 +1916,22 @@
   transition: filter var(--transition-fast);
 }
 .rooms-invite-copy:hover { filter: brightness(1.08); }
+/* Secondary "copy deep link" action under the primary copy-invite button. */
+.rooms-invite-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.rooms-invite-link:hover { color: var(--color-text-primary); border-color: var(--color-accent-primary); }
 
 /* (.page-loading comes from base.css — no local override, so the three
    definitions can't fight over injection order.) */

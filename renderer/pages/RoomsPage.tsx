@@ -106,9 +106,12 @@ interface RoomsPageProps {
   onFocusHandled?: () => void;
   /** Reports the currently-open room so the rail can highlight it. */
   onRoomSelected?: (roomId: string | null) => void;
+  /** Invite from a havvn://join/<invite> deep link — opens a prefilled Join dialog. */
+  pendingJoinInvite?: string | null;
+  onJoinInviteHandled?: () => void;
 }
 
-const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRoomSelected }) => {
+const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRoomSelected, pendingJoinInvite, onJoinInviteHandled }) => {
   const { t } = useTranslation();
   const [profile, setProfile] = useState<RoomProfile | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
@@ -279,6 +282,24 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
+
+  // A havvn://join/<invite> deep link (routed here from main) opens the Join
+  // dialog PREFILLED — the user still confirms (a deep link is untrusted input,
+  // never auto-joined). Invalid links get a clear error, not a broken dialog.
+  useEffect(() => {
+    if (!pendingJoinInvite) return;
+    const candidate = pendingJoinInvite.trim();
+    const normalized = candidate.toLowerCase().replace(/\s*~\s*/g, '~').replace(/\s+/g, '-').replace(/-+/g, '-');
+    if (INVITE_SHAPE_RE.test(normalized)) {
+      setJoinCode(candidate);
+      setDialog('join');
+      toast(t('rooms.joinFromLink'), { icon: '🔗' });
+    } else {
+      toast.error(t('rooms.joinBadFormat'));
+    }
+    onJoinInviteHandled?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingJoinInvite]);
 
   const handleJoin = async () => {
     if (!joinCode.trim()) return;
@@ -699,6 +720,14 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
             onClick={() => copy(room.invite || room.code, t('rooms.codeCopied'))}
           >
             <Icon name="copy" size={15} /> {t('rooms.copyInvite')}
+          </button>
+          {/* A one-click deep link — opens the app straight to a prefilled Join dialog. */}
+          <button
+            type="button"
+            className="rooms-invite-link"
+            onClick={() => copy(`havvn://join/${room.invite || room.code}`, t('rooms.linkCopied'))}
+          >
+            <Icon name="link" size={14} /> {t('rooms.copyLink')}
           </button>
           <div className="rooms-invite-code" onClick={() => copy(room.code, t('rooms.codeCopied'))} title={t('rooms.copyCode')}>
             <span>{room.code}</span>

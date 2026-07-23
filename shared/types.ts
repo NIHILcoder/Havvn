@@ -1040,6 +1040,7 @@ export interface IpcApi {
 
   // App events
   onOpenTorrent: (callback: (torrentUri: string) => void) => () => void;
+  onJoinInvite: (callback: (invite: string) => void) => () => void;
   // Renderer announces its IPC listeners are attached (flushes buffered OS opens)
   notifyReady: () => void;
   // Mirror the renderer's UI language to main (localizes tray/dialogs/notifications)

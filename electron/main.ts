@@ -16,6 +16,7 @@ import {
   initCompletionAction, stopCompletionAction, tickCompletionAction,
   getCompletionActionState, setCompletionAction,
 } from './utils/completion-action';
+import { isHavvnUrl, parseHavvnInvite } from './utils/deep-link';
 import { t, initMainI18n, setMainLanguage } from './i18n';
 
 
@@ -39,6 +40,9 @@ let refreshTrayLanguage: (() => void) | null = null;
 // flush it once the renderer signals it's ready (see 'app:rendererReady').
 let rendererReady = false;
 let pendingOpenUri: string | null = null;
+// A havvn://join/<invite> deep link handed to us by the OS. Same cold-start
+// buffering as pendingOpenUri — held until the renderer's listeners attach.
+let pendingJoinInvite: string | null = null;
 
 /**
  * Reliably bring the main window back to the foreground. restore() MUST come
@@ -63,6 +67,24 @@ function deliverOpenTorrent(uri: string): void {
   }
 }
 
+// Route an already-parsed invite to the renderer (or buffer it for a cold start).
+// A deep-link never auto-joins — the renderer opens the Join dialog PREFILLED so
+// the user confirms (a havvn:// link can come from an untrusted page/message).
+function routeJoinInvite(invite: string | null): void {
+  if (!invite) return;
+  if (mainWindow && !mainWindow.isDestroyed() && rendererReady) {
+    showMainWindow();
+    mainWindow.webContents.send('app:joinInvite', invite);
+  } else {
+    pendingJoinInvite = invite; // cold start — flush on renderer ready
+  }
+}
+
+// Parse a havvn:// URL from the OS and route the invite it carries.
+function deliverJoinInvite(url: string): void {
+  routeJoinInvite(parseHavvnInvite(url));
+}
+
 // Renderer tells us its IPC listeners are attached; flush any buffered open.
 ipcMain.on('app:rendererReady', () => {
   rendererReady = true;
@@ -70,6 +92,11 @@ ipcMain.on('app:rendererReady', () => {
     const uri = pendingOpenUri;
     pendingOpenUri = null;
     deliverOpenTorrent(uri);
+  }
+  if (pendingJoinInvite) {
+    const invite = pendingJoinInvite;
+    pendingJoinInvite = null;
+    routeJoinInvite(invite); // already parsed at cold-start — route straight through
   }
 });
 
@@ -100,7 +127,13 @@ if (!gotTheLock) {
     // (this is a primary reopen path when the app is hidden in the tray).
     showMainWindow();
 
-    // Handle protocol/file arguments from second instance
+    // Handle protocol/file arguments from second instance. On Windows a deep
+    // link launches a NEW process whose argv reaches the primary here.
+    const havvn = commandLine.find(isHavvnUrl);
+    if (havvn) {
+      deliverJoinInvite(havvn);
+      return;
+    }
     const arg = commandLine.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
     if (arg) {
       deliverOpenTorrent(arg);
@@ -108,13 +141,26 @@ if (!gotTheLock) {
   });
 }
 
-// === Register magnet: protocol handler ===
+// macOS delivers custom-scheme URLs via 'open-url', never argv. (magnet on macOS
+// isn't wired; havvn is.) preventDefault + route to the prefilled Join dialog.
+app.on('open-url', (event, url) => {
+  if (!isHavvnUrl(url)) return;
+  event.preventDefault();
+  deliverJoinInvite(url);
+});
+
+// === Register magnet: and havvn: protocol handlers ===
+// In dev (process.defaultApp) the exe is electron itself, so the app path must
+// ride along as an explicit argv or the OS would relaunch bare electron.
 if (process.defaultApp) {
   if (process.argv.length >= 2) {
-    app.setAsDefaultProtocolClient('magnet', process.execPath, [path.resolve(process.argv[1])]);
+    const devArgs = [path.resolve(process.argv[1])];
+    app.setAsDefaultProtocolClient('magnet', process.execPath, devArgs);
+    app.setAsDefaultProtocolClient('havvn', process.execPath, devArgs);
   }
 } else {
   app.setAsDefaultProtocolClient('magnet');
+  app.setAsDefaultProtocolClient('havvn');
 }
 
 // Shows a one-time hint when the app first hides into the tray, so users
@@ -680,12 +726,17 @@ async function createWindow(): Promise<void> {
     rendererReady = false;
   });
 
-  // Handle startup arguments (magnet links, .torrent files).
+  // Handle startup arguments (magnet links, .torrent files, havvn:// deep links).
   // Buffered until the renderer signals readiness — avoids losing the first
   // open on a cold start (the classic "first click just opens the app" bug).
-  const startupArg = process.argv.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
-  if (startupArg) {
-    pendingOpenUri = startupArg;
+  const havvnArg = process.argv.find(isHavvnUrl);
+  if (havvnArg) {
+    pendingJoinInvite = parseHavvnInvite(havvnArg);
+  } else {
+    const startupArg = process.argv.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
+    if (startupArg) {
+      pendingOpenUri = startupArg;
+    }
   }
 }
 

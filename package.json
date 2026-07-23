@@ -116,6 +116,12 @@
         "schemes": [
           "magnet"
         ]
+      },
+      {
+        "name": "Havvn room invite",
+        "schemes": [
+          "havvn"
+        ]
       }
     ],
     "win": {

@@ -407,6 +407,14 @@ const api: IpcApi = {
     return () => { ipcRenderer.removeListener('app:openTorrent', handler); };
   },
 
+  // A havvn://join/<invite> deep link — the renderer opens the Join dialog
+  // PREFILLED with the invite (never auto-joins; the user confirms).
+  onJoinInvite: (callback: (invite: string) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, invite: string) => { callback(invite); };
+    ipcRenderer.on('app:joinInvite', handler);
+    return () => { ipcRenderer.removeListener('app:joinInvite', handler); };
+  },
+
   notifyReady: (): void => {
     ipcRenderer.send('app:rendererReady');
   },

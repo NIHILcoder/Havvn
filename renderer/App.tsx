@@ -60,6 +60,8 @@ const AppContent: React.FC = () => {
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   // Torrent/magnet handed to us by the OS — passed to DownloadsPage to open the add dialog
   const [openTorrentUri, setOpenTorrentUri] = useState<string | null>(null);
+  // A havvn://join/<invite> deep link — routes to Rooms and prefills the Join dialog.
+  const [pendingJoinInvite, setPendingJoinInvite] = useState<string | null>(null);
   // VPN kill-switch warning banner (set when the guard auto-pauses on VPN drop)
   const [vpnAlert, setVpnAlert] = useState<{ paused: number; rooms?: boolean; publicIP?: string } | null>(null);
   // Engine VPN-bind banner (bound address vanished — sockets dead until VPN returns)
@@ -209,12 +211,18 @@ const AppContent: React.FC = () => {
       setCurrentPage('downloads');
       setOpenTorrentUri(torrentUri);
     });
+    // A havvn://join/<invite> deep link → Rooms, prefilled Join dialog (RoomsPage
+    // validates + confirms; a deep link is never auto-joined).
+    const unsubscribeJoin = window.api.onJoinInvite((invite) => {
+      setCurrentPage('rooms');
+      setPendingJoinInvite(invite);
+    });
 
-    // Tell main our listener is attached so it can flush any URI buffered
+    // Tell main our listeners are attached so it can flush any URI/invite buffered
     // during a cold start (fixes "first double-click only opens the app").
     window.api.notifyReady();
 
-    return () => unsubscribe();
+    return () => { unsubscribe(); unsubscribeJoin(); };
   }, []);
 
   // VPN kill-switch: show a warning banner when the guard auto-pauses torrents
@@ -487,6 +495,8 @@ const AppContent: React.FC = () => {
             focusRoomId={roomFocusId}
             onFocusHandled={() => setRoomFocusId(null)}
             onRoomSelected={setActiveRoomId}
+            pendingJoinInvite={pendingJoinInvite}
+            onJoinInviteHandled={() => setPendingJoinInvite(null)}
           />
         );
       case 'swarm':
