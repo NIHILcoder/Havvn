@@ -394,9 +394,31 @@ body.te-inspecting, body.te-inspecting * { cursor: crosshair !important; }
   pointer-events: none;
   border: 2px solid var(--color-accent-primary);
   background: var(--color-accent-bg);
-  border-radius: 2px;
+  border-radius: 0;
   transition: all 0.05s linear;
 }
+/* Breadcrumb of the currently-targeted element + the drill hint, above the box. */
+.te-inspect-tag {
+  position: absolute;
+  left: -2px;
+  bottom: 100%;
+  margin-bottom: 3px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  max-width: 360px;
+  padding: 2px 7px;
+  background: var(--color-accent-primary);
+  color: var(--color-bg-primary);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.te-inspect-tag b { font-family: var(--font-family-mono); font-weight: 700; }
+.te-inspect-tag i { font-style: normal; opacity: 0.7; }
 
 /* ── Inspector: "which layer did you mean?" chooser ───────────── */
 .te-pick-catch { position: fixed; inset: 0; z-index: var(--z-tooltip); }

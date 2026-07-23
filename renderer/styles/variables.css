@@ -61,6 +61,13 @@
   --color-accent-secondary: #ADB87C; /* olive — the seeding/giving-back hue */
   --color-accent-secondary-hover: #BDC78E;
 
+  /* Brand mark — the logo is themeable too. Defaults are the Blaze brand colors;
+     a custom theme can repaint the W-wings mark (face / dark outline / highlight)
+     independently of the UI accent. Logo.tsx drives its fills from these. */
+  --color-logo: #E25117;          /* the wings' face + the wordmark VV */
+  --color-logo-outline: #161311;  /* the dark silhouette behind the face */
+  --color-logo-glare: #F4C1B0;    /* the specular highlights on the face */
+
   /* "Gradients" — kept as valid gradient images for background-image consumers,
      but with identical stops: the Ember system is FLAT. The flat surface/accent
      gradients reference their color token so a custom theme that recolors the

@@ -73,6 +73,8 @@ const TOKEN_NAMES: readonly string[] = [
   // accent
   '--color-accent-primary', '--color-accent-primary-hover', '--color-accent-bg',
   '--color-accent-secondary', '--color-accent-secondary-hover',
+  // brand mark (logo is themeable)
+  '--color-logo', '--color-logo-outline', '--color-logo-glare',
   // gradients
   '--gradient-primary', '--gradient-success', '--gradient-warning',
   '--gradient-danger', '--gradient-elevated', '--gradient-sidebar',
@@ -399,6 +401,11 @@ export const EDITABLE_TOKENS: readonly EditableGroup[] = [
   { id: 'accent', labelKey: 'settings.theme.group.accent', kind: 'accent', tokens: [
     { token: '--color-accent-primary', labelKey: 'settings.theme.token.accentPrimary' },
   ] },
+  { id: 'brand', labelKey: 'settings.theme.group.brand', kind: 'color', tokens: [
+    { token: '--color-logo', labelKey: 'settings.theme.token.logo' },
+    { token: '--color-logo-outline', labelKey: 'settings.theme.token.logoOutline' },
+    { token: '--color-logo-glare', labelKey: 'settings.theme.token.logoGlare' },
+  ] },
   { id: 'borders', labelKey: 'settings.theme.group.borders', kind: 'color', tokens: [
     { token: '--color-border-default', labelKey: 'settings.theme.token.borderDefault' },
     { token: '--color-border-subtle', labelKey: 'settings.theme.token.borderSubtle' },
@@ -453,6 +460,7 @@ const ADVANCED_GROUP_DEFS: { id: string; labelKey: string; match: (n: string) =>
   { id: 'borders', labelKey: 'settings.theme.adv.borders', match: (n) => n.startsWith('--color-border') },
   { id: 'text', labelKey: 'settings.theme.adv.text', match: (n) => n.startsWith('--color-text') },
   { id: 'accent', labelKey: 'settings.theme.adv.accent', match: (n) => n.startsWith('--color-accent') },
+  { id: 'brand', labelKey: 'settings.theme.adv.brand', match: (n) => n.startsWith('--color-logo') },
   { id: 'statuses', labelKey: 'settings.theme.adv.statuses', match: (n) => n.startsWith('--color-status-') },
   { id: 'semantic', labelKey: 'settings.theme.adv.semantic', match: (n) => /^--color-(success|warning|error|info)/.test(n) },
   { id: 'filetypes', labelKey: 'settings.theme.adv.filetypes', match: (n) => /^--color-(video|audio|image|archive|document)$/.test(n) },

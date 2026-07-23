@@ -51,21 +51,35 @@ const CONTRAST_PAIRS: [string, string][] = [
 ];
 const shortToken = (name: string): string => name.replace(/^--color-/, '').replace(/^--/, '');
 
-/** One thing the inspector can offer to edit at the clicked spot. */
-interface InspectCandidate { token: string; kind: 'bg' | 'border' | 'text'; css: string; }
+/** One thing the inspector can offer to edit at the clicked spot. `approx` marks
+ *  a nearest-token guess (no exact token painted that colour — e.g. a color-mix). */
+interface InspectCandidate { token: string; kind: 'bg' | 'border' | 'text' | 'fill' | 'stroke'; css: string; approx?: boolean; }
+
+/** Pull rgb()/rgba()/#hex colour stops out of a gradient background-image. */
+function gradientStops(bgImage: string): string[] {
+  if (!bgImage || bgImage === 'none') return [];
+  const out: string[] = [];
+  const re = /(rgba?\([^)]*\)|#[0-9a-fA-F]{3,8})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(bgImage))) out.push(m[1]);
+  return out;
+}
 
 /**
- * Inspector: collect every whitelisted color token in play at the clicked spot,
- * walking from the clicked element UP through its ancestors. A click always
- * lands on the DEEPEST element — usually the text span — so matching only that
- * would offer the text colour and make a folder's outline or the logo
- * unreachable. Each level contributes its background, its border (only when one
- * is actually drawn) and its text colour; the nearest match for a token wins.
- * Impure (reads the live DOM) — module-level to keep the component lean.
+ * Inspector: collect every whitelisted color token in play at a spot, walking
+ * from the target element UP through its ancestors. Each level contributes its
+ * background (incl. gradient stops), border (only when drawn), SVG fill/stroke
+ * (so ICONS and the themeable LOGO are reachable) and text colour. Matching is
+ * exact-rgb first; when a painted colour matches no token exactly (a color-mix,
+ * an alpha blend) the NEAREST token within a small threshold is offered, flagged
+ * approximate — so the inspector "captures the detail" instead of giving up.
+ * All tokens sharing a value are offered (not just the first). Impure (reads the
+ * live DOM); module-level to keep the component lean.
  */
 function tokenCandidatesFor(el: Element): InspectCandidate[] {
   const rootCS = getComputedStyle(document.documentElement);
-  const byRgb = new Map<string, string>(); // "r,g,b" -> first token with that resolved value
+  const exact = new Map<string, string[]>();                         // "r,g,b" -> tokens
+  const palette: { token: string; r: number; g: number; b: number }[] = [];
   for (const tk of TOKEN_WHITELIST) {
     const cat = tokenCategory(tk);
     if (cat !== 'color' && cat !== 'colorTriplet') continue;
@@ -74,30 +88,69 @@ function tokenCandidatesFor(el: Element): InspectCandidate[] {
     const p = parseColor(cat === 'colorTriplet' ? `rgb(${raw})` : raw);
     if (!p || p.a === 0) continue;
     const key = `${p.r},${p.g},${p.b}`;
-    if (!byRgb.has(key)) byRgb.set(key, tk);
+    const arr = exact.get(key); if (arr) arr.push(tk); else exact.set(key, [tk]);
+    palette.push({ token: tk, r: p.r, g: p.g, b: p.b });
   }
 
   const out: InspectCandidate[] = [];
   const seen = new Set<string>();
+  const NEAR2 = 120; // squared rgb distance for an "approximate" hit (~ΔE 11)
+  // Many tokens can share one value (--color-logo, --color-accent-primary,
+  // --color-status-downloading … are all the ember accent). Offer ONE token per
+  // painted colour — the one whose name best fits the layer you clicked — so the
+  // menu stays short and every layer (text, border, fill) stays reachable instead
+  // of a single colour crowding out the rest. SVG fill/stroke prefers the logo
+  // token, which is the whole point of clicking the mark.
+  const prefer = (kind: InspectCandidate['kind']): string =>
+    kind === 'bg' ? 'bg' : kind === 'border' ? 'border' : kind === 'text' ? 'text' : 'logo';
   const add = (used: string, kind: InspectCandidate['kind']) => {
     const p = parseColor(used);
     if (!p || p.a === 0) return; // transparent paints nothing
-    const token = byRgb.get(`${p.r},${p.g},${p.b}`);
-    if (!token || seen.has(token)) return;
-    seen.add(token);
-    out.push({ token, kind, css: toRgbString(p) });
+    const exactTokens = exact.get(`${p.r},${p.g},${p.b}`);
+    if (exactTokens && exactTokens.length) {
+      const want = prefer(kind);
+      const token = exactTokens.find((tk) => tk.includes(want)) ?? exactTokens[0];
+      if (!seen.has(token)) { seen.add(token); out.push({ token, kind, css: toRgbString(p) }); }
+      return;
+    }
+    let best: { token: string; d: number } | null = null;
+    for (const c of palette) {
+      const d = (c.r - p.r) ** 2 + (c.g - p.g) ** 2 + (c.b - p.b) ** 2;
+      if (d <= NEAR2 && (!best || d < best.d)) best = { token: c.token, d };
+    }
+    if (best && !seen.has(best.token)) {
+      seen.add(best.token);
+      out.push({ token: best.token, kind, css: toRgbString(p), approx: true });
+    }
   };
 
   let depth = 0;
-  for (let e: Element | null = el; e && e !== document.body && depth < 10; e = e.parentElement, depth++) {
+  for (let e: Element | null = el; e && e !== document.body && depth < 12; e = e.parentElement, depth++) {
     const cs = getComputedStyle(e);
     add(cs.backgroundColor, 'bg');
+    for (const stop of gradientStops(cs.backgroundImage)) add(stop, 'bg');
     // Only when a border is actually drawn — otherwise every element reports a
     // border colour and would match a token it never paints.
     if (parseFloat(cs.borderTopWidth) > 0) add(cs.borderTopColor, 'border');
+    // SVG paint: reaches icons and the themeable W-wings logo. Only on real SVG
+    // elements — `fill`/`stroke` compute to a value (initial black) on EVERY
+    // element, so reading them on plain HTML would inject bogus black candidates.
+    if (e instanceof SVGElement) {
+      const fill = cs.getPropertyValue('fill');
+      if (fill && fill !== 'none') add(fill, 'fill');
+      if (parseFloat(cs.getPropertyValue('stroke-width')) > 0) {
+        const stroke = cs.getPropertyValue('stroke');
+        if (stroke && stroke !== 'none') add(stroke, 'stroke');
+      }
+    }
     add(cs.color, 'text');
   }
-  return out;
+  // Exact matches first, approximate guesses after; the stable sort keeps the
+  // depth order so the clicked element's own layers lead. One token per colour
+  // (above) already keeps this short; the cap is just a floor against a very deep
+  // walk on a busy page.
+  out.sort((a, b) => (a.approx ? 1 : 0) - (b.approx ? 1 : 0));
+  return out.slice(0, 12);
 }
 
 // Dock geometry + persistence.
@@ -200,6 +253,8 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   const [redoStack, setRedoStack] = useState<Theme[]>([]);
   const [inspecting, setInspecting] = useState(false);
   const [inspectRect, setInspectRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  // A small breadcrumb (tag.class) of the element the highlight currently targets.
+  const [inspectTag, setInspectTag] = useState<string | null>(null);
   // When a click matches several layers (text vs the block's fill vs its border),
   // ask which one instead of silently guessing.
   const [pick, setPick] = useState<{ x: number; y: number; items: InspectCandidate[] } | null>(null);
@@ -622,18 +677,55 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     if (w && !w.closed) w.focus();
   };
 
-  // Inspect mode: hover highlights any app element, click maps it to the token
-  // coloring it and jumps there. Capture-phase listeners so the click never
-  // reaches the app; clicks inside the dock pass through so the UI stays usable.
+  // Inspect mode: hover highlights any app element; the mouse WHEEL drills up/down
+  // its ancestor chain so you can lock onto the exact layer instead of whatever's
+  // topmost (fixes the highlight "jumping over" a nested detail). Click maps the
+  // locked element to the token colouring it and jumps there. Capture-phase
+  // listeners so the click never reaches the app; the dock stays interactive.
   useEffect(() => {
-    if (!inspecting) { setInspectRect(null); return; }
-    // The dock (expanded panel OR the collapsed reopen tab) must stay interactive.
+    if (!inspecting) { setInspectRect(null); setInspectTag(null); return; }
     const inDock = (el: Element | null) => !!el && !!el.closest('.ted, .ted-reopen');
-    const onMove = (e: PointerEvent) => {
-      const el = e.target as Element | null;
-      if (inDock(el) || !el) { setInspectRect(null); return; }
+    // A short readable name for the breadcrumb: tag + first class (SVG className
+    // is an object, not a string — guard for it).
+    const describe = (el: Element): string => {
+      const tag = el.tagName.toLowerCase();
+      const cn = typeof el.className === 'string' ? el.className : '';
+      const cls = cn.trim().split(/\s+/).filter(Boolean)[0];
+      return cls ? `${tag}.${cls}` : tag;
+    };
+    let base: Element | null = null; // deepest element under the pointer
+    let drill = 0;                   // ancestors climbed from base
+    let locked: Element | null = null;
+    // Climb up to `n` ancestors (never past body) and report how many we actually
+    // reached, so `drill` can be clamped to real depth — otherwise overshooting the
+    // top leaves a dead zone on the way back down (wheel-down does nothing until the
+    // inflated counter unwinds to the real ceiling).
+    const chainUp = (from: Element, n: number): { el: Element; reached: number } => {
+      let e = from; let reached = 0;
+      for (let i = 0; i < n && e.parentElement && e.parentElement !== document.body; i++) { e = e.parentElement; reached++; }
+      return { el: e, reached };
+    };
+    const paint = () => {
+      if (!base) { setInspectRect(null); setInspectTag(null); locked = null; return; }
+      const { el, reached } = chainUp(base, drill);
+      drill = reached;               // clamp to what we could actually climb
+      locked = el;
       const r = el.getBoundingClientRect();
       setInspectRect({ x: r.left, y: r.top, w: r.width, h: r.height });
+      setInspectTag(describe(el));
+    };
+    const onMove = (e: PointerEvent) => {
+      const el = e.target as Element | null;
+      if (inDock(el) || !el) { base = null; setInspectRect(null); setInspectTag(null); return; }
+      if (el !== base) { base = el; drill = 0; } // new element under pointer → follow it
+      paint();
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!base || inDock(e.target as Element | null)) return;
+      e.preventDefault();          // don't scroll the app while drilling
+      e.stopPropagation();
+      if (e.deltaY < 0) drill += 1; else if (e.deltaY > 0) drill = Math.max(0, drill - 1);
+      paint();
     };
     // Swallow the whole press (down + up + click) on app elements so nothing —
     // focus, text-selection, a pointerdown-activated control — reacts while
@@ -645,15 +737,16 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
       e.stopPropagation();
     };
     const onClick = (e: MouseEvent) => {
-      const el = e.target as Element | null;
-      if (inDock(el) || !el) return; // dock clicks work normally
+      const tgt = e.target as Element | null;
+      if (inDock(tgt) || !tgt) return; // dock clicks work normally
       e.preventDefault();
       e.stopPropagation();
+      const el = locked || tgt;      // the drilled/locked element, not the raw target
       const items = tokenCandidatesFor(el);
       setInspecting(false);
       if (!items.length) { note('err', t('settings.theme.inspectNone')); return; }
       // One match → go straight there. Several (text + the block's fill + its
-      // border) → let the user say which layer they meant.
+      // border + an icon fill) → let the user say which layer they meant.
       if (items.length === 1) jumpToToken(items[0].token);
       else setPick({
         // Keep the menu on screen when the click lands near an edge.
@@ -664,16 +757,19 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     };
     document.body.classList.add('te-inspecting');
     window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('wheel', onWheel, { capture: true, passive: false });
     window.addEventListener('pointerdown', swallow, true);
     window.addEventListener('mousedown', swallow, true);
     window.addEventListener('click', onClick, true);
     return () => {
       document.body.classList.remove('te-inspecting');
       window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('wheel', onWheel, true);
       window.removeEventListener('pointerdown', swallow, true);
       window.removeEventListener('mousedown', swallow, true);
       window.removeEventListener('click', onClick, true);
       setInspectRect(null);
+      setInspectTag(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inspecting]);
@@ -1056,7 +1152,14 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   return (
     <>
       {inspecting && inspectRect && (
-        <div className="te-inspect-box" style={{ left: inspectRect.x, top: inspectRect.y, width: inspectRect.w, height: inspectRect.h }} />
+        <div className="te-inspect-box" style={{ left: inspectRect.x, top: inspectRect.y, width: inspectRect.w, height: inspectRect.h }}>
+          {inspectTag && (
+            <span className="te-inspect-tag">
+              <b>{inspectTag}</b>
+              <i>{t('settings.theme.inspectDrill')}</i>
+            </span>
+          )}
+        </div>
       )}
       {pick && (
         <>
@@ -1066,7 +1169,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
             {pick.items.map((it) => (
               <button key={it.token} type="button" className="te-pick-item" role="menuitem" onClick={() => jumpToToken(it.token)}>
                 <span className="te-pick-sw" style={{ background: it.css }} />
-                <span className="te-pick-kind">{t(`settings.theme.layer.${it.kind}`)}</span>
+                <span className="te-pick-kind">{t(`settings.theme.layer.${it.kind}`)}{it.approx ? ` · ${t('settings.theme.inspectApprox')}` : ''}</span>
                 <code className="te-pick-token">{it.token}</code>
               </button>
             ))}

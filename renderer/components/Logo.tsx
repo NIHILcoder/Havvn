@@ -53,9 +53,11 @@ export const LogoMark: React.FC<LogoMarkProps> = ({ size = 22, mono = false, cla
               <stop offset="1" stopColor="#fff" stopOpacity="0" />
             </linearGradient>
           </defs>
-          <path d={MARK_OUTLINE} fill="#161311" />
-          <path d={MARK_FACE} fill="#e25117" />
-          {MARK_GLARES.map((d, i) => <path key={i} d={d} fill="#f4c1b0" />)}
+          {/* Fills come from themeable tokens (inline style, since a var() in the
+              SVG fill *attribute* wouldn't resolve); the hex is the brand fallback. */}
+          <path d={MARK_OUTLINE} style={{ fill: 'var(--color-logo-outline, #161311)' }} />
+          <path d={MARK_FACE} style={{ fill: 'var(--color-logo, #e25117)' }} />
+          {MARK_GLARES.map((d, i) => <path key={i} d={d} style={{ fill: 'var(--color-logo-glare, #f4c1b0)' }} />)}
           {/* The glint: a light band sweeping INSIDE the silhouette on hover. */}
           <g clipPath={`url(#lgc${uid})`}>
             <rect className="logo-glint" x="-180" y="-30" width="180" height={VB_H + 60} fill={`url(#lgg${uid})`} />
@@ -92,9 +94,9 @@ export const Wordmark: React.FC<WordmarkProps> = ({ height = 17, className }) =>
     xmlns="http://www.w3.org/2000/svg"
   >
     <path fill="currentColor" d={WM_MAIN} />
-    {/* VV takes the FIXED brand blaze — same as the mark's face (#e25117), so the
-        lockup is always one colour, independent of the (recolourable) UI accent. */}
-    <path fill="#e25117" d={WM_VV} />
+    {/* VV takes the themeable brand mark colour (--color-logo, default #e25117),
+        matching the mark's face so the lockup stays one colour. */}
+    <path style={{ fill: 'var(--color-logo, #e25117)' }} d={WM_VV} />
   </svg>
 );
 

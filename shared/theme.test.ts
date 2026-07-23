@@ -31,11 +31,11 @@ function fakeRoot() {
 }
 
 describe('TOKEN_WHITELIST', () => {
-  it('contains exactly the 123 :root tokens', () => {
-    expect(TOKEN_WHITELIST.size).toBe(123);
+  it('contains exactly the 126 :root tokens', () => {
+    expect(TOKEN_WHITELIST.size).toBe(126);
   });
   it('includes representative real tokens', () => {
-    for (const t of ['--color-bg-primary', '--color-accent-primary', '--font-family', '--radius-lg', '--shadow-glow', '--z-modal']) {
+    for (const t of ['--color-bg-primary', '--color-accent-primary', '--color-logo', '--font-family', '--radius-lg', '--shadow-glow', '--z-modal']) {
       expect(TOKEN_WHITELIST.has(t)).toBe(true);
     }
   });
