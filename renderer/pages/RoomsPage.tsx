@@ -1719,6 +1719,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // grid-template-columns PROPERTY) still wins and stacks the columns.
   const [layout, setLayout] = useState(loadRoomLayout);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [chatPopped, setChatPopped] = useState(false); // chat detached → collapse its column
   const dragRef = useRef<null | { edge: 'rail' | 'chat'; startX: number; startW: number }>(null);
   const onSplitDown = (edge: 'rail' | 'chat') => (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1942,8 +1943,8 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           Rail/chat widths are draggable (set as CSS vars so the narrow-mode
           @container rule, which sets the grid-template-columns PROPERTY, still wins). */}
       <div
-        className={`room-detail-grid${railCollapsed ? ' rail-collapsed' : ''}`}
-        style={{ '--rail-w': `${railCollapsed ? 0 : layout.railW}px`, '--chat-w': `${layout.chatW}px` } as React.CSSProperties}
+        className={`room-detail-grid${railCollapsed ? ' rail-collapsed' : ''}${chatPopped ? ' chat-popped' : ''}`}
+        style={{ '--rail-w': `${railCollapsed ? 0 : layout.railW}px`, '--chat-w': `${chatPopped ? 0 : layout.chatW}px` } as React.CSSProperties}
       >
         <RoomPeopleRail room={room} onWatchShare={(id) => setStageView({ kind: 'screen', memberId: id })} />
         <div
@@ -1964,11 +1965,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           onToggleAutoFetch={onToggleAutoFetch} busy={busy}
         />
         <div
-          className="room-splitter"
+          className="room-splitter room-splitter-chat"
           role="separator" aria-orientation="vertical" title={t('rooms.resize')}
           onPointerDown={onSplitDown('chat')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
         />
-        <RoomChat room={room} onAttachRequest={() => onAddFiles()} />
+        <RoomChat room={room} onAttachRequest={() => onAddFiles()} onPoppedChange={setChatPopped} />
       </div>
     </div>
   );
@@ -2443,7 +2444,7 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
   );
 };
 
-const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({ room, onAttachRequest }) => {
+const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPoppedChange?: (popped: boolean) => void }> = ({ room, onAttachRequest, onPoppedChange }) => {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -2474,6 +2475,10 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
   const chatCardMember = chatCardFor ? room.members.find((m) => m.memberId === chatCardFor.memberId) : undefined;
   useEffect(() => { setChatCardFor(null); }, [room.roomId]);
   const { popout, openPopout, closePopout } = usePopout('havvn-room-chat', t('rooms.chat'));
+  // Tell the parent so it can COLLAPSE the docked chat column while detached —
+  // no empty placeholder is left where the chat was.
+  const isPopped = !!(popout && !popout.closed);
+  useEffect(() => { onPoppedChange?.(isPopped); }, [isPopped, onPoppedChange]);
   // Detach/reattach and tab switches remount the log DOM — the card's anchor
   // element is gone, so a surviving card would pin to the window corner.
   useEffect(() => { setChatCardFor(null); }, [popout, zoneTab]);
@@ -2976,22 +2981,12 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
   );
 
   // Detached: the whole zone (tabs + log + composer) portals into the pop-out
-  // window; the docked column shows a slim placeholder with a restore action.
-  // Same React tree either way — chat state and subscriptions are unaffected.
+  // window and NOTHING is rendered in the grid — the parent collapses the docked
+  // chat column so no empty space is left. Restore from the detached window's
+  // pop-in button, or by closing that window. Same React tree either way — chat
+  // state and subscriptions are unaffected.
   if (popout && !popout.closed) {
-    return (
-      <>
-        <div className="room-section room-chat-section room-chat-placeholder">
-          <div className="room-section-title">{t('rooms.chat')}</div>
-          <div className="room-chat-placeholder-body">
-            <Icon name="external-link" size={18} />
-            <span>{t('rooms.chatDetached')}</span>
-            <Button variant="ghost" size="sm" onClick={closePopout}>{t('rooms.chatPopIn')}</Button>
-          </div>
-        </div>
-        {createPortal(zone, popout.document.body)}
-      </>
-    );
+    return createPortal(zone, popout.document.body);
   }
   return zone;
 };

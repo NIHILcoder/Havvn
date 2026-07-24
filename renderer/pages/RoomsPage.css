@@ -368,6 +368,7 @@
   overflow: hidden;   /* voice pinned; member list scrolls */
   position: relative;
   border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);  /* rounds with the theme, like .room-section */
   background: var(--color-bg-secondary);
   padding: var(--space-4);
 }
@@ -403,6 +404,11 @@
 .room-splitter:hover::before { background: var(--color-accent-primary); width: 2px; }
 .room-detail-grid.rail-collapsed { grid-template-columns: 0 6px minmax(0, 1fr) 6px var(--chat-w, 340px); }
 .room-detail-grid.rail-collapsed .room-col-rail { visibility: hidden; }
+/* Chat detached → collapse its column AND its splitter track so the stage reclaims
+   the space (no empty placeholder left). The chat lives in its own window. */
+.room-detail-grid.chat-popped { grid-template-columns: var(--rail-w, 240px) 6px minmax(0, 1fr) 0 0; }
+.room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 0 6px minmax(0, 1fr) 0 0; }
+.room-detail-grid.chat-popped .room-splitter-chat { display: none; }
 
 /* People rail: the voice panel sits on top; the member list fills + scrolls. */
 .room-rail-people {
@@ -491,18 +497,6 @@
   border-radius: 0;
   border: none;
 }
-/* Docked placeholder while the chat lives in its own window. */
-.room-chat-placeholder-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  color: var(--color-text-tertiary);
-  font-size: 12px;
-}
-
 /* Multiline composer: auto-grows with content up to ~6 lines. */
 .room-chat-input {
   resize: none;
@@ -554,13 +548,15 @@
 @container room (max-width: 1040px) {
   .room-detail-grid { grid-template-columns: 200px 6px minmax(0, 1fr) 6px 300px; }
   .room-detail-grid.rail-collapsed { grid-template-columns: 0 6px minmax(0, 1fr) 6px 300px; }
+  .room-detail-grid.chat-popped { grid-template-columns: 200px 6px minmax(0, 1fr) 0 0; }
+  .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 0 6px minmax(0, 1fr) 0 0; }
 }
 
 /* NARROW: single-column stack rail → stage → chat. The grid-template-columns
    PROPERTY here beats the inline var-based template; the .rail-collapsed variant is
    listed too so a collapsed rail still stacks (and re-shows) instead of staying hidden. */
 @container room (max-width: 720px) {
-  .room-detail-grid, .room-detail-grid.rail-collapsed { grid-template-columns: minmax(0, 1fr); flex: initial; }
+  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: minmax(0, 1fr); flex: initial; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   .room-splitter { display: none; }
   .room-col-rail, .room-col-stage { overflow: visible; }
@@ -574,7 +570,7 @@
   /* The page scrolls here, so an absolutely-anchored banner could sit far
      above the viewport — stick it to the scroller's visible top instead. */
   .room-drop-overlay { position: sticky; top: var(--space-3); left: auto; transform: none; align-self: center; }
-  .room-detail-grid, .room-detail-grid.rail-collapsed { grid-template-columns: 1fr; flex: initial; }
+  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 1fr; flex: initial; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   .room-splitter { display: none; }
   .room-col-rail, .room-col-stage { overflow: visible; }
