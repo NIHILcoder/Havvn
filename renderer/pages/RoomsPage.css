@@ -1167,6 +1167,9 @@
   font-size: 12.5px;
   font-family: var(--font-family);
 }
+/* Wrapper carries the focus ring (:focus-within) — mute the global
+   :focus-visible shadow on the inner input or the frame doubles. */
+.room-chat-search input:focus-visible { box-shadow: none; }
 /* The search toggle takes the tab row's right side; the pop-out follows it. */
 .room-zone-search { margin-left: auto; }
 .room-zone-search + .room-zone-popout { margin-left: 0; }
@@ -1444,6 +1447,8 @@
   font-family: var(--font-family);
 }
 .room-file-search input::placeholder { color: var(--color-text-tertiary); }
+/* Same as .room-chat-search: the wrapper rings, the input must not. */
+.room-file-search input:focus-visible { box-shadow: none; }
 
 /* Sort/filter + bulk-select toolbar */
 .room-file-toolbar,

@@ -267,6 +267,12 @@
   color: var(--color-text-muted);
 }
 
+/* .items-search:focus-within already draws the ring — mute the global
+   :focus-visible shadow on the inner input or the frame doubles. */
+.items-search-input:focus-visible {
+  box-shadow: none;
+}
+
 .items-search-clear {
   display: flex;
   align-items: center;

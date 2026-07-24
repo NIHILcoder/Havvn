@@ -112,6 +112,12 @@
   color: var(--color-text-tertiary);
 }
 
+/* The box's :focus-within border IS the focus ring; without this the global
+   :focus-visible shadow (base.css) rings the inner input too — double frame. */
+.modern-search-input:focus-visible {
+  box-shadow: none;
+}
+
 .modern-search-clear {
   display: flex;
   align-items: center;
@@ -1016,6 +1022,12 @@
 
 .search-box input::placeholder {
   color: var(--color-text-tertiary);
+}
+
+/* Wrapper carries the focus ring (:focus-within) — mute the global
+   :focus-visible shadow on the inner input or the frame doubles. */
+.search-box input:focus-visible {
+  box-shadow: none;
 }
 
 .search-clear {

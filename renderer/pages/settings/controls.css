@@ -118,6 +118,9 @@
   background: var(--color-bg-tertiary);
 }
 .stg-num:focus-within { border-color: var(--color-border-focus); }
+/* Wrapper carries the focus ring — mute the global :focus-visible shadow
+   on the inner input or the frame doubles. */
+.stg-num input:focus-visible { box-shadow: none; }
 .stg-num input {
   width: 84px;
   background: transparent;
