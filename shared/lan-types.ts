@@ -197,6 +197,33 @@ export type LanQuality = 'good' | 'fair' | 'poor';
  *  'failed' is the terminal symmetric-NAT case surfaced honestly (plan §12.7). */
 export type LanPeerStatus = 'connecting' | 'connected' | 'reconnecting' | 'failed';
 
+/** ICE candidateType of one end of the selected pair (getStats). Structurally
+ *  identical to shared/lan-quality.ts's LanCandidateType (the two are mutually
+ *  assignable); this copy is the UI/state contract, that one is the mapper's. */
+export type LanCandidateType = 'host' | 'srflx' | 'prflx' | 'relay' | 'unknown';
+
+/** How frames actually travel: same physical LAN, hole-punched through NAT, or
+ *  bounced off a TURN relay (which inflates RTT — worth saying out loud). */
+export type LanPathKind = 'local' | 'nat' | 'relay' | 'unknown';
+
+/**
+ * WHY a leg has no usable path — the honest terminal message behind a 'failed'
+ * peer (plan §12.7), derived from the GATHERED ICE candidate types because a
+ * failed link has no selected pair left to inspect:
+ *   • no-udp           — we never gathered a server-reflexive candidate: UDP/STUN
+ *                        never left this machine (firewall / blocked outbound).
+ *   • needs-turn       — both ends saw the internet, no pair ever succeeded and NO
+ *                        relay is configured: the symmetric-NAT tail. The fix is a
+ *                        TURN server (Settings → Connection), and because a room's
+ *                        iceServers are fixed at session start, the LAN session
+ *                        must be restarted afterwards.
+ *   • symmetric-nat    — same, but TURN *is* configured and a relay path still
+ *                        never came up (bad credentials / relay unreachable).
+ *   • peer-unreachable — even a relayed pair failed; the peer is simply not there.
+ *   • unknown          — never sampled; do NOT guess at a cause.
+ */
+export type LanIceFailReason = 'no-udp' | 'symmetric-nat' | 'needs-turn' | 'peer-unreachable' | 'unknown';
+
 /** A member participating in the room's LAN session (includes self when active). */
 export interface RoomLanParticipant {
   memberId: string;
@@ -207,8 +234,33 @@ export interface RoomLanParticipant {
   admitted: boolean;
   /** OUR LanPeer connection state to them; 'connecting' until first negotiated. */
   status: LanPeerStatus;
-  /** OUR link quality (Phase 2); absent in beta. */
+  // ── Phase 2A: measured link facts (one getStats poll every ~3s). Every field
+  //    below is ABSENT until actually measured — an absent `quality` means "no
+  //    dot at all", never "good" (voice's never-connected rule). Self carries
+  //    none of them (self has no LanPeer, so nothing to measure).
+  /** OUR link quality to them (voice's ladder: RTT 200/400ms, loss 3%/8%). */
   quality?: LanQuality;
+  /** Selected-pair round-trip time in ms (rounded). */
+  rttMs?: number;
+  /** ICE-consent loss proxy, PERCENT 0..100 (a data-only PC has no RTP loss). */
+  lossPct?: number;
+  /** OUR OWN send-drop rate, PERCENT 0..100 (channel closed / over the send HWM).
+   *  Display-only: deliberately not an input to the quality ladder. */
+  dropPct?: number;
+  /** candidateType of OUR end of the selected pair. */
+  candidate?: LanCandidateType;
+  /** candidateType of THEIR end of the selected pair. */
+  remoteCandidate?: LanCandidateType;
+  /** Local / NAT-traversed / TURN-relayed. */
+  path?: LanPathKind;
+  /** The link connected before and is re-establishing right now. */
+  reconnecting?: boolean;
+  /** Latched explanation of the last connection failure — kept across the
+   *  reap/rebuild churn so the honest message does not flicker. */
+  failReason?: LanIceFailReason;
+  /** Reconnect attempts exhausted: this leg is terminally dead (not "connecting
+   *  forever"). Pairs with failReason to explain WHY and point at the fix. */
+  terminal?: boolean;
 }
 
 /** The room's LAN session as this install sees it. */
@@ -234,6 +286,11 @@ export interface RoomLanState {
   selfAdmitted?: boolean;
   /** Networking torn down by the VPN kill-switch. */
   suspended?: boolean;
+  /** A turn:/turns: entry is present in the room's iceServers. Decides whether a
+   *  failed leg should read "add a TURN server" or "TURN is configured and the
+   *  path still failed" — the room's iceServers are fixed at session start, so a
+   *  TURN change only takes effect for a session started afterwards. */
+  turnConfigured?: boolean;
   /** Admitted peers plus self when active. */
   participants: RoomLanParticipant[];
 }
@@ -287,9 +344,44 @@ export type LanHelperErrorCode =
   | 'ip-config' // New-NetIPAddress / MTU / route step failed
   | 'firewall' // New-NetFirewallRule step failed
   | 'bad-token' // hello token mismatch (also destroys the pipe)
-  | 'bad-adapter-name'; // validateAdapterName rejected a VPN-ish name
+  | 'bad-adapter-name' // validateAdapterName rejected a VPN-ish name
+  | 'bad-app-path'; // validateGameExePath rejected a renderer-supplied .exe path
 
-/** Control-plane messages multiplexed over the helper pipe. */
+/** Elevated-side facts the helper reports for the connectivity diagnostics (§11
+ *  Phase 2A). MIRROR of the interface in electron/lan/pipe-bridge.ts. */
+export interface LanHelperFacts {
+  adapterName: string;
+  /**
+   * Whether the elevated PowerShell probe actually COMPLETED. When false, every
+   * probed field below is ABSENT and diagnostics must render 'unknown' — a probe
+   * that failed to run is not evidence that the adapter/IP/rules are gone, and
+   * reporting it as such would accuse a healthy tunnel of being torn down.
+   */
+  probed?: boolean;
+  adapterPresent?: boolean;
+  adapterUp?: boolean;
+  adapterStatus: string;
+  ipAddresses: string[];
+  expectedVip: string;
+  subnet: string;
+  mtu?: number;
+  firewallRules?: string[];
+  appRules: string[];
+  driverVersion: string;
+  ringActive: boolean;
+  helperPid: number;
+  uptimeMs: number;
+}
+
+/**
+ * Control-plane messages multiplexed over the helper pipe.
+ *
+ * ⚠ DUPLICATED VERBATIM in electron/lan/pipe-bridge.ts (the copy the helper and
+ * LanPipeClient actually import). Any new arm MUST land in BOTH in the same
+ * commit or the two silently drift. The Phase-2A request/response arms carry an
+ * `id` correlation number (uint32) — the Phase-1 verbs were fire-and-forget and
+ * the pipe has no other correlation mechanism.
+ */
 export type LanControlMsg =
   | { t: 'hello'; token: string; proto: number } // engine→helper, MUST be first frame
   | { t: 'ready'; adapter: string; vip: number; subnetBase: number; prefix: number } // helper→engine after net setup
@@ -297,7 +389,12 @@ export type LanControlMsg =
   | { t: 'reip'; vip: number; gen: number } // engine→helper on vIP collision loss
   | { t: 'shutdown' } // engine→helper cooperative teardown
   | { t: 'ping' }
-  | { t: 'pong' }; // over-pipe heartbeat (independent of the PID watchdog)
+  | { t: 'pong' } // over-pipe heartbeat (independent of the PID watchdog)
+  // ── Phase 2A (§11) — request/response, correlated by `id` ──────────────────
+  | { t: 'allow-app'; id: number; exe: string } // engine→helper, scoped per-game allow-rule
+  | { t: 'allow-app-result'; id: number; ok: boolean; rule?: string; code?: LanHelperErrorCode; message?: string }
+  | { t: 'diag'; id: number } // engine→helper, zero-input fact collection
+  | { t: 'diag-result'; id: number; facts: LanHelperFacts };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 6. Shared constants.

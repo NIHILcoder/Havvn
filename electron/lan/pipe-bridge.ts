@@ -64,8 +64,20 @@ export type LanHelperErrorCode =
   | 'ip-config' // New-NetIPAddress / MTU / route step failed
   | 'firewall' // New-NetFirewallRule step failed
   | 'bad-token' // hello token mismatch (also destroys the pipe)
-  | 'bad-adapter-name'; // validateAdapterName rejected a VPN-ish name
+  | 'bad-adapter-name' // validateAdapterName rejected a VPN-ish name
+  | 'bad-app-path'; // validateGameExePath rejected a renderer-supplied .exe path
 
+/**
+ * Phase-2A REQUEST/RESPONSE verbs ('allow-app', 'diag') carry a `id` correlation
+ * number so the engine can resolve exactly one pending promise per request — the
+ * Phase-1 verbs were all fire-and-forget and the pipe has no other correlation.
+ * Ids are uint32 and validated with isControlId() on BOTH sides; an out-of-range
+ * id is IGNORED (never answered), so a malformed verb cannot allocate state.
+ *
+ * NOTE: this union is additive over proto 1 — an older peer simply ignores the
+ * new discriminators (helper `default:` / engine `else`), so LAN_PIPE_PROTO (and
+ * lan-manager's HANDSHAKE_PROTO, which must move in lockstep) stay at 1.
+ */
 export type LanControlMsg =
   | { t: 'hello'; token: string; proto: number } // engine→helper, MUST be the first frame
   | { t: 'ready'; adapter: string; vip: number; subnetBase: number; prefix: number } // helper→engine after net setup
@@ -73,7 +85,154 @@ export type LanControlMsg =
   | { t: 'reip'; vip: number; gen: number } // engine→helper on vIP collision loss
   | { t: 'shutdown' } // engine→helper cooperative teardown
   | { t: 'ping' }
-  | { t: 'pong' }; // over-pipe heartbeat (independent of the PID watchdog)
+  | { t: 'pong' } // over-pipe heartbeat (independent of the PID watchdog)
+  // ── Phase 2A (§11) — request/response, correlated by `id` ──────────────────
+  /** engine→helper: scope an inbound+outbound allow-rule to ONE game executable.
+   *  `exe` is advisory input only — the elevated side re-validates it with
+   *  validateGameExePath() + a real stat() before it ever reaches PowerShell. */
+  | { t: 'allow-app'; id: number; exe: string }
+  | { t: 'allow-app-result'; id: number; ok: boolean; rule?: string; code?: LanHelperErrorCode; message?: string }
+  /** engine→helper: collect elevated-side facts (adapter/IP/MTU/rules/driver).
+   *  ZERO input — nothing renderer-supplied reaches a Get-* cmdlet. */
+  | { t: 'diag'; id: number }
+  | { t: 'diag-result'; id: number; facts: LanHelperFacts };
+
+// ── Phase-2A verb bounds (pure; enforced on BOTH sides) ──────────────────────
+
+/** Correlation-id domain for the request/response verbs. */
+export function isControlId(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
+}
+
+/** MAX_PATH. A longer string is not a real picker result — reject, never truncate. */
+export const MAX_APP_PATH = 260;
+
+/** Firewall-rule DisplayName token cap (the sanitized exe basename). */
+export const MAX_RULE_TOKEN = 64;
+
+/** Clamp for every list inside a diag-result. ChannelReader.dispatch is FATAL on a
+ *  control body over MAX_CONTROL_BYTES, so an unbounded Get-NetFirewallRule dump
+ *  would tear down the very tunnel being diagnosed. */
+export const MAX_DIAG_LIST = 32;
+export const MAX_DIAG_STRING = 160;
+
+/** Why a candidate .exe path was refused. */
+export type AppPathReject =
+  | 'not-a-string'
+  | 'empty'
+  | 'too-long'
+  | 'bad-chars'
+  | 'not-absolute'
+  | 'traversal'
+  | 'not-exe';
+
+/** Characters refused outright in a game path: NUL/control/newline, quotes and
+ *  backtick (PowerShell string terminators), the glob pair, and the characters
+ *  Windows already forbids in a filename. Forward slash is refused too — a native
+ *  picker always yields backslashes, so a `/` means the path was hand-fabricated. */
+// eslint-disable-next-line no-control-regex -- refusing control characters IS the point
+const APP_PATH_BAD = /[\x00-\x1f\x7f"'`*?<>|/]/;
+/** A second ':' after the drive letter means an NTFS alternate-data-stream target
+ *  ('game.exe:payload.exe' — which stat() happily resolves), or a fabricated
+ *  'C:\a\C:\b'. Checked on the post-drive remainder only. */
+const APP_PATH_COLON = /:/;
+const APP_PATH_DRIVE = /^[A-Za-z]:\\/;
+
+/**
+ * HARD gate for a path that will reach an ELEVATED PowerShell as `-Program`.
+ * Pure (no fs) so it is unit-testable and can also run engine-side as cheap
+ * defence in depth; the helper re-runs it and additionally stat()s the file.
+ *
+ * Requires: a drive-absolute Windows path (so UNC `\\server\share` and the
+ * `\\?\` / `\\.\` device namespaces are refused — an elevated process must never
+ * be pointed at an attacker-named SMB host), no traversal or empty segments, a
+ * `.exe` leaf, MAX_APP_PATH length, and none of APP_PATH_BAD. Escaping with
+ * psq() + single quotes at the call site is REQUIRED on top of this, never
+ * instead of it.
+ */
+export function validateGameExePath(p: unknown): { ok: true; path: string } | { ok: false; reason: AppPathReject } {
+  if (typeof p !== 'string') return { ok: false, reason: 'not-a-string' };
+  if (p.length === 0) return { ok: false, reason: 'empty' };
+  if (p.length > MAX_APP_PATH) return { ok: false, reason: 'too-long' };
+  if (APP_PATH_BAD.test(p)) return { ok: false, reason: 'bad-chars' };
+  if (!APP_PATH_DRIVE.test(p)) return { ok: false, reason: 'not-absolute' };
+  // Only the drive colon is legal; any further ':' is an ADS or a fabricated path.
+  if (APP_PATH_COLON.test(p.slice(2))) return { ok: false, reason: 'bad-chars' };
+  const segments = p.slice(3).split('\\');
+  if (segments.length < 1) return { ok: false, reason: 'traversal' };
+  for (const s of segments) {
+    if (s === '' || s === '.' || s === '..') return { ok: false, reason: 'traversal' };
+    // A trailing dot/space is stripped by Win32 path canonicalisation — refuse it
+    // rather than let the stat()'d path differ from the -Program string.
+    if (s !== s.trim() || s.endsWith('.')) return { ok: false, reason: 'bad-chars' };
+  }
+  const leaf = segments[segments.length - 1];
+  if (leaf.length <= 4 || !/\.exe$/i.test(leaf)) return { ok: false, reason: 'not-exe' };
+  return { ok: true, path: p };
+}
+
+/**
+ * Reduce an arbitrary string to the charset that is safe inside a firewall rule
+ * DisplayName. The DisplayName is later matched with a PowerShell WILDCARD by
+ * revertNetConfig (`'<adapterName>*'`) and orphanSweep (`'Havvn LAN-*'`), so a
+ * `[`, `]`, `*` or `?` in a filename would make teardown globbing unpredictable
+ * and could strand a permanent allow-rule on the user's machine.
+ */
+export function sanitizeRuleToken(s: string): string {
+  const t = s
+    .replace(/[^A-Za-z0-9._ -]/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_RULE_TOKEN)
+    .trim();
+  return t || 'app';
+}
+
+/**
+ * DisplayName base for a per-app rule. It MUST begin with the full adapter name
+ * (`Havvn LAN-<sessionId>`) so BOTH revertNetConfig's `'<adapterName>*'` and
+ * orphanSweep's `'Havvn LAN-*'` remove it on teardown — no sweep change needed.
+ */
+export function appRuleDisplayName(adapterName: string, exePath: string): string {
+  const leaf = exePath.split(/[\\/]/).pop() || exePath;
+  return `${adapterName} App ${sanitizeRuleToken(leaf)}`;
+}
+
+/**
+ * Elevated-side facts only the helper can see (diag-result payload).
+ *
+ * DEDUPED: shared/lan-types.ts is the SINGLE source of truth. This module used to
+ * carry a verbatim copy, which silently drifted the moment a field was added
+ * (exactly what the old "duplicated verbatim, keep in lockstep" comment warned
+ * about). shared/ may not import from electron/, but electron/ may import from
+ * shared/, so the type lives there and is re-exported here for existing importers.
+ */
+export type { LanHelperFacts } from '../../shared/lan-types';
+import type { LanHelperFacts } from '../../shared/lan-types';
+
+/** Clamp every unbounded field of a diag-result before it is framed. */
+export function clampHelperFacts(f: LanHelperFacts): LanHelperFacts {
+  const list = (a: readonly string[] | undefined): string[] =>
+    (a ?? []).slice(0, MAX_DIAG_LIST).map((s) => String(s).slice(0, MAX_DIAG_STRING));
+  const str = (s: unknown): string => String(s ?? '').slice(0, MAX_DIAG_STRING);
+  const num = (n: unknown): number => (Number.isFinite(n as number) ? Math.max(0, Math.floor(n as number)) : 0);
+  return {
+    adapterName: str(f.adapterName),
+    adapterPresent: !!f.adapterPresent,
+    adapterUp: !!f.adapterUp,
+    adapterStatus: str(f.adapterStatus),
+    ipAddresses: list(f.ipAddresses),
+    expectedVip: str(f.expectedVip),
+    subnet: str(f.subnet),
+    mtu: num(f.mtu),
+    firewallRules: list(f.firewallRules),
+    appRules: list(f.appRules),
+    driverVersion: str(f.driverVersion),
+    ringActive: !!f.ringActive,
+    helperPid: num(f.helperPid),
+    uptimeMs: num(f.uptimeMs),
+  };
+}
 
 // ── Handshake artifacts (main → helper) ──────────────────────────────────────
 // main computes every field; the helper trusts none past its own validators

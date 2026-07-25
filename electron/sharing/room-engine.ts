@@ -47,8 +47,9 @@ import { lanGenesisCanonical, lanStateCanonical, lanSignalCanonical, lanAdmitCan
 import { verifyVipClaim } from '../../shared/lan-ip';
 import type { LanStateClaim } from '../../shared/lan-session-core';
 import { sessionHostPrefix } from '../../shared/lan-session-core';
-import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanControlMsg } from '../../shared/lan-types';
-import { LanPipeClient } from '../lan/pipe-bridge';
+import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanControlMsg, LanHelperFacts } from '../../shared/lan-types';
+import type { LanDiagInput } from '../../shared/lan-quality';
+import { LanPipeClient, validateGameExePath } from '../lan/pipe-bridge';
 
 const ROOM_TRACKERS = RENDEZVOUS_TRACKERS;
 
@@ -303,6 +304,8 @@ interface Room {
   lan?: LanSession;                       // virtual-LAN session (session-only; created on lanStart, undefined until then)
   lanPipe?: LanPipeClient;                // named-pipe client to the elevated Wintun helper (session-only)
   lanEgress?: (frame: Buffer) => void;    // TUN-egress router the LanSession adapter registered via onPacket
+  lanReq?: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: any }>; // in-flight correlated helper requests (diag / allow-app), cleared by teardownLan
+  lanReqSeq?: number;                     // uint32 correlation counter for lanReq
   profiles: Map<string, { name: string; avatarSeed: string; color: string; status: string; img: string; at: number }>; // VERIFIED rich profiles; entry.at doubles as the anti-replay floor (session-only, FIFO-capped)
   profileSentTo: Set<string>;            // memberIds whose hello we've already answered with our profile broadcast
   profileAnnounce: any;                  // pending coalesced profile broadcast timer (join waves = one flood)
@@ -1462,6 +1465,16 @@ function ensureLanSession(room: Room, sessionId: string, isHost = false): LanSes
 /** Cooperative + defensive LAN teardown: stop the session and close the helper pipe
  *  (asks the helper to revert its adapter/route/firewall via the shutdown verb). */
 function teardownLan(room: Room): void {
+  // Reject anything still waiting on the helper FIRST — a Stop during a diagnose
+  // would otherwise leave the renderer's reply hanging until RoomManager's own
+  // timeout (the pipe is about to close and no answer can arrive).
+  if (room.lanReq) {
+    for (const p of room.lanReq.values()) {
+      clearTimeout(p.timer);
+      try { p.reject(new Error('The LAN session ended')); } catch { /* ignore */ }
+    }
+    room.lanReq.clear();
+  }
   if (room.lan) { try { room.lan.suspend(); } catch { /* ignore */ } room.lan = undefined; }
   if (room.lanPipe) {
     try { room.lanPipe.sendControl({ t: 'shutdown' }); } catch { /* ignore */ }
@@ -1471,7 +1484,8 @@ function teardownLan(room: Room): void {
   room.lanEgress = undefined;
 }
 
-/** Control-plane frames from the helper (ready / error / ping). */
+/** Control-plane frames from the helper (ready / error / ping + the Phase-2A
+ *  correlated results). */
 function onLanControl(room: Room, m: LanControlMsg): void {
   if (m.t === 'error') {
     try { ipcRenderer.send('room-lan-warn', { msg: m.message || ('LAN helper error: ' + m.code) }); } catch { /* ignore */ }
@@ -1481,7 +1495,99 @@ function onLanControl(room: Room, m: LanControlMsg): void {
     log('lan helper ready: adapter=' + m.adapter + ' vip=' + m.vip);
   } else if (m.t === 'ping') {
     try { room.lanPipe?.sendControl({ t: 'pong' }); } catch { /* ignore */ }
+  } else if (m.t === 'diag-result') {
+    settleLanRequest(room, m.id, m.facts);
+  } else if (m.t === 'allow-app-result') {
+    settleLanRequest(room, m.id, m);
   }
+}
+
+/** Phase-2A correlated request over the helper control channel. The Phase-1 verbs
+ *  are fire-and-forget; 'diag' / 'allow-app' carry a uint32 id the helper echoes
+ *  on its result frame. LanPipeClient.sendControl is void and swallows errors, so
+ *  the missing-pipe case is rejected here rather than waiting out the timeout. */
+function lanRequest<T>(room: Room, make: (id: number) => LanControlMsg, timeoutMs: number): Promise<T> {
+  const pipe = room.lanPipe;
+  if (!pipe) return Promise.reject(new Error('The LAN helper is not connected'));
+  const pending = room.lanReq ?? (room.lanReq = new Map());
+  const id = (((room.lanReqSeq ?? 0) + 1) >>> 0) || 1;
+  room.lanReqSeq = id;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error('The LAN helper did not answer'));
+    }, timeoutMs);
+    pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+    try {
+      pipe.sendControl(make(id));
+    } catch (e) {
+      clearTimeout(timer);
+      pending.delete(id);
+      reject(new Error(String(e)));
+    }
+  });
+}
+
+/** Resolve the pending request `id` (unknown/late ids are ignored, not fatal). */
+function settleLanRequest(room: Room, id: number, value: unknown): void {
+  const p = room.lanReq?.get(id);
+  if (!p) return;
+  clearTimeout(p.timer);
+  room.lanReq?.delete(id);
+  p.resolve(value);
+}
+
+/** Engine half of the connectivity report (Phase 2A item C): session + per-peer
+ *  facts read from the LAST stats poll, plus whatever only the elevated helper can
+ *  see (adapter/vIP/MTU/firewall). Main merges its own facts (driver probe, helper
+ *  liveness) and runs the pure evaluator — nothing here judges anything. A helper
+ *  that does not answer degrades the report to 'unknown' rows, never to an error. */
+async function lanDiagnose(roomId: string): Promise<Partial<LanDiagInput>> {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  const st = room.lan ? room.lan.getState() : undefined;
+  const out: Partial<LanDiagInput> = {
+    active: st?.active === true,
+    blocked: netSuspended,
+    peers: room.lan ? room.lan.peerDiagnostics() : [],
+    ...(st?.selfVip ? { selfVip: st.selfVip } : {}),
+    ...(st?.subnet ? { subnet: st.subnet } : {}),
+    ...(typeof st?.turnConfigured === 'boolean' ? { turnConfigured: st.turnConfigured } : {}),
+  };
+  if (room.lanPipe) {
+    try {
+      const f = await lanRequest<LanHelperFacts>(room, (id) => ({ t: 'diag', id }), 8000);
+      out.adapterName = f.adapterName || undefined;
+      out.adapterPresent = f.adapterPresent;
+      out.adapterUp = f.adapterUp;
+      out.expectedVip = f.expectedVip || undefined;
+      out.mtu = f.mtu || undefined;
+      out.firewallRuleCount = Array.isArray(f.firewallRules) ? f.firewallRules.length : undefined;
+      if (!out.subnet && f.subnet) out.subnet = f.subnet;
+    } catch (e) {
+      log('lan diag: helper query failed: ' + String(e)); // leaves those rows 'unknown'
+    }
+  }
+  return out;
+}
+
+/** Engine half of the firewall troubleshooter (Phase 2A item D). The path was
+ *  chosen by a MAIN-process picker; re-validating it here is defence in depth —
+ *  the elevated helper validates it again before it reaches PowerShell. A refusal
+ *  comes back as ok:false, NEVER as a helper {t:'error'} (that arm tears the
+ *  tunnel down). */
+async function lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boolean; exe?: string; rule?: string; error?: string }> {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  if (!room.lanPipe) throw new Error('The LAN session is not running');
+  const v = validateGameExePath(exePath);
+  if (!v.ok) return { ok: false, error: 'Rejected executable path (' + v.reason + ')' };
+  const r = await lanRequest<{ ok: boolean; rule?: string; message?: string }>(
+    room, (id) => ({ t: 'allow-app', id, exe: v.path }), 20000,
+  );
+  return r.ok
+    ? { ok: true, exe: v.path, rule: r.rule }
+    : { ok: false, exe: v.path, error: r.message || 'The firewall rule was refused' };
 }
 
 /** Handle a 'lanStart' room-cmd: build the LanSession, dial the helper pipe, then
@@ -4114,6 +4220,10 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       rooms.get(msg.roomId)?.lan?.control(String(msg.kind || ''), msg.memberId ? String(msg.memberId) : undefined);
       data = { ok: true };
     }
+    // Phase 2A: the connectivity report (facts only — main evaluates) and the
+    // scoped per-game firewall rule (already-elevated helper, so no new UAC).
+    else if (type === 'lanDiagnose') { data = await lanDiagnose(String(msg.roomId || '')); }
+    else if (type === 'lanAllowApp') { data = await lanAllowApp(String(msg.roomId || ''), String(msg.exePath || '')); }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
     else if (type === 'setAutoFetch') {
       const r = rooms.get(msg.roomId);

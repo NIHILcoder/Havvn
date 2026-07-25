@@ -25,6 +25,8 @@ import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torren
 import { generateRoomSecret } from './room-e2e';
 import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
 import { getLanManager } from '../lan/lan-manager';
+import { evaluateLanDiagnostics } from '../../shared/lan-quality';
+import type { LanDiagInput, LanDiagReport } from '../../shared/lan-quality';
 
 const log = logger.child('RoomManager');
 
@@ -974,6 +976,60 @@ export class RoomManager {
   /** Host removes a member (host-signed lan-evict). */
   lanEvict(roomId: string, memberId: string): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'evict', memberId });
+  }
+
+  /**
+   * Phase 2A item C — the connectivity report. Facts come from three places and
+   * are judged in exactly one: main owns the driver probe + helper liveness, the
+   * engine owns the session/peer view and relays the elevated helper's own
+   * adapter/vIP/firewall facts, and the pure evaluator turns the merged input into
+   * checks + a verdict + one most-likely cause. An engine that cannot answer
+   * degrades rows to 'unknown' instead of failing the whole run.
+   */
+  async lanDiagnose(roomId: string): Promise<LanDiagReport> {
+    const mgr = getLanManager();
+    const avail = mgr.available();
+    let engine: Partial<LanDiagInput> = {};
+    try {
+      engine = await this.call<Partial<LanDiagInput>>('lanDiagnose', { roomId }, 12000);
+    } catch { /* engine down / no room — everything downstream reads 'unknown' */ }
+    const active = engine.active === true;
+    const input: LanDiagInput = {
+      platformWin32: process.platform === 'win32',
+      available: avail.ok,
+      ...(avail.reason ? { availableReason: avail.reason } : {}),
+      active,
+      ...(engine.blocked !== undefined ? { blocked: engine.blocked } : {}),
+      ...(this.networkSuspended ? { suspended: true } : {}),
+      // The helper is unkillable from main; LanManager's watchdog drops the active
+      // session as soon as its PID dies, so "engine says active, main has no
+      // session" is exactly the helper-died signal.
+      ...(active ? { helperAlive: mgr.activeSessionId() !== null } : {}),
+      ...(engine.adapterName !== undefined ? { adapterName: engine.adapterName } : {}),
+      ...(engine.adapterPresent !== undefined ? { adapterPresent: engine.adapterPresent } : {}),
+      ...(engine.adapterUp !== undefined ? { adapterUp: engine.adapterUp } : {}),
+      ...(engine.selfVip !== undefined ? { selfVip: engine.selfVip } : {}),
+      ...(engine.expectedVip !== undefined ? { expectedVip: engine.expectedVip } : {}),
+      ...(engine.subnet !== undefined ? { subnet: engine.subnet } : {}),
+      ...(engine.mtu !== undefined ? { mtu: engine.mtu } : {}),
+      ...(engine.firewallRuleCount !== undefined ? { firewallRuleCount: engine.firewallRuleCount } : {}),
+      ...(engine.turnConfigured !== undefined ? { turnConfigured: engine.turnConfigured } : {}),
+      peers: Array.isArray(engine.peers) ? engine.peers : [],
+    };
+    return evaluateLanDiagnostics(input);
+  }
+
+  /**
+   * Phase 2A item D — scoped inbound allow-rule for one game executable. The path
+   * is picked by a MAIN-process dialog (handlers.ts) and re-validated by the
+   * already-elevated helper, so this adds NO new UAC prompt. A rejection resolves
+   * as ok:false — it must never surface as a helper error (that tears the tunnel
+   * down).
+   */
+  async lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }> {
+    const p = String(exePath || '');
+    if (!p) return { ok: false, canceled: true };
+    return this.call<{ ok: boolean; exe?: string; rule?: string; error?: string }>('lanAllowApp', { roomId, exePath: p }, 25000);
   }
 
   /** Joiner: acquire our own elevated helper leg for the session the host

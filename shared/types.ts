@@ -18,6 +18,9 @@ export type {
   LanSignalKind,
 } from './lan-types';
 export { MAX_LAN_PEERS } from './lan-types';
+// The evaluated connectivity report (pure layer) — the shape rooms.lan.diagnose returns.
+import type { LanDiagReport } from './lan-quality';
+export type { LanDiagReport, LanDiagCheck, LanCheckId, LanCheckLevel, LanDiagCause } from './lan-quality';
 
 export type DownloadStatus =
   | 'queued'
@@ -1237,6 +1240,10 @@ export interface IpcApi {
       accept: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;
       /** Host removes a member (host-signed lan-evict). */
       evict: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+      /** Connectivity report: main + engine + helper facts, judged by the pure evaluator. */
+      diagnose: (roomId: string) => Promise<LanDiagReport>;
+      /** Firewall troubleshooter: MAIN opens the .exe picker, the elevated helper adds a scoped rule (no new UAC). */
+      allowApp: (roomId: string) => Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }>;
     };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;

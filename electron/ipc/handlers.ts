@@ -651,6 +651,23 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:lanEvict', wrapHandler('rooms:lanEvict',
     async (_event, roomId: string, memberId: string) => roomManager.lanEvict(roomId, String(memberId || ''))
   ));
+  ipcMain.handle('rooms:lanDiagnose', wrapHandler('rooms:lanDiagnose',
+    async (_event, roomId: string) => roomManager.lanDiagnose(String(roomId || ''))
+  ));
+  // The .exe is chosen HERE, by the OS picker — the renderer never fabricates a
+  // path that ends up in an elevated PowerShell command (the helper validates it
+  // again anyway; this is the outer gate, not the only one).
+  ipcMain.handle('rooms:lanAllowApp', wrapHandler('rooms:lanAllowApp',
+    async (_event, roomId: string) => {
+      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
+        title: t('dialog.lanAllowApp'),
+        properties: ['openFile'],
+        filters: [{ name: t('dialog.filter.exe'), extensions: ['exe'] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true };
+      return roomManager.lanAllowApp(String(roomId || ''), result.filePaths[0]);
+    }
+  ));
 
   ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',
     async (_event, roomId: string | null) => roomManager.setActiveRoom(roomId ?? null)

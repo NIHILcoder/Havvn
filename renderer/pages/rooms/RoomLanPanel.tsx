@@ -13,17 +13,75 @@
  * room rail between the voice panel and the people list, and wires the callback
  * props to window.api.rooms.lan.*.
  *
+ * Phase 2A adds the "make failures visible and fixable" half: the status dot
+ * carries the MEASURED link quality (getStats RTT / loss / relayed-vs-direct) in
+ * its tooltip, a peer whose ICE reached the terminal 'failed' state gets an
+ * explicit explanation pointing at TURN instead of a silently dead tile, and two
+ * self-service actions sit under the control row — a Diagnostics report (portaled
+ * modal, copy-paste-able) and a firewall troubleshooter for "I see the peer but
+ * the game won't connect".
+ *
  * Styling uses ONLY theme tokens (no hardcoded radius; --radius-full is reserved
  * for the status dots). The peer picker portals its fixed overlay to <body>.
  */
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Avatar, Icon } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
 import { LanPeerPicker } from './LanPeerPicker';
+import { LanDiagnosticsModal } from './LanDiagnosticsModal';
+import type { LanDiagReportView } from './LanDiagnosticsModal';
 import './RoomLanPanel.css';
+
+/**
+ * How the selected ICE candidate pair got there (from getStats' candidate types).
+ * `local` = both host candidates (same physical network), `nat` = at least one
+ * server-reflexive hop, `relay` = the path runs through TURN (RTT is inflated and
+ * the user deserves to know).
+ */
+export type LanPathKind = 'local' | 'nat' | 'relay' | 'unknown';
+
+/** Why ICE never produced a working pair — the honest terminal-failure taxonomy. */
+export type LanIceFailReason = 'no-udp' | 'symmetric-nat' | 'needs-turn' | 'peer-unreachable' | 'unknown';
+
+/**
+ * Phase 2A per-peer measurements, declared structurally so the panel type-checks
+ * before the transport phase lands them on RoomLanParticipant. Once shared/
+ * carries these fields the intersection below stays valid — integration deletes
+ * nothing and only re-points the import if it wants a single source.
+ *
+ * UNITS (integration must match these or the tooltip lies):
+ *   rttMs   — milliseconds, already ×1000 from candidate-pair.currentRoundTripTime
+ *   lossPct — PERCENT 0..100 (not a 0..1 fraction), windowed, not lifetime
+ *   dropPct — PERCENT 0..100, OUR local backpressure drops (send-HWM + token bucket)
+ */
+export interface LanPeerLinkView {
+  rttMs?: number;
+  lossPct?: number;
+  dropPct?: number;
+  path?: LanPathKind;
+  /** Latched by the transport: this peer has stopped being retried. */
+  terminal?: boolean;
+  failReason?: LanIceFailReason;
+}
+
+/** A participant as this panel renders it. */
+export type LanParticipantView = RoomLanParticipant & LanPeerLinkView;
+
+/** Result of the firewall troubleshooter (main picks the .exe, the helper adds the rule). */
+export interface LanAllowAppResult {
+  ok: boolean;
+  /** The user dismissed the native picker — not an error, say nothing. */
+  canceled?: boolean;
+  /** Absolute path of the executable the rule was created for. */
+  exe?: string;
+  /** DisplayName of the created rule (removed on teardown by the orphan sweep). */
+  rule?: string;
+  /** Human-readable failure (validator rejection, PowerShell error). */
+  error?: string;
+}
 
 export interface RoomLanPanelProps {
   /** The room's LAN session as this install sees it (RoomState.lan). */
@@ -44,6 +102,23 @@ export interface RoomLanPanelProps {
   onEvict?: (memberId: string) => void | Promise<void>;
   /** Open a LAN settings surface (optional; no-op until a settings modal exists). */
   onOpenSettings?: () => void;
+  /**
+   * Run the connectivity check pass and return an already-EVALUATED report
+   * (integration wires window.api.rooms.lan.diagnostics → the pure evaluator).
+   * Absent → the Diagnostics action is not rendered.
+   */
+  onDiagnostics?: () => Promise<LanDiagReportView>;
+  /**
+   * Firewall troubleshooter: opens a native .exe picker in MAIN and asks the
+   * already-elevated helper for a scoped inbound allow-rule. The renderer never
+   * fabricates the path. Absent → the action is not rendered.
+   */
+  onAllowApp?: () => Promise<LanAllowAppResult>;
+  /**
+   * Jump to Settings → Connection (TURN relay) from the terminal-failure notice.
+   * Absent → the notice still explains the fix in words, just without a shortcut.
+   */
+  onOpenTurnSettings?: () => void;
 }
 
 /** Map the LanPeer connection state to the shared quality-dot class vocabulary. */
@@ -54,12 +129,47 @@ const STATUS_CLASS: Record<LanPeerStatus, string> = {
   failed: 'q-poor',
 };
 
+/** Terminal-failure reason → the i18n key that explains it in one sentence. */
+const FAIL_REASON_KEY = {
+  'no-udp': 'rooms.lan.failNoUdp',
+  'symmetric-nat': 'rooms.lan.failSymmetric',
+  'needs-turn': 'rooms.lan.failNeedsTurn',
+  'peer-unreachable': 'rooms.lan.failUnreachable',
+  unknown: 'rooms.lan.failUnknown',
+} as const;
+
+/** Selected-pair provenance → the tooltip word for it. */
+const PATH_KEY = {
+  local: 'rooms.lan.pathLocal',
+  nat: 'rooms.lan.pathDirect',
+  relay: 'rooms.lan.pathRelayed',
+  unknown: 'rooms.lan.pathUnknown',
+} as const;
+
+/** Percent with one decimal below 10 (0.4% reads better than 0%), integer above. */
+const pct = (v: number) => (v < 10 ? Math.round(v * 10) / 10 : Math.round(v)).toString();
+
+/** Last path segment of a Windows or POSIX path — for the firewall success toast. */
+const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
+
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
+  onDiagnostics, onAllowApp, onOpenTurnSettings,
 }) => {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
   const [pickerMode, setPickerMode] = useState<null | 'start' | 'invite'>(null);
+  const [diagOpen, setDiagOpen] = useState(false);
+  /**
+   * memberId → latched failure reason.
+   *
+   * The transport reaps and immediately REBUILDS a failed peer, so an untreated
+   * `status === 'failed'` is overwritten by a fresh 'connecting' within a tick and
+   * the honest terminal message would strobe. We latch the first failure and clear
+   * it only on a real 'connected' (or when the session ends / changes identity).
+   */
+  const [failLatch, setFailLatch] = useState<Record<string, LanIceFailReason>>({});
+  const sessionRef = useRef<string | undefined>(lan.sessionId);
 
   const memberOf = (id: string) => members.find((m) => m.memberId === id);
   const nameOf = (id: string) => (id === selfId ? t('rooms.you') : (memberOf(id)?.name || '?'));
@@ -78,8 +188,90 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   };
 
   // Peers are every admitted participant except ourselves; self reads off selfVip.
-  const peers = lan.participants.filter((p) => p.memberId !== selfId);
+  // Self is hardcoded 'connected' upstream and has no RTCPeerConnection, so it
+  // never carries measurements — the filter keeps quality off the self tile.
+  const peers = lan.participants.filter((p) => p.memberId !== selfId) as LanParticipantView[];
   const admittedIds = lan.participants.map((p) => p.memberId);
+
+  // ── Terminal-failure latch ────────────────────────────────────────────────
+  // Set on the first 'failed'/terminal sighting, cleared on a real 'connected',
+  // dropped wholesale when the session stops or a different session takes over.
+  useEffect(() => {
+    if (!lan.active || lan.sessionId !== sessionRef.current) {
+      sessionRef.current = lan.sessionId;
+      setFailLatch((prev) => (Object.keys(prev).length ? {} : prev));
+      if (!lan.active) return;
+    }
+    setFailLatch((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      const present = new Set<string>();
+      for (const p of lan.participants as LanParticipantView[]) {
+        if (p.memberId === selfId) continue;
+        present.add(p.memberId);
+        // Latch ONLY on the transport's terminal verdict. A bare status==='failed'
+        // is a transient ICE hiccup that room-lan.ts still has rebuild budget for
+        // (LAN_MAX_PEER_REBUILDS); latching it here would declare a recoverable leg
+        // permanently dead and defeat the retry the transport was built around.
+        const failed = p.terminal === true;
+        if (failed && !(p.memberId in next)) { next[p.memberId] = p.failReason || 'unknown'; changed = true; }
+        else if (p.status === 'connected' && p.memberId in next) { delete next[p.memberId]; changed = true; }
+      }
+      // Evicted / departed members must not keep a stale failure line alive.
+      for (const id of Object.keys(next)) if (!present.has(id)) { delete next[id]; changed = true; }
+      return changed ? next : prev;
+    });
+  }, [lan.active, lan.sessionId, lan.participants, selfId]);
+
+  /** Peers whose direct path is (latched) dead, with the reason we'll explain. */
+  const failedPeers = peers.filter((p) => p.memberId in failLatch);
+  const failReason: LanIceFailReason = failedPeers.length
+    ? (failLatch[failedPeers[0].memberId] || 'unknown')
+    : 'unknown';
+
+  // ── Per-peer dot + tooltip ────────────────────────────────────────────────
+  /** Measured quality wins on a connected link; the raw status is the fallback. */
+  const dotClass = (p: LanParticipantView) => {
+    if (p.memberId in failLatch) return 'q-poor';
+    if (p.status === 'connected' && p.quality) return `q-${p.quality}`;
+    return STATUS_CLASS[p.status] || 'q-fair';
+  };
+
+  /** "Connected · RTT 42 ms · loss 0.4% · relayed" — the honest numbers behind the dot. */
+  const dotTitle = (p: LanParticipantView) => {
+    const head = p.memberId in failLatch ? t('rooms.lan.statusFailed')
+      : p.status === 'connected' ? t('rooms.lan.statusConnected')
+        : p.status === 'connecting' ? t('rooms.lan.statusConnecting')
+          : p.status === 'reconnecting' ? t('rooms.lan.statusReconnecting')
+            : t('rooms.lan.statusFailed');
+    const parts = [head];
+    if (typeof p.rttMs === 'number' && p.rttMs > 0) {
+      parts.push(t('rooms.lan.qRtt').replace('{n}', String(Math.round(p.rttMs))));
+    }
+    if (typeof p.lossPct === 'number') parts.push(t('rooms.lan.qLoss').replace('{n}', pct(p.lossPct)));
+    // Our own backpressure drops — display-only, never a threshold input, and only
+    // worth a line when they are actually happening.
+    if (typeof p.dropPct === 'number' && p.dropPct >= 0.1) {
+      parts.push(t('rooms.lan.qDrop').replace('{n}', pct(p.dropPct)));
+    }
+    if (p.path) parts.push(t(PATH_KEY[p.path] || PATH_KEY.unknown));
+    return parts.join(' · ');
+  };
+
+  // ── Firewall troubleshooter ("I see the peer but the game won't connect") ──
+  const allowApp = wrap(async () => {
+    if (!onAllowApp) return;
+    const r = await onAllowApp();
+    if (!r || r.canceled) return; // the user dismissed the picker — say nothing
+    if (r.ok) toast.success(t('rooms.lan.fwAdded').replace('{n}', r.exe ? baseName(r.exe) : ''));
+    else toast.error(r.error || t('rooms.lan.fwFailed'));
+  });
+
+  // Stable identity so the modal's mount pass doesn't re-fire on every render.
+  const runDiagnostics = useCallback(
+    () => (onDiagnostics ? onDiagnostics() : Promise.reject(new Error('unavailable'))),
+    [onDiagnostics],
+  );
 
   // Start is offerable only when the driver is present, no other room holds the
   // single beta session, and the kill-switch isn't down.
@@ -143,6 +335,54 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               <Icon name="power" size={15} /> {t('rooms.lan.stop')}
             </button>
           </div>
+
+          {/* Self-service row: the two things that actually unstick a session. */}
+          {(onDiagnostics || onAllowApp) && (
+            <div className="room-lan-tools">
+              {onAllowApp && (
+                <button
+                  className="room-lan-tool"
+                  onClick={allowApp}
+                  disabled={busy}
+                  title={t('rooms.lan.fwHint')}
+                  type="button"
+                >
+                  <Icon name="shield" size={12} /> {t('rooms.lan.fwAction')}
+                </button>
+              )}
+              {onDiagnostics && (
+                <button
+                  className="room-lan-tool"
+                  onClick={() => setDiagOpen(true)}
+                  title={t('rooms.lan.diagHint')}
+                  type="button"
+                >
+                  <Icon name="activity" size={12} /> {t('rooms.lan.diagAction')}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Honest terminal failure: ICE found no working path to these peers.
+              A red dot alone reads as "still trying" — it never is. */}
+          {failedPeers.length > 0 && (
+            <div className="room-lan-fail">
+              <span className="room-lan-fail-head">
+                <Icon name="alert-triangle" size={13} />
+                {t('rooms.lan.failTitle').replace('{n}', failedPeers.map((p) => nameOf(p.memberId)).join(', '))}
+              </span>
+              <span className="room-lan-fail-body">{t(FAIL_REASON_KEY[failReason] || FAIL_REASON_KEY.unknown)}</span>
+              {/* iceServers are frozen at session start, so a TURN entry added now
+                  only applies to the NEXT session — say so rather than let the user
+                  stare at an unchanged red dot. */}
+              <span className="room-lan-fail-body">{t('rooms.lan.failTurnHint')}</span>
+              {onOpenTurnSettings && (
+                <button className="room-lan-link" onClick={onOpenTurnSettings} type="button">
+                  {t('rooms.lan.failOpenSettings')}
+                </button>
+              )}
+            </div>
+          )}
         </>
       ) : (
         <>
@@ -168,24 +408,34 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               <Icon name="network" size={14} /> {t('rooms.lan.start')}
             </button>
           )}
+          {/* Diagnostics is useful precisely when Start is greyed out — it is the
+              surface that names the missing driver / kill-switch / busy session. */}
+          {onDiagnostics && (
+            <div className="room-lan-tools">
+              <button
+                className="room-lan-tool"
+                onClick={() => setDiagOpen(true)}
+                title={t('rooms.lan.diagHint')}
+                type="button"
+              >
+                <Icon name="activity" size={12} /> {t('rooms.lan.diagAction')}
+              </button>
+            </div>
+          )}
         </>
       )}
 
       {peers.length > 0 && (
         <div className="room-lan-people">
-          {peers.map((p: RoomLanParticipant) => (
-            <div key={p.memberId} className="room-lan-person" title={nameOf(p.memberId)}>
+          {peers.map((p: LanParticipantView) => (
+            <div
+              key={p.memberId}
+              className={`room-lan-person${p.memberId in failLatch ? ' failed' : ''}`}
+              title={nameOf(p.memberId)}
+            >
               <span className="room-lan-ring">
                 <Avatar seed={seedOf(p.memberId)} img={memberOf(p.memberId)?.avatarImg} size={30} />
-                <span
-                  className={`room-lan-quality ${STATUS_CLASS[p.status] || 'q-fair'}`}
-                  title={
-                    p.status === 'connected' ? t('rooms.lan.statusConnected')
-                      : p.status === 'connecting' ? t('rooms.lan.statusConnecting')
-                        : p.status === 'reconnecting' ? t('rooms.lan.statusReconnecting')
-                          : t('rooms.lan.statusFailed')
-                  }
-                />
+                <span className={`room-lan-quality ${dotClass(p)}`} title={dotTitle(p)} />
                 {lan.isHost && onEvict && (
                   <button
                     className="room-lan-evict"
@@ -231,6 +481,10 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             void wrap(() => (mode === 'invite' && onInvite ? onInvite(ids) : onStart(ids)))();
           }}
         />
+      )}
+
+      {diagOpen && onDiagnostics && (
+        <LanDiagnosticsModal run={runDiagnostics} onClose={() => setDiagOpen(false)} />
       )}
     </div>
   );

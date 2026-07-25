@@ -41,7 +41,16 @@ import type { LanStateClaim } from '../../shared/lan-session-core';
 import { planRoute, acceptInbound } from '../../shared/lan-router';
 import type { RouteCtx } from '../../shared/lan-router';
 import { sessionSubnet, vipToString } from '../../shared/lan-ip';
-import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../shared/lan-types';
+import {
+  LAN_QUALITY_POLL_MS, reduceLanStats, stunDelta, windowedLoss, classifyLanQuality,
+  isMeasured, explainIceFailure, hasTurn, linkQualityChanged, lossToPct,
+} from '../../shared/lan-quality';
+import type {
+  LanRawStat, LanStatsSnapshot, LanStunCounters, LanLossSample, LanLinkQuality, LanDiagPeer,
+} from '../../shared/lan-quality';
+import type {
+  RoomLanState, RoomLanParticipant, LanPeerStatus, LanIceFailReason,
+} from '../../shared/lan-types';
 
 export type LanSignalKind = 'offer' | 'answer' | 'ice';
 
@@ -50,6 +59,29 @@ export type LanSignalKind = 'offer' | 'answer' | 'ice';
  *  queueing degrades unreliable into reliable-with-lag. Precedent: remote-cast
  *  streamTo HIGH_WATER. */
 const LAN_SEND_HWM = 256 * 1024;
+
+/**
+ * How many times a leg may be reaped-and-rebuilt after 'failed' before we call it
+ * TERMINAL and stop (plan §12.7, Phase 2A item B).
+ *
+ * Without this bound onPeerFailed re-creates the peer instantly and a
+ * symmetric-NAT pair oscillates connecting→failed→connecting forever: the tile
+ * never settles on 'failed', so the honest "no direct path — configure a TURN
+ * server" message can never be shown and the leg merely looks slow. Three
+ * attempts is enough to ride out a one-off ICE hiccup and short enough that a
+ * genuinely unreachable peer stops burning candidates within ~a minute.
+ */
+const LAN_MAX_PEER_REBUILDS = 3;
+
+/** One poll's reading of a leg: the raw getStats snapshot plus the two derived
+ *  rates that need per-peer history (smoothed consent loss, our own send-drop). */
+interface LanPeerSample {
+  snap: LanStatsSnapshot;
+  /** Smoothed ICE-consent loss over LAN_LOSS_WINDOW_MS, fraction 0..1. */
+  loss: number;
+  /** OUR send-drop fraction since the previous poll, 0..1. */
+  dropPct: number;
+}
 
 /**
  * What the engine (createLanSession in room-engine.ts) provides to a LanSession —
@@ -105,16 +137,33 @@ class LanPeer {
   // Candidates that arrive before the remote description (signaling rides an
   // UNORDERED gossip flood, so trickled ICE can beat the offer/answer). Capped.
   private pendingIce: RTCIceCandidateInit[] = [];
+  // ── Phase 2A link-quality state (all per-peer, all reset with the peer) ──
+  /** Consent counters read by the PREVIOUS poll — the delta source for the loss
+   *  proxy (a data-only PC has no inbound-rtp, so there is no RTP loss to read). */
+  private lastStun: LanStunCounters | null = null;
+  /** Per-poll consent deltas inside the smoothing window; one lost consent check
+   *  in a 3s sample would otherwise read as ~50% loss and strobe the dot. */
+  private lossSamples: LanLossSample[] = [];
+  /** Last successful getStats reduction — also the ONLY thing that can explain a
+   *  'failed' link, whose PC is already gone by the time the event fires. */
+  private lastSnap: LanStatsSnapshot | null = null;
+  // OUR OWN send-drop rate over the current poll window (closed channel / HWM).
+  private sendAttempts = 0;
+  private sendDrops = 0;
+  /** A turn:/turns: entry exists in this room's iceServers — decides whether a
+   *  failure reads "add a TURN server" or "TURN is configured and it still failed". */
+  private turnConfigured: boolean;
 
   constructor(
     private id: string,
     private polite: boolean,       // selfId > memberId — deterministic glare split
     private a: LanAdapter,
     private onFrame: (frame: Buffer) => void,   // inbound datachannel msg → router
-    private onFailed: () => void,               // pc 'failed' → session reaps + rebuilds
+    private onFailed: (reason: LanIceFailReason) => void, // pc 'failed' → session latches the reason, reaps, maybe rebuilds
     private onStatus: (s: LanPeerStatus) => void, // connectionState → UI dot
     private now: () => number,
   ) {
+    this.turnConfigured = hasTurn(a.iceServers as ReadonlyArray<{ urls?: string | string[] }>);
     this.pc = new RTCPeerConnection({ iceServers: a.iceServers });
     // must-fix #4: ONE out-of-band negotiated channel on both sides, unreliable +
     // unordered (games tolerate loss/reorder; retransmit-with-lag is worse).
@@ -145,7 +194,10 @@ class LanPeer {
       if (s === 'connected') { this.everConnected = true; this.setStatus('connected'); }
       else if (s === 'connecting' || s === 'new') this.setStatus(this.everConnected ? 'reconnecting' : 'connecting');
       else if (s === 'disconnected') this.setStatus('reconnecting');
-      else if (s === 'failed') { this.setStatus('failed'); this.onFailed(); } // honest symmetric-NAT terminal state (plan §12.7)
+      // Honest symmetric-NAT terminal state (plan §12.7): the reason is derived
+      // from the LAST poll's candidate facts, because getStats on a failed PC is
+      // already useless (and the session reaps this peer on the next line).
+      else if (s === 'failed') { this.setStatus('failed'); this.onFailed(this.failReason()); }
       else if (s === 'closed') this.setStatus('failed');
     };
   }
@@ -157,6 +209,86 @@ class LanPeer {
   }
 
   status(): LanPeerStatus { return this.curStatus; }
+
+  /** True only while the link is up right now (else it is (re)connecting). */
+  linkConnected(): boolean { return this.pc.connectionState === 'connected'; }
+
+  /** True once the link has connected at least once — a later drop reads as
+   *  "reconnecting", while a first-time handshake shows no quality yet. */
+  wasConnected(): boolean { return this.everConnected; }
+
+  /** Data-channel readyState right now (diagnostics item C). */
+  channelState(): 'connecting' | 'open' | 'closing' | 'closed' | 'unknown' {
+    const s = this.ch?.readyState;
+    return s === 'connecting' || s === 'open' || s === 'closing' || s === 'closed' ? s : 'unknown';
+  }
+
+  /** The last poll's reduction — read-only, so a diagnostics run costs nothing. */
+  lastStats(): LanStatsSnapshot | null { return this.lastSnap; }
+
+  /**
+   * WHY this leg has no path, from the gathered ICE candidate types of the last
+   * poll. 'unknown' when we never got a sample — an honest "don't know" beats a
+   * guessed cause in a message that tells the user what to go fix.
+   */
+  failReason(): LanIceFailReason {
+    const s = this.lastSnap;
+    if (!s) return 'unknown';
+    return explainIceFailure({
+      localTypes: s.localTypes,
+      remoteTypes: s.remoteTypes,
+      anyPairSucceeded: s.anyPairSucceeded,
+      turnConfigured: this.turnConfigured,
+    });
+  }
+
+  /**
+   * Sample OUR link to this peer — ONE getStats pass that feeds the quality dot,
+   * the failure explanation and the diagnostics report alike (mirrors
+   * MediaPeer.sampleQuality, room-voice.ts:496).
+   *
+   * Two deliberate divergences from voice: the selected CANDIDATE PAIR (not
+   * inbound-rtp, which a data-only PC never emits) carries the RTT, and loss is
+   * the ICE-consent delta smoothed over a window. Returns null — never a neutral
+   * zero reading — when stats are unavailable, so an unmeasured link renders NO
+   * dot instead of a flattering 'good'.
+   */
+  async sampleQuality(): Promise<LanPeerSample | null> {
+    if (this.closed) return null;
+    // Capture-and-zero the backpressure window UP FRONT, so every exit path (no
+    // getStats, a rejecting/closing PC) still bounds it to one poll. Resetting
+    // only on the success path let the counters accumulate across failed polls and
+    // the next good sample divided drops by an arbitrarily long window.
+    const attempts = this.sendAttempts, drops = this.sendDrops;
+    this.sendAttempts = 0; this.sendDrops = 0;
+    try {
+      const pc = this.pc as unknown as { getStats?: () => Promise<unknown> };
+      if (typeof pc.getStats !== 'function') return null; // stubbed/older PC — no dot, no crash
+      const report = await pc.getStats();
+      const rows: LanRawStat[] = [];
+      // RTCStatsReport is Map-like; forEach is the one iteration API it guarantees.
+      (report as { forEach?: (cb: (r: unknown) => void) => void })?.forEach?.((r) => {
+        const row = r as LanRawStat | null;
+        if (row && typeof row.type === 'string') rows.push(row);
+      });
+      const snap = reduceLanStats(rows);
+      this.lastSnap = snap;
+
+      // Consent loss: delta vs the previous read, accumulated over the window.
+      const d = stunDelta(this.lastStun, snap.stun);
+      this.lastStun = snap.stun;
+      const now = this.now();
+      if (d.sent > 0) this.lossSamples.push({ at: now, sent: d.sent, recv: d.recv });
+      const w = windowedLoss(this.lossSamples, now);
+      this.lossSamples = w.kept;
+
+      // Our own backpressure drops over this window (explains game stutter that
+      // no remote metric can see); captured+zeroed at entry.
+      return { snap, loss: w.loss, dropPct: attempts > 0 ? drops / attempts : 0 };
+    } catch {
+      return null; // getStats rejects on a closing PC — no reading, no dot change
+    }
+  }
 
   /** Handle an inbound offer/answer/ice for this peer (perfect negotiation). */
   async onSignal(kind: LanSignalKind, data: unknown): Promise<void> {
@@ -194,12 +326,15 @@ class LanPeer {
    * plan §2 DROP policy.
    */
   send(frame: Buffer): boolean {
-    if (this.closed || this.ch.readyState !== 'open') return false;
-    if (this.ch.bufferedAmount > LAN_SEND_HWM) return false;
+    // Every attempt/drop is counted for the per-poll dropPct — the one loss
+    // signal that is genuinely OURS (no wire change, no peer cooperation).
+    this.sendAttempts++;
+    if (this.closed || this.ch.readyState !== 'open') { this.sendDrops++; return false; }
+    if (this.ch.bufferedAmount > LAN_SEND_HWM) { this.sendDrops++; return false; }
     // A Node Buffer is a valid BufferSource at runtime; the cast bridges the
     // @types/node ArrayBufferLike ↔ DOM ArrayBuffer generic mismatch (no copy).
     try { this.ch.send(frame as unknown as ArrayBufferView<ArrayBuffer>); return true; }
-    catch { return false; }
+    catch { this.sendDrops++; return false; }
   }
 
   close(): void {
@@ -221,6 +356,18 @@ export class LanSession {
   private active = false;
   private selfGen = 0;
   private lastAt = 0;
+  // ── Phase 2A ──
+  /** Last measured link per member; ABSENT means "no dot" (voice's rule). */
+  private quality = new Map<string, LanLinkQuality>();
+  /** LATCHED failure explanation per member. Latched rather than read live
+   *  because onPeerFailed reaps and rebuilds instantly — the instantaneous status
+   *  flips back to 'connecting' and the honest reason would flicker away. */
+  private failReasons = new Map<string, LanIceFailReason>();
+  /** Consecutive failures since the last successful connect (rebuild budget). */
+  private failCounts = new Map<string, number>();
+  /** Members whose rebuild budget is spent — the leg is terminally dead. */
+  private terminal = new Set<string>();
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private a: LanAdapter, private now: () => number = Date.now) {
     this.core = new LanSessionCore(a.sessionId, a.selfId, now);
@@ -261,6 +408,7 @@ export class LanSession {
     this.hostAdmit(this.a.selfId);                               // self-admit (see doc above)
     for (const m of picks) if (m !== this.a.selfId) this.hostAdmit(m);
     this.announceSelf();
+    this.armStatsPoll();                                         // host measures its own legs too
     this.a.onChange();
   }
 
@@ -271,6 +419,7 @@ export class LanSession {
     this.active = true;
     this.announceSelf();
     for (const id of this.core.admittedIds()) if (id !== this.a.selfId) this.ensurePeer(id);
+    this.armStatsPoll();
     this.a.onChange();
   }
 
@@ -279,7 +428,81 @@ export class LanSession {
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
     this.statuses.clear();
+    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+    this.quality.clear();
+    this.failReasons.clear();
+    this.failCounts.clear();
+    this.terminal.clear();
     this.a.onChange();
+  }
+
+  /** Arm the getStats poll (mirrors VoiceSession's statsTimer, room-voice.ts:819).
+   *  LAN has TWO entry points — start() and startAsHost() — and one exit, stop(),
+   *  which suspend() delegates to, so the VPN kill-switch path is covered. */
+  private armStatsPoll(): void {
+    if (this.statsTimer) return;
+    const t = setInterval(() => { void this.pollQuality(); }, LAN_QUALITY_POLL_MS);
+    // In node (vitest) a Timeout keeps the event loop alive; the engine window
+    // does not care, but a test that forgets stop() would hang the runner.
+    (t as unknown as { unref?: () => void }).unref?.();
+    this.statsTimer = t;
+  }
+
+  /**
+   * Sample every leg and refresh the per-member quality entry (mirrors
+   * VoiceSession.pollQuality, room-voice.ts:1365). Three rules copied verbatim
+   * because they are what make the dot honest:
+   *   • a peer that has never connected gets NO entry (no dot during handshake);
+   *   • one that connected and dropped reads poor + reconnecting;
+   *   • onChange() fires ONLY when something actually changed — this timer feeds
+   *     pushState → IPC → React, so an unconditional push every 3s is a
+   *     measurable regression in a window that also carries voice and files.
+   * The LAN-specific addition: we sample NOT-yet-connected legs too, because
+   * their gathered candidates are the only thing that can explain a later
+   * 'failed' — they simply do not produce a quality entry.
+   */
+  private async pollQuality(): Promise<void> {
+    if (!this.active) return;
+    let changed = false;
+    const seen = new Set<string>();
+    for (const [id, p] of this.peers) {
+      const s = await p.sampleQuality();
+      if (!this.active) return;              // stopped while awaiting
+      if (this.peers.get(id) !== p) continue; // reaped/rebuilt while awaiting
+      let entry: LanLinkQuality | null = null;
+      if (p.linkConnected()) {
+        // A connected leg whose pair has produced no RTT and no consent response
+        // yet is NOT 'good' — rtt 0 / loss 0 would classify as good. No dot yet.
+        if (s && s.snap.havePair && isMeasured({ rttMs: s.snap.rttMs, responsesReceived: s.snap.stun.responsesReceived })) {
+          entry = {
+            level: classifyLanQuality({ rttMs: s.snap.rttMs, loss: s.loss }),
+            rttMs: s.snap.rttMs,
+            loss: s.loss,
+            dropPct: s.dropPct,
+            path: s.snap.path,
+            local: s.snap.local,
+            remote: s.snap.remote,
+            reconnecting: false,
+          };
+        }
+      } else if (p.wasConnected()) {
+        entry = {
+          level: 'poor', rttMs: 0, loss: 0, dropPct: s?.dropPct ?? 0,
+          path: s?.snap.path ?? 'unknown',
+          local: s?.snap.local ?? 'unknown',
+          remote: s?.snap.remote ?? 'unknown',
+          reconnecting: true,
+        };
+      }
+      if (!entry) continue; // still doing the first handshake — no dot yet
+      seen.add(id);
+      if (linkQualityChanged(this.quality.get(id), entry)) changed = true;
+      this.quality.set(id, entry);
+    }
+    for (const id of Array.from(this.quality.keys())) {
+      if (!seen.has(id)) { this.quality.delete(id); changed = true; } // gone / torn down
+    }
+    if (changed) this.a.onChange();
   }
 
   /** VPN kill-switch / teardown — identical to stop (closes every leg). */
@@ -311,6 +534,7 @@ export class LanSession {
     if (!this.core.applyEvict(this.a.selfId, memberId, at, this.a.sessionId)) return;
     this.a.evict(memberId, at);
     this.dropPeer(memberId);
+    this.forgetFailure(memberId);
     this.a.onChange();
   }
 
@@ -338,7 +562,7 @@ export class LanSession {
   onEvict(by: string, target: string, at: number, sessionId: string): void {
     if (!this.core.applyEvict(by, target, at, sessionId)) return;
     if (target === this.a.selfId) this.stop();
-    else this.dropPeer(target);
+    else { this.dropPeer(target); this.forgetFailure(target); }
     this.a.onChange();
   }
 
@@ -385,7 +609,19 @@ export class LanSession {
   onMemberGone(memberId: string): void {
     this.core.onMemberGone(memberId);
     this.dropPeer(memberId);
+    this.forgetFailure(memberId); // genuinely gone — clear the latches, not just the leg
     this.a.onChange();
+  }
+
+  /** Drop the per-member failure latches (reason / rebuild count / terminal flag).
+   *  ONLY for a member who genuinely leaves the session — never from dropPeer,
+   *  which onPeerFailed calls and which must PRESERVE the latch across a rebuild.
+   *  Without this the maps grow for the session's life and a re-invited member
+   *  stays permanently marked as terminally failed. */
+  private forgetFailure(memberId: string): void {
+    this.failReasons.delete(memberId);
+    this.failCounts.delete(memberId);
+    this.terminal.delete(memberId);
   }
 
   /** Host-only: re-flood the DURABLE authority (lan-genesis + every live lan-admit)
@@ -463,11 +699,12 @@ export class LanSession {
     const p = new LanPeer(
       memberId, polite, this.a,
       (frame) => this.onPeerFrame(memberId, frame),
-      () => this.onPeerFailed(memberId),
+      (reason) => this.onPeerFailed(memberId, reason),
       (s) => this.setStatus(memberId, s),
       this.now,
     );
     this.peers.set(memberId, p);
+    this.terminal.delete(memberId); // a fresh attempt is, by definition, not terminal
     this.setStatus(memberId, p.status());
     return p;
   }
@@ -476,20 +713,44 @@ export class LanSession {
     const p = this.peers.get(memberId);
     if (p) { p.close(); this.peers.delete(memberId); }
     this.statuses.delete(memberId);
+    this.quality.delete(memberId); // measurements die with the PC they came from
   }
 
-  /** A LanPeer reached 'failed' (e.g. torn down our side while the peer kept
-   *  theirs). Reap and, if still admitted, re-create a clean pair (voice pattern). */
-  private onPeerFailed(memberId: string): void {
+  /**
+   * A LanPeer reached 'failed'. Latch WHY (the rebuilt peer starts with no stats
+   * and could only report 'unknown'), then reap and rebuild — but only while the
+   * rebuild budget lasts. Once it is spent the leg stays 'failed' so the panel can
+   * say "no direct path — configure a TURN server" instead of showing an eternal,
+   * dishonest 'connecting' (plan §12.7, Phase 2A item B).
+   */
+  private onPeerFailed(memberId: string, reason: LanIceFailReason): void {
     if (!this.active) return;
+    // Never let a later factless 'unknown' erase a real explanation.
+    if (reason !== 'unknown' || !this.failReasons.has(memberId)) this.failReasons.set(memberId, reason);
+    const n = (this.failCounts.get(memberId) ?? 0) + 1;
+    this.failCounts.set(memberId, n);
     this.dropPeer(memberId);
-    if (this.core.isAdmitted(memberId)) this.ensurePeer(memberId);
+    if (!this.core.isAdmitted(memberId)) { this.a.onChange(); return; }
+    if (n >= LAN_MAX_PEER_REBUILDS) {
+      this.terminal.add(memberId);
+      this.statuses.set(memberId, 'failed'); // dropPeer cleared it — restate it as terminal
+      this.a.log(`lan leg to ${memberId.slice(0, 8)} terminally failed after ${n} attempts (${this.failReasons.get(memberId)})`);
+      this.a.onChange();
+      return;
+    }
+    this.ensurePeer(memberId);
   }
 
   private setStatus(memberId: string, s: LanPeerStatus): void {
-    if (this.statuses.get(memberId) === s) return;
-    this.statuses.set(memberId, s);
-    this.a.onChange();
+    let changed = false;
+    if (s === 'connected') {
+      // A working link retires the latched failure story (budget, reason, terminal).
+      if (this.failCounts.delete(memberId)) changed = true;
+      if (this.failReasons.delete(memberId)) changed = true;
+      if (this.terminal.delete(memberId)) changed = true;
+    }
+    if (this.statuses.get(memberId) !== s) { this.statuses.set(memberId, s); changed = true; }
+    if (changed) this.a.onChange();
   }
 
   // ── State projection for the UI ─────────────────────────────────────────────
@@ -510,11 +771,28 @@ export class LanSession {
     for (const id of this.core.admittedIds()) {
       if (id === this.a.selfId) continue;
       const v = this.core.memberVip(id);
+      // Optional-spread discipline (voice getState, room-voice.ts:1396): an
+      // unmeasured leg carries NO quality key at all, so the UI renders no dot
+      // rather than a default one. Self is never measured (it has no LanPeer).
+      const q = this.quality.get(id);
+      const fail = this.failReasons.get(id);
       participants.push({
         memberId: id,
         vip: v !== undefined ? vipToString(v) : '',
         admitted: true,
         status: this.statuses.get(id) ?? 'connecting',
+        ...(q ? {
+          quality: q.level,
+          rttMs: Math.round(q.rttMs),
+          lossPct: lossToPct(q.loss),
+          dropPct: lossToPct(q.dropPct),
+          candidate: q.local,
+          remoteCandidate: q.remote,
+          path: q.path,
+          ...(q.reconnecting ? { reconnecting: true } : {}),
+        } : {}),
+        ...(fail ? { failReason: fail } : {}),
+        ...(this.terminal.has(id) ? { terminal: true } : {}),
       });
     }
     return {
@@ -528,10 +806,42 @@ export class LanSession {
       // Whether the host has admitted US — the join gate. True on a passive
       // (not-yet-active) session means "invited, ready to Accept".
       selfAdmitted: this.core.isAdmitted(this.a.selfId),
+      // A room's iceServers are fixed when the room starts, so this also tells the
+      // UI whether "add a TURN server" is still an available fix for a failed leg
+      // (and that the session must be restarted after configuring one).
+      turnConfigured: hasTurn(this.a.iceServers as ReadonlyArray<{ urls?: string | string[] }>),
       participants,
     };
   }
 
   /** Alias — some engine wiring calls getState() (mirrors room.voice.getState()). */
   getState(): RoomLanState { return this.buildState(); }
+
+  /**
+   * Per-peer facts for the connectivity report (Phase 2A item C), read from the
+   * LAST poll — a diagnostics run must never trigger a second getStats pass, and
+   * must never be the only thing that measures a link (the 3s poll owns that).
+   * Members whose leg has been reaped are still listed, with whatever the latch
+   * remembers, because "the peer is admitted and has NO channel" is a finding.
+   */
+  peerDiagnostics(): LanDiagPeer[] {
+    const out: LanDiagPeer[] = [];
+    for (const id of this.core.admittedIds()) {
+      if (id === this.a.selfId) continue;
+      const v = this.core.memberVip(id);
+      const p = this.peers.get(id);
+      const snap = p?.lastStats() ?? null;
+      const q = this.quality.get(id);
+      out.push({
+        memberId: id,
+        ...(v !== undefined ? { vip: vipToString(v) } : {}),
+        status: this.statuses.get(id) ?? 'connecting',
+        channelState: p?.channelState() ?? 'unknown',
+        ...(q ? { rttMs: q.rttMs, loss: q.loss } : {}),
+        ...(snap ? { localCandidate: snap.local, remoteCandidate: snap.remote } : {}),
+        ...(this.terminal.has(id) ? { terminal: true } : {}),
+      });
+    }
+    return out;
+  }
 }

@@ -5,11 +5,21 @@ import {
   ChannelReader,
   buildPipeSddl,
   lanPipePath,
+  appRuleDisplayName,
+  clampHelperFacts,
+  isControlId,
+  sanitizeRuleToken,
+  validateGameExePath,
   CH_DATA,
   CH_CONTROL,
   LAN_PIPE_PROTO,
+  MAX_APP_PATH,
   MAX_CONTROL_BYTES,
+  MAX_DIAG_LIST,
+  MAX_DIAG_STRING,
+  MAX_RULE_TOKEN,
   type LanControlMsg,
+  type LanHelperFacts,
 } from './pipe-bridge';
 import { encodeFrame } from '../../shared/lan-frame';
 
@@ -165,6 +175,214 @@ describe('hello handshake shape', () => {
     reader.push(encodeControl({ t: 'hello', token: 'wrong', proto: LAN_PIPE_PROTO }));
     const hello = control[0] as Extract<LanControlMsg, { t: 'hello' }>;
     expect(hello.token === 'expected').toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2A — request/response verbs, their bounds, and the privilege-boundary
+// path validator. These verbs are the ONLY renderer-influenced input that ever
+// reaches the elevated helper, so their bounds are load-bearing security, not
+// hygiene.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const FACTS: LanHelperFacts = {
+  adapterName: 'Havvn LAN-alice.deadbeef',
+  adapterPresent: true,
+  adapterUp: true,
+  adapterStatus: 'Up',
+  ipAddresses: ['100.88.4.7'],
+  expectedVip: '100.88.4.7',
+  subnet: '100.88.0.0/16',
+  mtu: 1280,
+  firewallRules: ['Havvn LAN-alice.deadbeef In', 'Havvn LAN-alice.deadbeef Out'],
+  appRules: [],
+  driverVersion: '0.14',
+  ringActive: true,
+  helperPid: 4242,
+  uptimeMs: 12_000,
+};
+
+describe('isControlId (correlation-id domain)', () => {
+  it('accepts uint32', () => {
+    expect(isControlId(0)).toBe(true);
+    expect(isControlId(1)).toBe(true);
+    expect(isControlId(0xffffffff)).toBe(true);
+  });
+
+  it('rejects anything that is not an in-range integer', () => {
+    for (const bad of [-1, 1.5, 0x1_0000_0000, NaN, Infinity, '1', null, undefined, {}, []]) {
+      expect(isControlId(bad)).toBe(false);
+    }
+  });
+});
+
+describe('Phase-2A verbs round-trip over the SAME channel codec', () => {
+  it('carries allow-app / allow-app-result / diag / diag-result with their ids', () => {
+    const msgs: LanControlMsg[] = [
+      { t: 'allow-app', id: 7, exe: 'C:\\Games\\Minecraft\\launcher.exe' },
+      { t: 'allow-app-result', id: 7, ok: true, rule: 'Havvn LAN-x App launcher.exe' },
+      { t: 'diag', id: 8 },
+      { t: 'diag-result', id: 8, facts: FACTS },
+    ];
+    const { reader, control, data } = makeReader();
+    reader.push(Buffer.concat(msgs.map(encodeControl)));
+    expect(control).toEqual(msgs);
+    expect(data.length).toBe(0);
+  });
+
+  it('reports a refusal as allow-app-result (never as {t:error}, which is fatal)', () => {
+    const { reader, control } = makeReader();
+    reader.push(encodeControl({ t: 'allow-app-result', id: 3, ok: false, code: 'bad-app-path', message: 'rejected exe path (not-exe)' }));
+    const m = control[0] as Extract<LanControlMsg, { t: 'allow-app-result' }>;
+    expect(m.t).toBe('allow-app-result');
+    expect(m.ok).toBe(false);
+    expect(m.code).toBe('bad-app-path');
+  });
+
+  it('a fully-saturated diag-result still fits under the FATAL control cap', () => {
+    const saturated: LanHelperFacts = {
+      ...FACTS,
+      ipAddresses: Array.from({ length: 64 }, () => 'x'.repeat(400)),
+      firewallRules: Array.from({ length: 64 }, () => 'r'.repeat(400)),
+      appRules: Array.from({ length: 64 }, () => 'a'.repeat(400)),
+    };
+    const frame = encodeControl({ t: 'diag-result', id: 1, facts: clampHelperFacts(saturated) });
+    expect(frame.length).toBeLessThan(MAX_CONTROL_BYTES);
+    // …and the UNclamped version is exactly what would have killed the bridge.
+    const { reader } = makeReader(4096);
+    expect(() => reader.push(encodeControl({ t: 'diag-result', id: 1, facts: saturated }))).toThrow(/too large/);
+  });
+});
+
+describe('clampHelperFacts', () => {
+  it('caps list length and per-string length', () => {
+    const c = clampHelperFacts({
+      ...FACTS,
+      firewallRules: Array.from({ length: 100 }, (_, i) => `${i}`.padEnd(500, 'x')),
+      ipAddresses: Array.from({ length: 100 }, () => '1.2.3.4'),
+      appRules: Array.from({ length: 100 }, () => 'a'),
+    });
+    expect(c.firewallRules.length).toBe(MAX_DIAG_LIST);
+    expect(c.ipAddresses.length).toBe(MAX_DIAG_LIST);
+    expect(c.appRules.length).toBe(MAX_DIAG_LIST);
+    expect(c.firewallRules[0].length).toBe(MAX_DIAG_STRING);
+  });
+
+  it('coerces hostile/absent scalars instead of propagating them', () => {
+    const c = clampHelperFacts({
+      ...FACTS,
+      mtu: NaN,
+      helperPid: -5,
+      uptimeMs: Infinity,
+      adapterPresent: 1 as unknown as boolean,
+      ipAddresses: undefined as unknown as string[],
+    });
+    expect(c.mtu).toBe(0);
+    expect(c.helperPid).toBe(0);
+    expect(c.uptimeMs).toBe(0);
+    expect(c.adapterPresent).toBe(true);
+    expect(c.ipAddresses).toEqual([]);
+  });
+});
+
+describe('validateGameExePath (renderer → ELEVATED PowerShell boundary)', () => {
+  it('accepts a plain drive-absolute .exe path', () => {
+    expect(validateGameExePath('C:\\Program Files (x86)\\Steam\\steam.exe')).toEqual({
+      ok: true,
+      path: 'C:\\Program Files (x86)\\Steam\\steam.exe',
+    });
+    expect(validateGameExePath('D:\\g.EXE')).toEqual({ ok: true, path: 'D:\\g.EXE' });
+  });
+
+  it('rejects non-strings and empties', () => {
+    expect(validateGameExePath(undefined)).toEqual({ ok: false, reason: 'not-a-string' });
+    expect(validateGameExePath(42)).toEqual({ ok: false, reason: 'not-a-string' });
+    expect(validateGameExePath({ path: 'C:\\a.exe' })).toEqual({ ok: false, reason: 'not-a-string' });
+    expect(validateGameExePath('')).toEqual({ ok: false, reason: 'empty' });
+  });
+
+  it('rejects a path longer than MAX_APP_PATH (never truncates)', () => {
+    const long = `C:\\${'a'.repeat(MAX_APP_PATH)}\\x.exe`;
+    expect(validateGameExePath(long)).toEqual({ ok: false, reason: 'too-long' });
+  });
+
+  it('rejects quotes, backticks, newlines, NUL and glob characters', () => {
+    for (const bad of [
+      "C:\\Games\\Assassin's Creed\\ac.exe", // apostrophe would need psq — refuse outright
+      'C:\\Games\\a"b\\x.exe',
+      'C:\\Games\\a`b\\x.exe',
+      'C:\\Games\\a\nb\\x.exe',
+      'C:\\Games\\a\r\\x.exe',
+      'C:\\Games\\a\u0000b\\x.exe',
+      'C:\\Games\\*\\x.exe',
+      'C:\\Games\\?\\x.exe',
+      'C:\\Games\\<x>\\x.exe',
+      'C:\\Games\\a|b\\x.exe',
+    ]) {
+      expect(validateGameExePath(bad)).toEqual({ ok: false, reason: 'bad-chars' });
+    }
+  });
+
+  it('rejects UNC and device paths — an elevated -Program must never be an SMB host', () => {
+    expect(validateGameExePath('\\\\evil-server\\share\\game.exe')).toEqual({ ok: false, reason: 'not-absolute' });
+    expect(validateGameExePath('\\\\?\\C:\\game.exe')).toEqual({ ok: false, reason: 'bad-chars' });
+    expect(validateGameExePath('\\\\.\\pipe\\x.exe')).toEqual({ ok: false, reason: 'not-absolute' });
+  });
+
+  it('rejects relative, rootless and forward-slash paths', () => {
+    expect(validateGameExePath('game.exe')).toEqual({ ok: false, reason: 'not-absolute' });
+    expect(validateGameExePath('\\Games\\game.exe')).toEqual({ ok: false, reason: 'not-absolute' });
+    expect(validateGameExePath('C:game.exe')).toEqual({ ok: false, reason: 'not-absolute' });
+    expect(validateGameExePath('C:/Games/game.exe')).toEqual({ ok: false, reason: 'bad-chars' });
+  });
+
+  it('rejects traversal and empty segments', () => {
+    expect(validateGameExePath('C:\\Games\\..\\Windows\\System32\\cmd.exe')).toEqual({ ok: false, reason: 'traversal' });
+    expect(validateGameExePath('C:\\Games\\.\\g.exe')).toEqual({ ok: false, reason: 'traversal' });
+    expect(validateGameExePath('C:\\Games\\\\g.exe')).toEqual({ ok: false, reason: 'traversal' });
+    expect(validateGameExePath('C:\\')).toEqual({ ok: false, reason: 'traversal' });
+  });
+
+  it('rejects trailing-dot / trailing-space segments (Win32 canonicalisation drift)', () => {
+    expect(validateGameExePath('C:\\Games \\g.exe')).toEqual({ ok: false, reason: 'bad-chars' });
+    expect(validateGameExePath('C:\\Games.\\g.exe')).toEqual({ ok: false, reason: 'bad-chars' });
+  });
+
+  it('rejects anything that is not a .exe leaf', () => {
+    expect(validateGameExePath('C:\\Games\\game.bat')).toEqual({ ok: false, reason: 'not-exe' });
+    expect(validateGameExePath('C:\\Games\\game.exe.txt')).toEqual({ ok: false, reason: 'not-exe' });
+    expect(validateGameExePath('C:\\Games\\game')).toEqual({ ok: false, reason: 'not-exe' });
+    expect(validateGameExePath('C:\\Games\\.exe')).toEqual({ ok: false, reason: 'not-exe' });
+    expect(validateGameExePath('C:\\Games\\dir.exe\\')).toEqual({ ok: false, reason: 'traversal' });
+  });
+});
+
+describe('sanitizeRuleToken / appRuleDisplayName (teardown-sweep compatibility)', () => {
+  it('keeps the full adapter name as the prefix so BOTH sweep globs match', () => {
+    const adapter = 'Havvn LAN-alice.deadbeefdeadbeef';
+    const name = appRuleDisplayName(adapter, 'C:\\Games\\Minecraft\\launcher.exe');
+    expect(name).toBe(`${adapter} App launcher.exe`);
+    // revertNetConfig matches '<adapterName>*'; orphanSweep matches 'Havvn LAN-*'.
+    expect(name.startsWith(adapter)).toBe(true);
+    expect(name.startsWith('Havvn LAN-')).toBe(true);
+  });
+
+  it('strips PowerShell wildcard metacharacters from the exe basename', () => {
+    const name = appRuleDisplayName('Havvn LAN-x', 'C:\\g\\we[i]rd.exe');
+    expect(name).toBe('Havvn LAN-x App we_i_rd.exe');
+    expect(/[[\]*?']/.test(name)).toBe(false);
+  });
+
+  it('caps the token and never yields an empty one', () => {
+    expect(sanitizeRuleToken('x'.repeat(500)).length).toBe(MAX_RULE_TOKEN);
+    expect(sanitizeRuleToken('')).toBe('app');
+    expect(sanitizeRuleToken('   ')).toBe('app');
+    expect(sanitizeRuleToken('!!!')).toBe('___');
+  });
+
+  it('takes the basename regardless of separator style', () => {
+    expect(appRuleDisplayName('A', 'C:\\a\\b\\c.exe')).toBe('A App c.exe');
+    expect(appRuleDisplayName('A', 'c.exe')).toBe('A App c.exe');
   });
 });
 

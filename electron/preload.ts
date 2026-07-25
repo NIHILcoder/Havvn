@@ -27,6 +27,7 @@ import {
   VoiceSettings,
   VoiceDeviceInfo,
   ScreenSourceInfo,
+  LanDiagReport,
 } from '../shared/types';
 
 const api: IpcApi = {
@@ -698,6 +699,9 @@ const api: IpcApi = {
       invite: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanInvite', roomId, memberId),
       accept: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:lanAccept', roomId),
       evict: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanEvict', roomId, memberId),
+      diagnose: (roomId: string): Promise<LanDiagReport> => ipcRenderer.invoke('rooms:lanDiagnose', roomId),
+      allowApp: (roomId: string): Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }> =>
+        ipcRenderer.invoke('rooms:lanAllowApp', roomId),
     },
     createFolder: (roomId: string, name: string, icon: string, color: string, parentId?: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color, parentId),

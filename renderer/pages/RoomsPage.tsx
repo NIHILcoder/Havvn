@@ -12,7 +12,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { createPortal } from 'react-dom';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
-import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, RoomChatMessage } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, RoomChatMessage, LanDiagReport } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
@@ -20,6 +20,7 @@ import { usePopout } from '../utils/popout';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
+import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
@@ -34,6 +35,33 @@ const isPlayable = (name: string): boolean => classifyMediaKind(name) !== 'other
 // Rooms file-list kind: images are a display category (thumbnail/lightbox) layered
 // over the streaming-only classifyMediaKind, which never returns 'image'.
 const fileTypeOf = (name: string): 'video' | 'audio' | 'image' | 'other' => isImage(name) ? 'image' : classifyMediaKind(name);
+
+/**
+ * Adapt the pure LAN evaluator's report to the shape the diagnostics modal reads.
+ * The evaluator emits stable ids and language-neutral details and never formats
+ * prose, so the only work here is naming the i18n keys: `rooms.lan.diag.<check>`
+ * for every row, plus the single most-likely `cause` attached as a fix hint to the
+ * first row that is not 'ok' (the check list and the cause ladder are ordered the
+ * same way, most upstream first).
+ */
+function toLanDiagView(r: LanDiagReport): LanDiagReportView {
+  let hinted = false;
+  return {
+    verdict: r.verdict,
+    generatedAt: Date.now(),
+    checks: (r.checks ?? []).map((c) => {
+      const wantsHint = !hinted && c.level !== 'ok' && !!r.cause;
+      if (wantsHint) hinted = true;
+      return {
+        id: c.check,
+        level: c.level,
+        key: `rooms.lan.diag.${c.check}`,
+        ...(c.detail ? { detail: c.detail } : {}),
+        ...(wantsHint ? { hintKey: `rooms.lan.diag.cause.${r.cause}` } : {}),
+      };
+    }),
+  };
+}
 
 /** The compact per-file reaction set (mirrors the engine's allow-list). */
 const FILE_REACT_EMOJIS = ['🔥', '👍', '❤️', '😂'] as const;
@@ -1481,6 +1509,8 @@ const RoomPeopleRail: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
         onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
         onInvite={async (ids) => { await Promise.all(ids.map((id) => window.api.rooms.lan.invite(room.roomId, id))); }}
         onEvict={async (id) => { await window.api.rooms.lan.evict(room.roomId, id); }}
+        onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
+        onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
       />
       <div className="room-rail-people">
         <div className="room-rail-people-head">

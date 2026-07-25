@@ -140,6 +140,76 @@
 /* the bare "+ invite" glyph button is content-sized, not stretched */
 .room-lan-ctl .room-lan-btn:not(.stop) { flex: 0 0 auto; padding: 0 8px; }
 
+/* ── Self-service tools row (diagnostics + firewall troubleshooter) ──
+   Quiet ghost affordances: they must be findable when something is wrong but
+   must not compete with Start/Stop. Wraps in a narrow rail (@container). */
+.room-lan-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.room-lan-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.room-lan-tool:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-secondary); }
+.room-lan-tool:disabled { opacity: 0.6; cursor: default; }
+.room-lan-tool svg { flex: 0 0 auto; }
+
+/* ── Terminal failure notice: no direct path exists to these peers ──
+   Deliberately verbose. A red dot alone reads as "still trying"; this block is
+   the only place that says "this will not fix itself" and names the fix. */
+.room-lan-fail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-error) 40%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-error) 8%, transparent);
+}
+.room-lan-fail-head {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-error);
+}
+.room-lan-fail-head svg { flex: 0 0 auto; margin-top: 1px; }
+.room-lan-fail-body {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+.room-lan-link {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent-primary);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.room-lan-link:hover { text-decoration: underline; }
+
 /* ── Peer tiles ── */
 .room-lan-people {
   display: flex;
@@ -174,9 +244,15 @@
   background: var(--color-success);
   pointer-events: none;
 }
+.room-lan-quality.q-good { background: var(--color-success); }
 .room-lan-quality.q-fair { background: var(--color-warning); }
 .room-lan-quality.q-poor { background: var(--color-error); }
 .room-lan-quality.reconnecting { animation: room-lan-pulse 1s ease-in-out infinite; }
+/* A latched terminal failure is NOT "still trying" — kill the pulse and dim the
+   tile so the eye lands on the explanation block instead of the avatar. */
+.room-lan-person.failed .room-lan-quality { animation: none; }
+.room-lan-person.failed .room-lan-pname,
+.room-lan-person.failed .room-lan-pip { opacity: 0.6; }
 @keyframes room-lan-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 /* Host-only evict badge, top-right of the avatar. */
 .room-lan-evict {
@@ -301,6 +377,112 @@
   color: var(--color-text-tertiary);
 }
 .lpp-notice svg { flex: 0 0 auto; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   LanDiagnosticsModal (portaled Modal) — the copy-paste-able check list.
+   ══════════════════════════════════════════════════════════════════════ */
+.lan-diag-body { padding-top: var(--space-2); }
+.lan-diag-desc {
+  margin: 0 0 var(--space-3);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.lan-diag-empty {
+  padding: var(--space-6) var(--space-2);
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+/* Summary banner — tinted by the worst check. */
+.lan-diag-verdict {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.lan-diag-verdict svg { flex: 0 0 auto; }
+.lan-diag-verdict.ok { color: var(--color-success); border-color: color-mix(in srgb, var(--color-success) 40%, transparent); }
+.lan-diag-verdict.warn { color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 40%, transparent); }
+.lan-diag-verdict.fail { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 40%, transparent); }
+
+.lan-diag-list { display: flex; flex-direction: column; }
+.lan-diag-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+  color: var(--color-text-tertiary);
+}
+.lan-diag-list .lan-diag-row:last-child { border-bottom: none; }
+.lan-diag-row svg { flex: 0 0 auto; margin-top: 1px; }
+.lan-diag-row.ok { color: var(--color-success); }
+.lan-diag-row.warn { color: var(--color-warning); }
+.lan-diag-row.fail { color: var(--color-error); }
+.lan-diag-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0; /* long adapter names / paths must wrap, never widen the card */
+}
+.lan-diag-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+}
+.lan-diag-detail {
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+}
+.lan-diag-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+}
+
+/* Selectable raw block — the escape hatch when the clipboard is blocked. */
+.lan-diag-raw { margin-top: var(--space-3); }
+.lan-diag-raw > summary {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+}
+.lan-diag-pre {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  max-height: 220px;
+  overflow: auto; /* the block scrolls itself — the modal body never goes sideways */
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.lan-diag-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  width: 100%;
+}
 
 /* LAN entry-point chip in the room detail badges (mirrors .room-people-chip so
    the badge row reads as one system). Shown only while a LAN session is active. */

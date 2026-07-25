@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { LanSession } from './room-lan';
 import { deriveVip } from '../../shared/lan-ip';
+import { LAN_QUALITY_POLL_MS } from '../../shared/lan-quality';
 
 // ── Minimal RTCPeerConnection / RTCDataChannel stubs (constructed inside LanPeer) ──
 class FakeDC {
@@ -25,6 +26,8 @@ class FakeDC {
 }
 class FakePC {
   static count = 0;
+  /** The most recently constructed PC — the leg a test wants to drive. */
+  static last: FakePC | null = null;
   connectionState = 'new';
   signalingState = 'stable';
   localDescription = { type: 'offer', sdp: 'x' };
@@ -32,15 +35,28 @@ class FakePC {
   onnegotiationneeded: (() => void) | null = null;
   onicecandidate: ((e: unknown) => void) | null = null;
   onconnectionstatechange: (() => void) | null = null;
-  constructor() { FakePC.count++; }
+  /** Rows getStats() should hand back; null makes it REJECT, which is what a
+   *  real closing PC does — sampleQuality has to swallow that to a no-reading. */
+  stats: unknown[] | null = [];
+  constructor() { FakePC.count++; FakePC.last = this; }
   createDataChannel(): FakeDC { return new FakeDC(); }
   async setLocalDescription(): Promise<void> { /* noop */ }
   async setRemoteDescription(): Promise<void> { this.remoteDescription = {}; }
   async addIceCandidate(): Promise<void> { /* noop */ }
+  /** RTCStatsReport is Map-like; forEach is the only API room-lan.ts uses. */
+  async getStats(): Promise<{ forEach: (cb: (r: unknown) => void) => void }> {
+    const rows = this.stats;
+    if (!rows) throw new Error('getStats on a closing PC');
+    return { forEach: (cb) => { rows.forEach((r) => cb(r)); } };
+  }
   close(): void { this.connectionState = 'closed'; }
+  // ── test drivers ──
+  setState(s: string): void { this.connectionState = s; this.onconnectionstatechange?.(); }
+  connect(): void { this.setState('connected'); }
+  fail(): void { this.setState('failed'); }
 }
 
-beforeEach(() => { FakePC.count = 0; vi.stubGlobal('RTCPeerConnection', FakePC as unknown); });
+beforeEach(() => { FakePC.count = 0; FakePC.last = null; vi.stubGlobal('RTCPeerConnection', FakePC as unknown); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
 interface AdapterCalls {
@@ -223,6 +239,226 @@ describe('LanSession — passive joiner bootstrap → explicit accept', () => {
     expect(st.hostId).toBe(HOST);   // discoverable
     expect(st.selfAdmitted).toBeFalsy(); // but B has no grant → Accept refused
     expect(FakePC.count).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2A — the getStats poll. No real RTCPeerConnection is ever constructed:
+// FakePC.stats is fed the row shapes a DATA-ONLY PC emits (transport +
+// candidate-pair + local/remote-candidate + data-channel; there is deliberately
+// no inbound-rtp, because a data channel has none). The mapping math itself is
+// unit-tested in shared/lan-quality.test.ts — what THIS file locks is the
+// wiring: poll → per-peer sample → participant fields, and the latched terminal
+// failure that the reap/rebuild loop would otherwise hide.
+// ─────────────────────────────────────────────────────────────────────────────
+function connectedStats(rttSec: number, over: Record<string, unknown> = {}): unknown[] {
+  return [
+    { type: 'transport', id: 'T', selectedCandidatePairId: 'P', dtlsState: 'connected', iceState: 'connected' },
+    {
+      type: 'candidate-pair', id: 'P', nominated: true, state: 'succeeded',
+      localCandidateId: 'LC', remoteCandidateId: 'RC',
+      currentRoundTripTime: rttSec, requestsSent: 4, consentRequestsSent: 2, responsesReceived: 6,
+      ...over,
+    },
+    { type: 'local-candidate', id: 'LC', candidateType: 'srflx' },
+    { type: 'remote-candidate', id: 'RC', candidateType: 'srflx' },
+    { type: 'data-channel', id: 'D', label: 'lan', state: 'open' },
+  ];
+}
+
+/** Both ends saw the internet, nothing ever paired — the symmetric-NAT tail. */
+function gatheringOnlyStats(): unknown[] {
+  return [
+    { type: 'local-candidate', id: 'l1', candidateType: 'host' },
+    { type: 'local-candidate', id: 'l2', candidateType: 'srflx' },
+    { type: 'remote-candidate', id: 'r1', candidateType: 'srflx' },
+    { type: 'candidate-pair', id: 'p', state: 'in-progress' },
+  ];
+}
+
+describe('LanSession — per-peer link quality from getStats (Phase 2A A)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('maps one poll onto the participant: quality, RTT, loss, candidate + path', async () => {
+    vi.useFakeTimers(); // arm BEFORE start() so the session's interval is faked
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = connectedStats(0.042);
+    pc.connect();
+
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.status).toBe('connected');
+    expect(p.quality).toBe('good');
+    expect(p.rttMs).toBe(42);          // 0.042s → ms
+    expect(p.lossPct).toBe(0);         // first sample has no delta to lose
+    expect(p.dropPct).toBe(0);
+    expect(p.candidate).toBe('srflx');
+    expect(p.remoteCandidate).toBe('srflx');
+    expect(p.path).toBe('nat');
+    expect(p.reconnecting).toBeUndefined();
+    s.stop();
+  });
+
+  it('downgrades the dot on a slow link (voice ladder, unchanged)', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = connectedStats(0.5); // 500ms > RTT_POOR_MS
+    pc.connect();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.quality).toBe('poor');
+    expect(p.rttMs).toBe(500);
+    s.stop();
+  });
+
+  it('a peer that has never connected carries NO quality key at all (no dot)', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    FakePC.last!.stats = connectedStats(0.01); // stats exist, but the link is not up
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.status).toBe('connecting');
+    expect(p.quality).toBeUndefined();
+    expect(p.rttMs).toBeUndefined();
+    s.stop();
+  });
+
+  it('a connected link with no measurable pair yet is NOT reported as good', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = gatheringOnlyStats(); // no selected pair → nothing measured
+    pc.connect();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    expect(s.buildState().participants.find((x) => x.memberId === A)!.quality).toBeUndefined();
+    s.stop();
+  });
+
+  it('a rejecting getStats (closing PC) is swallowed — no reading, no throw', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = null; // getStats rejects
+    pc.connect();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    expect(s.buildState().participants.find((x) => x.memberId === A)!.quality).toBeUndefined();
+    s.stop();
+  });
+
+  it('reads poor + reconnecting once a link that WAS connected drops', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = connectedStats(0.02);
+    pc.connect();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    pc.setState('disconnected');
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.status).toBe('reconnecting');
+    expect(p.quality).toBe('poor');
+    expect(p.reconnecting).toBe(true);
+    s.stop();
+  });
+
+  it('stop() clears the poll and every measurement', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = connectedStats(0.02);
+    pc.connect();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    expect(s.buildState().participants.find((x) => x.memberId === A)!.quality).toBe('good');
+    s.stop();
+    expect(vi.getTimerCount()).toBe(0); // a live interval would outlive the session
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.quality).toBeUndefined(); // measurements die with the peers
+    expect(p.status).toBe('connecting');
+  });
+});
+
+describe('LanSession — honest terminal failure (Phase 2A B)', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('latches the reason across the reap/rebuild churn and finally goes terminal', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true); // no TURN in iceServers
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = gatheringOnlyStats(); // srflx both ends, nothing ever succeeded
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5); // gather the facts
+
+    pc.fail();
+    let p = s.buildState().participants.find((x) => x.memberId === A)!;
+    // Rebuilt immediately (voice pattern) — but the WHY is latched, not lost.
+    expect(p.failReason).toBe('needs-turn');
+    expect(p.terminal).toBeFalsy();
+    expect(p.status).toBe('connecting');
+
+    // The rebuilt legs have no stats of their own; their factless 'unknown' must
+    // NOT overwrite the real explanation.
+    FakePC.last!.fail();
+    FakePC.last!.fail();
+    p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.status).toBe('failed');
+    expect(p.terminal).toBe(true);
+    expect(p.failReason).toBe('needs-turn');
+    expect(s.buildState().turnConfigured).toBe(false);
+    s.stop();
+  });
+
+  it('with TURN configured the same failure reads as symmetric-nat, not needs-turn', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    adapter.iceServers = [{ urls: 'turn:relay.example:3478' }] as RTCIceServer[];
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.stats = gatheringOnlyStats();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    pc.fail();
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.failReason).toBe('symmetric-nat');
+    expect(s.buildState().turnConfigured).toBe(true);
+    s.stop();
+  });
+
+  it('a successful connect retires the latched failure entirely', async () => {
+    vi.useFakeTimers();
+    const { adapter } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    FakePC.last!.stats = gatheringOnlyStats();
+    await vi.advanceTimersByTimeAsync(LAN_QUALITY_POLL_MS + 5);
+    FakePC.last!.fail();
+    expect(s.buildState().participants.find((x) => x.memberId === A)!.failReason).toBe('needs-turn');
+
+    const rebuilt = FakePC.last!;
+    rebuilt.stats = connectedStats(0.03);
+    rebuilt.connect();
+    const p = s.buildState().participants.find((x) => x.memberId === A)!;
+    expect(p.status).toBe('connected');
+    expect(p.failReason).toBeUndefined();
+    expect(p.terminal).toBeFalsy();
+    s.stop();
   });
 });
 
