@@ -19,6 +19,7 @@ import { loadRoomLayout, saveRoomLayout, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX 
 import { usePopout } from '../utils/popout';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
+import { RoomLanPanel } from './rooms/RoomLanPanel';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
@@ -174,7 +175,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   useEffect(() => {
     const off = window.api.onRoomUpdate((state) => {
       setRooms((prev) => prev.map((r) => r.roomId === state.roomId
-        ? { ...r, name: state.name, memberCount: state.members.length, onlineCount: state.members.filter((m) => m.online).length, fileCount: state.files.length }
+        ? { ...r, name: state.name, memberCount: state.members.length, onlineCount: state.members.filter((m) => m.online).length, fileCount: state.files.length, lan: state.lan?.active === true }
         : r));
       if (state.roomId === selectedRef.current) setRoom(state);
     });
@@ -1471,6 +1472,16 @@ const RoomPeopleRail: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
   return (
     <div className="room-col-rail">
       <RoomVoicePanel room={room} onWatchShare={onWatchShare} />
+      <RoomLanPanel
+        lan={room.lan}
+        members={room.members}
+        selfId={room.members.find((m) => m.isSelf)?.memberId}
+        onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
+        onStop={async () => { await window.api.rooms.lan.stop(room.roomId); }}
+        onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
+        onInvite={async (ids) => { await Promise.all(ids.map((id) => window.api.rooms.lan.invite(room.roomId, id))); }}
+        onEvict={async (id) => { await window.api.rooms.lan.evict(room.roomId, id); }}
+      />
       <div className="room-rail-people">
         <div className="room-rail-people-head">
           <span className="room-section-title">{t('rooms.people')}</span>
@@ -1830,6 +1841,16 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
               <span className="room-e2e-badge" title={t('rooms.e2eHint')}>
                 <Icon name="lock" size={12} /> {t('rooms.encrypted')}
               </span>
+            )}
+            {room.lan?.active && (
+              <button
+                type="button"
+                className="room-lan-chip"
+                onClick={() => setRailCollapsed(false)}
+                title={room.lan.selfVip || t('rooms.lan.active')}
+              >
+                <Icon name="network" size={12} /> {t('rooms.lan.chip')}
+              </button>
             )}
             <span
               className={`room-conn ${connState}`}

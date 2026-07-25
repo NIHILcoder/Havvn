@@ -7,6 +7,17 @@ import type { CompletionAction, CompletionPending, CompletionActionState } from 
 export type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
 import type { Theme } from './theme';
 export type { Theme, ThemeBase, ValidateResult } from './theme';
+// Virtual-LAN feature types live in their own dependency-free leaf module; re-export
+// the renderer-facing state shapes here so IPC surfaces keep one import hub.
+import type { RoomLanState } from './lan-types';
+export type {
+  RoomLanState,
+  RoomLanParticipant,
+  LanPeerStatus,
+  LanQuality,
+  LanSignalKind,
+} from './lan-types';
+export { MAX_LAN_PEERS } from './lan-types';
 
 export type DownloadStatus =
   | 'queued'
@@ -258,6 +269,7 @@ export interface RoomState {
   chatEdits?: Record<string, { text: string; at: number }>; // chat msgId → author's latest edit (LWW by at)
   memberProg?: Record<string, Record<string, number>>;   // memberId → fileId → coarse download % (0-100; a member's 'have' implies 100)
   voice: RoomVoiceState; // serverless mesh voice channel state (who's in the call, who's talking)
+  lan: RoomLanState; // serverless virtual-LAN session state (who's admitted, their vIPs) — mirrors `voice`
   /** Per-folder auto-fetch overrides (local pref): folderId → forced on/off;
    *  a folder with no entry inherits `autoFetch`. */
   folderFetch?: Record<string, boolean>;
@@ -347,6 +359,8 @@ export interface RoomSummary {
   /** Networking torn down by the VPN kill-switch (VPN dropped) — nothing is
    *  seeding or announcing until the VPN returns. */
   suspended?: boolean;
+  /** A virtual-LAN session is active in this room (rail-collapsed entry-point badge). */
+  lan?: boolean;
   /** Unread chat messages from others since the room was last viewed. */
   unread?: number;
   /** OS notifications silenced for this room (per-install preference). */
@@ -1211,6 +1225,19 @@ export interface IpcApi {
       watchStop: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
       signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown) => Promise<{ ok: boolean }>;
     };
+    // Serverless virtual-LAN (Hamachi-like) for games. Host starts a session and
+    // admits members (1 UAC per host start); state rides onRoomUpdate wholesale.
+    lan: {
+      /** Host starts a session and admits the picked members (1 UAC). */
+      start: (roomId: string, memberIds: string[]) => Promise<{ ok: boolean; sessionId?: string; warning?: string }>;
+      stop: (roomId: string) => Promise<{ ok: boolean }>;
+      /** Host admits one more member into an already-live session. */
+      invite: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+      /** A non-host who has been admitted joins the session's mesh. */
+      accept: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;
+      /** Host removes a member (host-signed lan-evict). */
+      evict: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+    };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;
   };
@@ -1230,6 +1257,9 @@ export interface IpcApi {
   onVoiceDevicesChanged: (callback: () => void) => () => void;
   /** A transient voice warning to surface (e.g. a mid-call mic fell back to default). */
   onVoiceWarning: (callback: (msg: string) => void) => () => void;
+  /** A transient LAN notice to toast (UAC cancelled, helper crashed, driver missing,
+   *  direct-connect failed). LAN state itself rides onRoomUpdate — no separate channel. */
+  onLanWarning: (callback: (msg: string) => void) => () => void;
   /** Screen-watch loopback signaling from the engine (offer/ice/end). The overlay
    *  answers via rooms.screen.signal; 'end' means the stream is gone — close. */
   onRoomScreenSignal: (callback: (msg: { roomId: string; memberId: string; kind: 'offer' | 'ice' | 'end'; data?: unknown }) => void) => () => void;

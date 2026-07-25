@@ -11,6 +11,7 @@
  */
 
 import type { VpnBindStatus } from './types';
+import { isLanSessionAddressStr, type ActiveLanSubnet } from './lan-ip';
 
 /**
  * Interface-name patterns that identify VPN adapters. Single source of truth —
@@ -49,12 +50,18 @@ type IfaceMap = Record<string, ReadonlyArray<{ family: string | number; address:
  * Pick the address transmission should bind to: the first non-internal IPv4 on
  * a VPN-pattern-matched interface. Null when no VPN adapter carries an IPv4 —
  * the caller then falls back to loopback (fail-closed), never to a real NIC.
+ *
+ * `excludeSubnets` (must-fix #8) are the ACTIVE LAN session /16s: an address
+ * inside one is OUR virtual adapter, never a VPN — skip it so a renamed-VPN-ish
+ * LAN adapter is not masked and our own 100.64 address is never picked as the
+ * bind target. Default [] preserves the pre-LAN behaviour exactly.
  */
-export function selectVpnIPv4(ifaces: IfaceMap): VpnIfaceAddr | null {
+export function selectVpnIPv4(ifaces: IfaceMap, excludeSubnets: readonly ActiveLanSubnet[] = []): VpnIfaceAddr | null {
   for (const [name, addrs] of Object.entries(ifaces)) {
     if (!addrs || !isVpnIfaceName(name)) continue;
     for (const a of addrs) {
       if ((a.family === 'IPv4' || a.family === 4) && !a.internal) {
+        if (excludeSubnets.length && isLanSessionAddressStr(a.address, excludeSubnets)) continue; // our own LAN /16
         return { iface: name, address: a.address };
       }
     }

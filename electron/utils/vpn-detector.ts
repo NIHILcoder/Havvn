@@ -14,6 +14,8 @@ import { promisify } from 'util';
 import https from 'https';
 import { logger } from './logger';
 import { VPN_IFACE_PATTERNS, selectVpnIPv4, VpnIfaceAddr } from '../../shared/vpn-bind';
+import { isLanSessionAddressStr } from '../../shared/lan-ip';
+import { lanSubnets } from '../lan/lan-net-registry';
 
 const execAsync = promisify(exec);
 
@@ -126,7 +128,12 @@ function checkVPNInterfaces(): {
     'OpenVPN': /^(tun|tap)\d+/i,
   };
 
-  for (const [name] of Object.entries(interfaces)) {
+  const lanRanges = lanSubnets.list();
+  for (const [name, addrs] of Object.entries(interfaces)) {
+    // Our own virtual-LAN adapter carries a 100.64 session address — exclude it BY
+    // RANGE (must-fix #8) so enabling LAN never reads as "VPN active" → suspend →
+    // mesh death. The name-only match below is the pre-existing structural gap.
+    if (lanRanges.length && Array.isArray(addrs) && addrs.some((a) => (a.family === 'IPv4' || (a.family as unknown as number) === 4) && isLanSessionAddressStr(a.address, lanRanges))) continue;
     for (const pattern of vpnPatterns) {
       if (pattern.test(name)) {
         vpnInterfaces.push(name);
@@ -194,8 +201,10 @@ function getLocalIP(): string | undefined {
     }
 
     for (const addr of addrs) {
-      // IPv4, not internal
-      if (addr.family === 'IPv4' && !addr.internal) {
+      // IPv4, not internal, and not our own virtual-LAN /16 (must-fix #8 — the
+      // 100.64 vIP is not a real local IP; cosmetic, keeps getLocalIP honest).
+      if ((addr.family === 'IPv4' || (addr.family as unknown as number) === 4) && !addr.internal) {
+        if (isLanSessionAddressStr(addr.address, lanSubnets.list())) continue;
         return addr.address;
       }
     }
@@ -209,7 +218,8 @@ function getLocalIP(): string | undefined {
  * needs. Distinct from getLocalIP(), which deliberately SKIPS VPN interfaces.
  */
 export function getVpnInterfaceIPv4(): VpnIfaceAddr | null {
-  return selectVpnIPv4(os.networkInterfaces());
+  // Exclude active LAN session /16s so the engine bind never targets a dead 100.64.
+  return selectVpnIPv4(os.networkInterfaces(), lanSubnets.list());
 }
 
 /**

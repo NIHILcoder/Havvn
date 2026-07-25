@@ -12,6 +12,7 @@
 
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { BrowserWindow, ipcMain, app, shell } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
@@ -23,6 +24,7 @@ import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torrent/subtitle-probe';
 import { generateRoomSecret } from './room-e2e';
 import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
+import { getLanManager } from '../lan/lan-manager';
 
 const log = logger.child('RoomManager');
 
@@ -74,6 +76,21 @@ export class RoomManager {
       this.reactFile(String(roomId || ''), String(fileId || ''), String(emoji || '')));
     ipcMain.handle('rooms:reactChat', async (_e, roomId: string, msgId: string, emoji: string) =>
       this.reactChat(String(roomId || ''), String(msgId || ''), String(emoji || '')));
+    // Wire the main-process LAN helper lifecycle to this manager. `isNetSuspended`
+    // is re-read AFTER the UAC await (plan §7); teardown is cooperative — main
+    // cannot force-kill the elevated helper (medium→high IL = Access Denied), it
+    // asks the engine to send the pipe `shutdown` verb.
+    getLanManager().configure({
+      isNetSuspended: () => this.networkSuspended,
+      requestEngineShutdown: () => {
+        const rid = getLanManager().activeRoomId();
+        if (rid) { try { void this.call('lanStop', { roomId: rid }, 5000).catch(() => { /* engine gone */ }); } catch { /* ignore */ } }
+      },
+      onWarning: (msg: string) => {
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:lanWarn', String(msg || ''));
+      },
+      log: (level: 'info' | 'warn' | 'error', msg: string, extra?: unknown) => { try { (log as any)[level]?.(msg, extra); } catch { /* ignore */ } },
+    });
   }
 
   setMainWindow(win: BrowserWindow): void { this.mainWindow = win; }
@@ -132,6 +149,13 @@ export class RoomManager {
     ipcMain.on('room-voice-warn', (_e, payload: { msg: string }) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:voiceWarn', String(payload?.msg || ''));
+      }
+    });
+    // Transient virtual-LAN warning from the engine (UAC cancelled, helper crashed,
+    // driver missing, direct-connect failed) — surfaced as a renderer toast.
+    ipcMain.on('room-lan-warn', (_e, payload: { msg: string }) => {
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+        this.mainWindow.webContents.send('rooms:lanWarn', String(payload?.msg || ''));
       }
     });
     // A file was deleted — persist the tombstone so it stays gone after restart,
@@ -365,6 +389,9 @@ export class RoomManager {
       this.failAll('Room networking stopped unexpectedly (the engine crashed).');
       this.ready = false;
       if (this.win === win) this.win = null;
+      // The engine window owned the LAN session's pipe; with it gone the helper is
+      // orphaned. Tear it down (its own PID-watchdog is the backstop).
+      getLanManager().onEngineGone();
       // The cached RoomStates are now stale (their engine is gone); leaving them
       // would keep decideGlobalPtt seeing voice.inVoice=true and the OS key hook
       // installed with no session behind it. Clear + re-evaluate so the hook stops.
@@ -629,6 +656,7 @@ export class RoomManager {
         createdAt: r.createdAt,
         e2e: r.e2e ?? false,
         suspended: this.networkSuspended,
+        lan: s?.lan?.active === true, // rail-collapsed LAN badge (built per-field)
         unread,
         notifyMuted: r.notifyMuted === true,
       };
@@ -902,6 +930,77 @@ export class RoomManager {
     return this.call<{ ok: boolean }>('screenSignal', { roomId, memberId, kind, data });
   }
 
+  // ── Virtual-LAN (Havvn LAN) ─────────────────────────────────────────────────
+  /** Host: start a virtual-LAN session and admit the picked members (1 UAC).
+   *  Gates the VPN kill-switch, reactivates a dormant room, acquires the single
+   *  global elevated helper via LanManager, then hands the pipe scope to the engine
+   *  window which pins genesis + admits the picks. If the engine push fails after
+   *  the helper spawned, the helper is torn down so nothing leaks. */
+  async lanStart(roomId: string, memberIds: string[]): Promise<{ ok: boolean; sessionId?: string; warning?: string }> {
+    this.assertNotSuspended(); // a LAN adapter exposes the real interface just like seeding
+    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+    const selfMemberId = db.getRoomProfile().memberId;
+    // Self-describing session id (must-fix #7 hardening): `${host}.${16hexRandom}`,
+    // so the pinned host is structurally derivable AND first-writer-wins per id.
+    const sessionId = `${selfMemberId}.${crypto.randomBytes(8).toString('hex')}`;
+    const handle = await getLanManager().start({ roomId, sessionId, hostId: selfMemberId, selfMemberId });
+    try {
+      await this.call('lanStart', {
+        roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
+        subnet: handle.subnet, admit: Array.isArray(memberIds) ? memberIds.map(String) : [], isHost: true,
+      }, 30000);
+    } catch (e) {
+      try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
+      throw e;
+    }
+    return { ok: true, sessionId: handle.sessionId };
+  }
+
+  /** Stop the LAN session: cooperative engine teardown (reverts the adapter via the
+   *  pipe shutdown verb) then release the main-side helper handle. */
+  async lanStop(roomId: string): Promise<{ ok: boolean }> {
+    try { await this.call('lanStop', { roomId }, 8000); } catch { /* engine may be down */ }
+    const sid = getLanManager().activeSessionId();
+    if (sid) { try { await getLanManager().stop(sid); } catch { /* ignore */ } }
+    return { ok: true };
+  }
+
+  /** Host admits one more member into an already-live session. */
+  lanInvite(roomId: string, memberId: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'invite', memberId });
+  }
+
+  /** Host removes a member (host-signed lan-evict). */
+  lanEvict(roomId: string, memberId: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'evict', memberId });
+  }
+
+  /** Joiner: acquire our own elevated helper leg for the session the host
+   *  advertised (its scope comes from the cached RoomState.lan), wire the engine,
+   *  then accept. Tears the helper down if the engine push fails. */
+  async lanAccept(roomId: string): Promise<{ ok: boolean; warning?: string }> {
+    this.assertNotSuspended();
+    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+    const lan = this.cache.get(roomId)?.lan;
+    if (!lan?.sessionId || !lan.hostId) throw new Error('No LAN session to join yet.');
+    if (!lan.selfAdmitted) throw new Error('The host has not invited you to this LAN session yet.');
+    const selfMemberId = db.getRoomProfile().memberId;
+    const handle = await getLanManager().start({ roomId, sessionId: lan.sessionId, hostId: lan.hostId, selfMemberId });
+    try {
+      await this.call('lanStart', {
+        roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
+        subnet: handle.subnet, admit: [], isHost: false,
+      }, 30000);
+      await this.call('lanSignal', { roomId, kind: 'accept' }, 8000);
+    } catch (e) {
+      try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
+      throw e;
+    }
+    return { ok: true };
+  }
+
   /** macOS gates screen recording at TCC and it cannot be prompted from code —
    *  surface a clear pointer at System Settings instead of a silent black frame.
    *  No-op elsewhere (Windows needs nothing). */
@@ -1123,6 +1222,9 @@ export class RoomManager {
     if (this.networkSuspended) return;
     this.networkSuspended = true;
     log.warn('VPN dropped — suspending all room networking');
+    // Tear the LAN session down too (the adapter holds a real interface). resume
+    // does NOT auto-restart it — LAN membership is explicit (plan §7).
+    getLanManager().onVpnSuspend();
     // Only if the engine window already exists — never spawn it merely to
     // suspend (nothing is seeding if it was never started). ensureWindow (inside
     // call) waits for readiness, so a drop during engine startup still tears down
@@ -1162,6 +1264,7 @@ export class RoomManager {
 
   destroy(): void {
     this.failAll('Shutting down');
+    void getLanManager().shutdown().catch(() => { /* best-effort teardown */ }); // revert any LAN adapter/firewall/route
     if (this.win && !this.win.isDestroyed()) { try { this.win.destroy(); } catch { /* ignore */ } }
     this.win = null; this.ready = false;
     log.info('RoomManager destroyed');

@@ -1,6 +1,6 @@
 // MUST be first: sets an isolated userData dir for `TH_INSTANCE` test copies
 // before electron-store / the logger read the path at module load.
-import { isSecondaryInstance } from './app-instance';
+import { isSecondaryInstance, isLanHelper } from './app-instance';
 import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog } from 'electron';
 import path from 'path';
 import dotenv from 'dotenv';
@@ -127,11 +127,13 @@ ipcMain.handle('win:isMaximized', () => !!(mainWindow && !mainWindow.isDestroyed
 // === Single Instance Lock ===
 // Isolated test copies (TH_INSTANCE) skip the lock so they run alongside the
 // primary instead of just focusing its window — see app-instance.ts.
-const gotTheLock = isSecondaryInstance ? true : app.requestSingleInstanceLock();
+// The elevated LAN helper also skips the lock (it is a separate short-lived
+// process that must run alongside the primary, never focus its window).
+const gotTheLock = (isSecondaryInstance || isLanHelper) ? true : app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
   app.quit();
-} else if (!isSecondaryInstance) {
+} else if (!isSecondaryInstance && !isLanHelper) {
   app.on('second-instance', (_event, commandLine) => {
     // Someone tried to run a second instance — bring the existing window back
     // (this is a primary reopen path when the app is hidden in the tray).
@@ -162,15 +164,17 @@ app.on('open-url', (event, url) => {
 // === Register magnet: and havvn: protocol handlers ===
 // In dev (process.defaultApp) the exe is electron itself, so the app path must
 // ride along as an explicit argv or the OS would relaunch bare electron.
-if (process.defaultApp) {
-  if (process.argv.length >= 2) {
-    const devArgs = [path.resolve(process.argv[1])];
-    app.setAsDefaultProtocolClient('magnet', process.execPath, devArgs);
-    app.setAsDefaultProtocolClient('havvn', process.execPath, devArgs);
+if (!isLanHelper) {
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      const devArgs = [path.resolve(process.argv[1])];
+      app.setAsDefaultProtocolClient('magnet', process.execPath, devArgs);
+      app.setAsDefaultProtocolClient('havvn', process.execPath, devArgs);
+    }
+  } else {
+    app.setAsDefaultProtocolClient('magnet');
+    app.setAsDefaultProtocolClient('havvn');
   }
-} else {
-  app.setAsDefaultProtocolClient('magnet');
-  app.setAsDefaultProtocolClient('havvn');
 }
 
 // Shows a one-time hint when the app first hides into the tray, so users
@@ -1076,9 +1080,19 @@ async function initializeApp(): Promise<void> {
       logger.error('App', 'Failed to check VPN status', { error });
     }
   }, 2000); // Delay to let UI load first
+
+  // Detect (non-elevated) any orphaned 'Havvn LAN-*' adapters/firewall rules left
+  // by a crash of BOTH processes — removal needs admin, so this only surfaces them.
+  // Fire-and-forget so a slow WMI scan never blocks startup.
+  import('./lan/lan-manager').then((m) => m.startupOrphanSweep()).catch(() => { /* best-effort */ });
 }
 
-app.whenReady().then(initializeApp);
+// The elevated relaunch runs ONLY the LAN helper — never the full app (no window,
+// tray, torrent engine, etc.). It reads its handshake from the argv path, sets up
+// the Wintun adapter under one UAC, and shovels ring↔pipe until main dies.
+app.whenReady().then(isLanHelper
+  ? () => import('./lan/helper-main').then((m) => m.runLanHelper()).catch((e) => { console.error('[lan-helper] fatal:', e); app.exit(1); })
+  : initializeApp);
 
 app.on('window-all-closed', async () => {
   // On macOS, keep app running until explicitly quit
@@ -1127,6 +1141,13 @@ async function cleanup(): Promise<void> {
     const { shutdownGlobalPtt } = await import('./utils/global-ptt');
     shutdownGlobalPtt();
   } catch { /* never loaded — nothing to stop */ }
+
+  // Revert any active virtual-LAN session (adapter/firewall/routes) cooperatively
+  // within the quit budget — the helper self-reverts on its PID-watchdog too.
+  try {
+    const { getLanManager } = await import('./lan/lan-manager');
+    await getLanManager().shutdown();
+  } catch { /* never started — nothing to revert */ }
 
   // Check if clearDataOnExit is enabled
   try {

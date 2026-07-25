@@ -1,0 +1,322 @@
+/*
+ * RoomLanPanel + LanPeerPicker styling.
+ *
+ * Lifted from the voice rail (.room-voice-*) and the screenshare picker (.ssp-*)
+ * so the LAN widget reads as the same HUD. Theme tokens ONLY — no hardcoded
+ * radius; --radius-full is reserved for the round status dots. @container-aware:
+ * the tile grids wrap and the panel never forces horizontal overflow.
+ */
+
+.room-lan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-border-subtle); /* hairline splits LAN from voice within the framed rail */
+  background: transparent;
+}
+
+/* ── Header: title + BETA pill left, ghost gear right ── */
+.room-lan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 24px;
+}
+.room-lan-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-tertiary);
+}
+.room-lan-beta {
+  margin-left: 4px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.room-lan-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.room-lan-gear:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+/* ── Notice line (unavailable / busy elsewhere / suspended) ── */
+.room-lan-notice {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+  padding: 2px 0;
+}
+
+/* ── Self readout: your virtual IP + copy ── */
+.room-lan-self {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.room-lan-self-label {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+}
+.room-lan-ip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-lan-ip:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-border-default); background: var(--color-bg-hover); }
+.room-lan-ip:disabled { opacity: 0.6; cursor: default; }
+.room-lan-ip-text {
+  font-family: var(--font-family-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Start (full-width) + in-session control strip ── */
+.room-lan-join {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--transition-fast);
+}
+.room-lan-join:hover:not(:disabled) { filter: brightness(1.08); }
+.room-lan-join:disabled { opacity: 0.6; cursor: default; }
+
+.room-lan-ctl { display: flex; align-items: center; gap: 4px; }
+.room-lan-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-lan-btn:hover:not(:disabled) { color: var(--color-text-primary); border-color: var(--color-border-default); }
+.room-lan-btn.stop { color: var(--color-error); border-color: color-mix(in srgb, var(--color-error) 40%, transparent); }
+.room-lan-btn.stop:hover:not(:disabled) { background: var(--color-error); color: #fff; }
+.room-lan-btn:disabled { opacity: 0.6; cursor: default; }
+/* the bare "+ invite" glyph button is content-sized, not stretched */
+.room-lan-ctl .room-lan-btn:not(.stop) { flex: 0 0 auto; padding: 0 8px; }
+
+/* ── Peer tiles ── */
+.room-lan-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding-top: 2px;
+}
+.room-lan-person {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 56px;
+  text-align: center;
+}
+.room-lan-ring {
+  position: relative; /* anchors the status dot + evict badge to the avatar */
+  display: inline-flex;
+  border-radius: var(--radius-md); /* squared HUD */
+  padding: 2px;
+}
+/* OUR connection state to this peer — green connected, amber connecting,
+   pulsing red while reconnecting, solid red on terminal failure. */
+.room-lan-quality {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-bg-secondary);
+  background: var(--color-success);
+  pointer-events: none;
+}
+.room-lan-quality.q-fair { background: var(--color-warning); }
+.room-lan-quality.q-poor { background: var(--color-error); }
+.room-lan-quality.reconnecting { animation: room-lan-pulse 1s ease-in-out infinite; }
+@keyframes room-lan-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+/* Host-only evict badge, top-right of the avatar. */
+.room-lan-evict {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--color-bg-secondary);
+  border-radius: var(--radius-full);
+  background: var(--color-error);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+.room-lan-person:hover .room-lan-evict { opacity: 1; }
+.room-lan-evict:disabled { opacity: 0.5; cursor: default; }
+.room-lan-pname {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-lan-pip {
+  max-width: 100%;
+  padding: 1px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.room-lan-pip:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-secondary); }
+.room-lan-pip:disabled { cursor: default; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   LanPeerPicker (portaled Modal) — mirrors the screenshare source picker.
+   ══════════════════════════════════════════════════════════════════════ */
+.lpp-body { padding-top: var(--space-2); }
+.lpp-desc {
+  margin: 0 0 var(--space-3);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
+.lpp-empty {
+  padding: var(--space-6) var(--space-2);
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+.lpp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-3);
+}
+.lpp-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.lpp-tile:hover:not(:disabled) { border-color: var(--color-border-strong); background: var(--color-bg-hover); }
+.lpp-tile.selected { border-color: var(--color-accent-primary); background: var(--color-accent-bg); }
+.lpp-tile:disabled { opacity: 0.45; cursor: default; }
+.lpp-avatar { position: relative; display: inline-flex; }
+.lpp-check {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--color-bg-secondary);
+  border-radius: var(--radius-full);
+  background: var(--color-accent-primary);
+  color: #fff;
+}
+.lpp-name {
+  max-width: 100%;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lpp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+}
+.lpp-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+}
+.lpp-notice svg { flex: 0 0 auto; }
+
+/* LAN entry-point chip in the room detail badges (mirrors .room-people-chip so
+   the badge row reads as one system). Shown only while a LAN session is active. */
+.room-lan-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-accent-primary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-accent-primary);
+  border-radius: var(--radius-sm);
+  clip-path: var(--clip-cut-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.room-lan-chip:hover { color: var(--color-text-primary); border-color: var(--color-border-hover); }

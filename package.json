@@ -18,7 +18,9 @@
     "lint": "eslint \"electron/**/*.ts\" \"renderer/**/*.{ts,tsx}\" \"shared/**/*.ts\"",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder --win",
-    "spike:engine": "npm run build:electron && node dist/electron/electron/torrent/native/spike-harness.js"
+    "spike:engine": "npm run build:electron && node dist/electron/electron/torrent/native/spike-harness.js",
+    "spike:lan": "npm run build:electron && node dist/electron/electron/lan/spike-harness.js",
+    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",
@@ -35,6 +37,7 @@
     "ffmpeg-static": "^5.3.0",
     "hls.js": "^1.5.13",
     "ip3country": "^5.0.0",
+    "koffi": "^2.12.0",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -101,7 +104,8 @@
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
       "**/node_modules/utp-native/**",
-      "**/node_modules/uiohook-napi/**"
+      "**/node_modules/uiohook-napi/**",
+      "**/node_modules/koffi/**"
     ],
     "fileAssociations": [
       {
@@ -159,6 +163,10 @@
       {
         "from": "vendor/transmission/win32-x64",
         "to": "engine"
+      },
+      {
+        "from": "vendor/wintun/win32-x64",
+        "to": "wintun"
       }
     ],
     "nsis": {

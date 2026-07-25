@@ -690,6 +690,15 @@ const api: IpcApi = {
       signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown): Promise<{ ok: boolean }> =>
         ipcRenderer.invoke('rooms:screenSignal', roomId, memberId, kind, data),
     },
+    // Serverless virtual-LAN (Havvn LAN) for games.
+    lan: {
+      start: (roomId: string, memberIds: string[]): Promise<{ ok: boolean; sessionId?: string; warning?: string }> =>
+        ipcRenderer.invoke('rooms:lanStart', roomId, memberIds),
+      stop: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanStop', roomId),
+      invite: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanInvite', roomId, memberId),
+      accept: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:lanAccept', roomId),
+      evict: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanEvict', roomId, memberId),
+    },
     createFolder: (roomId: string, name: string, icon: string, color: string, parentId?: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color, parentId),
     updateFolder: (roomId: string, folderId: string, patch: { name?: string; icon?: string; color?: string; parentId?: string | null }): Promise<RoomState> =>
@@ -780,6 +789,14 @@ const api: IpcApi = {
     const handler = (_event: IpcRendererEvent, msg: string) => callback(msg);
     ipcRenderer.on('rooms:voiceWarn', handler);
     return () => { ipcRenderer.removeListener('rooms:voiceWarn', handler); };
+  },
+
+  // Transient LAN warning (UAC cancelled, helper crashed, driver missing, direct
+  // connection failed). LAN state itself rides onRoomUpdate — no separate channel.
+  onLanWarning: (callback: (msg: string) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, msg: string) => callback(msg);
+    ipcRenderer.on('rooms:lanWarn', handler);
+    return () => { ipcRenderer.removeListener('rooms:lanWarn', handler); };
   },
 
   // Screen-watch loopback signaling from the engine forwarder (offer/ice/end).

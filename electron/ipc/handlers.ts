@@ -635,6 +635,23 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       roomManager.screenSignal(roomId, String(memberId || ''), String(kind || ''), data)
   ));
 
+  // ── Virtual-LAN (Havvn LAN) ─────────────────────────────────────────────────
+  ipcMain.handle('rooms:lanStart', wrapHandler('rooms:lanStart',
+    async (_event, roomId: string, memberIds: string[]) => roomManager.lanStart(roomId, Array.isArray(memberIds) ? memberIds.map(String) : [])
+  ));
+  ipcMain.handle('rooms:lanStop', wrapHandler('rooms:lanStop',
+    async (_event, roomId: string) => roomManager.lanStop(roomId)
+  ));
+  ipcMain.handle('rooms:lanInvite', wrapHandler('rooms:lanInvite',
+    async (_event, roomId: string, memberId: string) => roomManager.lanInvite(roomId, String(memberId || ''))
+  ));
+  ipcMain.handle('rooms:lanAccept', wrapHandler('rooms:lanAccept',
+    async (_event, roomId: string) => roomManager.lanAccept(roomId)
+  ));
+  ipcMain.handle('rooms:lanEvict', wrapHandler('rooms:lanEvict',
+    async (_event, roomId: string, memberId: string) => roomManager.lanEvict(roomId, String(memberId || ''))
+  ));
+
   ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',
     async (_event, roomId: string | null) => roomManager.setActiveRoom(roomId ?? null)
   ));

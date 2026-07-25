@@ -31,6 +31,16 @@ export const INSTANCE_ID = (process.env.TH_INSTANCE || '').trim();
 export const isSecondaryInstance = INSTANCE_ID.length > 0;
 
 /**
+ * True when this process was relaunched as the elevated Virtual-LAN helper
+ * (`Havvn.exe --lan-helper`). Must be read BEFORE any userData side-effect below:
+ * the helper runs under the ADMIN token (over-the-shoulder UAC = a DIFFERENT SID),
+ * so it must NOT redirect userData or migrate the profile — it reads its handshake
+ * from the ABSOLUTE path passed via argv (plan §0.1 #3). It also bypasses the
+ * single-instance lock in main.ts (else it self-quits when the primary holds it).
+ */
+export const isLanHelper = process.argv.includes('--lan-helper');
+
+/**
  * Marker written ONLY after a fully successful migration. It — not the presence
  * of config.json — is the "already migrated" anchor: config.json cannot serve
  * that role because electron-store (loaded moments later in store.ts) writes it
@@ -44,7 +54,11 @@ export const isSecondaryInstance = INSTANCE_ID.length > 0;
  */
 const MIGRATION_SENTINEL = '.migrated-from-torrenthunt';
 
-if (isSecondaryInstance) {
+if (isLanHelper) {
+  // The elevated helper reads its handshake from the absolute argv path — it needs
+  // no electron-store, and redirecting userData to the admin profile would be wrong
+  // (and cross-SID pointless). Leave userData untouched and skip the migration.
+} else if (isSecondaryInstance) {
   // Derive the isolated profile dir from the default one, e.g.
   //   …/havvn  ->  …/havvn-peer2
   const base = app.getPath('userData');

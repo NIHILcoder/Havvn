@@ -1,0 +1,329 @@
+/**
+ * Pure state machine for a Havvn virtual-LAN session — the "brain" the RTC
+ * wiring (electron/sharing/room-lan.ts) drives, and the ONLY place the
+ * host-gated admission decision lives. Dependency-free (no electron, no browser
+ * globals, no node:crypto) so it imports unchanged in the engine window, the
+ * main process, AND node vitest — same contract as lan-ip.ts / lan-packet.ts /
+ * lan-frame.ts.
+ *
+ * WHAT IT OWNS (plan §0.1, mesh contract):
+ *   • genesis pinning — first-writer-wins per sessionId, the pinned hostId is the
+ *     trust root every lan-admit / lan-evict verifies against (must-fix #7).
+ *   • admittedSet — populated ONLY by a host-signed lan-admit whose `by` equals
+ *     the pinned hostId (must-fix #1/#7). Roster membership is necessary but NOT
+ *     sufficient: canAdmitPeer() is the gate ensurePeer consults, and it is FALSE
+ *     for any member the host has not admitted.
+ *   • TERMINAL-EVICT — evictedSet is sticky and beats admittedSet, so admit and
+ *     evict keep SEPARATE per-member monotonic `at` floors (never a shared floor,
+ *     the documented voice HIGH) and a replayed old admit can never re-admit.
+ *   • the vIP claim table — every claim re-verified against deriveVip (must-fix
+ *     #6); only ADMITTED members feed resolveVipOwners into the routing table.
+ *   • per-type monotonic anti-replay floors (one map each, FIFO-capped 512).
+ *   • per-peer inbound token buckets (pure; wall-clock refill).
+ *
+ * SECURITY: a signature proves "a member SAID this", never entitlement. The gate
+ * is the host grant (admittedSet), and every vIP is a claim re-derived on
+ * receipt — divergence from voice, which is open-to-all by design.
+ */
+import { deriveVip, verifyVipClaim, resolveVipOwners, type VipClaim } from './lan-ip';
+
+/** Mesh cap: bounds fan-out AND how many peers a hostile keyholder can force us
+ *  to build. Mirrored in the renderer next to VOICE_MESH_LIMIT. Enforced against
+ *  live peers in LanSession.ensurePeer — the core exposes it, the wiring counts. */
+export const MAX_LAN_PEERS = 8;
+/** Per-peer ICE buffer (clone of the voice pendingIce cap). */
+export const MAX_PENDING_ICE = 64;
+/** FIFO cap per anti-replay floor map (clone of the voice discipline). */
+export const MAX_ANTIREPLAY = 512;
+/** SCTP no-fragment MTU (plan §0 dec.5 — >1192 fragments SCTP → doubled loss). */
+export const LAN_MTU = 1280;
+
+/** Per-peer inbound rate limit (plan §4). Pure token bucket; refilled by wall-clock. */
+export interface TokenBucketCfg {
+  pps: number;
+  bytesPerSec: number;
+  burstPackets: number;
+  burstBytes: number;
+}
+
+/** Beta defaults — generous enough for LAN games, tight enough to bound a flood. */
+export const DEFAULT_LAN_BUCKET: TokenBucketCfg = {
+  pps: 4000,
+  bytesPerSec: 4_000_000, // ~32 Mbps sustained
+  burstPackets: 800,
+  burstBytes: 800_000,
+};
+
+/** The host memberId a sessionId commits to. sessionId is `${hostId}.${random}`;
+ *  the prefix before the first '.' is the creator. Returns '' for a malformed id
+ *  with no '.', which can never equal a real 32-hex memberId → genesis refused. */
+export function sessionHostPrefix(sessionId: string): string {
+  const dot = sessionId.indexOf('.');
+  return dot > 0 ? sessionId.slice(0, dot) : '';
+}
+
+/** A presence + vIP claim from a member (already signature-verified in the engine). */
+export interface LanStateClaim {
+  memberId: string;
+  sessionId: string;
+  vip: number;
+  gen: number;
+  at: number;
+}
+
+/** Immutable snapshot the routing brain reads (all pure). */
+export interface LanCoreView {
+  hostId: string | null;
+  admitted: ReadonlySet<string>;
+  vipOwners: ReadonlyMap<number, string>;
+  selfVip: number;
+}
+
+interface Bucket {
+  tokens: number;
+  bytes: number;
+  last: number;
+}
+
+export class LanSessionCore {
+  private _hostId: string | null = null;
+  private _genesisAt = -1;
+
+  private readonly admitted = new Set<string>();
+  private readonly evicted = new Set<string>(); // sticky, terminal
+
+  // Separate per-member monotonic anti-replay floors — NEVER shared between types.
+  private readonly lastAdmitAt = new Map<string, number>();
+  private readonly lastEvictAt = new Map<string, number>();
+  private readonly lastStateAt = new Map<string, number>();
+
+  // Verified presence claims (memberId → latest). Non-admitted claims are kept
+  // (join-intent) but filtered OUT of the routing table until admitted.
+  private readonly claims = new Map<string, LanStateClaim>();
+  private vipOwners = new Map<number, string>();
+  private memberToVip = new Map<string, number>();
+
+  private selfGen = 0;
+  private readonly buckets = new Map<string, Bucket>();
+
+  constructor(
+    private readonly sessionId: string,
+    private readonly selfId: string,
+    private readonly now: () => number = Date.now,
+    private readonly bucketCfg: TokenBucketCfg = DEFAULT_LAN_BUCKET,
+  ) {}
+
+  // ── Genesis pinning (must-fix #7) — first-writer-wins per sessionId ─────────
+
+  /** Pin the host from a VERIFIED lan-genesis. Rejects (false) a genesis for a
+   *  different sessionId, one whose host is not the sessionId's own committed
+   *  prefix, or a SECOND genesis naming a DIFFERENT host. Idempotent for a
+   *  re-broadcast of the same host.
+   *
+   *  SECURITY (must-fix #7): sessionId is minted as `${hostId}.${random}`, so it
+   *  already commits to the creator's memberId. Binding `by` to that prefix means
+   *  ONLY the creator can ever pin genesis for its own sessionId — closing the
+   *  first-writer-wins host-spoof race (an attacker forging a genesis for the
+   *  victim's sessionId names a `by` that can never match the prefix). */
+  pinGenesis(hostId: string, sessionId: string, at: number): boolean {
+    if (sessionId !== this.sessionId) return false;
+    if (hostId !== sessionHostPrefix(sessionId)) return false; // must be the committed creator
+    if (this._hostId !== null) return this._hostId === hostId; // first-writer-wins
+    this._hostId = hostId;
+    this._genesisAt = at;
+    return true;
+  }
+
+  hostId(): string | null {
+    return this._hostId;
+  }
+
+  // ── Admission (must-fix #1/#2) — admittedSet ONLY from host-signed lan-admit ─
+
+  /** Apply a VERIFIED lan-admit. Enforces THIS session's id + host pinned +
+   *  by === hostId + a monotonic per-member `at` floor. TERMINAL-EVICT: an evicted
+   *  member can never be re-admitted in this session (returns false).
+   *
+   *  SECURITY (must-fix #1/#7): the sessionId gate is mandatory. A host-signed
+   *  admit from a PAST session (same host ⇒ same hostId, empty floors in a fresh
+   *  core) would otherwise replay in and admit a member the host did NOT admit
+   *  here — a cross-session domain confusion. Mirrors pinGenesis/applyState. */
+  applyAdmit(by: string, target: string, at: number, sessionId: string): boolean {
+    if (sessionId !== this.sessionId) return false;
+    if (this._hostId === null || by !== this._hostId) return false;
+    if (this.evicted.has(target)) return false; // terminal — sticky evict wins
+    const floor = this.lastAdmitAt.get(target);
+    if (floor !== undefined && at <= floor) return false; // replay
+    this.lastAdmitAt.set(target, at);
+    this.capMap(this.lastAdmitAt);
+    if (this.admitted.has(target)) return true; // floor advanced, no table change
+    this.admitted.add(target);
+    this.recomputeOwners(); // a stored claim from `target` may now route
+    return true;
+  }
+
+  /** Apply a VERIFIED lan-evict (this session's id + by === hostId). Sticky +
+   *  terminal: drops the member from admittedSet, releases their vIP claim, keeps
+   *  its OWN floor. The sessionId gate blocks a captured old evict from replaying
+   *  a permanent (terminal) ban into a fresh session (must-fix #1, DoS variant). */
+  applyEvict(by: string, target: string, at: number, sessionId: string): boolean {
+    if (sessionId !== this.sessionId) return false;
+    if (this._hostId === null || by !== this._hostId) return false;
+    const floor = this.lastEvictAt.get(target);
+    if (floor !== undefined && at <= floor) return false; // replay
+    this.lastEvictAt.set(target, at);
+    this.capMap(this.lastEvictAt);
+    this.evicted.add(target);
+    const wasAdmitted = this.admitted.delete(target);
+    const hadClaim = this.claims.delete(target);
+    if (wasAdmitted || hadClaim) this.recomputeOwners();
+    return true;
+  }
+
+  /** True iff the host has admitted this member and NOT evicted them. The
+   *  ensurePeer gate consults this — never roster membership. */
+  isAdmitted(memberId: string): boolean {
+    return this.admitted.has(memberId) && !this.evicted.has(memberId);
+  }
+
+  /** The decision predicate ensurePeer uses: a real, admitted, non-self peer we
+   *  may build a LanPeer for. (The MAX_LAN_PEERS live-connection cap is enforced
+   *  by ensurePeer against peers.size, not here.) */
+  canAdmitPeer(memberId: string): boolean {
+    return memberId !== this.selfId && this.isAdmitted(memberId);
+  }
+
+  admittedIds(): string[] {
+    return [...this.admitted].filter((m) => !this.evicted.has(m));
+  }
+
+  // ── vIP table (must-fix #6) — reuses lan-ip verifyVipClaim/resolveVipOwners ──
+
+  /** Apply a VERIFIED lan-state claim. Rejects a wrong-session claim, our own
+   *  echo, a FORGED vip (claimed !== deriveVip), or a replay (`at` <= floor). The
+   *  claim is stored on success; the routing table only ever includes ADMITTED
+   *  members, so a non-admitted claim is remembered (join-intent) yet never routes. */
+  applyState(c: LanStateClaim): boolean {
+    if (c.sessionId !== this.sessionId) return false;
+    if (c.memberId === this.selfId) return false; // ignore our own relayed presence
+    if (!verifyVipClaim(c.sessionId, c.memberId, c.gen, c.vip)) return false; // forged
+    const floor = this.lastStateAt.get(c.memberId);
+    if (floor !== undefined && c.at <= floor) return false; // replay
+    this.lastStateAt.set(c.memberId, c.at);
+    this.capMap(this.lastStateAt);
+    this.claims.set(c.memberId, { ...c, vip: c.vip >>> 0 });
+    this.capClaims(); // bound the join-intent store against synthetic-key floods
+    this.recomputeOwners();
+    return true;
+  }
+
+  /** Routing lookup: which member owns this vIP (converged table). */
+  vipToMember(vip: number): string | undefined {
+    return this.vipOwners.get(vip >>> 0);
+  }
+
+  /** The vIP a member currently owns in the converged table (for display). */
+  memberVip(memberId: string): number | undefined {
+    return this.memberToVip.get(memberId);
+  }
+
+  /** Our own vIP for the session (current gen). */
+  selfVip(): number {
+    return deriveVip(this.sessionId, this.selfId, this.selfGen);
+  }
+
+  /** If a lower-memberId peer legitimately owns our derived vIP, bump `gen` and
+   *  return the fresh {vip, gen} so the caller re-announces; else null. */
+  bumpGenOnCollision(): { vip: number; gen: number } | null {
+    const mine = deriveVip(this.sessionId, this.selfId, this.selfGen);
+    const owner = this.vipOwners.get(mine);
+    // owner is the min memberId among RECEIVED claimants of `mine` (our own claim
+    // is not in that set); if it outranks us, we lost the arbitration → bump.
+    if (owner !== undefined && owner !== this.selfId && owner < this.selfId) {
+      this.selfGen = (this.selfGen + 1) & 0xffff;
+      return { vip: deriveVip(this.sessionId, this.selfId, this.selfGen), gen: this.selfGen };
+    }
+    return null;
+  }
+
+  // ── Per-peer inbound rate limit (plan §4) — pure token bucket ───────────────
+
+  /** Consume one packet of `bytes` from the peer's bucket; false = over budget
+   *  (drop). Buckets refill by wall-clock and are capped at the configured burst. */
+  allowPacket(memberId: string, bytes: number): boolean {
+    const t = this.now();
+    let b = this.buckets.get(memberId);
+    if (!b) {
+      b = { tokens: this.bucketCfg.burstPackets, bytes: this.bucketCfg.burstBytes, last: t };
+      this.buckets.set(memberId, b);
+      this.capMap(this.buckets as unknown as Map<string, number>);
+    }
+    const elapsed = Math.max(0, t - b.last) / 1000;
+    b.last = t;
+    b.tokens = Math.min(this.bucketCfg.burstPackets, b.tokens + elapsed * this.bucketCfg.pps);
+    b.bytes = Math.min(this.bucketCfg.burstBytes, b.bytes + elapsed * this.bucketCfg.bytesPerSec);
+    if (b.tokens < 1 || b.bytes < bytes) return false;
+    b.tokens -= 1;
+    b.bytes -= bytes;
+    return true;
+  }
+
+  // ── Departure / teardown ────────────────────────────────────────────────────
+
+  /** A member left the ROOM (leave/kick). Release their vIP + admission and drop
+   *  their bucket, but KEEP the anti-replay floors so a captured old signed frame
+   *  can't resurrect them. Does NOT touch evictedSet (sticky). */
+  onMemberGone(memberId: string): void {
+    const wasAdmitted = this.admitted.delete(memberId);
+    const hadClaim = this.claims.delete(memberId);
+    this.buckets.delete(memberId);
+    if (wasAdmitted || hadClaim) this.recomputeOwners();
+  }
+
+  /** Immutable snapshot for the router (references typed Readonly — do not mutate). */
+  view(): LanCoreView {
+    return {
+      hostId: this._hostId,
+      admitted: this.admitted,
+      vipOwners: this.vipOwners,
+      selfVip: this.selfVip(),
+    };
+  }
+
+  // ── internals ──────────────────────────────────────────────────────────────
+
+  /** Rebuild vipOwners/memberToVip from ADMITTED claims only, applying the shared
+   *  lowest-memberId arbitration so every receiver converges on the same table. */
+  private recomputeOwners(): void {
+    const list: VipClaim[] = [];
+    for (const [mid, c] of this.claims) {
+      if (this.isAdmitted(mid)) list.push({ memberId: mid, gen: c.gen, vip: c.vip });
+    }
+    this.vipOwners = resolveVipOwners(this.sessionId, list);
+    const rev = new Map<string, number>();
+    for (const [vip, mid] of this.vipOwners) rev.set(mid, vip);
+    this.memberToVip = rev;
+  }
+
+  /** Bound the `claims` store (fed by ANY valid keyholder — a synthetic-key flood
+   *  would otherwise grow it without limit). FIFO-evict the OLDEST NON-admitted
+   *  claim so admitted members' routing is never dropped; admitted ≤ MAX_LAN_PEERS
+   *  (8) ≪ cap, so a non-admitted victim always exists above the ceiling. */
+  private capClaims(): void {
+    while (this.claims.size > MAX_ANTIREPLAY) {
+      let victim: string | undefined;
+      for (const k of this.claims.keys()) { if (!this.isAdmitted(k)) { victim = k; break; } }
+      if (victim === undefined) break; // all admitted (unreachable given the cap)
+      this.claims.delete(victim);
+    }
+  }
+
+  /** FIFO-cap a bookkeeping map at MAX_ANTIREPLAY (Map preserves insertion order). */
+  private capMap(m: Map<string, unknown>): void {
+    while (m.size > MAX_ANTIREPLAY) {
+      const first = m.keys().next().value as string | undefined;
+      if (first === undefined) break;
+      m.delete(first);
+    }
+  }
+}

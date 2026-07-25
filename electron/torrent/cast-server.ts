@@ -30,6 +30,8 @@ import { spawn, ChildProcess } from 'child_process';
 import { logger } from '../utils';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { getHostEnv } from './host/env';
+import { isLanSessionAddressStr } from '../../shared/lan-ip';
+import { lanSubnets } from '../lan/lan-net-registry';
 
 const log = logger.child('CastServer');
 
@@ -84,10 +86,13 @@ export class CastServer {
   /** Best-guess LAN IPv4 (prefers 192.168.* → 10.* → 172.16–31.*). */
   static lanAddress(): string | null {
     const ifaces = os.networkInterfaces();
+    const lanRanges = lanSubnets.list();
     const addrs: string[] = [];
     for (const name of Object.keys(ifaces)) {
       for (const ni of ifaces[name] || []) {
-        if (ni.family === 'IPv4' && !ni.internal) addrs.push(ni.address);
+        // Never advertise OUR virtual-LAN vIP as a cast/QR target (must-fix #8) —
+        // it is unreachable off the session mesh.
+        if (ni.family === 'IPv4' && !ni.internal && !isLanSessionAddressStr(ni.address, lanRanges)) addrs.push(ni.address);
       }
     }
     const score = (ip: string) => ip.startsWith('192.168.') ? 0 : ip.startsWith('10.') ? 1 : /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ? 2 : 3;

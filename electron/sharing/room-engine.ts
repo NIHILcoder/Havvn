@@ -38,6 +38,17 @@ import TrackerClient from 'bittorrent-tracker';
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 import { VoiceSession, VoiceAdapter, SignalKind, LoopbackKind, MicTester, defaultVoiceSettings, sanitizeVoiceSettings } from './room-voice';
+// ── Virtual-LAN (Havvn LAN) — transport + signed gossip. The LanSession routing
+//    brain lives in room-lan.ts; canonical builders are pure (shared/lan-protocol);
+//    the pipe client bridges the elevated Wintun helper. RTCPeerConnection is only
+//    touched inside LanSession's class bodies, so importing here is import-safe.
+import { LanSession, LanAdapter, LanSignalKind } from './room-lan';
+import { lanGenesisCanonical, lanStateCanonical, lanSignalCanonical, lanAdmitCanonical, lanEvictCanonical } from '../../shared/lan-protocol';
+import { verifyVipClaim } from '../../shared/lan-ip';
+import type { LanStateClaim } from '../../shared/lan-session-core';
+import { sessionHostPrefix } from '../../shared/lan-session-core';
+import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanControlMsg } from '../../shared/lan-types';
+import { LanPipeClient } from '../lan/pipe-bridge';
 
 const ROOM_TRACKERS = RENDEZVOUS_TRACKERS;
 
@@ -71,7 +82,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -201,7 +212,19 @@ type Msg =
   // verification against older clients, while an unknown type is ignored (and
   // still relayed) by them. `streamId` identifies the share's MediaStream (msid)
   // for future multi-kind video; v1 receivers key on track.kind anyway.
-  | { t: 'voice-share'; memberId: string; sharing: boolean; streamId: string; at: number; pub: string; sig: string };
+  | { t: 'voice-share'; memberId: string; sharing: boolean; streamId: string; at: number; pub: string; sig: string }
+  // ── Virtual-LAN signed gossip (5 arms, plan §3). The DURABLE authority triple
+  // (lan-genesis/lan-admit/lan-evict) binds sessionId (rekey-stable); the TRANSIENT
+  // pair (lan-state/lan-signal) binds room.topic like voice. Genesis pins the host
+  // (first-writer-wins); admit/evict verify `by === pinned hostId`; every lan-state
+  // vIP is re-derived (verifyVipClaim); lan-signal from a non-admitted member is
+  // dropped BEFORE the mesh. Each carries its OWN per-type anti-replay floor (never
+  // shared) inside the LanSessionCore. All 5 are RELAYABLE + clamped in-place.
+  | LanGenesisMsg
+  | LanStateMsg
+  | LanSignalMsg
+  | LanAdmitMsg
+  | LanEvictMsg;
 
 interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean; }
 
@@ -277,6 +300,9 @@ interface Room {
   progSent: Map<string, number>;         // fileId → last PROG_STEP % WE gossiped (throttle)
   identities: Map<string, string>;       // memberId → Ed25519 public key (PEM), TOFU-bound
   voice: VoiceSession;                    // serverless mesh voice channel (session-only)
+  lan?: LanSession;                       // virtual-LAN session (session-only; created on lanStart, undefined until then)
+  lanPipe?: LanPipeClient;                // named-pipe client to the elevated Wintun helper (session-only)
+  lanEgress?: (frame: Buffer) => void;    // TUN-egress router the LanSession adapter registered via onPacket
   profiles: Map<string, { name: string; avatarSeed: string; color: string; status: string; img: string; at: number }>; // VERIFIED rich profiles; entry.at doubles as the anti-replay floor (session-only, FIFO-capped)
   profileSentTo: Set<string>;            // memberIds whose hello we've already answered with our profile broadcast
   profileAnnounce: any;                  // pending coalesced profile broadcast timer (join waves = one flood)
@@ -733,7 +759,16 @@ function buildState(room: Room): RoomState {
     ...(room.chatEdits.size ? { chatEdits: chatEditsToState(room) } : {}),
     memberProg,
     voice: room.voice.getState(),
+    lan: room.lan ? room.lan.getState() : idleLanState(),
   };
+}
+
+/** Default RoomLanState when no LAN session is running in this room (mirrors how
+ *  voice always emits a state). `available` reflects only the platform gate here —
+ *  the main-process LanManager owns the koffi/wintun availability check and greys
+ *  Start out via `blocked` when another room holds the single global session. */
+function idleLanState(): RoomState['lan'] {
+  return { available: process.platform === 'win32', active: false, isHost: false, participants: [] };
 }
 
 function pushState(room: Room, immediate = false): void {
@@ -1365,6 +1400,132 @@ function createVoiceSession(room: Room): VoiceSession {
   return new VoiceSession(adapter, undefined, () => voiceSettings);
 }
 
+/** Wire a room's LanSession to the signed, encrypted gossip + the elevated Wintun
+ *  helper's named pipe. Genesis/admit/evict are DURABLE (bound to sessionId,
+ *  host-signed); state/signal are TRANSIENT (bound to room.topic, survive rekey via
+ *  reannounce) — the same split as voice. The LanSession is the routing brain; the
+ *  helper stays a dumb ring↔pipe shovel. */
+function createLanSession(room: Room, sessionId: string, isHost: boolean): LanSession {
+  const adapter: LanAdapter = {
+    selfId: room.self.memberId,
+    iceServers: room.iceServers as RTCIceServer[],
+    sessionId,
+    isHost,
+    sendSignal(to: string, kind: LanSignalKind, data: unknown): void {
+      const sig = signBytes(room, lanSignalCanonical(room.topic, { memberId: room.self.memberId, to, kind, data }));
+      broadcast(room, { t: 'lan-signal', memberId: room.self.memberId, to, kind, data, pub: room.self.pub, sig });
+    },
+    announce(vip: number, gen: number, at: number): void {
+      const sig = signBytes(room, lanStateCanonical(room.topic, { memberId: room.self.memberId, sessionId, vip, gen, at }));
+      broadcast(room, { t: 'lan-state', memberId: room.self.memberId, sessionId, vip, gen, at, pub: room.self.pub, sig });
+    },
+    admit(member: string, at: number): void {
+      const sig = signBytes(room, lanAdmitCanonical(sessionId, { by: room.self.memberId, member, at }));
+      broadcast(room, { t: 'lan-admit', sessionId, by: room.self.memberId, member, at, pub: room.self.pub, sig });
+    },
+    evict(member: string, at: number): void {
+      const sig = signBytes(room, lanEvictCanonical(sessionId, { by: room.self.memberId, member, at }));
+      broadcast(room, { t: 'lan-evict', sessionId, by: room.self.memberId, member, at, pub: room.self.pub, sig });
+    },
+    genesis(): void {
+      const at = Date.now();
+      const sig = signBytes(room, lanGenesisCanonical(sessionId, { by: room.self.memberId, at }));
+      broadcast(room, { t: 'lan-genesis', sessionId, by: room.self.memberId, at, pub: room.self.pub, sig });
+    },
+    reip(vip: number, gen: number): void {
+      // Collision loss → flap our Wintun adapter to the new vip via the helper
+      // (must-fix #6). The helper's applyReip re-assigns the address; without it
+      // the loser's tunnel black-holes.
+      try { room.lanPipe?.sendControl({ t: 'reip', vip: vip >>> 0, gen: gen & 0xffff }); } catch { /* ignore */ }
+    },
+    sendPacket(frame: Buffer): void { room.lanPipe?.send(frame); },   // inbound peer→us → helper → Wintun ring
+    onPacket(handler: (frame: Buffer) => void): void { room.lanEgress = handler; }, // TUN-egress router
+    onChange(): void { pushState(room, true); },
+    warn(msg: string): void { try { ipcRenderer.send('room-lan-warn', { msg }); } catch { /* ignore */ } },
+    log,
+  };
+  return new LanSession(adapter);
+}
+
+/** Return room.lan, lazily creating a PASSIVE joiner session (no helper/pipe, not
+ *  started) for `sessionId` so an incoming host-signed lan-genesis/lan-admit is
+ *  tracked BEFORE the user accepts — otherwise the joiner drops that gossip and
+ *  can never learn the session to join. A different sessionId supersedes (beta =
+ *  one session per install). The reused pipe/start happen later in lanStart. */
+function ensureLanSession(room: Room, sessionId: string, isHost = false): LanSession {
+  if (room.lan && room.lan.sessionId() === sessionId) return room.lan;
+  if (room.lan) teardownLan(room);
+  room.lan = createLanSession(room, sessionId, isHost);
+  return room.lan;
+}
+
+/** Cooperative + defensive LAN teardown: stop the session and close the helper pipe
+ *  (asks the helper to revert its adapter/route/firewall via the shutdown verb). */
+function teardownLan(room: Room): void {
+  if (room.lan) { try { room.lan.suspend(); } catch { /* ignore */ } room.lan = undefined; }
+  if (room.lanPipe) {
+    try { room.lanPipe.sendControl({ t: 'shutdown' }); } catch { /* ignore */ }
+    try { room.lanPipe.close(); } catch { /* ignore */ }
+    room.lanPipe = undefined;
+  }
+  room.lanEgress = undefined;
+}
+
+/** Control-plane frames from the helper (ready / error / ping). */
+function onLanControl(room: Room, m: LanControlMsg): void {
+  if (m.t === 'error') {
+    try { ipcRenderer.send('room-lan-warn', { msg: m.message || ('LAN helper error: ' + m.code) }); } catch { /* ignore */ }
+    teardownLan(room);
+    pushState(room, true);
+  } else if (m.t === 'ready') {
+    log('lan helper ready: adapter=' + m.adapter + ' vip=' + m.vip);
+  } else if (m.t === 'ping') {
+    try { room.lanPipe?.sendControl({ t: 'pong' }); } catch { /* ignore */ }
+  }
+}
+
+/** Handle a 'lanStart' room-cmd: build the LanSession, dial the helper pipe, then
+ *  (host) pin genesis + admit picks or (joiner) begin participating. Re-checks the
+ *  VPN kill-switch after the connect await — the UAC prompt is an unbounded window
+ *  (mirrors voiceJoin's re-check-and-undo). */
+async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean }): Promise<{ ok: boolean; sessionId: string }> {
+  const room = rooms.get(roomId);
+  if (!room) throw new Error('Room not active');
+  if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+  const isHost = opts.isHost === true;
+  const sid = String(opts.sessionId || '');
+  // Joiner: REUSE the passive session already bootstrapped from the host's gossip
+  // (it holds the pinned host + admittedSet — tearing it down would lose them and
+  // the mesh could never come up). Host or a different session → fresh.
+  let session: LanSession;
+  if (!isHost && room.lan && room.lan.sessionId() === sid) {
+    session = room.lan;
+  } else {
+    teardownLan(room); // single active session per install (beta) — replace any prior
+    session = createLanSession(room, sid, isHost);
+    room.lan = session;
+  }
+  const client = new LanPipeClient({
+    pipeName: String(opts.pipeName || ''),
+    token: String(opts.token || ''),
+    onData: (frame) => { try { room.lanEgress?.(frame); } catch (e) { log('lan egress error: ' + String(e)); } },
+    onControl: (m) => onLanControl(room, m),
+    onClose: () => { try { room.lan?.suspend(); } catch { /* ignore */ } },
+  });
+  room.lanPipe = client;
+  try {
+    await client.connect();
+  } catch (e) {
+    teardownLan(room);
+    throw new Error('LAN helper connection failed: ' + String(e));
+  }
+  if (netSuspended || !rooms.has(roomId)) { teardownLan(room); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+  if (isHost) session.startAsHost(Array.isArray(opts.admit) ? opts.admit.map(String) : []);
+  else session.start();
+  pushState(room, true);
+  return { ok: true, sessionId: String(opts.sessionId || '') };
+}
+
 /** Capture a screen/window in THIS (hidden, secure-context) window via the legacy
  *  chromeMediaSource path — unlike getDisplayMedia it needs NO user gesture, so it
  *  works from the engine window; the permission handlers already allow 'media'.
@@ -1717,6 +1878,14 @@ function clampGossip(msg: any): void {
   if ('to' in msg) msg.to = clampStr(msg.to, MAX_STR);       // voice-signal target
   if ('kind' in msg) msg.kind = clampStr(msg.kind, 16);      // voice-signal kind (offer/answer/ice)
   if ('streamId' in msg) msg.streamId = clampStr(msg.streamId, MAX_STR); // voice-share stream id (msid)
+  // Virtual-LAN fields (anti-DoS bounds — the clamp bounds the RELAYED copy too;
+  // an out-of-range value simply breaks the sender's signature and dies at verify).
+  // `at` is left raw (each handler enforces a future-cutoff + per-type floor) and
+  // lan-signal.data is left raw (structured SDP/ICE, bounded by MAX_FRAME_CHARS).
+  if ('sessionId' in msg) msg.sessionId = clampStr(msg.sessionId, MAX_STR);   // lan-* session id
+  if ('member' in msg) msg.member = clampStr(msg.member, MAX_STR);            // lan-admit / lan-evict target
+  if ('vip' in msg) msg.vip = (Number(msg.vip) || 0) >>> 0;                    // lan-state claimed vIP (uint32)
+  if ('gen' in msg) { const g = Number(msg.gen); msg.gen = Number.isFinite(g) ? Math.min(0xffff, Math.max(0, Math.round(g))) : 0; } // lan-state arbitration gen (16-bit)
   if ('sharing' in msg) msg.sharing = msg.sharing === true;
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
   if ('msgId' in msg) msg.msgId = clampStr(msg.msgId, MAX_STR);
@@ -1923,6 +2092,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // hello doubles as a "who's in voice?" solicit — e.g. a peer that just
       // un-muted us locally greets to re-learn the voice state it was dropping.
       room.voice.reannounce();
+      // Same solicit for the virtual-LAN session: presence (lan-state) is transient
+      // and survives rekey by re-flooding on hello, exactly like voice-state.
+      room.lan?.reannounce();
       // Merge the peer's files first so an authenticated tombstone below can check
       // authorship (addedBy) against the file, then re-suppress it. `tombSigs` are
       // AUTHENTICATED deletions — each re-verifies (owner/author + signature)
@@ -2145,6 +2317,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       room.memberProg.delete(msg.memberId);
       delete room.typing[msg.memberId];
       room.voice.onMemberGone(msg.memberId); // tear down any voice connection to them
+      room.lan?.onMemberGone(msg.memberId); // release their vIP/route + close the LAN leg
       for (const w of Array.from(room.wires.values())) {
         if (w.memberId === msg.memberId) { try { w.peer.destroy(); } catch { /* ignore */ } room.wires.delete(w.id); }
       }
@@ -2173,6 +2346,59 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (!Number.isFinite(at) || at > Date.now() + 60_000) break; // reject unstamped / far-future
       if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceShareCanonical(room.topic, { memberId: msg.memberId, sharing: msg.sharing, streamId: msg.streamId, at }))) break;
       room.voice.onPeerShare(msg.memberId, !!msg.sharing, String(msg.streamId || ''), at);
+      break;
+    }
+    // ── Virtual-LAN signed gossip (plan §3). Each verifies with verifySignedBy over
+    // its OWN domain-tagged canonical; the per-type monotonic anti-replay floor,
+    // host-authority (by === pinned genesis host), terminal-evict and the admission
+    // gate all live in the LanSessionCore the LanSession owns — so these arms only
+    // gate signature + shape and feed the session. A lan-* frame that arrives before
+    // this install has a local LAN session is simply dropped (beta).
+    case 'lan-genesis': {
+      const sid = String(msg.sessionId || '');
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break; // future-cutoff (pin is immutable, no floor)
+      // Only the host the sessionId commits to (`${host}.${rand}`) may bootstrap a
+      // session here — blocks attacker-induced passive-session churn (must-fix #7).
+      if (msg.by !== sessionHostPrefix(sid)) break;
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, lanGenesisCanonical(msg.sessionId, { by: msg.by, at }))) break;
+      ensureLanSession(room, sid).onGenesis(msg.by, msg.sessionId, at); // lazily create a passive joiner session, then pin
+      break;
+    }
+    case 'lan-admit': {
+      const sid = String(msg.sessionId || '');
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      if (msg.by !== sessionHostPrefix(sid)) break; // admits only from the committed host
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, lanAdmitCanonical(msg.sessionId, { by: msg.by, member: msg.member, at }))) break;
+      ensureLanSession(room, sid).onAdmit(msg.by, msg.member, at, msg.sessionId); // core enforces this-session + by === pinned host + own floor + terminal-evict
+      break;
+    }
+    case 'lan-evict': {
+      if (!room.lan) break;
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, lanEvictCanonical(msg.sessionId, { by: msg.by, member: msg.member, at }))) break;
+      room.lan.onEvict(msg.by, msg.member, at, msg.sessionId); // core enforces this-session + by === pinned host + own (sticky) floor
+      break;
+    }
+    case 'lan-state': {
+      if (!room.lan) break;
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, lanStateCanonical(room.topic, { memberId: msg.memberId, sessionId: msg.sessionId, vip: msg.vip, gen: msg.gen, at }))) break;
+      // Every vIP is a CLAIM — re-derive it (must-fix #6) before it can route.
+      if (!verifyVipClaim(msg.sessionId, msg.memberId, msg.gen, msg.vip)) break;
+      const claim: LanStateClaim = { memberId: msg.memberId, sessionId: msg.sessionId, vip: msg.vip, gen: msg.gen, at };
+      room.lan.onPeerState(claim); // core re-verifies + admission-gates for the routing table
+      break;
+    }
+    case 'lan-signal': {
+      if (!room.lan) break;
+      if (msg.to !== room.self.memberId) break; // not addressed to us (already relayed above)
+      if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice') break;
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, lanSignalCanonical(room.topic, { memberId: msg.memberId, to: msg.to, kind: msg.kind, data: msg.data }))) break;
+      room.lan.onSignal(msg.memberId, msg.kind as LanSignalKind, msg.data); // the ADMISSION GATE (must-fix #1) is INSIDE onSignal
       break;
     }
     case 'profile': {
@@ -2853,9 +3079,17 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   // survives the code rotation, so without this a kicked (or malicious) member
   // keeps hearing/speaking on the established connection. Enforce it on our side.
   room.voice.onMemberGone(kickedId);
+  // Same for the virtual-LAN leg: free the kicked member's vIP/route and stop
+  // forwarding to them (else their address is squatted / traffic black-holes).
+  room.lan?.onMemberGone(kickedId);
   for (const wire of Array.from(room.wires.values())) {
     if (wire.memberId === kickedId) { try { wire.peer.destroy(); } catch { /* ignore */ } room.wires.delete(wire.id); }
   }
+  // Re-mint every live host-granted lan-admit so admitted players aren't silently
+  // dropped at a late-joiner/reconnect after the topic rotation (must-fix #2). This
+  // no-ops unless we are the session host with an active session; lan-admit binds
+  // sessionId (not topic) so the re-flood is belt-and-suspenders for convergence.
+  room.lan?.remintAdmits();
   room.code = newCode;
   room.key = deriveKey(newCode);
   room.topic = topicHash(newCode);
@@ -2920,6 +3154,7 @@ function suspendAllNetworking(): void {
   let n = 0;
   for (const room of Array.from(rooms.values())) {
     try { room.voice.suspend(); } catch { /* ignore */ } // voice leaks the real IP too — tear it down
+    teardownLan(room); // the LAN adapter holds a real interface too — revert it with the rest
     try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
     room.tracker = null;
     for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
@@ -2943,6 +3178,7 @@ function markKicked(room: Room, byName: string): void {
   room.kickedBy = byName;
   logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: byName, targetName: room.self.name || 'You' });
   try { room.voice.suspend(); } catch { /* ignore */ }
+  teardownLan(room); // being kicked also tears down our LAN adapter for this room
   try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
   room.tracker = null;
   for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
@@ -3443,6 +3679,7 @@ function leaveRoom(roomId: string): void {
   if (!room) return;
   // Tell peers we're leaving so they drop us at once (no 45s offline ghost).
   try { room.voice.suspend(); } catch { /* ignore */ } // release the mic + close voice PCs
+  teardownLan(room); // revert the LAN adapter + close the helper pipe on leave
   if (room.profileAnnounce) { clearTimeout(room.profileAnnounce); room.profileAnnounce = null; }
   broadcast(room, { t: 'bye', memberId: room.self.memberId });
   rooms.delete(roomId);
@@ -3856,6 +4093,25 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'screenWatchStop') { rooms.get(msg.roomId)?.voice.watchStop(String(msg.memberId || '')); data = { ok: true }; }
     else if (type === 'screenSignal') {
       rooms.get(msg.roomId)?.voice.onLoopbackSignal(String(msg.memberId || ''), String(msg.kind || ''), msg.data);
+      data = { ok: true };
+    }
+    // ── Virtual-LAN: exactly three engine-facing commands. lanStart builds the
+    // session + dials the helper pipe (payload from the main-process LanManager);
+    // lanStop tears it down; lanSignal funnels invite/accept/evict via a kind
+    // discriminator (mirrors screenSignal) — the host mints, the joiner accepts.
+    else if (type === 'lanStart') {
+      data = await lanStart(msg.roomId, {
+        sessionId: String(msg.sessionId || ''),
+        pipeName: String(msg.pipeName || ''),
+        token: String(msg.token || ''),
+        subnet: msg.subnet ? String(msg.subnet) : undefined,
+        admit: Array.isArray(msg.admit) ? msg.admit.map(String) : [],
+        isHost: msg.isHost === true,
+      });
+    }
+    else if (type === 'lanStop') { const r = rooms.get(msg.roomId); if (r) teardownLan(r); data = { ok: true }; }
+    else if (type === 'lanSignal') {
+      rooms.get(msg.roomId)?.lan?.control(String(msg.kind || ''), msg.memberId ? String(msg.memberId) : undefined);
       data = { ok: true };
     }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
