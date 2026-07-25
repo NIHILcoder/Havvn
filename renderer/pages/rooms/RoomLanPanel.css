@@ -210,6 +210,122 @@
 }
 .room-lan-link:hover { text-decoration: underline; }
 
+/* ── Phase 2B: informational "reached through another player" notice ──
+   Same anatomy as .room-lan-fail, deliberately NOT its colour: the pair is
+   PLAYABLE, so an error tint here would be a lie. Accent-tinted = "a fact you
+   should know", not "something is broken". */
+.room-lan-note {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-accent-primary) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent-primary) 7%, transparent);
+}
+.room-lan-note-head {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-accent-primary);
+}
+.room-lan-note-head svg { flex: 0 0 auto; margin-top: 1px; }
+/* One line per relayed pair: "Alice · via Bob". min-width:0 lets long names
+   ellipsize instead of widening the rail. */
+.room-lan-note-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.room-lan-note-who {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-lan-note-via {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-lan-note-body {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+
+/* ── Phase 2B: "this install is relaying" readout + opt-out ──
+   Relaying spends the user's own uplink, so the surface is quiet but never
+   hidden: a labelled switch, the honest cost/privacy sentence, and a live line
+   with the count while frames are actually being forwarded. */
+.room-lan-relay {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+}
+/* Actively forwarding → lift the frame so the count is findable at a glance. */
+.room-lan-relay.live {
+  border-color: color-mix(in srgb, var(--color-accent-primary) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent-primary) 7%, transparent);
+}
+.room-lan-relay-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.room-lan-relay-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+}
+.room-lan-relay-label svg { flex: 0 0 auto; }
+/* The switch keeps its size in a narrow rail; the label is what gives way. */
+.room-lan-relay-row .toggle-container { flex: 0 0 auto; }
+.room-lan-relay-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-tertiary);
+}
+.room-lan-relay-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--color-accent-primary);
+}
+.room-lan-relay-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full); /* the one place round survives strict-square */
+  background: var(--color-accent-primary);
+  animation: room-lan-pulse 1.6s ease-in-out infinite;
+}
+
 /* ── Peer tiles ── */
 .room-lan-people {
   display: flex;
@@ -254,6 +370,47 @@
 .room-lan-person.failed .room-lan-pname,
 .room-lan-person.failed .room-lan-pip { opacity: 0.6; }
 @keyframes room-lan-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+/* ── Phase 2B: relayed leg ──
+   HOLLOW dot: the colour still carries the measured quality of our leg to the
+   RELAY (amber, or red when even that leg is bad — never green), while the punched
+   centre says "indirect" at a glance. The tile is NOT dimmed like a failed one:
+   the peer is reachable and playable. */
+.room-lan-quality.relayed {
+  box-shadow: inset 0 0 0 2px var(--color-bg-secondary);
+  animation: none;
+}
+/* Relay glyph, top-left of the avatar (evict owns top-right). */
+.room-lan-relay-badge {
+  position: absolute;
+  top: -4px;
+  left: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 2px solid var(--color-bg-secondary);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-primary);
+  color: var(--color-bg-primary);
+  pointer-events: none;
+}
+/* A relayed tile is deliberately NOT dimmed the way .failed is: the peer is
+   reachable, just not directly. Stated rather than inherited so a future tweak to
+   the failed-tile treatment cannot quietly grey out a working link. */
+.room-lan-person.relayed .room-lan-pname,
+.room-lan-person.relayed .room-lan-pip { opacity: 1; }
+/* "via <name>" caption under the virtual IP. */
+.room-lan-via {
+  max-width: 100%;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--color-accent-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Host-only evict badge, top-right of the avatar. */
 .room-lan-evict {
   position: absolute;
@@ -300,6 +457,13 @@
 }
 .room-lan-pip:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-secondary); }
 .room-lan-pip:disabled { cursor: default; }
+
+/* Motion is decoration here — the reconnecting/relaying state is also carried by
+   colour and by text, so honouring the OS preference loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  .room-lan-quality.reconnecting,
+  .room-lan-relay-dot { animation: none; }
+}
 
 /* ══════════════════════════════════════════════════════════════════════
    LanPeerPicker (portaled Modal) — mirrors the screenshare source picker.

@@ -57,6 +57,11 @@ export class RoomManager {
   // Last global voice settings the renderer sent — re-asserted on engine respawn
   // (the engine's own store is session-only and would reset to defaults).
   private voiceSettingsCache: VoiceSettings | null = null;
+  // Phase 2B relay willingness (AppSettings.lanRelayEnabled, absent ⇒ true).
+  // Cached for the same reason as voiceSettingsCache — the engine store is
+  // session-only, so a respawned window would come back willing to relay after
+  // the user switched it off. null = not read from the store yet.
+  private lanRelayCache: boolean | null = null;
   // Global push-to-talk config (renderer prefs) + what the hook is currently
   // tuned to. The OS key hook runs ONLY while some room is in voice in PTT mode.
   private globalPtt: { enabled: boolean; keycode: number | null } = { enabled: false, keycode: null };
@@ -439,6 +444,13 @@ export class RoomManager {
     // respawned window would otherwise capture with defaults (wrong mic/gain).
     if (this.voiceSettingsCache) {
       win.webContents.send('room-cmd', { type: 'voiceSettings', reqId: ++this.reqSeq, settings: this.voiceSettingsCache });
+    }
+    // Same reasoning for the LAN relay-willingness bit: the engine's copy is
+    // session-only, so a respawn would silently revert an explicit "don't relay
+    // for others" to the default ON. (lanStart also carries it, which covers the
+    // case where the store was never read on this run.)
+    if (this.lanRelayCache !== null) {
+      win.webContents.send('room-cmd', { type: 'lanSettings', reqId: ++this.reqSeq, relayEnabled: this.lanRelayCache });
     }
     return win;
   }
@@ -946,11 +958,13 @@ export class RoomManager {
     // Self-describing session id (must-fix #7 hardening): `${host}.${16hexRandom}`,
     // so the pinned host is structurally derivable AND first-writer-wins per id.
     const sessionId = `${selfMemberId}.${crypto.randomBytes(8).toString('hex')}`;
+    const relayEnabled = await this.lanRelayPref();
     const handle = await getLanManager().start({ roomId, sessionId, hostId: selfMemberId, selfMemberId });
     try {
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit: Array.isArray(memberIds) ? memberIds.map(String) : [], isHost: true,
+        relayEnabled,
       }, 30000);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
@@ -976,6 +990,40 @@ export class RoomManager {
   /** Host removes a member (host-signed lan-evict). */
   lanEvict(roomId: string, memberId: string): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'evict', memberId });
+  }
+
+  /** Persisted relay willingness (AppSettings.lanRelayEnabled, absent ⇒ true).
+   *  Read through the cache so the start payload never blocks on the store twice,
+   *  and so a store read failure degrades to the default rather than throwing into
+   *  the LAN start path. */
+  private async lanRelayPref(): Promise<boolean> {
+    if (this.lanRelayCache !== null) return this.lanRelayCache;
+    try {
+      const s = await db.getSettings();
+      this.lanRelayCache = s.lanRelayEnabled !== false;
+    } catch { this.lanRelayCache = true; }
+    return this.lanRelayCache;
+  }
+
+  /**
+   * Phase 2B — flip whether THIS install forwards other players' LAN frames.
+   * GLOBAL (it spends one uplink, not one room's), so it is persisted in
+   * AppSettings and pushed to the engine, which applies it to every live session
+   * and re-reads it on the forward path. Switching it off publishes relay:false
+   * (removing us from every peer's candidate set) and stops forwarding on the very
+   * next packet — see the AppSettings comment for the bandwidth AND privacy cost.
+   */
+  async lanSetRelay(enabled: boolean): Promise<{ ok: boolean }> {
+    const on = enabled !== false;
+    this.lanRelayCache = on;
+    try { await db.updateSettings({ lanRelayEnabled: on }); } catch { /* keep the session-only value */ }
+    // Fire-and-forget into a LIVE engine only — deliberately NOT this.call(),
+    // which would SPAWN the engine window just to record a preference. A window
+    // that is down (or spawns later) picks the value up from readied()/lanStart.
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'lanSettings', reqId: ++this.reqSeq, relayEnabled: on });
+    }
+    return { ok: true };
   }
 
   /**
@@ -1043,11 +1091,13 @@ export class RoomManager {
     if (!lan?.sessionId || !lan.hostId) throw new Error('No LAN session to join yet.');
     if (!lan.selfAdmitted) throw new Error('The host has not invited you to this LAN session yet.');
     const selfMemberId = db.getRoomProfile().memberId;
+    const relayEnabled = await this.lanRelayPref();
     const handle = await getLanManager().start({ roomId, sessionId: lan.sessionId, hostId: lan.hostId, selfMemberId });
     try {
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit: [], isHost: false,
+        relayEnabled,
       }, 30000);
       await this.call('lanSignal', { roomId, kind: 'accept' }, 8000);
     } catch (e) {

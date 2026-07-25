@@ -43,11 +43,11 @@ import { VoiceSession, VoiceAdapter, SignalKind, LoopbackKind, MicTester, defaul
 //    the pipe client bridges the elevated Wintun helper. RTCPeerConnection is only
 //    touched inside LanSession's class bodies, so importing here is import-safe.
 import { LanSession, LanAdapter, LanSignalKind } from './room-lan';
-import { lanGenesisCanonical, lanStateCanonical, lanSignalCanonical, lanAdmitCanonical, lanEvictCanonical } from '../../shared/lan-protocol';
+import { lanGenesisCanonical, lanStateCanonical, lanSignalCanonical, lanAdmitCanonical, lanEvictCanonical, lanReachCanonical, normalizeReachList } from '../../shared/lan-protocol';
 import { verifyVipClaim } from '../../shared/lan-ip';
 import type { LanStateClaim } from '../../shared/lan-session-core';
 import { sessionHostPrefix } from '../../shared/lan-session-core';
-import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanControlMsg, LanHelperFacts } from '../../shared/lan-types';
+import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanReachMsg, LanControlMsg, LanHelperFacts } from '../../shared/lan-types';
 import type { LanDiagInput } from '../../shared/lan-quality';
 import { LanPipeClient, validateGameExePath } from '../lan/pipe-bridge';
 
@@ -83,7 +83,7 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict']);
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -225,7 +225,12 @@ type Msg =
   | LanStateMsg
   | LanSignalMsg
   | LanAdmitMsg
-  | LanEvictMsg;
+  | LanEvictMsg
+  // Phase 2B: the 6th arm. TRANSIENT (topic-bound like lan-state), presence-class
+  // — it grants nothing, so it needs no rekey-stable anchor; it carries sessionId
+  // INSIDE the canonical and has its OWN monotonic floor (inside LanReachTable),
+  // never shared with lan-state's.
+  | LanReachMsg;
 
 interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean; }
 
@@ -341,6 +346,11 @@ let wireSeq = 0;
 // truth (localStorage) and re-sends on every change AND after an engine respawn
 // (the manager re-asserts its cache in readied()) — this store is session-only.
 let voiceSettings: VoiceSettings = defaultVoiceSettings();
+// Phase 2B: is THIS install willing to forward another pair's LAN frames? Global
+// (the cost is one uplink, not one room), session-only here — the persisted
+// AppSetting is the source of truth and main re-asserts it on the 'lanStart'
+// payload AND on a 'lanSettings' push (see room-manager.readied). Absent ⇒ true.
+let lanRelayEnabled = true;
 // Mic level meter for the settings UI (independent of any call).
 const micTester = new MicTester();
 // Tell the UI to refresh its device lists when hardware comes/goes.
@@ -1435,6 +1445,18 @@ function createLanSession(room: Room, sessionId: string, isHost: boolean): LanSe
       const sig = signBytes(room, lanGenesisCanonical(sessionId, { by: room.self.memberId, at }));
       broadcast(room, { t: 'lan-genesis', sessionId, by: room.self.memberId, at, pub: room.self.pub, sig });
     },
+    reach(peers: string[], relay: boolean, at: number): void {
+      // Phase 2B reachability advert. TRANSIENT like lan-state → bound to
+      // room.topic (survives rekey by being re-announced from reannounce(), never
+      // re-signed), with sessionId carried INSIDE the canonical so a cross-session
+      // advert can never poison relay selection. `peers` is already in canonical
+      // wire form (LanSession calls normalizeReachList before emitting) — the
+      // receiver's clampLanReach NORMALISES, so any other representation would
+      // yield bytes the verifier cannot reproduce and the signature would fail.
+      const m = { memberId: room.self.memberId, sessionId, at, relay, reach: peers };
+      const sig = signBytes(room, lanReachCanonical(room.topic, m));
+      broadcast(room, { t: 'lan-reach', ...m, pub: room.self.pub, sig });
+    },
     reip(vip: number, gen: number): void {
       // Collision loss → flap our Wintun adapter to the new vip via the helper
       // (must-fix #6). The helper's applyReip re-assigns the address; without it
@@ -1594,12 +1616,17 @@ async function lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boole
  *  (host) pin genesis + admit picks or (joiner) begin participating. Re-checks the
  *  VPN kill-switch after the connect await — the UAC prompt is an unbounded window
  *  (mirrors voiceJoin's re-check-and-undo). */
-async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean }): Promise<{ ok: boolean; sessionId: string }> {
+async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean; relayEnabled?: boolean }): Promise<{ ok: boolean; sessionId: string }> {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
   if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
   const isHost = opts.isHost === true;
   const sid = String(opts.sessionId || '');
+  // Phase 2B willingness travels ON the start payload (main reads the persisted
+  // AppSetting) rather than relying on a separate push, so a session can never
+  // come up relaying when the user has switched it off — including on the reused
+  // passive joiner session below, which was constructed before the toggle existed.
+  if (typeof opts.relayEnabled === 'boolean') lanRelayEnabled = opts.relayEnabled;
   // Joiner: REUSE the passive session already bootstrapped from the host's gossip
   // (it holds the pinned host + admittedSet — tearing it down would lose them and
   // the mesh could never come up). Host or a different session → fresh.
@@ -1626,6 +1653,9 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
     throw new Error('LAN helper connection failed: ' + String(e));
   }
   if (netSuspended || !rooms.has(roomId)) { teardownLan(room); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+  // Apply BEFORE start(): the first advert we emit must already carry the honest
+  // willingness bit, or peers would briefly hold us as a candidate we then refuse.
+  session.setRelayEnabled(lanRelayEnabled);
   if (isHost) session.startAsHost(Array.isArray(opts.admit) ? opts.admit.map(String) : []);
   else session.start();
   pushState(room, true);
@@ -1992,6 +2022,12 @@ function clampGossip(msg: any): void {
   if ('member' in msg) msg.member = clampStr(msg.member, MAX_STR);            // lan-admit / lan-evict target
   if ('vip' in msg) msg.vip = (Number(msg.vip) || 0) >>> 0;                    // lan-state claimed vIP (uint32)
   if ('gen' in msg) { const g = Number(msg.gen); msg.gen = Number.isFinite(g) ? Math.min(0xffff, Math.max(0, Math.round(g))) : 0; } // lan-state arbitration gen (16-bit)
+  // lan-reach (Phase 2B). NOTE these two clamps are keyed on FIELD NAME and are
+  // therefore shared with every other arm — `relay` and `reach` were checked to be
+  // collision-free today, so any future message reusing either name silently
+  // inherits this reshaping (and would break its own signature). Pick other names.
+  if ('relay' in msg) msg.relay = msg.relay === true;                        // strict boolean: "true" must not slip through
+  if ('reach' in msg) msg.reach = normalizeReachList(msg.reach);             // NORMALISING clamp — see lanReachCanonical
   if ('sharing' in msg) msg.sharing = msg.sharing === true;
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
   if ('msgId' in msg) msg.msgId = clampStr(msg.msgId, MAX_STR);
@@ -2505,6 +2541,21 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice') break;
       if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, lanSignalCanonical(room.topic, { memberId: msg.memberId, to: msg.to, kind: msg.kind, data: msg.data }))) break;
       room.lan.onSignal(msg.memberId, msg.kind as LanSignalKind, msg.data); // the ADMISSION GATE (must-fix #1) is INSIDE onSignal
+      break;
+    }
+    case 'lan-reach': {
+      // Phase 2B reachability advert. Mirrors lan-state exactly: no
+      // ensureLanSession (an advert must never bootstrap a session — it is
+      // presence, not authority), future-cutoff, then verify over the TRANSIENT
+      // topic-bound canonical. The session gate, the OWN monotonic floor and the
+      // admission filter all live below this line, in LanSession/LanReachTable.
+      if (!room.lan) break;
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      const relay = msg.relay === true;
+      const reach = Array.isArray(msg.reach) ? msg.reach : [];
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, lanReachCanonical(room.topic, { memberId: msg.memberId, sessionId: msg.sessionId, at, relay, reach }))) break;
+      room.lan.onPeerReach({ memberId: msg.memberId, sessionId: msg.sessionId, at, relay, peers: reach });
       break;
     }
     case 'profile': {
@@ -4201,7 +4252,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       rooms.get(msg.roomId)?.voice.onLoopbackSignal(String(msg.memberId || ''), String(msg.kind || ''), msg.data);
       data = { ok: true };
     }
-    // ── Virtual-LAN: exactly three engine-facing commands. lanStart builds the
+    // ── Virtual-LAN: the three core engine-facing commands. lanStart builds the
     // session + dials the helper pipe (payload from the main-process LanManager);
     // lanStop tears it down; lanSignal funnels invite/accept/evict via a kind
     // discriminator (mirrors screenSignal) — the host mints, the joiner accepts.
@@ -4213,11 +4264,24 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         subnet: msg.subnet ? String(msg.subnet) : undefined,
         admit: Array.isArray(msg.admit) ? msg.admit.map(String) : [],
         isHost: msg.isHost === true,
+        // Phase 2B relay willingness rides the start payload (main reads the
+        // persisted setting) — omitted by an older caller ⇒ keep the current value.
+        relayEnabled: typeof msg.relayEnabled === 'boolean' ? msg.relayEnabled : undefined,
       });
     }
     else if (type === 'lanStop') { const r = rooms.get(msg.roomId); if (r) teardownLan(r); data = { ok: true }; }
     else if (type === 'lanSignal') {
       rooms.get(msg.roomId)?.lan?.control(String(msg.kind || ''), msg.memberId ? String(msg.memberId) : undefined);
+      data = { ok: true };
+    }
+    // Phase 2B: the relay-willingness toggle. GLOBAL, not per-room — the cost is
+    // this install's uplink — so it updates the module store and every live
+    // session, and is re-asserted on a respawned engine window (readied()). The
+    // session reads `relayEnabled` LIVE on the forward path, so switching it off
+    // stops forwarding on the very next packet, not at the next advert.
+    else if (type === 'lanSettings') {
+      lanRelayEnabled = msg.relayEnabled !== false;
+      for (const r of rooms.values()) r.lan?.setRelayEnabled(lanRelayEnabled);
       data = { ok: true };
     }
     // Phase 2A: the connectivity report (facts only — main evaluates) and the

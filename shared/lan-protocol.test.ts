@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   lanGenesisCanonical, lanAdmitCanonical, lanEvictCanonical,
-  lanStateCanonical, lanSignalCanonical,
-  clampLanStr, clampVip, clampGen,
-  clampLanGenesis, clampLanAdmit, clampLanEvict, clampLanState, clampLanSignal,
+  lanStateCanonical, lanSignalCanonical, lanReachCanonical,
+  clampLanStr, clampVip, clampGen, normalizeReachList,
+  clampLanGenesis, clampLanAdmit, clampLanEvict, clampLanState, clampLanSignal, clampLanReach,
   isValidLanGenesis, isValidLanAdmit, isValidLanEvict, isValidLanState, isValidLanSignal,
+  isValidLanReach, isNormalizedReach, isLanMemberId,
   isLanSignalKind,
-  GEN_MAX, MAX_LAN_STR,
-  LAN_GENESIS_TAG, LAN_STATE_TAG, LAN_SIGNAL_TAG, LAN_ADMIT_TAG, LAN_EVICT_TAG,
+  GEN_MAX, MAX_LAN_STR, MAX_LAN_REACH, MAX_REACH_SCAN,
+  LAN_GENESIS_TAG, LAN_STATE_TAG, LAN_SIGNAL_TAG, LAN_ADMIT_TAG, LAN_EVICT_TAG, LAN_REACH_TAG,
 } from './lan-protocol';
 
 const SID = 'sess-1';
@@ -16,6 +17,12 @@ const HOST = 'hostA';
 const MEM = 'memB';
 
 const creds = { pub: 'PUBKEYPEM', sig: 'SIGBYTES' };
+
+/** Real-shaped memberIds (32 lowercase hex — sha256(pub).slice(0,32)), which the
+ *  reach list requires. Declared ASCENDING so `[A, B, C]` is already canonical. */
+const A = 'a'.repeat(32);
+const B = 'b'.repeat(32);
+const C = 'c'.repeat(32);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Golden bytes — the v1 field order is FROZEN. If any of these change, older
@@ -43,6 +50,22 @@ describe('canonical golden bytes (frozen v1 field order)', () => {
     expect(lanSignalCanonical(TOPIC, { memberId: MEM, to: 'memC', kind: 'offer', data: { sdp: 'x' } }).toString('utf8'))
       .toBe('["th-lan-signal:v1","topic-x","memB","memC","offer",{"sdp":"x"}]');
   });
+  it('lan-reach = [tag, topic, memberId, sessionId, at, relay, reach]', () => {
+    expect(lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 100, relay: true, reach: [A, B] }).toString('utf8'))
+      .toBe(`["th-lan-reach:v1","topic-x","memB","sess-1",100,true,["${A}","${B}"]]`);
+  });
+  it('lan-reach relay flag is IN the signed bytes (willingness cannot be flipped in transit)', () => {
+    const on = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [] });
+    const off = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: false, reach: [] });
+    expect(on.equals(off)).toBe(false);
+  });
+  it('lan-reach reach ORDER is load-bearing (why the emitter must pre-normalise)', () => {
+    const sorted = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [A, B] });
+    const unsorted = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [B, A] });
+    // A sender emitting [B, A] signs different bytes than the receiver rebuilds
+    // after clampLanReach normalises to [A, B] → its signature fails. Deliberate.
+    expect(sorted.equals(unsorted)).toBe(false);
+  });
 
   it('builders are deterministic (same input → identical bytes)', () => {
     const a = lanAdmitCanonical(SID, { by: HOST, member: MEM, at: 7 });
@@ -57,9 +80,23 @@ describe('canonical golden bytes (frozen v1 field order)', () => {
 // on one type can never be replayed as another).
 // ─────────────────────────────────────────────────────────────────────────────
 describe('domain separation', () => {
-  it('the five tags are distinct', () => {
-    const tags = [LAN_GENESIS_TAG, LAN_STATE_TAG, LAN_SIGNAL_TAG, LAN_ADMIT_TAG, LAN_EVICT_TAG];
-    expect(new Set(tags).size).toBe(5);
+  it('the six tags are distinct', () => {
+    const tags = [
+      LAN_GENESIS_TAG, LAN_STATE_TAG, LAN_SIGNAL_TAG,
+      LAN_ADMIT_TAG, LAN_EVICT_TAG, LAN_REACH_TAG,
+    ];
+    expect(new Set(tags).size).toBe(6);
+  });
+
+  it('lan-reach never collides with lan-state (same topic anchor, same id prefix)', () => {
+    // Both are topic-anchored and both start [tag, topic, memberId, sessionId, at]
+    // — only the domain tag keeps a lan-state signature from being replayed as a
+    // lan-reach. Prove the tag is what separates them.
+    const s = lanStateCanonical(TOPIC, { memberId: MEM, sessionId: SID, vip: 0, gen: 0, at: 1 }).toString('utf8');
+    const r = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: false, reach: [] }).toString('utf8');
+    expect(s).not.toBe(r);
+    expect(r.startsWith(`["${LAN_REACH_TAG}"`)).toBe(true);
+    expect(s.startsWith(`["${LAN_STATE_TAG}"`)).toBe(true);
   });
 
   it('genesis vs admit vs evict never collide even with overlapping fields', () => {
@@ -82,6 +119,7 @@ describe('domain separation', () => {
     expect(lanEvictCanonical(SID, { by: HOST, member: MEM, at: 1 }).toString('utf8')).toContain(LAN_EVICT_TAG);
     expect(lanStateCanonical(TOPIC, { memberId: MEM, sessionId: SID, vip: 1, gen: 0, at: 1 }).toString('utf8')).toContain(LAN_STATE_TAG);
     expect(lanSignalCanonical(TOPIC, { memberId: MEM, to: 'x', kind: 'ice', data: null }).toString('utf8')).toContain(LAN_SIGNAL_TAG);
+    expect(lanReachCanonical(TOPIC, { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [] }).toString('utf8')).toContain(LAN_REACH_TAG);
   });
 });
 
@@ -154,6 +192,29 @@ describe('transient pair binds room.topic', () => {
     const b = lanStateCanonical(TOPIC, { memberId: MEM, sessionId: 'sess-2', vip: 1, gen: 0, at: 1 });
     expect(a.equals(b)).toBe(false);
   });
+
+  // ── Phase 2B: lan-reach joins the transient trio. It is PRESENCE class (it
+  //    grants nothing — admission still comes only from a host-signed lan-admit),
+  //    so it takes the topic anchor and survives rekey by re-announcing.
+  it('lan-reach bytes change with topic (transient anchor, not sessionId)', () => {
+    const a = lanReachCanonical('topic-1', { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [A] });
+    const b = lanReachCanonical('topic-2', { memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [A] });
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('lan-reach still binds sessionId INSIDE the canonical (no cross-session advert)', () => {
+    const a = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: 'sess-1', at: 1, relay: true, reach: [A] });
+    const b = lanReachCanonical(TOPIC, { memberId: MEM, sessionId: 'sess-2', at: 1, relay: true, reach: [A] });
+    expect(a.equals(b)).toBe(false);
+  });
+
+  it('lan-reach takes a topic parameter (it is NOT in the durable sessionId class)', () => {
+    expect(lanReachCanonical.length).toBe(2); // (topic, m) — same shape as lan-state
+    // and unlike admit/evict, the first arg really is the rotating anchor:
+    const t1 = lanReachCanonical('t1', { memberId: MEM, sessionId: SID, at: 1, relay: false, reach: [] });
+    const t2 = lanReachCanonical('t2', { memberId: MEM, sessionId: SID, at: 1, relay: false, reach: [] });
+    expect(t1.equals(t2)).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +277,136 @@ describe('field clamps', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Phase 2B — lan-reach: the NORMALISING clamp. Unlike the other clamps this one
+// rewrites `reach` and forces `relay` to a real boolean, so that exactly one wire
+// representation of an advert can ever verify.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('normalizeReachList', () => {
+  it('sorts ascending', () => {
+    expect(normalizeReachList([C, A, B])).toEqual([A, B, C]);
+  });
+
+  it('dedupes', () => {
+    expect(normalizeReachList([B, A, B, A, B])).toEqual([A, B]);
+  });
+
+  it('drops anything that is not a 32-lowercase-hex memberId', () => {
+    expect(normalizeReachList([
+      A,
+      'memB',                 // too short / not hex
+      A.toUpperCase(),        // uppercase hex is NOT a memberId
+      'g'.repeat(32),         // not hex
+      'a'.repeat(31),         // one char short
+      'a'.repeat(33),         // one char long
+      '',
+      null, undefined, 42, {}, [], { toString: () => A },
+    ])).toEqual([A]);
+  });
+
+  it('caps at MAX_LAN_REACH, keeping the lowest ids (deterministic truncation)', () => {
+    const many = Array.from({ length: 20 }, (_, i) => i.toString(16).padStart(32, '0'));
+    const out = normalizeReachList([...many].reverse());
+    expect(out.length).toBe(MAX_LAN_REACH);
+    expect(out).toEqual(many.slice(0, MAX_LAN_REACH));
+  });
+
+  it('is TOTAL: non-arrays and hostile input reduce to [] without throwing', () => {
+    expect(normalizeReachList(undefined)).toEqual([]);
+    expect(normalizeReachList(null)).toEqual([]);
+    expect(normalizeReachList('abc')).toEqual([]);
+    expect(normalizeReachList(42)).toEqual([]);
+    expect(normalizeReachList({ 0: A, length: 1 })).toEqual([]); // array-LIKE is not an array
+    expect(() => normalizeReachList([[A], [[B]]])).not.toThrow();
+    expect(normalizeReachList([[A]])).toEqual([]);
+  });
+
+  it('bounds the WORK, not just the result (a huge array costs O(MAX_REACH_SCAN))', () => {
+    const huge = new Array(50_000).fill('nope');
+    huge[MAX_REACH_SCAN + 10] = A; // past the scan window → never seen
+    expect(normalizeReachList(huge)).toEqual([]);
+  });
+
+  it('is IDEMPOTENT — the emitter and the receiver-side clamp agree exactly', () => {
+    // MANDATORY invariant: the sender signs normalize(x); the receiver clamps the
+    // arriving array with the same function and re-canonicalises. If these ever
+    // disagreed every advert would fail verify and relaying would silently die.
+    for (const input of [[C, A, B], [B, B, A], [A], [], [C, 'junk', A, A]]) {
+      const once = normalizeReachList(input);
+      expect(normalizeReachList(once)).toEqual(once);
+      expect(isNormalizedReach(once)).toBe(true);
+    }
+  });
+
+  it('isLanMemberId is shape-only and rejects uppercase', () => {
+    expect(isLanMemberId(A)).toBe(true);
+    expect(isLanMemberId(A.toUpperCase())).toBe(false);
+    expect(isLanMemberId('memB')).toBe(false);
+    expect(isLanMemberId(null)).toBe(false);
+  });
+});
+
+describe('clampLanReach', () => {
+  it('mutates in place and normalises reach', () => {
+    const msg: any = {
+      t: 'lan-reach', memberId: MEM, sessionId: SID, at: 5,
+      relay: true, reach: [C, A, B, A, 'junk'], ...creds,
+    };
+    const out = clampLanReach(msg);
+    expect(out).toBe(msg); // same object (in-place, like the other clampers)
+    expect(msg.reach).toEqual([A, B, C]);
+  });
+
+  it('forces relay to a REAL boolean (a truthy string must not pass as true)', () => {
+    const t = (relay: unknown) => { const m: any = { relay }; clampLanReach(m); return m.relay; };
+    expect(t(true)).toBe(true);
+    expect(t(false)).toBe(false);
+    expect(t('true')).toBe(false);  // would otherwise break the signature silently
+    expect(t(1)).toBe(false);
+    expect(t(undefined)).toBe(false);
+    expect(t({})).toBe(false);
+  });
+
+  it('truncates an oversized reach (a member cannot hold more legs than the cap)', () => {
+    const msg: any = { reach: Array.from({ length: 30 }, (_, i) => i.toString(16).padStart(32, '0')) };
+    clampLanReach(msg);
+    expect(msg.reach.length).toBe(MAX_LAN_REACH);
+  });
+
+  it('leaves `at` raw (the handler owns the future-cutoff + its OWN floor)', () => {
+    const msg: any = { at: 1e15, relay: true, reach: [] };
+    clampLanReach(msg);
+    expect(msg.at).toBe(1e15);
+  });
+
+  it('coerces non-object input without throwing', () => {
+    expect(() => clampLanReach(null)).not.toThrow();
+    expect(() => clampLanReach(undefined)).not.toThrow();
+    expect(clampLanReach(null)).toBe(null);
+    expect(clampLanReach(7 as any)).toBe(7);
+  });
+
+  it('clamps the id/cred strings like every other arm', () => {
+    const msg: any = { memberId: 'm'.repeat(4000), sessionId: 's'.repeat(4000), pub: 'p'.repeat(5000), sig: 'g'.repeat(5000) };
+    clampLanReach(msg);
+    expect(msg.memberId.length).toBe(MAX_LAN_STR);
+    expect(msg.sessionId.length).toBe(MAX_LAN_STR);
+    expect(msg.pub.length).toBe(MAX_LAN_STR * 2);
+    expect(msg.sig.length).toBe(MAX_LAN_STR * 2);
+  });
+
+  it('a clamped message always satisfies isValidLanReach when the ids survive', () => {
+    const msg: any = {
+      t: 'lan-reach', memberId: MEM, sessionId: SID, at: 3,
+      relay: 'yes', reach: [B, A, B, 'junk'], ...creds,
+    };
+    clampLanReach(msg);
+    expect(isValidLanReach(msg)).toBe(true);
+    expect(msg.relay).toBe(false); // ...but the willingness bit is now false, so
+    expect(msg.reach).toEqual([A, B]); //  the sender's signature will not verify
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Shape / bounds validators.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('validators', () => {
@@ -268,5 +459,51 @@ describe('validators', () => {
     expect(isLanSignalKind('ice')).toBe(true);
     expect(isLanSignalKind('candidate')).toBe(false);
     expect(isLanSignalKind(0)).toBe(false);
+  });
+
+  // ── Phase 2B ───────────────────────────────────────────────────────────────
+  it('isNormalizedReach demands strictly-ascending 32-hex within the cap', () => {
+    expect(isNormalizedReach([])).toBe(true);
+    expect(isNormalizedReach([A, B, C])).toBe(true);
+    expect(isNormalizedReach([B, A])).toBe(false);       // unsorted
+    expect(isNormalizedReach([A, A])).toBe(false);       // duplicate
+    expect(isNormalizedReach([A, 'junk'])).toBe(false);  // not a memberId
+    expect(isNormalizedReach([A.toUpperCase()])).toBe(false);
+    expect(isNormalizedReach('nope')).toBe(false);
+    expect(isNormalizedReach(null)).toBe(false);
+    expect(isNormalizedReach(
+      Array.from({ length: MAX_LAN_REACH + 1 }, (_, i) => i.toString(16).padStart(32, '0')),
+    )).toBe(false); // over the cap even though sorted + deduped
+  });
+
+  it('isValidLanReach requires t / ids / finite at / real boolean relay / creds', () => {
+    const base = { t: 'lan-reach', memberId: MEM, sessionId: SID, at: 1, relay: true, reach: [A, B], ...creds };
+    expect(isValidLanReach(base)).toBe(true);
+    expect(isValidLanReach({ ...base, relay: false })).toBe(true);
+    expect(isValidLanReach({ ...base, reach: [] })).toBe(true);
+
+    expect(isValidLanReach({ ...base, t: 'lan-state' })).toBe(false); // wrong t
+    expect(isValidLanReach({ ...base, memberId: '' })).toBe(false);
+    expect(isValidLanReach({ ...base, sessionId: '' })).toBe(false);  // must name a session
+    expect(isValidLanReach({ ...base, at: undefined })).toBe(false);  // unlike lan-signal, `at` is REQUIRED
+    expect(isValidLanReach({ ...base, at: NaN })).toBe(false);
+    expect(isValidLanReach({ ...base, relay: 'true' })).toBe(false);  // strict boolean
+    expect(isValidLanReach({ ...base, relay: 1 })).toBe(false);
+    expect(isValidLanReach({ ...base, reach: undefined })).toBe(false);
+    expect(isValidLanReach({ ...base, reach: [B, A] })).toBe(false);  // non-canonical order
+    expect(isValidLanReach({ ...base, pub: '', sig: '' })).toBe(false);
+    expect(isValidLanReach(null)).toBe(false);
+    expect(isValidLanReach('lan-reach')).toBe(false);
+  });
+
+  it('isValidLanReach rejects an advert claiming more legs than the mesh allows', () => {
+    const tooMany = Array.from({ length: MAX_LAN_REACH + 1 }, (_, i) => i.toString(16).padStart(32, '0'));
+    const msg: any = { t: 'lan-reach', memberId: MEM, sessionId: SID, at: 1, relay: true, reach: tooMany, ...creds };
+    expect(isValidLanReach(msg)).toBe(false);
+    // ...and the clamp truncates rather than throwing, which then breaks the
+    // liar's signature at verify instead of letting an inflated set through.
+    clampLanReach(msg);
+    expect(msg.reach.length).toBe(MAX_LAN_REACH);
+    expect(isValidLanReach(msg)).toBe(true);
   });
 });

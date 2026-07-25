@@ -654,6 +654,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:lanDiagnose', wrapHandler('rooms:lanDiagnose',
     async (_event, roomId: string) => roomManager.lanDiagnose(String(roomId || ''))
   ));
+  // Phase 2B relay willingness. GLOBAL (it spends this install's uplink), so it
+  // takes no roomId — the manager persists it and pushes it to every live session.
+  ipcMain.handle('rooms:lanSetRelay', wrapHandler('rooms:lanSetRelay',
+    async (_event, enabled: unknown) => roomManager.lanSetRelay(enabled !== false)
+  ));
   // The .exe is chosen HERE, by the OS picker — the renderer never fabricates a
   // path that ends up in an elevated PowerShell command (the helper validates it
   // again anyway; this is the outer gate, not the only one).

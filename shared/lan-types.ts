@@ -10,12 +10,14 @@
  * an imported value. This mirrors the dependency invariant of shared/lan-ip.ts /
  * lan-packet.ts / lan-frame.ts.
  *
- * FROZEN-WIRE WARNING: the 5 signed gossip interfaces below (LanGenesisMsg /
- * LanStateMsg / LanSignalMsg / LanAdmitMsg / LanEvictMsg) describe messages whose
- * signatures are computed over a domain-tagged canonical with a FROZEN field
- * order (see shared/lan-protocol.ts). NEVER append a field to a signed type —
- * it breaks older peers' signatures (the `deafened` lesson). A v2 field rides a
- * new domain tag or travels OUTSIDE the signed canonical.
+ * FROZEN-WIRE WARNING: the 6 signed gossip interfaces below (LanGenesisMsg /
+ * LanStateMsg / LanSignalMsg / LanAdmitMsg / LanEvictMsg / LanReachMsg) describe
+ * messages whose signatures are computed over a domain-tagged canonical with a
+ * FROZEN field order (see shared/lan-protocol.ts). NEVER append a field to a
+ * signed type — it breaks older peers' signatures (the `deafened` lesson). A v2
+ * field rides a new domain tag or travels OUTSIDE the signed canonical.
+ * `lan-reach` (Phase 2B) is exactly that discipline applied: a NEW arm with its
+ * OWN tag, never a field bolted onto lan-state.
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,8 +28,9 @@
 //    DOMAIN SPLIT (plan §0.1 #2/#7): the DURABLE authority triple
 //    (lan-genesis / lan-admit / lan-evict) binds `sessionId` — a rekey-stable
 //    anchor that never rotates on kick, so no re-mint in applyLocalRekey is
-//    needed. The TRANSIENT pair (lan-state / lan-signal) binds `room.topic`
-//    exactly like voice-state / voice-signal and survives rekey via reannounce.
+//    needed. The TRANSIENT trio (lan-state / lan-signal / lan-reach) binds
+//    `room.topic` exactly like voice-state / voice-signal and survives rekey via
+//    reannounce.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** WebRTC signaling verb for the LanPeer mesh (offer/answer/ice). */
@@ -142,13 +145,58 @@ export interface LanEvictMsg {
   sig: string;
 }
 
-/** Convenience union of the 5 signed LAN gossip arms (for exhaustive handling). */
+/**
+ * Phase 2B — signed REACHABILITY advert: "these are the admitted members I
+ * currently hold a CONNECTED direct leg to, and here is whether I am willing to
+ * forward for others". The single input the one-hop peer-relay selector needs.
+ *
+ * CLASS: presence, NOT authority. It grants nothing — admission still comes only
+ * from a host-signed lan-admit, and a vIP is still a claim re-derived on receipt.
+ * So it is TRANSIENT: anchored on room.topic (like lan-state / lan-signal /
+ * voice-state), with `sessionId` carried INSIDE the canonical and re-checked on
+ * receipt so a cross-session advert can never poison relay selection. It survives
+ * a rekey by being RE-ANNOUNCED, never by being re-signed.
+ *
+ * ANTI-REPLAY: its OWN per-member monotonic floor (lastLanReachAt) — NEVER shared
+ * with lastLanStateAt. A shared floor is the documented voice HIGH: one type's
+ * fresh `at` would silently censor the other type's next message.
+ *
+ * WIRE CANONICAL FORM: `reach` MUST already be ascending, deduped and made of
+ * 32-lowercase-hex memberIds. The receiver's clamp NORMALISES it, so a sender
+ * that emits any other representation produces bytes the verifier will not
+ * reproduce and its signature fails — deliberately: one representation on the
+ * wire means no signature malleability and no duplicate gossip ids.
+ *
+ * Signed BY `memberId` (sender) so the existing ban-gate covers a banned sender.
+ */
+export interface LanReachMsg {
+  t: 'lan-reach';
+  /** Sender (ban-gate key + per-member lastLanReachAt anti-replay floor key). */
+  memberId: string;
+  /** Which session this reachability is for (bound INSIDE the canonical). */
+  sessionId: string;
+  /** Monotonic per-member reach clock (own lastLanReachAt floor). */
+  at: number;
+  /** Willing to spend OUR uplink forwarding for a pair that cannot connect
+   *  directly (the `lanRelayEnabled` setting). false ⇒ never a relay candidate,
+   *  but the advert still publishes reachability, which stays useful. */
+  relay: boolean;
+  /** memberIds we hold a CONNECTED direct leg to right now. CANONICAL FORM ONLY:
+   *  ascending, deduped, /^[0-9a-f]{32}$/, at most MAX_LAN_REACH entries. */
+  reach: string[];
+  pub: string;
+  /** Ed25519 over lanReachCanonical(room.topic, m). */
+  sig: string;
+}
+
+/** Convenience union of the 6 signed LAN gossip arms (for exhaustive handling). */
 export type LanMsg =
   | LanGenesisMsg
   | LanStateMsg
   | LanSignalMsg
   | LanAdmitMsg
-  | LanEvictMsg;
+  | LanEvictMsg
+  | LanReachMsg;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. Engine-side admission state the switch handlers / admission gate need. Lives
@@ -181,6 +229,25 @@ export interface LanSessionAdmission {
   lastLanAdmitAt: Map<string, number>;
   /** Per-member evict anti-replay floor. */
   lastLanEvictAt: Map<string, number>;
+  /** Per-member REACH anti-replay floor (Phase 2B). Its OWN map — sharing it
+   *  with lastLanStateAt would let a fresh presence `at` censor the next
+   *  reachability advert (and vice versa), the documented voice HIGH. */
+  lastLanReachAt: Map<string, number>;
+}
+
+/**
+ * A member's last accepted reachability advert, as the relay selector consumes it
+ * (Phase 2B). Stored per memberId; `at` doubles as the freshness stamp so a
+ * departed member's advert can expire out of the candidate set.
+ */
+export interface LanReachAdvert {
+  /** The advert's monotonic clock — also its freshness stamp (TTL is applied by
+   *  the selector, not here). */
+  at: number;
+  /** Willing to forward for others. false ⇒ excluded from every candidate set. */
+  relay: boolean;
+  /** Admitted members this member claims a connected direct leg to. */
+  peers: ReadonlySet<string>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -261,6 +328,25 @@ export interface RoomLanParticipant {
   /** Reconnect attempts exhausted: this leg is terminally dead (not "connecting
    *  forever"). Pairs with failReason to explain WHY and point at the fix. */
   terminal?: boolean;
+  // ── Phase 2B: one-hop peer relay. Both fields follow the absent-unless-true
+  //    discipline above, and NEITHER widens LanPeerStatus — a relayed leg keeps
+  //    its honest direct status (terminal 'failed'), and the UI keys off
+  //    `relayVia` to render "connected through <name>" instead of the red
+  //    no-path block. Widening the status union would silently reshape every
+  //    exhaustive Record<LanPeerStatus, …> (RoomLanPanel's STATUS_CLASS,
+  //    lan-quality's tally) for a purely cosmetic gain.
+  /** memberId of the peer currently forwarding this leg's traffic for us. Present
+   *  ⇒ the pair IS playable despite `terminal`. NOTE for the UI: any quality /
+   *  rttMs shown alongside this is measured to the RELAY, not end-to-end — say so
+   *  in the tooltip rather than passing it off as the pair's quality. */
+  relayVia?: string;
+  /** Round-trip through the relay in ms — the ONLY end-to-end number a relayed
+   *  pair has, because getStats can see no further than our leg to the relay.
+   *  Absent until actually measured; never synthesised from the two legs. */
+  relayRttMs?: number;
+  /** This member's own advertised willingness to relay for others (from their
+   *  signed lan-reach). Informational only — never an authorisation. */
+  relayWilling?: boolean;
 }
 
 /** The room's LAN session as this install sees it. */
@@ -291,6 +377,16 @@ export interface RoomLanState {
    *  path still failed" — the room's iceServers are fixed at session start, so a
    *  TURN change only takes effect for a session started afterwards. */
   turnConfigured?: boolean;
+  /** THIS install is willing to forward traffic for a pair that cannot connect
+   *  directly (the `lanRelayEnabled` setting, absent ⇒ treat as on). Phase 2B.
+   *  PRIVACY: relaying is a plaintext waypoint — the per-leg DTLS terminates on
+   *  the relay, so a relaying install can read the pair's LAN packets. That fact
+   *  belongs in the toggle's user-visible description, not only here. */
+  relayEnabled?: boolean;
+  /** Distinct originators WE forwarded for recently (~10s window) — the visible
+   *  "Relaying for N" indicator required by the bandwidth-cost invariant. Absent
+   *  or empty ⇒ we are not currently spending uplink for anyone. */
+  relayFor?: string[];
   /** Admitted peers plus self when active. */
   participants: RoomLanParticipant[];
 }
@@ -319,6 +415,16 @@ export interface LanAdapter {
   evict(memberId: string, at: number): void;
   /** Host-only ONCE at session create: signed 'lan-genesis' over sessionId. */
   genesis(): void;
+  /** Signed 'lan-reach' broadcast (Phase 2B): our currently-connected legs +
+   *  relay willingness. `peers` MUST be pre-normalised (normalizeReachList) or
+   *  the receiver's normalising clamp will not reproduce our signed bytes. `at`
+   *  monotonic, on its OWN floor.
+   *  ⚠ The IMPLEMENTED copy of this interface lives in
+   *  electron/sharing/room-lan.ts (~92) — this one is the shared spec. Adding
+   *  reach() there (and to createLanSession's adapter literal in room-engine.ts)
+   *  is the next Phase-2B slice; until then the two copies differ by exactly
+   *  this method, on purpose. */
+  reach(peers: string[], relay: boolean, at: number): void;
   /** Inject an inbound (peer→us) IP frame into the local TUN via the helper pipe. */
   sendPacket(frame: Buffer): void;
   /** Register the TUN-egress router: the pipe-read loop calls handler per raw frame. */
@@ -406,3 +512,9 @@ export type LanControlMsg =
  *  MAX_ANTIREPLAY, LAN_MTU, DEFAULT_LAN_BUCKET) live in shared/lan-session-core.ts;
  *  that module should import MAX_LAN_PEERS from here rather than redefine it. */
 export const MAX_LAN_PEERS = 8;
+
+/** Cap on a lan-reach advert's `reach` array. Equals MAX_LAN_PEERS because a
+ *  member can hold no more legs than the mesh cap allows — so an advert claiming
+ *  more is provably lying and the clamp truncates it (which breaks its signature
+ *  at verify, exactly as intended). */
+export const MAX_LAN_REACH = MAX_LAN_PEERS;

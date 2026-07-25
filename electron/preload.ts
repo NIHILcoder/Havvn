@@ -700,6 +700,8 @@ const api: IpcApi = {
       accept: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:lanAccept', roomId),
       evict: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanEvict', roomId, memberId),
       diagnose: (roomId: string): Promise<LanDiagReport> => ipcRenderer.invoke('rooms:lanDiagnose', roomId),
+      // Relay willingness is GLOBAL (one uplink, not one room) — no roomId.
+      setRelay: (enabled: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanSetRelay', enabled),
       allowApp: (roomId: string): Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }> =>
         ipcRenderer.invoke('rooms:lanAllowApp', roomId),
     },

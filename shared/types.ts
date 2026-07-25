@@ -585,6 +585,17 @@ export interface AppSettings {
   customTurnUrl?: string;          // e.g. "turn:relay.example.com:3478" ('' = none)
   customTurnUsername?: string;
   customTurnCredential?: string;
+  // Virtual-LAN (Phase 2B): are we willing to FORWARD another pair's LAN frames
+  // when they have no direct path? Absent ⇒ true. Two costs, both deliberate and
+  // both user-visible in the room's LAN panel:
+  //   • bandwidth — forwarding spends this install's uplink (hard token-bucket
+  //     capped, and the panel shows a live "Relaying for N" readout);
+  //   • privacy — the tunnel is DTLS per LEG, so a relaying install TERMINATES
+  //     the encryption and can read the plaintext LAN packets it forwards. That
+  //     fact is stated in the toggle's own description string, not only here.
+  // Turning it off publishes relay:false, which removes this install from every
+  // peer's candidate set, and stops forwarding on the very next packet.
+  lanRelayEnabled?: boolean;
   updatedAt: Date;
 }
 
@@ -1244,6 +1255,10 @@ export interface IpcApi {
       diagnose: (roomId: string) => Promise<LanDiagReport>;
       /** Firewall troubleshooter: MAIN opens the .exe picker, the elevated helper adds a scoped rule (no new UAC). */
       allowApp: (roomId: string) => Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }>;
+      /** Phase 2B: are we willing to FORWARD another pair's LAN frames? GLOBAL —
+       *  the cost is this install's uplink (and, honestly, the relay can read what
+       *  it forwards), so this takes no roomId. Persisted as AppSettings.lanRelayEnabled. */
+      setRelay: (enabled: boolean) => Promise<{ ok: boolean }>;
     };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;

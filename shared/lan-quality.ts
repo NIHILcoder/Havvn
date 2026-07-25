@@ -276,6 +276,10 @@ export interface LanDiagPeer {
   remoteCandidate?: unknown;
   /** Retries exhausted — the honest terminal state, latched by the session. */
   terminal?: boolean;
+  /** Phase 2B: this leg has no direct channel but IS carried by a one-hop peer
+   *  relay. Present ⇒ `terminal` above describes the DIRECT path only and the
+   *  pair is actually playable — a report must not read it as unreachable. */
+  relayVia?: string;
 }
 
 export interface LanDiagInput {

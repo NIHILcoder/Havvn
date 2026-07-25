@@ -21,12 +21,27 @@
  * modal, copy-paste-able) and a firewall troubleshooter for "I see the peer but
  * the game won't connect".
  *
+ * Phase 2B adds the one-hop PEER RELAY surface, which is three separate honesty
+ * problems, not one:
+ *   1. A peer reached through another player is NOT a direct peer — it costs a
+ *      third party's uplink, doubles the latency and the relaying player can read
+ *      the traffic. Its tile therefore never shows the green "good" dot (the dot
+ *      is hollow + capped at fair/poor), carries a relay glyph and a `via <name>`
+ *      caption, and its tooltip says out loud that the numbers were measured to
+ *      the RELAY, not end-to-end.
+ *   2. The Phase 2A terminal-failure block must stop lying once a relay exists:
+ *      peers with a working relayed path move OUT of the red "no direct path →
+ *      configure TURN" block into an informational one; only genuinely stranded
+ *      peers keep pointing at TURN.
+ *   3. Relaying for someone spends THIS install's bandwidth, so it is visible
+ *      (a live "Relaying for N" line with the count) and switchable off.
+ *
  * Styling uses ONLY theme tokens (no hardcoded radius; --radius-full is reserved
  * for the status dots). The peer picker portals its fixed overlay to <body>.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Avatar, Icon } from '../../components';
+import { Avatar, Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
@@ -40,6 +55,10 @@ import './RoomLanPanel.css';
  * `local` = both host candidates (same physical network), `nat` = at least one
  * server-reflexive hop, `relay` = the path runs through TURN (RTT is inflated and
  * the user deserves to know).
+ *
+ * A Phase 2B PEER-relayed leg is deliberately NOT a value here: it has no ICE pair
+ * at all (no LanPeer, no getStats), so it is carried by `relayVia` instead of being
+ * smuggled in as a fifth path kind that nothing could ever measure.
  */
 export type LanPathKind = 'local' | 'nat' | 'relay' | 'unknown';
 
@@ -65,10 +84,43 @@ export interface LanPeerLinkView {
   /** Latched by the transport: this peer has stopped being retried. */
   terminal?: boolean;
   failReason?: LanIceFailReason;
+  // ── Phase 2B: one-hop peer relay ────────────────────────────────────────────
+  /**
+   * memberId of the player forwarding our frames to this peer. PRESENT ⇒ there is
+   * NO direct leg and the traffic rides a third party's uplink. Absent is the
+   * normal case and must render exactly as Phase 2A did.
+   */
+  relayVia?: string;
+  /**
+   * Round-trip through the relay, ms — the only end-to-end number a relayed pair
+   * has (getStats cannot see past the relay). Absent until probed; the tile then
+   * falls back to `rttMs`, which is OUR leg to the RELAY and is labelled as such.
+   */
+  relayRttMs?: number;
+}
+
+/**
+ * Session-level relay facts (Phase 2B), declared structurally for the same reason
+ * as LanPeerLinkView: the panel type-checks before the transport lands them on
+ * RoomLanState, and stays valid afterwards (the intersection below keeps both
+ * declarations compatible — identical optional shapes).
+ */
+export interface LanRelayStateView {
+  /** THIS install is willing to forward for others. ABSENT ⇒ true (opt-out). */
+  relayEnabled?: boolean;
+  /**
+   * memberIds we actually forwarded for in the recent window (~10s, damped by the
+   * transport so the readout does not strobe while two ends converge on a relay).
+   * ABSENT / empty ⇒ we are not spending anything on anyone right now.
+   */
+  relayFor?: string[];
 }
 
 /** A participant as this panel renders it. */
 export type LanParticipantView = RoomLanParticipant & LanPeerLinkView;
+
+/** The session as this panel renders it. */
+export type LanStateView = RoomLanState & LanRelayStateView;
 
 /** Result of the firewall troubleshooter (main picks the .exe, the helper adds the rule). */
 export interface LanAllowAppResult {
@@ -85,7 +137,7 @@ export interface LanAllowAppResult {
 
 export interface RoomLanPanelProps {
   /** The room's LAN session as this install sees it (RoomState.lan). */
-  lan: RoomLanState;
+  lan: LanStateView;
   /** Full room roster — the picker selects admit targets from here. */
   members: RoomMember[];
   /** This install's memberId (to split self from peers). */
@@ -119,10 +171,21 @@ export interface RoomLanPanelProps {
    * Absent → the notice still explains the fix in words, just without a shortcut.
    */
   onOpenTurnSettings?: () => void;
+  /**
+   * Phase 2B opt-out: stop / resume forwarding OTHER players' LAN traffic through
+   * this install. Renderer-side only — integration points this at the settings
+   * write + the room-cmd that tells the engine. Absent → the toggle is not
+   * rendered (the live "Relaying for N" readout still is, if it is happening).
+   */
+  onSetRelayEnabled?: (enabled: boolean) => void | Promise<void>;
 }
 
-/** Map the LanPeer connection state to the shared quality-dot class vocabulary. */
-const STATUS_CLASS: Record<LanPeerStatus, string> = {
+/**
+ * Map the LanPeer connection state to the shared quality-dot class vocabulary.
+ * Partial on purpose: the transport may widen LanPeerStatus (Phase 2B floated a
+ * 'relayed' member) and a missing key must fall back, never break the build.
+ */
+const STATUS_CLASS: Partial<Record<LanPeerStatus, string>> = {
   connected: 'q-good',
   connecting: 'q-fair',
   reconnecting: 'q-poor reconnecting',
@@ -154,7 +217,7 @@ const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
-  onDiagnostics, onAllowApp, onOpenTurnSettings,
+  onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled,
 }) => {
   const { t } = useTranslation();
   const [busy, setBusy] = useState(false);
@@ -223,15 +286,42 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
     });
   }, [lan.active, lan.sessionId, lan.participants, selfId]);
 
-  /** Peers whose direct path is (latched) dead, with the reason we'll explain. */
-  const failedPeers = peers.filter((p) => p.memberId in failLatch);
+  // ── Phase 2B: relayed peers vs genuinely stranded ones ────────────────────
+  // A relayed peer is STILL terminal (the direct leg really is dead, and the
+  // transport keeps that latch), so it is in `failLatch` too — but it is PLAYABLE.
+  // Splitting here is what stops the Phase 2A red block from claiming a working
+  // session is broken.
+  /** Peers reached through another player right now (narrowed: relayVia is set). */
+  const relayedPeers = peers.filter(
+    (p): p is LanParticipantView & { relayVia: string } => !!p.relayVia,
+  );
+  /** Peers whose direct path is (latched) dead AND that no relay is carrying. */
+  const failedPeers = peers.filter((p) => p.memberId in failLatch && !p.relayVia);
   const failReason: LanIceFailReason = failedPeers.length
     ? (failLatch[failedPeers[0].memberId] || 'unknown')
     : 'unknown';
 
+  // ── Phase 2B: are WE forwarding for anyone? ───────────────────────────────
+  // Absent setting ⇒ ON (opt-out, per the plan): a build that predates the flag
+  // must not read as "relaying is off" when it is in fact relaying.
+  const relayEnabled = lan.relayEnabled !== false;
+  const relayForIds = lan.relayFor || [];
+  const relayCount = relayForIds.length;
+  /** Who we forward for, for the readout's tooltip — never shown as a bare list. */
+  const relayForNames = relayForIds.map((id) => nameOf(id)).join(', ');
+
   // ── Per-peer dot + tooltip ────────────────────────────────────────────────
-  /** Measured quality wins on a connected link; the raw status is the fallback. */
+  /**
+   * Measured quality wins on a connected link; the raw status is the fallback.
+   *
+   * A RELAYED leg is capped: never green. Two hops through a stranger's uplink is
+   * materially worse than a direct link even when every measured number looks
+   * fine, and the numbers we do have only describe our leg to the relay — so the
+   * dot goes amber (or red if even that leg is poor) and gets the hollow
+   * `.relayed` treatment so it reads as "indirect" without hovering.
+   */
   const dotClass = (p: LanParticipantView) => {
+    if (p.relayVia) return `q-${p.quality === 'poor' ? 'poor' : 'fair'} relayed`;
     if (p.memberId in failLatch) return 'q-poor';
     if (p.status === 'connected' && p.quality) return `q-${p.quality}`;
     return STATUS_CLASS[p.status] || 'q-fair';
@@ -239,13 +329,23 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
 
   /** "Connected · RTT 42 ms · loss 0.4% · relayed" — the honest numbers behind the dot. */
   const dotTitle = (p: LanParticipantView) => {
-    const head = p.memberId in failLatch ? t('rooms.lan.statusFailed')
-      : p.status === 'connected' ? t('rooms.lan.statusConnected')
-        : p.status === 'connecting' ? t('rooms.lan.statusConnecting')
-          : p.status === 'reconnecting' ? t('rooms.lan.statusReconnecting')
-            : t('rooms.lan.statusFailed');
+    const via = p.relayVia;
+    const head = via ? t('rooms.lan.statusRelayed')
+      : p.memberId in failLatch ? t('rooms.lan.statusFailed')
+        : p.status === 'connected' ? t('rooms.lan.statusConnected')
+          : p.status === 'connecting' ? t('rooms.lan.statusConnecting')
+            : p.status === 'reconnecting' ? t('rooms.lan.statusReconnecting')
+              : t('rooms.lan.statusFailed');
     const parts = [head];
-    if (typeof p.rttMs === 'number' && p.rttMs > 0) {
+    if (via) parts.push(t('rooms.lan.viaPeer').replace('{n}', nameOf(via)));
+    // A relayed pair has TWO different round trips and conflating them would be
+    // exactly the flattering dishonesty Phase 2A was built to avoid: prefer the
+    // end-to-end probe when the transport measured one, otherwise fall back to our
+    // leg to the relay — which the closing note then names as such.
+    const relayRtt = via && typeof p.relayRttMs === 'number' && p.relayRttMs > 0 ? p.relayRttMs : undefined;
+    if (relayRtt !== undefined) {
+      parts.push(t('rooms.lan.relayRtt').replace('{n}', String(Math.round(relayRtt))));
+    } else if (typeof p.rttMs === 'number' && p.rttMs > 0) {
       parts.push(t('rooms.lan.qRtt').replace('{n}', String(Math.round(p.rttMs))));
     }
     if (typeof p.lossPct === 'number') parts.push(t('rooms.lan.qLoss').replace('{n}', pct(p.lossPct)));
@@ -254,7 +354,10 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
     if (typeof p.dropPct === 'number' && p.dropPct >= 0.1) {
       parts.push(t('rooms.lan.qDrop').replace('{n}', pct(p.dropPct)));
     }
-    if (p.path) parts.push(t(PATH_KEY[p.path] || PATH_KEY.unknown));
+    // On a relayed leg getStats can only see as far as the relay — say so instead
+    // of letting a good-looking number pass for an end-to-end measurement.
+    if (via) parts.push(t('rooms.lan.relayQualityNote').replace('{n}', nameOf(via)));
+    else if (p.path) parts.push(t(PATH_KEY[p.path] || PATH_KEY.unknown));
     return parts.join(' · ');
   };
 
@@ -266,6 +369,14 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
     if (r.ok) toast.success(t('rooms.lan.fwAdded').replace('{n}', r.exe ? baseName(r.exe) : ''));
     else toast.error(r.error || t('rooms.lan.fwFailed'));
   });
+
+  // Phase 2B opt-out. Fire-and-forget through `wrap` so a rejected IPC surfaces as
+  // a toast instead of an unhandled rejection; the switch renders off the state we
+  // are given, never a local optimistic copy.
+  const toggleRelay = (on: boolean) => {
+    if (!onSetRelayEnabled) return;
+    void wrap(() => onSetRelayEnabled(on))();
+  };
 
   // Stable identity so the modal's mount pass doesn't re-fire on every render.
   const runDiagnostics = useCallback(
@@ -363,7 +474,34 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             </div>
           )}
 
-          {/* Honest terminal failure: ICE found no working path to these peers.
+          {/* Phase 2B: peers with no direct leg that ARE reachable through another
+              player. This is deliberately NOT the red block — the pair can play.
+              It is still a notice rather than silence, because relaying has two
+              costs the user cannot see: the extra hop (latency) and the fact that
+              the forwarding player terminates encryption and can read the frames. */}
+          {relayedPeers.length > 0 && (
+            <div className="room-lan-note">
+              <span className="room-lan-note-head">
+                <Icon name="share-2" size={13} />
+                {t('rooms.lan.relayedTitle')}
+              </span>
+              {relayedPeers.map((p) => (
+                <span className="room-lan-note-line" key={p.memberId}>
+                  <span className="room-lan-note-who">{nameOf(p.memberId)}</span>
+                  <span className="room-lan-note-via">
+                    {t('rooms.lan.viaPeer').replace('{n}', nameOf(p.relayVia))}
+                  </span>
+                </span>
+              ))}
+              <span className="room-lan-note-body">{t('rooms.lan.relayedHint')}</span>
+              <span className="room-lan-note-body">{t('rooms.lan.relayedPrivacy')}</span>
+            </div>
+          )}
+
+          {/* Honest terminal failure: ICE found no working path to these peers AND
+              no relay is carrying them. Peers that a relay DID rescue were filtered
+              out above — leaving them here would render a working link as broken
+              and send the user off to configure a TURN server they do not need.
               A red dot alone reads as "still trying" — it never is. */}
           {failedPeers.length > 0 && (
             <div className="room-lan-fail">
@@ -380,6 +518,41 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                 <button className="room-lan-link" onClick={onOpenTurnSettings} type="button">
                   {t('rooms.lan.failOpenSettings')}
                 </button>
+              )}
+            </div>
+          )}
+
+          {/* Phase 2B visibility + opt-out: forwarding for someone else spends THIS
+              install's uplink, so it can never be silent. The live line carries the
+              count (and names in its tooltip); the switch stops it mid-session. */}
+          {(onSetRelayEnabled || relayCount > 0) && (
+            <div className={`room-lan-relay${relayCount > 0 ? ' live' : ''}`}>
+              <div className="room-lan-relay-row">
+                <span className="room-lan-relay-label">
+                  <Icon name="share-2" size={12} /> {t('rooms.lan.relayToggle')}
+                </span>
+                {onSetRelayEnabled && (
+                  <Toggle
+                    size="small"
+                    checked={relayEnabled}
+                    onChange={toggleRelay}
+                    disabled={busy}
+                    ariaLabel={t('rooms.lan.relayToggle')}
+                  />
+                )}
+              </div>
+              <span className="room-lan-relay-desc">{t('rooms.lan.relayToggleDesc')}</span>
+              {/* The count wins over the switch: while frames are still in flight
+                  after a flip, "off" would be the wrong thing to claim. */}
+              {relayCount > 0 ? (
+                <span className="room-lan-relay-live" title={relayForNames || undefined}>
+                  <span className="room-lan-relay-dot" />
+                  {t('rooms.lan.relaying').replace('{n}', String(relayCount))}
+                </span>
+              ) : (
+                <span className="room-lan-relay-desc">
+                  {relayEnabled ? t('rooms.lan.relayNone') : t('rooms.lan.relayOff')}
+                </span>
               )}
             </div>
           )}
@@ -430,12 +603,21 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
           {peers.map((p: LanParticipantView) => (
             <div
               key={p.memberId}
-              className={`room-lan-person${p.memberId in failLatch ? ' failed' : ''}`}
+              className={`room-lan-person${p.relayVia ? ' relayed' : p.memberId in failLatch ? ' failed' : ''}`}
               title={nameOf(p.memberId)}
             >
               <span className="room-lan-ring">
                 <Avatar seed={seedOf(p.memberId)} img={memberOf(p.memberId)?.avatarImg} size={30} />
                 <span className={`room-lan-quality ${dotClass(p)}`} title={dotTitle(p)} />
+                {/* Relay glyph: the tile must read "not direct" WITHOUT a hover. */}
+                {p.relayVia && (
+                  <span
+                    className="room-lan-relay-badge"
+                    title={t('rooms.lan.viaPeer').replace('{n}', nameOf(p.relayVia))}
+                  >
+                    <Icon name="share-2" size={9} />
+                  </span>
+                )}
                 {lan.isHost && onEvict && (
                   <button
                     className="room-lan-evict"
@@ -463,6 +645,15 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               >
                 {p.vip || '···'}
               </button>
+              {/* "via <name>" caption — the one fact the dot cannot carry. */}
+              {p.relayVia && (
+                <span
+                  className="room-lan-via"
+                  title={t('rooms.lan.relayQualityNote').replace('{n}', nameOf(p.relayVia))}
+                >
+                  {t('rooms.lan.viaPeer').replace('{n}', nameOf(p.relayVia))}
+                </span>
+              )}
             </div>
           ))}
         </div>

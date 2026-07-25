@@ -54,6 +54,53 @@ export const DEFAULT_LAN_BUCKET: TokenBucketCfg = {
   burstBytes: 800_000,
 };
 
+/**
+ * Phase 2B — which budget a packet is charged to. Relayed traffic gets its OWN
+ * buckets on BOTH sides of the hop so it can never eat into the proven per-peer
+ * DIRECT budget (and vice versa):
+ *   • 'direct'    — the Phase-1 per-peer inbound bucket. UNCHANGED key (the bare
+ *                   memberId) and UNCHANGED cfg, so every existing call site is
+ *                   byte-identical.
+ *   • 'relay-in'  — RECEIVER side, keyed by the ORIGINATOR of a relayed frame.
+ *   • 'relay-out' — RELAY side (our forwarding uplink), keyed by the originator,
+ *                   which is free: the originator IS the channel the frame
+ *                   arrived on, so the key is not attacker-chosen.
+ *   • 'relay-wire' — WIRE level, keyed by the SENDING channel, charged BEFORE the
+ *                   envelope is even decoded. Without it a relay-classified frame
+ *                   (first byte 0x52) would reach the decoder having passed NO
+ *                   budget at all: the 'relay-in'/'relay-out' buckets are keyed by
+ *                   the envelope's ORIGINATOR, which the sender chooses, and are
+ *                   charged only after a successful decode. This is the bucket that
+ *                   bounds pure garbage.
+ * Keys are namespaced (`${cls}:${memberId}`) so they can never collide.
+ */
+export type LanBucketClass = 'direct' | 'relay-in' | 'relay-out' | 'relay-wire';
+
+/** Per-originator relayed budget, deliberately TIGHTER than direct: relaying
+ *  spends someone else's uplink. ~1.5 MB/s (~12 Mbps) sustained per originator. */
+export const DEFAULT_LAN_RELAY_BUCKET: TokenBucketCfg = {
+  pps: 2000,
+  bytesPerSec: 1_500_000,
+  burstPackets: 400,
+  burstBytes: 300_000,
+};
+
+/**
+ * The session-wide FORWARDING ceiling every forward must additionally clear, so
+ * that no combination of pairs can drain a willing relay's uplink (the per-
+ * originator bucket alone only bounds ONE pair). ~3 MB/s (~24 Mbps) total.
+ */
+export const LAN_RELAY_TOTAL_BUCKET: TokenBucketCfg = {
+  pps: 6000,
+  bytesPerSec: 3_000_000,
+  burstPackets: 1200,
+  burstBytes: 600_000,
+};
+
+/** Reserved pseudo-member naming the session-wide 'relay-out' ceiling. A real
+ *  memberId is 32 lowercase hex, so '*' can never collide with one. */
+export const LAN_RELAY_TOTAL_MEMBER = '*';
+
 /** The host memberId a sessionId commits to. sessionId is `${hostId}.${random}`;
  *  the prefix before the first '.' is the creator. Returns '' for a malformed id
  *  with no '.', which can never equal a real 32-hex memberId → genesis refused. */
@@ -248,20 +295,43 @@ export class LanSessionCore {
 
   // ── Per-peer inbound rate limit (plan §4) — pure token bucket ───────────────
 
-  /** Consume one packet of `bytes` from the peer's bucket; false = over budget
-   *  (drop). Buckets refill by wall-clock and are capped at the configured burst. */
-  allowPacket(memberId: string, bytes: number): boolean {
+  /**
+   * Consume one packet of `bytes` from a bucket; false = over budget (drop).
+   * Buckets refill by wall-clock and are capped at the configured burst.
+   *
+   * `cls` defaults to 'direct', whose KEY (the bare memberId) and CFG are exactly
+   * what Phase 1 used — so the existing call site is byte-identical and the proven
+   * direct budget provably cannot be affected by Phase 2B. The relay classes get
+   * NAMESPACED keys and their own, tighter configs, so relayed traffic and direct
+   * traffic can never drain one another.
+   */
+  allowPacket(memberId: string, bytes: number, cls: LanBucketClass = 'direct'): boolean {
+    const key = cls === 'direct' ? memberId : `${cls}:${memberId}`;
+    const cfg = cls === 'direct'
+      ? this.bucketCfg
+      // The reserved '*' key is the SESSION-WIDE ceiling for whichever relay class
+      // charges it (forward and receive each keep their own '*' bucket, since the
+      // key is namespaced by class), so it always gets the larger aggregate cfg.
+      : memberId === LAN_RELAY_TOTAL_MEMBER
+        ? LAN_RELAY_TOTAL_BUCKET
+        : DEFAULT_LAN_RELAY_BUCKET;
+    return this.consume(key, bytes, cfg);
+  }
+
+  /** The shared token-bucket math (extracted verbatim from the Phase-1 inline
+   *  body so all classes use the one proven implementation). */
+  private consume(key: string, bytes: number, cfg: TokenBucketCfg): boolean {
     const t = this.now();
-    let b = this.buckets.get(memberId);
+    let b = this.buckets.get(key);
     if (!b) {
-      b = { tokens: this.bucketCfg.burstPackets, bytes: this.bucketCfg.burstBytes, last: t };
-      this.buckets.set(memberId, b);
+      b = { tokens: cfg.burstPackets, bytes: cfg.burstBytes, last: t };
+      this.buckets.set(key, b);
       this.capMap(this.buckets as unknown as Map<string, number>);
     }
     const elapsed = Math.max(0, t - b.last) / 1000;
     b.last = t;
-    b.tokens = Math.min(this.bucketCfg.burstPackets, b.tokens + elapsed * this.bucketCfg.pps);
-    b.bytes = Math.min(this.bucketCfg.burstBytes, b.bytes + elapsed * this.bucketCfg.bytesPerSec);
+    b.tokens = Math.min(cfg.burstPackets, b.tokens + elapsed * cfg.pps);
+    b.bytes = Math.min(cfg.burstBytes, b.bytes + elapsed * cfg.bytesPerSec);
     if (b.tokens < 1 || b.bytes < bytes) return false;
     b.tokens -= 1;
     b.bytes -= bytes;
@@ -277,6 +347,11 @@ export class LanSessionCore {
     const wasAdmitted = this.admitted.delete(memberId);
     const hadClaim = this.claims.delete(memberId);
     this.buckets.delete(memberId);
+    // Phase 2B: the namespaced relay budgets die with the member too, or a
+    // re-invited member would inherit a drained bucket for the session's life.
+    this.buckets.delete(`relay-in:${memberId}`);
+    this.buckets.delete(`relay-out:${memberId}`);
+    this.buckets.delete(`relay-wire:${memberId}`);
     if (wasAdmitted || hadClaim) this.recomputeOwners();
   }
 

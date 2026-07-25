@@ -1511,6 +1511,7 @@ const RoomPeopleRail: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
         onEvict={async (id) => { await window.api.rooms.lan.evict(room.roomId, id); }}
         onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
         onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
+        onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
       />
       <div className="room-rail-people">
         <div className="room-rail-people-head">
