@@ -15,11 +15,16 @@ import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, RoomChatMessage, LanDiagReport } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
-import { loadRoomLayout, saveRoomLayout, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
+import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { usePopout } from '../utils/popout';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
+import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
+import {
+  PANEL_BY_ID, DockPanelId, DockZoneId,
+  loadDockLayout, saveDockLayout, resetDockLayout, setActivePanel, zonePanels, activePanel, zoneOfPanel,
+} from './rooms/dock/dockModel';
 import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
@@ -1493,36 +1498,102 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
   );
 };
 
-// ── People rail (left region: voice on top, members below) ────────────────
-const RoomPeopleRail: React.FC<{ room: RoomState; onWatchShare: (memberId: string) => void }> = ({ room, onWatchShare }) => {
+// ── People rail (left region: ONE dock zone — Voice / LAN / People as tabs) ─
+//
+// The three panels used to be stacked in this 180-360px column, so an INACTIVE
+// panel (Voice and LAN each render a big CTA when off) cost as much height as an
+// active one. They are tabs now: same three components, unchanged, as the tab
+// bodies. The zone shell (strip + active panel + the `room-col-rail` framing it
+// keeps wearing) is DockZone; which panels live here and which one is showing is
+// the persisted dock model, owned by RoomDetail so the head-bar chips can
+// deep-link into a panel.
+const RoomPeopleRail: React.FC<{
+  room: RoomState;
+  onWatchShare: (memberId: string) => void;
+  /** Panel ids docked in this zone, in tab order (from the persisted model). */
+  panelIds: readonly DockPanelId[];
+  activeId: DockPanelId;
+  onSelect: (panel: DockPanelId) => void;
+}> = ({ room, onWatchShare, panelIds, activeId, onSelect }) => {
   const { t } = useTranslation();
   const online = room.members.filter((m) => m.online);
+  // The registry owns identity (label key, icon, keep-alive); the zone gets it
+  // already resolved. The People head's online/total count is hoisted onto the tab
+  // — with a tab labelled "People" right above it, a second header saying the same
+  // thing is exactly the crowding this phase removes.
+  // A tab hides its panel's state, so anything that USED to be permanently visible
+  // in the stacked rail and needs a response must survive on the tab itself —
+  // otherwise the dock quietly swallows it. Today that is the incoming LAN invite:
+  // it renders as a Join button inside RoomLanPanel, so on any other tab the user
+  // would never learn they were invited. An active session is also worth a mark,
+  // since it costs an adapter and (possibly) relayed bandwidth.
+  const lanBadge = room.lan?.selfAdmitted && !room.lan?.active
+    ? '!'                                    // invited, not joined — needs action
+    : room.lan?.active ? '•' : undefined;    // running
+  const panels: DockZonePanel<DockPanelId>[] = panelIds.map((id) => {
+    const def = PANEL_BY_ID[id];
+    return {
+      id,
+      label: t(def.labelKey),
+      icon: <Icon name={def.icon} size={13} />,
+      keepAlive: def.keepAlive,
+      badge: id === 'people'
+        ? `${online.length}/${room.members.length}`
+        : id === 'lan' ? lanBadge : undefined,
+      // The badge is read as part of the tab's accessible name, so anything whose
+      // meaning is not obvious from the label gets an explicit tooltip.
+      title: id === 'lan' && lanBadge === '!' ? t('rooms.lan.accept')
+        : id === 'people' ? t('rooms.onlineOfTotal') : undefined,
+    };
+  });
+  // Called only for MOUNTED panels. Voice and LAN are keep-alive (see the registry):
+  // Voice's unmount flushes the debounced settings push and tears down the PTT
+  // listeners; LAN's unmount loses its latched terminal-failure map.
+  const renderPanel = (id: DockPanelId): React.ReactNode => {
+    switch (id) {
+      case 'voice':
+        return <RoomVoicePanel room={room} onWatchShare={onWatchShare} />;
+      case 'lan':
+        return (
+          <RoomLanPanel
+            lan={room.lan}
+            members={room.members}
+            selfId={room.members.find((m) => m.isSelf)?.memberId}
+            onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
+            onStop={async () => { await window.api.rooms.lan.stop(room.roomId); }}
+            onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
+            onInvite={async (ids) => { await Promise.all(ids.map((id2) => window.api.rooms.lan.invite(room.roomId, id2))); }}
+            onEvict={async (id2) => { await window.api.rooms.lan.evict(room.roomId, id2); }}
+            onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
+            onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
+            onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
+          />
+        );
+      case 'people':
+        return (
+          <div className="room-rail-people">
+            {/* The scroller stays HERE, not on .dock-panel: overflow-y:auto computes
+                overflow-x to auto, which would make the panel body a clip box and cut
+                off the full-rail-width voice popover. */}
+            <div className="room-rail-people-list">
+              <RoomMembersList room={room} />
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
   return (
-    <div className="room-col-rail">
-      <RoomVoicePanel room={room} onWatchShare={onWatchShare} />
-      <RoomLanPanel
-        lan={room.lan}
-        members={room.members}
-        selfId={room.members.find((m) => m.isSelf)?.memberId}
-        onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
-        onStop={async () => { await window.api.rooms.lan.stop(room.roomId); }}
-        onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
-        onInvite={async (ids) => { await Promise.all(ids.map((id) => window.api.rooms.lan.invite(room.roomId, id))); }}
-        onEvict={async (id) => { await window.api.rooms.lan.evict(room.roomId, id); }}
-        onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
-        onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
-        onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
-      />
-      <div className="room-rail-people">
-        <div className="room-rail-people-head">
-          <span className="room-section-title">{t('rooms.people')}</span>
-          <span className="room-chat-online">{online.length}/{room.members.length}</span>
-        </div>
-        <div className="room-rail-people-list">
-          <RoomMembersList room={room} />
-        </div>
-      </div>
-    </div>
+    <DockZone
+      zoneId="rail"
+      className="room-col-rail"
+      ariaLabel={t('rooms.dock.railTabs')}
+      panels={panels}
+      activeId={activeId}
+      onSelect={onSelect}
+      renderPanel={renderPanel}
+    />
   );
 };
 
@@ -1787,6 +1858,40 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     setLayout((l) => { saveRoomLayout(l); return l; });
   };
 
+  // Dock model: which panels live in which zone and which one each zone shows.
+  // Its own localStorage key, versioned + self-repaired on load, so a corrupt dock
+  // blob can never take the splitter widths above down with it. Persisted on
+  // COMMIT (a tab switch), mirroring saveRoomLayout on pointer-up.
+  const [dock, setDock] = useState(loadDockLayout);
+  // The model guarantees a zone is never empty and that `active` is one of its
+  // panels; the `??` is belt-and-braces so a future zone id typo degrades to a
+  // visible panel instead of a blank rail.
+  const railPanels = zonePanels(dock, 'rail');
+  const railActive = activePanel(dock, 'rail') ?? railPanels[0];
+  const selectDockPanel = (zone: DockZoneId, panel: DockPanelId) => {
+    const next = setActivePanel(dock, zone, panel);
+    if (next === dock) return; // already active, or not docked in that zone
+    setDock(next);
+    saveDockLayout(next);
+  };
+  // Head-bar chips deep-link to a PANEL, not to a zone: ask the model where the
+  // panel currently lives, so the chips keep working if a later phase moves it.
+  const revealDockPanel = (panel: DockPanelId) => {
+    const zone = zoneOfPanel(dock, panel);
+    if (zone) selectDockPanel(zone, panel);
+  };
+  // "Reset layout" (room-settings popover — deliberately OUTSIDE the dock, so it
+  // survives any dock state). Restores the default widths, un-collapses the rail
+  // and drops the stored dock arrangement. It does NOT touch chatPopped: that flag
+  // is owned by RoomChat's own pop-out window.
+  const resetLayout = () => {
+    const dflt = { ...DEFAULT_ROOM_LAYOUT };
+    setLayout(dflt);
+    saveRoomLayout(dflt);
+    setRailCollapsed(false);
+    setDock(resetDockLayout());
+  };
+
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
   // The label talks about STATE only; the transport peer count (wires, not
   // people) moved into the tooltip so it can't be misread as a member count.
@@ -1877,7 +1982,9 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
               <button
                 type="button"
                 className="room-lan-chip"
-                onClick={() => setRailCollapsed(false)}
+                // Expanding the rail is not enough now that it is tabbed — land on
+                // the LAN panel too, or the chip shows whatever tab was last open.
+                onClick={() => { setRailCollapsed(false); revealDockPanel('lan'); }}
                 title={room.lan.selfVip || t('rooms.lan.active')}
               >
                 <Icon name="network" size={12} /> {t('rooms.lan.chip')}
@@ -1895,7 +2002,14 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             <button
               type="button"
               className={`room-people-chip${railCollapsed ? ' collapsed' : ''}`}
-              onClick={() => setRailCollapsed((c) => !c)}
+              // Still a collapse toggle; when it OPENS the rail it also selects the
+              // People panel, so the chip lands on what it names. Collapsing leaves
+              // the active tab alone.
+              onClick={() => {
+                const collapsed = !railCollapsed;
+                setRailCollapsed(collapsed);
+                if (!collapsed) revealDockPanel('people');
+              }}
               title={t('rooms.peopleChipHint')}
             >
               <Icon name="users" size={12} /> {onlineCount}/{room.members.length}
@@ -1965,6 +2079,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
                     <Icon name="edit-2" size={13} /> {t('rooms.rename')}
                   </button>
                 )}
+                {/* Lives here, not in the dock: the way out of a layout the user
+                    cannot click their way out of must not depend on the dock. */}
+                <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); resetLayout(); }}>
+                  <Icon name="rotate-ccw" size={13} /> {t('rooms.dock.resetLayout')}
+                </button>
                 <button type="button" className="room-settings-item danger" onClick={() => { setSettingsOpen(false); onLeave(); }}>
                   <Icon name="x" size={13} /> {t('rooms.leave')}
                 </button>
@@ -1998,7 +2117,13 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         className={`room-detail-grid${railCollapsed ? ' rail-collapsed' : ''}${chatPopped ? ' chat-popped' : ''}`}
         style={{ '--rail-w': `${railCollapsed ? 0 : layout.railW}px`, '--chat-w': `${chatPopped ? 0 : layout.chatW}px` } as React.CSSProperties}
       >
-        <RoomPeopleRail room={room} onWatchShare={(id) => setStageView({ kind: 'screen', memberId: id })} />
+        <RoomPeopleRail
+          room={room}
+          onWatchShare={(id) => setStageView({ kind: 'screen', memberId: id })}
+          panelIds={railPanels}
+          activeId={railActive}
+          onSelect={(panel) => selectDockPanel('rail', panel)}
+        />
         <div
           className="room-splitter"
           role="separator" aria-orientation="vertical" title={t('rooms.resize')}

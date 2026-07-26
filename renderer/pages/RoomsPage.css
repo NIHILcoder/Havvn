@@ -362,10 +362,14 @@
   min-width: 0;
   min-height: 0;
 }
-/* The people+voice rail is one framed module, matching the files/chat zones
-   (which frame via their inner .room-section). Same square border + brackets. */
+/* The rail is one framed module, matching the files/chat zones (which frame via
+   their inner .room-section). Same square border + brackets.
+   It is also the host frame of the rail DOCK ZONE: the class lands on .dock-zone,
+   which supplies the strip/panel flex plumbing and nothing visual (see
+   pages/rooms/dock/DockZone.css). The corner brackets sit at 5px inset, inside the
+   var(--space-4) padding, so the tab strip never collides with them. */
 .room-col-rail {
-  overflow: hidden;   /* voice pinned; member list scrolls */
+  overflow: hidden;   /* strip pinned; the active panel scrolls internally */
   position: relative;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);  /* rounds with the theme, like .room-section */
@@ -410,20 +414,17 @@
 .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 0 6px minmax(0, 1fr) 0 0; }
 .room-detail-grid.chat-popped .room-splitter-chat { display: none; }
 
-/* People rail: the voice panel sits on top; the member list fills + scrolls. */
+/* People panel of the rail dock: the member list fills + scrolls. The online/total
+   count is not a header here — it rides on the People tab, so the panel is all list.
+   The scroller stays on this inner element, NOT on .dock-panel: overflow-y:auto
+   computes overflow-x to auto, which would turn the panel body into a clip box and
+   cut off the full-rail-width voice popover. */
 .room-rail-people {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-.room-rail-people-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: 0 var(--space-2); /* keep the label + count off the rail edges */
 }
 .room-rail-people-list {
   flex: 1 1 auto;
@@ -432,9 +433,12 @@
 }
 .room-rail-people-list .room-members { max-height: none; }
 
-/* Voice card sits at the top of the rail as a rounded card (the panel's base
-   styles are rail-native now — actions live on their own row, nothing wraps). */
-.room-col-rail .room-voice { padding: 0 0 var(--space-3); border-radius: 0; }
+/* Voice and LAN each own the whole rail panel now, so the padding and hairlines
+   that separated them while they were STACKED are gone (the tab strip is the
+   separator). Both overrides are (0,2,0) and so beat the panels' own base rules,
+   including RoomLanPanel.css's, regardless of stylesheet order. */
+.room-col-rail .room-voice { padding: 0; border-radius: 0; border-bottom: none; }
+.room-col-rail .room-lan { padding: 0; border-top: none; }
 /* The member "have" count reads cryptic — give it a helper cursor (title attr). */
 .room-member-have { cursor: help; }
 

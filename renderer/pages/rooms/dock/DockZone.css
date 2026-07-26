@@ -1,0 +1,57 @@
+/**
+ * DockZone — layout plumbing only. See DockZone.tsx for the mount policy and the
+ * query-container rationale.
+ *
+ * Deliberately NO colours, borders, radii or padding here: the zone root also
+ * carries its host's framing class (`.room-col-rail` today, which owns the border,
+ * background, padding, corner brackets, and the `overflow:hidden` that the
+ * full-width voice popover leans on). Anything visual added here would duplicate
+ * chrome that already exists and would have to hardcode a radius, breaking the
+ * theme's --radius-scale contract.
+ */
+.dock-zone {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+
+  /* Named query container so panels can size against THEIR zone rather than the
+     room page — `@container dock (...)`. Panel rules asking for
+     `@container room (...)` still reach `.room-detail-inner`, because a NAMED
+     query walks past containers carrying a different name (which is also why
+     DockTabStrip.css's `@container room (max-width: 720px)` block keeps working
+     from inside here).
+     WARNING: container-type establishes containment, which traps position:fixed
+     descendants. Overlays inside a panel must portal to document.body. */
+  container-type: inline-size;
+  container-name: dock;
+}
+
+/* The host column class sets `gap: var(--space-4)` — spacing that existed to
+   separate the three panels it used to stack. A tabbed zone has no such stack, and
+   the strip already carries its own `margin-bottom: var(--space-2)`, so a gap here
+   would only double it. Both selectors are (0,1,0), so an unqualified `.dock-zone`
+   would be decided by bundler stylesheet order; the doubled class settles it. */
+.dock-zone.dock-zone { gap: 0; }
+
+/* The active panel takes the rest of the zone. Flex column so a panel whose own
+   root asks for `flex: 1 1 auto` (the People block) can fill and let its inner
+   list scroll.
+   NOT a scroller, on purpose: `overflow-y: auto` computes `overflow-x` to `auto`
+   too, which would make this a new clip box and cut off the full-rail-width voice
+   popover that depends on the frame's clip instead. Scrolling stays where it
+   already is, inside the panel (`.room-rail-people-list`).
+   No horizontal padding either — the frame already pads, and a second inset would
+   narrow that popover twice. */
+.dock-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`, so a
+   keep-alive panel would otherwise stay visible behind the active one. */
+.dock-panel[hidden] { display: none; }

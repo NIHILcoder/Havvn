@@ -1,0 +1,117 @@
+/*
+ * DockTabStrip styling.
+ *
+ * Visual lineage: `.room-zone-tab` (the Chat|History switcher in RoomsPage.css)
+ * — the room's 11px/700 uppercase HUD eyebrow with a 2px accent underline, the
+ * same scale as `.room-section-title`. It is deliberately NOT the full-page
+ * `.tab-button` (12px 20px) which the Stage already has to shrink by override.
+ *
+ * Theme tokens ONLY. Radius comes from --radius-* (strict square at the default
+ * --radius-scale: 0) — never a literal. No bespoke focus ring: base.css gives
+ * :focus-visible a --shadow-focus box-shadow, and commit e35d5af was a fix for
+ * DOUBLE rings, so nothing is added here (and the strip sets no overflow, which
+ * would clip that ring).
+ *
+ * NARROW RAIL: the rail clamps to 180px (RAIL_MIN) → ~148px of content box, less
+ * than three natural-width tabs need. The strip COMPRESSES instead of scrolling:
+ * tabs share the width (`flex: 1 1 0`), icon and badge hold their size, the label
+ * ellipsizes and `title` carries the full text. Because every tab shrinks, total
+ * width can never exceed the strip and nothing has to be clipped.
+ *
+ * Container queries only (@container room, from .room-detail-inner) — never
+ * @media: the dock moves with its column, not with the window.
+ */
+
+.dock-tabstrip {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  flex: 0 0 auto; /* the strip is chrome; the panel body below takes the slack */
+  min-width: 0;
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.dock-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  /* Share the strip, but start from CONTENT width, not an equal slice. With
+     `flex-basis: 0` every tab gets the same width regardless of what it holds,
+     while the icon and badge inside are `flex: 0 0 auto` — so the tab carrying a
+     badge spends its identical slice on fixed affixes and starves its LABEL
+     first, which is backwards (the badged tab is the one with most to say). */
+  flex: 1 1 auto;
+  min-width: 0; /* ...and are actually allowed to shrink below content size */
+  min-height: 24px;
+  padding: 4px 6px 6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em; /* tighter than the .12em eyebrow — buys glyphs at 180px */
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.dock-tab:hover {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-hover);
+}
+
+.dock-tab.selected {
+  color: var(--color-text-primary);
+  border-bottom-color: var(--color-accent-primary);
+  background: transparent;
+}
+.dock-tab.selected:hover { background: var(--color-bg-hover); }
+
+/* Icon and badge are identity, not decoration: they survive the squeeze so a
+   compressed tab is still recognisable when its label is down to an ellipsis. */
+.dock-tab-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.dock-tab.selected .dock-tab-icon { color: var(--color-accent-primary); }
+
+.dock-tab-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dock-tab-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-tertiary);
+}
+.dock-tab.selected .dock-tab-badge { color: var(--color-text-secondary); }
+
+/* At the rail's 180px minimum three labels plus a non-shrinkable badge cannot all
+   fit. Drop the AFFIX rather than clip the label: the count is a nicety, the tab
+   name is how you navigate. The zone establishes `container-name: dock`, so this
+   keys off the zone's own width and stays correct if a later phase puts the panel
+   in a wider column. The tooltip still carries the meaning. */
+@container dock (max-width: 260px) {
+  .dock-tab-badge { display: none; }
+}
+
+/* Single-column mode: the zone spans the full page width, so stretching three
+   tabs across it would look like a toolbar. Let them size to content instead. */
+@container room (max-width: 720px) {
+  .dock-tabstrip { justify-content: flex-start; }
+  .dock-tab { flex: 0 1 auto; padding: 4px 10px 6px; }
+}

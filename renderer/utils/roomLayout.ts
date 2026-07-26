@@ -13,6 +13,14 @@ export const CHAT_MAX = 460;
 
 export type RoomLayout = { railW: number; chatW: number };
 
+/**
+ * The arrangement a fresh install (and "Reset layout") gets. Readonly because it is
+ * shared: callers must spread it rather than hand the singleton to setState and then
+ * mutate it. Deliberately NOT versioned — stored blobs carry no schema stamp, so a
+ * discard-on-mismatch rule would wipe every existing user's dragged widths.
+ */
+export const DEFAULT_ROOM_LAYOUT: Readonly<RoomLayout> = { railW: 240, chatW: 340 };
+
 const clamp = (v: unknown, min: number, max: number, dflt: number): number => {
   const n = Number(v);
   return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : dflt;
@@ -27,8 +35,8 @@ export function loadRoomLayout(): RoomLayout {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) p = parsed;
   } catch { /* defaults */ }
   return {
-    railW: clamp(p.railW, RAIL_MIN, RAIL_MAX, 240),
-    chatW: clamp(p.chatW, CHAT_MIN, CHAT_MAX, 340),
+    railW: clamp(p.railW, RAIL_MIN, RAIL_MAX, DEFAULT_ROOM_LAYOUT.railW),
+    chatW: clamp(p.chatW, CHAT_MIN, CHAT_MAX, DEFAULT_ROOM_LAYOUT.chatW),
   };
 }
 
