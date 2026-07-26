@@ -58,3 +58,19 @@
 /* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`, so a
    keep-alive panel would otherwise stay visible behind the active one. */
 .dock-panel[hidden] { display: none; }
+
+/* A tab drag is hovering this zone's BODY (the strip writes data-dock-over="" on
+   itself instead, and stops propagation, so the two never light at once).
+   An INSET shadow rather than a border or an inserted element: zero layout shift,
+   so the panel underneath does not reflow 60 times a second during a drag. */
+.dock-zone[data-dock-over="zone"] {
+  box-shadow: inset 0 0 0 1px var(--color-accent-primary);
+  background: color-mix(in srgb, var(--color-accent-primary) 6%, transparent);
+}
+
+/* An empty zone (v2: legal) contributes nothing — the column that hosts it
+   collapses, and this keeps the frame from drawing a padded, bracketed void in
+   the one frame before the grid template catches up. */
+.dock-zone[data-dock-empty] { padding: 0; border: none; }
+.dock-zone[data-dock-empty]::before,
+.dock-zone[data-dock-empty]::after { content: none; }

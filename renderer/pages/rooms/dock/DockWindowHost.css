@@ -1,0 +1,132 @@
+/*
+ * DockWindowHost — the chrome of a torn-off dock group's window.
+ *
+ * SCOPE: this is the only place in the dock that draws a FRAME, and it does so
+ * because the frame it replaces is gone. A docked zone inherits the room column's
+ * class (`.room-col-rail` and friends: border, background, padding, corner
+ * brackets, `overflow: hidden`), and DockZone.css adds nothing visual on purpose.
+ * In a child window there is no column — `.popout-root` is a bare flex box — so
+ * the header bar and the body inset are supplied here and nowhere else.
+ *
+ * Theme tokens ONLY. Every radius is a `--radius-*` token, so the header chrome
+ * follows the theme's `--radius-scale` master (strict square at the default 0)
+ * exactly like the rest of the HUD. No literal colours, no literal radii, no
+ * hardcoded font stacks.
+ *
+ * Lineage: the header is the same 11px/700 uppercase display eyebrow as
+ * `.dock-tab` / `.room-section-title`, and the icon button matches
+ * `.vsm-popout-btn` (the voice-settings pop-out) so the two detached windows in
+ * the app do not look like they came from different products.
+ *
+ * NO `container-type` HERE. `.popout-root` already establishes one, and the zone
+ * establishes `dock`; a third containing block between them would trap any
+ * `position: fixed` overlay that a panel renders in place — the failure that looks
+ * almost right and is very hard to spot (see popout.ts's BASE_CSS note). The toast
+ * host deliberately portals to the window's <body>, outside all of this.
+ */
+
+.dock-window {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+/* Chrome: never shrinks, never scrolls away. The group below takes the slack. */
+.dock-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 6px 6px 6px var(--space-3);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-secondary);
+}
+
+.dock-window-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0; /* ...so the two spans below can actually ellipsize */
+  overflow: hidden;
+}
+
+.dock-window-title-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-primary);
+}
+
+/* The room name. Second in the visual hierarchy and FIRST to be sacrificed when
+   the window is narrow — which panels you are looking at matters more than which
+   room they belong to, and the OS title bar carries the full string anyway. */
+.dock-window-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.dock-window-acts {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.dock-window-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm); /* theme-scaled; square at --radius-scale: 0 */
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.dock-window-btn:hover {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+}
+
+/* No bespoke focus ring: base.css gives :focus-visible a --shadow-focus
+   box-shadow, and a second one here would double it (commit e35d5af). */
+
+/* The group's own box. Padding lives here rather than on the zone because the
+   zone must stay frame-agnostic — docked, its column already pads it. */
+.dock-window-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--space-3);
+}
+
+/* The zone fills the window. Docked, a grid track gives it its height; here
+   nothing does, and a zone that only sizes to its tab strip is a window showing a
+   row of tabs above a void. */
+.dock-window-body > .dock-zone {
+  flex: 1 1 auto;
+  min-height: 0;
+}

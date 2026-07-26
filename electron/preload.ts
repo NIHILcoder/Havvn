@@ -431,6 +431,26 @@ const api: IpcApi = {
       ipcRenderer.on('win:maximizeChanged', handler);
       return () => { ipcRenderer.removeListener('win:maximizeChanged', handler); };
     },
+    /**
+     * A dock pop-out was CLOSED. Main is the only place that can see this
+     * reliably: a window destroyed by the OS, by close-to-tray, or before its
+     * renderer ever ran never gets to report its own death, and its panels would
+     * be stranded in a window zone that no longer exists.
+     */
+    onPopoutClosed: (callback: (frameName: string) => void): (() => void) => {
+      const handler = (_e: IpcRendererEvent, p: { frameName: string }) => { callback(p?.frameName ?? ''); };
+      ipcRenderer.on('win:popoutClosed', handler);
+      return () => { ipcRenderer.removeListener('win:popoutClosed', handler); };
+    },
+    /** A pop-out was REFUSED (pool exhausted / policy), with the reason, so the UI
+     *  can say why instead of appearing to do nothing. */
+    onPopoutDenied: (callback: (info: { frameName: string; reason: string }) => void): (() => void) => {
+      const handler = (_e: IpcRendererEvent, p: { frameName: string; url: string; reason: string }) => {
+        callback({ frameName: p?.frameName ?? '', reason: p?.reason ?? '' });
+      };
+      ipcRenderer.on('win:popoutDenied', handler);
+      return () => { ipcRenderer.removeListener('win:popoutDenied', handler); };
+    },
   },
 
   // Mirror the renderer's UI language to main so the tray, native dialogs, and

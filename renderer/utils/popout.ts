@@ -203,17 +203,34 @@ export function usePopout(frameName: string, title: string, containerName?: stri
   // (and in dev every HMR update) injects its CSS afterwards, and the child would
   // render that part unstyled. Observing the MAIN document's head — deliberately,
   // that is where the app injects — keeps the child in sync while it is open.
-  // LIMIT: this tracks ADDED and REMOVED sheets, not a <style> whose textContent
-  // is rewritten in place. style-loader does that on an HMR edit, so a dev-only
-  // hot CSS change can go stale in an already-open child; reopening it re-clones.
+  //
+  // THREE kinds of change, not one. Beyond sheets being ADDED and REMOVED, a
+  // sheet's own TEXT can be rewritten in place, and that is not a dev-only
+  // curiosity: goober (which react-hot-toast is built on) keeps ONE
+  // <style id="_goober"> and appends every rule it ever generates onto that
+  // node's text. So a window torn off before the app's first toast ever rendered
+  // clones an almost-empty _goober sheet and then draws its toasts unstyled —
+  // and the same for any styled component first rendered after the tear-off.
+  // Hence characterData + subtree, mirroring textContent onto the matching clone.
+  // (style-loader rewrites the same way on an HMR edit, so this also closes the
+  // dev staleness this comment used to concede.)
   useEffect(() => {
     if (!popout) return;
     const clones = clonesRef.current;
+    const srcHead = document.head;
     const mo = new MutationObserver((records) => {
       if (popout.closed) return;
       const head = popout.document.head;
       const base = baseRef.current;
       for (const rec of records) {
+        // A record from INSIDE a tracked sheet (its text node changed, or its
+        // text node was swapped out) is an edit to that sheet, never a new one.
+        const owner = rec.type === 'characterData' ? rec.target.parentNode : rec.target;
+        if (owner && owner !== srcHead) {
+          const clone = clones.get(owner);
+          if (clone) clone.textContent = (owner as Element).textContent;
+          continue;
+        }
         for (const node of Array.from(rec.addedNodes)) {
           if (!isStylesheetNode(node) || clones.has(node)) continue;
           const clone = cloneSheet(node as Element);
@@ -228,7 +245,7 @@ export function usePopout(frameName: string, title: string, containerName?: stri
         }
       }
     });
-    mo.observe(document.head, { childList: true });
+    mo.observe(srcHead, { childList: true, characterData: true, subtree: true });
     return () => mo.disconnect();
   }, [popout]);
 

@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
-import { Toaster } from 'react-hot-toast';
+import { HostToaster } from './utils/hostToast';
 import { TitleBar, Sidebar, StatusBar, PageId, FilterMode, RoomPresence, VoiceCallInfo, OnlinePerson } from './layout';
 import { CompletionPending, DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
@@ -508,17 +508,11 @@ const AppContent: React.FC = () => {
 
   return (
     <>
-      <Toaster
-        position="bottom-right"
-        toastOptions={{
-          duration: 4000,
-          style: {
-            background: 'var(--color-bg-secondary)',
-            color: 'var(--color-text-primary)',
-            border: '1px solid var(--color-border)',
-          },
-        }}
-      />
+      {/* The app-wide default toaster. No toasterId and no portal target, so it
+          renders exactly where it always did and receives exactly the toasts a
+          bare `toast()` dispatches; a torn-off dock window mounts its own with
+          its frame name as the id (utils/hostToast.tsx). */}
+      <HostToaster />
       <div className="app-shell">
         <TitleBar />
         <div className="app-container">

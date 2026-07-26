@@ -342,30 +342,47 @@
 /* Released (on disk, seeding stopped) status glyph. */
 .room-status.released { color: var(--color-text-tertiary); }
 
-/* ── Three-region layout: People+Voice rail | Stage | Chat ─────────────────
-   Rail/chat widths come from CSS vars (set inline, draggable via .room-splitter);
-   the Stage flexes. The vars only feed the WIDE grid-template — the narrow
-   @container rules below set grid-template-columns directly so they still win. */
+/* ── Three DOCK ZONES: left | centre (+ watch/screen overlay) | right ───────
+   Positional columns, whose CONTENTS the dock model decides — any panel can live
+   in any of them, so nothing here names a panel.
+
+   THE INDIRECTION, and why it exists: the two draggable widths arrive as
+   `--rail-w` / `--chat-w` set INLINE (highest cascade origin short of !important),
+   so a stylesheet rule can never adjust them. Every rule below therefore works on
+   `--col-left` / `--col-right`, which this rule SEEDS from the inline vars. A
+   collapse class or a container query can then override the seed with an ordinary
+   declaration, and the user's dragged width survives underneath — it comes back
+   the moment the override stops applying. Only the CENTRE cases have to restate
+   `grid-template-columns` itself (a zero-width centre has to hand its slack to a
+   different column), and the narrow rules restate it too, exactly as before, which
+   is what keeps them winning over all of this. */
 .room-detail-grid {
+  --col-left: var(--rail-w, 240px);
+  --col-right: var(--chat-w, 340px);
+  --gut-left: 6px;
+  --gut-right: 6px;
   display: grid;
-  grid-template-columns: var(--rail-w, 240px) 6px minmax(0, 1fr) 6px var(--chat-w, 340px);
+  grid-template-columns: var(--col-left) var(--gut-left) minmax(0, 1fr) var(--gut-right) var(--col-right);
   gap: 0;
   align-items: stretch;   /* all regions take the full remaining height */
   flex: 1 1 auto;
   min-height: 0;
 }
 
-/* (.room-col-chat used to be listed here and is gone: RoomChat renders
-   `room-section room-chat-section` straight as the grid child, so the selector
-   never matched anything.) */
 .room-col-rail,
-.room-col-stage {
+.room-col-centre,
+.room-col-stage,
+.room-col-chat {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
   min-height: 0;
 }
+/* The stage WRAPS the centre zone (it also hosts the watch player / screen viewer,
+   neither of which is a dock panel), so the zone inside it has to fill. */
+.room-col-stage > .dock-zone { flex: 1 1 auto; }
+.room-col-chat { overflow: hidden; }
 /* The rail is one framed module, matching the files/chat zones (which frame via
    their inner .room-section). Same square border + brackets.
    It is also the host frame of the rail DOCK ZONE: the class lands on .dock-zone,
@@ -391,18 +408,20 @@
 }
 .room-col-rail::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
 .room-col-rail::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
-/* NOT a query container — deliberately, until the Stage can actually be torn off
-   (that is P4; today only the chat detaches). Making it one was tried and reverted
-   for two reasons worth recording:
-     1. containment makes the column a containing block for position:fixed
-        descendants, and NOT everything fixed in here portals out — TransferPickerModal
-        (RoomShareModals.tsx) renders a bare <Modal>, whose fixed backdrop was
-        trapped inside the column instead of covering the window;
-     2. the stage box is far narrower than the viewport (roughly room − 592px), so
-        re-pointing the viewport-based rules at it made them fire at ordinary window
-        sizes — the side-by-side player layout became unreachable at 1280px.
-   When the Stage becomes detachable, convert its rules WITH re-tuned thresholds and
-   verify both realms, rather than re-pointing viewport numbers at a smaller box. */
+/* STILL not a query container ITSELF, and the second of the two reasons it was
+   reverted stands unchanged: the stage box is far narrower than the viewport
+   (roughly room − 592px), so re-pointing the viewport-based player rules at it made
+   them fire at ordinary window sizes and the side-by-side player layout became
+   unreachable at 1280px. Convert those rules WITH re-tuned thresholds, never by
+   re-pointing viewport numbers at a smaller box.
+   The FIRST reason is now HANDLED rather than avoided: the centre dock zone nested
+   inside this wrapper carries `container-type: inline-size` (every zone does), so a
+   containing block for `position: fixed` exists here regardless. Everything fixed
+   under a panel therefore portals out to its own realm's <body> — the file row's
+   context menu, the image lightbox, DropdownMenu, ProfileCard, LanPeerPicker,
+   LanDiagnosticsModal, VoiceSettingsModal, ScreenSourcePicker, and (newly, because
+   it renders a bare <Modal>) TransferPickerModal. Any overlay added inside a panel
+   from now on must do the same. */
 .room-col-stage {
   overflow: hidden;  /* files list / player scroll internally */
 }
@@ -424,13 +443,35 @@
   transition: background 120ms ease, width 120ms ease;
 }
 .room-splitter:hover::before { background: var(--color-accent-primary); width: 2px; }
-.room-detail-grid.rail-collapsed { grid-template-columns: 0 6px minmax(0, 1fr) 6px var(--chat-w, 340px); }
+
+/* COLLAPSED (the user's toggle): the column goes to zero but its SPLITTER STAYS,
+   because double-clicking that track is how the rail comes back. */
+.room-detail-grid.rail-collapsed { --col-left: 0; }
 .room-detail-grid.rail-collapsed .room-col-rail { visibility: hidden; }
-/* Chat detached → collapse its column AND its splitter track so the stage reclaims
-   the space (no empty placeholder left). The chat lives in its own window. */
-.room-detail-grid.chat-popped { grid-template-columns: var(--rail-w, 240px) 6px minmax(0, 1fr) 0 0; }
-.room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 0 6px minmax(0, 1fr) 0 0; }
-.room-detail-grid.chat-popped .room-splitter-chat { display: none; }
+
+/* EMPTY (the model's doing — every panel moved out, or the whole group torn off
+   into its own window): the column AND its splitter track collapse, so the
+   neighbours reclaim the space with no placeholder left behind. This is one rule
+   per zone rather than a special case per panel: the old `.chat-popped` existed
+   only because the chat had a pop-out of its own, and it is gone with it.
+   Re-expansion is automatic — the class comes off the moment a panel lands back. */
+.room-detail-grid.left-empty { --col-left: 0; --gut-left: 0; }
+.room-detail-grid.right-empty { --col-right: 0; --gut-right: 0; }
+.room-detail-grid.left-empty .room-splitter-rail,
+.room-detail-grid.right-empty .room-splitter-chat { display: none; }
+/* The centre is the one column that cannot simply shrink: it is the flexible
+   track, so when it empties the slack has to go somewhere. It goes to the RIGHT
+   column, or to the left when the right is empty too. (All three empty is
+   unrepresentable — the model keeps at least one docked zone populated.) */
+.room-detail-grid.centre-empty { grid-template-columns: var(--col-left) var(--gut-left) 0 var(--gut-right) minmax(0, 1fr); }
+.room-detail-grid.centre-empty.right-empty { grid-template-columns: minmax(0, 1fr) 0 0 0 0; }
+/* NEVER hide the last visible column. `rail-collapsed` is a user toggle that is
+   independent of the dock model, so the model's "at least one docked zone has
+   panels" invariant cannot see it: collapse the rail while the centre and right
+   zones are empty and the surviving column is the one being hidden — a room that
+   is entirely present and entirely invisible. The template above already hands
+   that column all the width; this puts it back on screen. */
+.room-detail-grid.rail-collapsed.centre-empty.right-empty .room-col-rail { visibility: visible; }
 
 /* People panel of the rail dock: the member list fills + scrolls. The online/total
    count is not a header here — it rides on the People tab, so the panel is all list.
@@ -457,6 +498,17 @@
    including RoomLanPanel.css's, regardless of stylesheet order. */
 .room-col-rail .room-voice { padding: 0; border-radius: 0; border-bottom: none; }
 .room-col-rail .room-lan { padding: 0; border-top: none; }
+/* The left column is the one FRAMED zone (border + brackets + padding). Any panel
+   that carries its own card frame — Files and Chat both render `.room-section` —
+   would draw a second box inside it once the user moves it here, so the card
+   chrome is dropped for whatever lands in the rail. Generic on purpose: this is
+   about the COLUMN, not about which panel happens to be in it. */
+.room-col-rail .dock-panel > .room-section {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
 /* The member "have" count reads cryptic — give it a helper cursor (title attr). */
 .room-member-have { cursor: help; }
 
@@ -512,7 +564,9 @@
 .room-chat-section .room-zone-history { overflow-y: auto; }
 .room-history-zone { display: flex; flex-direction: column; }
 
-/* Detach chat into its own window: toggle at the right edge of the zone tabs. */
+/* Icon button at the right edge of the zone tabs. It was the chat's own detach
+   toggle (retired — detaching is `Move to ▸ New window` on the panel's tab, like
+   every other panel); the search toggle keeps the shape. */
 .room-zone-popout {
   margin-left: auto;
   display: inline-flex;
@@ -528,9 +582,14 @@
 /* A panel rendered INSIDE a pop-out window fills it edge to edge. The height comes
    from `.popout-root` (height:100% + flex column, injected by utils/popout.ts, so
    it exists even before this stylesheet is cloned in); only the card cosmetics are
-   left to undo. Generic on purpose — this serves any torn-off panel, not just chat,
-   which is what retires the old `.room-chat-popped` special case. */
-.popout-root > .room-section {
+   left to undo. Generic on purpose — it serves any torn-off panel, which is what
+   let the chat's bespoke `.room-chat-popped` special case be retired. */
+.popout-root > .room-section,
+/* …and the same once the panel is a dock panel inside a torn-off GROUP: the
+   window's own body supplies the frame, so a card border inside it is a box in a
+   box. Both selectors, because a group window nests one level deeper than the
+   single-panel pop-out this rule was written for. */
+.popout-root .dock-panel > .room-section {
   border: none;
   border-radius: 0;
 }
@@ -580,25 +639,32 @@
 .room-chat-bubble:hover .room-chat-copy { opacity: 1; }
 .room-chat-copy:hover { color: var(--color-text-primary); }
 
-/* MEDIUM: squeeze rail + chat, keep all three columns. Must set the PROPERTY, not
-   the vars — the vars are set inline (higher cascade origin) and would win. */
+/* MEDIUM: squeeze both side columns, keep all three. It sets the INTERNAL vars,
+   not `--rail-w`/`--chat-w` (which are inline and would win) and not the template
+   (which would have to be restated for every collapse combination) — so one pair
+   of declarations re-sizes every state, and the collapse rules above still
+   override it because they set the same internal vars later in the cascade. */
 @container room (max-width: 1040px) {
-  .room-detail-grid { grid-template-columns: 200px 6px minmax(0, 1fr) 6px 300px; }
-  .room-detail-grid.rail-collapsed { grid-template-columns: 0 6px minmax(0, 1fr) 6px 300px; }
-  .room-detail-grid.chat-popped { grid-template-columns: 200px 6px minmax(0, 1fr) 0 0; }
-  .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 0 6px minmax(0, 1fr) 0 0; }
+  .room-detail-grid { --col-left: 200px; --col-right: 300px; }
 }
 
-/* NARROW: single-column stack rail → stage → chat. The grid-template-columns
-   PROPERTY here beats the inline var-based template; the .rail-collapsed variant is
-   listed too so a collapsed rail still stacks (and re-shows) instead of staying hidden.
+/* NARROW: single-column stack left → centre → right. The grid-template-columns
+   PROPERTY here beats the var-driven template, and a collapsed rail is re-shown so
+   it stacks instead of staying hidden. An EMPTY zone still contributes no row
+   worth seeing (its `.dock-zone[data-dock-empty]` renders nothing and drops its
+   frame), so the stack needs no per-zone counterpart here.
    This block absorbed the old `@media (max-width: 980px)` one, which asked the
    wrong question twice over: the dock squeezes the room WITHOUT moving the
    viewport (so it fired late, or not at all), and a ~420px pop-out window matches
-   it unconditionally (so the detached chat needed a `.room-chat-popped` hack to
-   undo it — both are gone now). */
+   it unconditionally. */
 @container room (max-width: 720px) {
-  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: minmax(0, 1fr); }
+  /* Every selector that sets the TEMPLATE above is restated here, at the same
+     specificity and later in the file, so the single column wins in every state.
+     The collapse rules that only set `--col-*` need no counterpart — a one-column
+     template ignores those vars entirely. */
+  .room-detail-grid,
+  .room-detail-grid.centre-empty,
+  .room-detail-grid.centre-empty.right-empty { grid-template-columns: minmax(0, 1fr); }
   /* Stacked, the regions no longer share the room's height, so something has to
      scroll: the GRID does. The old block scrolled the PAGE (.room-detail /
      .room-detail-inner), which a container query cannot express — those two ARE
@@ -608,7 +674,7 @@
   .room-detail-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   .room-splitter { display: none; }
-  .room-col-rail, .room-col-stage { overflow: visible; }
+  .room-col-rail, .room-col-centre, .room-col-stage, .room-col-chat { overflow: visible; }
   .room-rail-people-list { overflow: visible; }
   /* Cards stop stretching so the stack flows; the chat log takes a fixed cap
      instead of filling a column it no longer has. */

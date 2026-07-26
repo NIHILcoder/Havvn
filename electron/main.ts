@@ -18,6 +18,10 @@ import {
 } from './utils/completion-action';
 import { isHavvnUrl, parseHavvnInvite } from './utils/deep-link';
 import { t, initMainI18n, setMainLanguage } from './i18n';
+import {
+  DOCK_WINDOW_FRAME_NAMES, LEGACY_CHAT_FRAME_NAME, isPopoutFrameName,
+  type PopoutDenyReason,
+} from '../shared/dock-windows';
 
 
 // Load environment variables
@@ -596,18 +600,44 @@ async function createWindow(): Promise<void> {
   // Pop-out panels: about:blank child windows the renderer scripts directly
   // (same-origin DOM portal — no navigation, no remote content), so the user can
   // drag them to a second monitor. Allowed strictly by frameName.
+  //
+  // The map is an ALLOWLIST and, for the dock, it is also the POOL: the room
+  // dock tears a whole panel GROUP off into one of `DOCK_WINDOW_FRAME_NAMES`
+  // (shared/dock-windows.ts, imported by the renderer's dock model too, so the
+  // two halves cannot drift). The pool is a literal Record, not a prefix regex —
+  // the security surface keeps exactly the shape it had with three static
+  // entries, and per-frameName bounds persistence keeps working unmodified, so
+  // `havvn-dock-1` always reopens where the user parked it.
+  //
+  // The pool being finite is what makes "beyond the pool" a real, checkable
+  // condition: a slot the allocator should never hand out (`havvn-dock-5`, or a
+  // retired name from a stale renderer) falls through to the deny branch below,
+  // which reports a REASON on `win:popoutDenied` rather than denying silently.
+  const DOCK_WINDOW_OPTS: Electron.BrowserWindowConstructorOptions =
+    { width: 460, height: 700, minWidth: 320, minHeight: 380 };
   const POPOUTS: Record<string, Electron.BrowserWindowConstructorOptions> = {
     'havvn-theme-editor': { width: 480, height: 900, minWidth: 360, minHeight: 480 },
-    'havvn-room-chat': { width: 420, height: 640, minWidth: 320, minHeight: 420 },
+    // 'havvn-room-chat' is DELETED with RoomChat's bespoke pop-out: chat is an
+    // ordinary dock panel now, so detaching it takes a pool slot like any other.
+    // Removing the name here is what stops a stale renderer from reopening the old
+    // window; its saved BOUNDS live on as the seed for dock slot 1 below.
     'havvn-voice-settings': { width: 540, height: 760, minWidth: 420, minHeight: 520 },
+    ...Object.fromEntries(DOCK_WINDOW_FRAME_NAMES.map((n) => [n, DOCK_WINDOW_OPTS])),
   };
   // Saved pop-out bounds, clamped: reject undersized ones, keep the position
   // only while it still lands on a connected display (same rule as the main
   // window's restoredBounds — a detached monitor must not strand the window).
+  //
+  // Dock slot 1 falls back to the retired chat pop-out's saved geometry when it
+  // has none of its own, so a user who had parked the detached chat on a second
+  // monitor finds their first torn-off group there instead of centred on the
+  // primary display. One read, no store migration, and it stops applying the
+  // moment slot 1 saves bounds of its own.
   const savedPopoutBounds = (frameName: string): Partial<Electron.Rectangle> => {
     try {
       const opts = POPOUTS[frameName];
-      const b = getPopoutBounds(frameName);
+      const b = getPopoutBounds(frameName)
+        ?? (frameName === DOCK_WINDOW_FRAME_NAMES[0] ? getPopoutBounds(LEGACY_CHAT_FRAME_NAME) : null);
       if (!opts || !b || b.width < (opts.minWidth ?? 200) || b.height < (opts.minHeight ?? 200)) return {};
       if (typeof b.x === 'number' && typeof b.y === 'number') {
         const visible = screen.getAllDisplays().some((d) => {
@@ -619,6 +649,21 @@ async function createWindow(): Promise<void> {
       }
       return { width: b.width, height: b.height };
     } catch { return {}; }
+  };
+
+  // A refusal the renderer can SURFACE. `window.open` already returns null when
+  // the handler denies, but null cannot say WHY, and the dock needs to tell the
+  // user something specific — it has just optimistically moved a panel group
+  // into a window that will never appear, and has to dock it straight back with
+  // an explanation. Only frames shaped like our pop-outs are reported: an
+  // ordinary external link arrives with frameName '' or '_blank' and is routed
+  // to the browser, which is a success, not a refusal.
+  const notifyPopoutDenied = (frameName: string, url: string, reason: PopoutDenyReason): void => {
+    if (!isPopoutFrameName(frameName)) return;
+    logger.warn('App', 'Pop-out refused', { frameName, reason });
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('win:popoutDenied', { frameName, url, reason });
+    }
   };
 
   mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
@@ -635,24 +680,45 @@ async function createWindow(): Promise<void> {
         },
       };
     }
+    // Not a pop-out we will open. `opts` present means the name is allowlisted
+    // but the request carried real content instead of about:blank — nothing we
+    // ship does that, so it is worth both a log line and a distinct reason.
+    notifyPopoutDenied(frameName, url, opts ? 'blocked-url' : 'not-allowed');
     if (url.startsWith('https://') || url.startsWith('http://')) {
       void shell.openExternal(url);
     }
     return { action: 'deny' };
   });
 
-  // Children allowed above (the theme-editor pop-out) are same-origin
-  // about:blank windows the renderer scripts directly. Lock each one down —
-  // it inherits the preload bridge, so it must never navigate or open windows
-  // of its own — and never let it outlive the window that scripts it (an
-  // orphaned child would also keep 'window-all-closed' from ever firing).
+  // Children allowed above (the theme-editor pop-out, the dock pool) are
+  // same-origin about:blank windows the renderer scripts directly. Lock each
+  // one down — it inherits the preload bridge, so it must never navigate or
+  // open windows of its own — and never let it outlive the window that scripts
+  // it (an orphaned child would also keep 'window-all-closed' from ever firing).
+  //
+  // Every protection below is name-agnostic, so the dock pool inherits all of
+  // it unchanged. Note the consequence for close-to-tray, which is deliberate:
+  // 'hide' closes every child, the renderer sees each one die and docks its
+  // panel group back, so restoring from the tray shows a COMPLETE room rather
+  // than one gutted by windows the user can no longer reach.
   const ownerWindow = mainWindow; // non-null capture for the closures below
   ownerWindow.webContents.on('did-create-window', (child, details) => {
     child.removeMenu(); // no app menu → no Ctrl+R accelerator reloading the child
-    // Remember where the user parked this pop-out (per frameName).
+    // Remember where the user parked this pop-out (per frameName — for the dock
+    // that means per POOL SLOT, which is why the allocator hands out the lowest
+    // free slot: the common single-group case always reuses slot 1's geometry).
     if (POPOUTS[details.frameName]) {
       child.on('close', () => {
         try { savePopoutBounds(details.frameName, child.getNormalBounds()); } catch { /* ignore */ }
+      });
+      // Tell the renderer the slot is free again, for ANY cause of death —
+      // user close, close-to-tray, owner closed, crash. The child's own
+      // beforeunload covers the common cases; this is the one signal that
+      // still arrives when the child's renderer never got to run.
+      child.on('closed', () => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('win:popoutClosed', { frameName: details.frameName });
+        }
       });
     }
     child.webContents.setWindowOpenHandler(({ url: childUrl }) => {

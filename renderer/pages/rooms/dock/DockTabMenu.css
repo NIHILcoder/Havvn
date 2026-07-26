@@ -1,0 +1,100 @@
+/*
+ * DockTabMenu styling.
+ *
+ * Visual lineage: `.context-menu` (ContextMenu.css) — the elevated surface, the
+ * 2px default border and the --shadow-lg the app already uses for every popup —
+ * with the dock's own 11px/700 uppercase HUD eyebrow for the group header, matching
+ * `.dock-tab` and `.room-section-title`.
+ *
+ * Theme tokens ONLY; radius from --radius-* (strict square at the default
+ * --radius-scale: 0), never a literal. No bespoke focus ring: base.css gives
+ * :focus-visible a --shadow-focus box-shadow, and a second ring here would be the
+ * double-ring bug commit e35d5af fixed.
+ *
+ * POSITIONING: `position: fixed` with left/top written by the component's clamp.
+ * The strip portals this menu to the OWNING document's BODY — never inside a zone —
+ * because `.dock-zone` and `.popout-root` set `container-type: inline-size`, which
+ * makes them containing blocks for fixed descendants and would trap the menu inside
+ * the panel's box.
+ */
+
+.dock-tab-menu {
+  position: fixed;
+  z-index: var(--z-modal);
+  min-width: 200px;
+  max-width: 320px;
+  padding: var(--space-2);
+  background: var(--color-bg-elevated);
+  border: 2px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.dock-tab-menu-header {
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-text-tertiary);
+}
+
+.dock-tab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.dock-tab-menu-item:hover:not(.refused) { background: var(--color-bg-hover); }
+
+/* Refused items stay in the tab order (aria-disabled, not `disabled`) so the
+   reason is reachable — the muting is the only thing that is visual. */
+.dock-tab-menu-item.refused {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+/* The radio mark for the panel's CURRENT zone. A dot, so --radius-full is the
+   right token here (the strict-square invariant deliberately keeps it for round
+   indicators). The slot is always present so labels line up whether marked or not. */
+.dock-tab-menu-mark {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: transparent;
+}
+.dock-tab-menu-item.checked .dock-tab-menu-mark { background: var(--color-accent-primary); }
+.dock-tab-menu-item.checked .dock-tab-menu-label { color: var(--color-text-secondary); }
+
+.dock-tab-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The refusal reason, rendered inline rather than only as a tooltip: a tooltip is
+   unreachable by keyboard and invisible on touch, and "why can't I click this" is
+   exactly the question a disabled item has to answer. */
+.dock-tab-menu-why {
+  flex: 0 1 auto;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  text-align: right;
+}
+
+.dock-tab-menu-sep {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--color-border-default);
+}

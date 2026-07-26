@@ -1078,6 +1078,11 @@ export interface IpcApi {
     close: () => void;
     isMaximized: () => Promise<boolean>;
     onMaximizeChange: (callback: (max: boolean) => void) => () => void;
+    /** A dock pop-out closed — including deaths its own renderer could never
+     *  report (OS close, close-to-tray, a window that died before it ran). */
+    onPopoutClosed: (callback: (frameName: string) => void) => () => void;
+    /** A pop-out was refused, with the reason, so the UI can explain it. */
+    onPopoutDenied: (callback: (info: { frameName: string; reason: string }) => void) => () => void;
   };
   // Mirror the renderer's UI language to main (localizes tray/dialogs/notifications)
   setLanguage: (lang: string) => void;

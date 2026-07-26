@@ -69,10 +69,36 @@
  * detached window sends its overlay to the main window instead (LanPeerPicker,
  * LanDiagnosticsModal and ProfileCard all resolve it that way).
  *
- * No drag-and-drop, no tear-off, no reordering here — P1 is selection only.
+ * ── P3: an EMPTY zone, and moving panels in and out ──────────────────────────
+ * v2 of the model deletes v1's "no zone is ever empty" rule: a docked zone MAY now
+ * hold nothing (that is what "Voice and Chat together on the second monitor" does
+ * to a column). So `activeId` widens to `P | ''` and `panels` may be empty — the
+ * zone then renders its ROOT AND NOTHING ELSE. It must still render the root: the
+ * three columns are grid children by POSITION, and a zone that vanished would
+ * shift the ones after it. The column's own CSS collapses it to zero width.
+ *
+ * The optional `dock` prop is the whole of P3's interaction surface. Absent = the
+ * P1 zone (selection only). Present, it is handed to the tab strip (drag source,
+ * drop target, "Move to" menu) and it also makes the zone BODY a drop target:
+ * the strip is ~24px tall and at the 180px rail minimum that is a hostile Fitts
+ * target where a miss loses the whole gesture, while the body is the whole column
+ * and is what "put Chat over there" actually means. A body drop APPENDS (index
+ * null) — this dock has fixed zones, so there is deliberately no quadrant/split
+ * target. The strip stops propagation on accept, so the body wash never lights
+ * while the pointer is over the strip.
  */
-import React, { useRef } from 'react';
+import React, { useCallback, useRef } from 'react';
 import { DockTabStrip, dockTabDomId, dockPanelDomId, dockCycleIndex } from './DockTabStrip';
+import type { DockStripInteractions } from './DockTabStrip';
+import {
+  DOCK_DND_TYPE,
+  DOCK_MAIN_WINDOW_KEY,
+  endDockDrag,
+  isDockDrag,
+  parseDockDragPayload,
+  resolveDockDrop,
+  setDockDragOver,
+} from './dockDrag';
 import './DockZone.css';
 
 /**
@@ -105,12 +131,12 @@ export interface DockZonePanel<P extends string = string> {
 }
 
 export interface DockZoneProps<P extends string = string> {
-  /** Zone identity ('rail' in P1). Namespaces the DOM ids; also a `data-` hook. */
+  /** Zone identity ('left' | 'centre' | 'right' | a window slot). Namespaces the DOM ids. */
   zoneId: string;
-  /** The panels docked here, in tab order. The model guarantees this is non-empty. */
+  /** The panels docked here, in tab order. MAY be empty (v2) — see the header. */
   panels: readonly DockZonePanel<P>[];
-  /** The selected panel. Repaired to the first panel if it is not in `panels`. */
-  activeId: P;
+  /** The selected panel — '' iff the zone is empty. Repaired against `panels`. */
+  activeId: P | '';
   /** Selection request from the strip. The owner persists it; the zone does not. */
   onSelect: (panelId: P) => void;
   /** The render map: panel id → its content. Called only for MOUNTED panels. */
@@ -121,6 +147,11 @@ export interface DockZoneProps<P extends string = string> {
   className?: string;
   /** Drop the strip when there is only one panel (RoomStage's existing habit). */
   hideSingleTab?: boolean;
+  /**
+   * P3 move wiring — drag source, drop target and the per-tab "Move to" menu.
+   * Absent ⇒ the P1 zone (selection only), with no drag handlers anywhere.
+   */
+  dock?: DockStripInteractions;
 }
 
 export interface DockMountResult<P extends string = string> {
@@ -187,8 +218,10 @@ export function DockZone<P extends string = string>({
   ariaLabel,
   className,
   hideSingleTab = false,
+  dock,
 }: DockZoneProps<P>): React.ReactElement {
   const idPrefix = `dock-${zoneId}`;
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // The keep-alive set lives in a ref rather than state: it is derived bookkeeping,
   // and resolving it during render keeps the mount decision in the same pass as the
@@ -199,8 +232,36 @@ export function DockZone<P extends string = string>({
   const { activeId: active, mounted, alive } = resolveDockMount(panels, activeId, aliveRef.current);
   aliveRef.current = alive;
 
-  const showStrip = panels.length > 1 || !hideSingleTab;
+  const showStrip = panels.length > 0 && (panels.length > 1 || !hideSingleTab);
   const rootClass = ['dock-zone', `dock-zone-${zoneId}`, className].filter(Boolean).join(' ');
+
+  // ── zone-body drop target ─────────────────────────────────────────────────
+  // Same guard order as the strip's, and the same single check in both places:
+  // only a drag carrying DOCK_DND_TYPE is ever preventDefault'ed, so an OS file
+  // drag ('Files') and a room file-row drag ('text/havvn-fileid') fall straight
+  // through to the room's own overlay. Nothing here touches React state — hover is
+  // a DOM attribute written by dockDrag.ts and read by CSS (invariant C).
+  const windowKey = dock?.windowKey ?? DOCK_MAIN_WINDOW_KEY;
+  const onZoneDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!dock || !isDockDrag(e.dataTransfer.types)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    setDockDragOver(rootRef.current, 'zone');
+  }, [dock]);
+  const onZoneDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!dock || !isDockDrag(e.dataTransfer.types)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const payload = parseDockDragPayload(e.dataTransfer.getData(DOCK_DND_TYPE));
+    endDockDrag();
+    // index null: a body drop appends at the end of the tab order and activates.
+    const plan = resolveDockDrop(payload, {
+      zone: zoneId, win: windowKey, panels: panels.map((p) => p.id), index: null,
+    });
+    if (!plan || plan.kind === 'noop') return;
+    dock.onMovePanel(plan.panel, plan.to, plan.index);
+  }, [dock, panels, windowKey, zoneId]);
 
   // Ctrl/Cmd+PageUp/PageDown is handled HERE, on the element that wraps both the
   // strip and the panels, because the strip is the panels' SIBLING — a handler on
@@ -217,7 +278,17 @@ export function DockZone<P extends string = string>({
   };
 
   return (
-    <div className={rootClass} data-dock-zone={zoneId} onKeyDown={onRootKeyDown}>
+    <div
+      ref={rootRef}
+      className={rootClass}
+      data-dock-zone={zoneId}
+      // An empty zone is legal and renders as nothing; the class lets the column
+      // collapse without the host having to duplicate the model's emptiness test.
+      data-dock-empty={panels.length === 0 ? '' : undefined}
+      onKeyDown={onRootKeyDown}
+      onDragOver={dock ? onZoneDragOver : undefined}
+      onDrop={dock ? onZoneDrop : undefined}
+    >
       {showStrip && (
         <DockTabStrip
           idPrefix={idPrefix}
@@ -225,6 +296,7 @@ export function DockZone<P extends string = string>({
           tabs={panels.map((p) => ({ id: p.id, label: p.label, icon: p.icon, badge: p.badge, title: p.title }))}
           activeId={active}
           onSelect={(id) => onSelect(id as P)}
+          dock={dock}
         />
       )}
       {mounted.map((id) => (

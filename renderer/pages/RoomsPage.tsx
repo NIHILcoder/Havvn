@@ -16,15 +16,19 @@ import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, 
 import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
-import { usePopout } from '../utils/popout';
 import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/hostWindow';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
 import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
+import type { DockStripInteractions, DockTabAction } from './rooms/dock/DockTabStrip';
+import { DockWindowHost } from './rooms/dock/DockWindowHost';
+import type { DockBackReason } from './rooms/dock/DockWindowHost';
 import {
-  PANEL_BY_ID, DockPanelId, DockZoneId,
+  PANEL_BY_ID, DockPanelId, DockZoneId, DockDockedZoneId, DockWindowZoneId, DockLayout, DockOpResult, DockRefusal,
+  isDockedZone, isWindowZone, dockWindowFrameName, openWindowZones, DOCK_WINDOW_ZONE_IDS,
   loadDockLayout, saveDockLayout, resetDockLayout, setActivePanel, zonePanels, activePanel, zoneOfPanel,
+  movePanel, detachPanel, tearOffZone, dockBackZone, moveTargets, detachTarget, tearOffTarget,
 } from './rooms/dock/dockModel';
 import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
@@ -91,7 +95,37 @@ function membersWithFile(room: RoomState, fileId: string): number {
   return room.members.filter((m) => m.have.includes(fileId)).length;
 }
 
-type RoomsTFn = (key: keyof typeof import('../i18n/en.json')) => string;
+type RoomsTKey = keyof typeof import('../i18n/en.json');
+type RoomsTFn = (key: RoomsTKey) => string;
+
+/**
+ * Dock chrome strings, resolved from model values so the UI can never invent a
+ * label the model does not have (and so a new zone or refusal fails to compile
+ * here rather than rendering a raw id).
+ */
+/** Zone name — the "Move to" menu items. Window zones are never move targets. */
+const DOCK_ZONE_NAME: Record<DockDockedZoneId, RoomsTKey> = {
+  left: 'rooms.dock.zone.left',
+  centre: 'rooms.dock.zone.centre',
+  right: 'rooms.dock.zone.right',
+};
+/** Accessible name of each zone's tablist. */
+const DOCK_ZONE_TABS: Record<DockDockedZoneId, RoomsTKey> = {
+  left: 'rooms.dock.leftTabs',
+  centre: 'rooms.dock.centreTabs',
+  right: 'rooms.dock.rightTabs',
+};
+/**
+ * A refusal is ALWAYS shown with its reason — as a toast when the user commits
+ * the move, and inline (tooltip + description) on the disabled menu item. A
+ * disabled item with no explanation is exactly the silent no-op this phase forbids.
+ */
+const DOCK_REFUSAL_TEXT: Record<DockRefusal, RoomsTKey> = {
+  'last-docked-group': 'rooms.dock.refuse.lastGroup',
+  'window-pool-exhausted': 'rooms.dock.refuse.poolExhausted',
+  'unknown-panel': 'rooms.dock.refuse.unknown',
+  'unknown-zone': 'rooms.dock.refuse.unknown',
+};
 
 /** Human text for one activity-log event (actor name is rendered separately). */
 function eventText(t: RoomsTFn, ev: import('../../shared/types').RoomEvent): string {
@@ -1495,142 +1529,103 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
 
       </div>
 
-      {pickTransfer && (
+      {/* PORTALLED, and it has to be: this panel is a dock panel now, so it sits
+          inside `.dock-zone`, which is `container-type: inline-size` — a containing
+          block for `position: fixed` descendants. TransferPickerModal renders a bare
+          <Modal>, whose fixed backdrop would be trapped inside the panel box instead
+          of covering the window (the exact hazard `.room-col-stage` used to avoid by
+          refusing to be a container). Every other overlay under this panel already
+          portals out: the row context menu, the image lightbox, DropdownMenu. */}
+      {pickTransfer && createPortal(
         <TransferPickerModal
           roomId={room.roomId}
           onClose={() => setPickTransfer(false)}
           onShared={onShared}
-        />
+        />,
+        portalTargetFor(null, host),
       )}
     </div>
   );
 };
 
-// ── People rail (left region: ONE dock zone — Voice / LAN / People as tabs) ─
+// ── The dockable panels ────────────────────────────────────────────────────
 //
-// The three panels used to be stacked in this 180-360px column, so an INACTIVE
-// panel (Voice and LAN each render a big CTA when off) cost as much height as an
-// active one. They are tabs now: same three components, unchanged, as the tab
-// bodies. The zone shell (strip + active panel + the `room-col-rail` framing it
-// keeps wearing) is DockZone; which panels live here and which one is showing is
-// the persisted dock model, owned by RoomDetail so the head-bar chips can
-// deep-link into a panel.
-const RoomPeopleRail: React.FC<{
-  room: RoomState;
-  onWatchShare: (memberId: string) => void;
-  /** Panel ids docked in this zone, in tab order (from the persisted model). */
-  panelIds: readonly DockPanelId[];
-  activeId: DockPanelId;
-  onSelect: (panel: DockPanelId) => void;
-}> = ({ room, onWatchShare, panelIds, activeId, onSelect }) => {
-  const { t } = useTranslation();
-  const online = room.members.filter((m) => m.online);
-  // The registry owns identity (label key, icon, keep-alive); the zone gets it
-  // already resolved. The People head's online/total count is hoisted onto the tab
-  // — with a tab labelled "People" right above it, a second header saying the same
-  // thing is exactly the crowding this phase removes.
-  // A tab hides its panel's state, so anything that USED to be permanently visible
-  // in the stacked rail and needs a response must survive on the tab itself —
-  // otherwise the dock quietly swallows it. Today that is the incoming LAN invite:
-  // it renders as a Join button inside RoomLanPanel, so on any other tab the user
-  // would never learn they were invited. An active session is also worth a mark,
-  // since it costs an adapter and (possibly) relayed bandwidth.
-  const lanBadge = room.lan?.selfAdmitted && !room.lan?.active
-    ? '!'                                    // invited, not joined — needs action
-    : room.lan?.active ? '•' : undefined;    // running
-  const panels: DockZonePanel<DockPanelId>[] = panelIds.map((id) => {
-    const def = PANEL_BY_ID[id];
-    return {
-      id,
-      label: t(def.labelKey),
-      icon: <Icon name={def.icon} size={13} />,
-      keepAlive: def.keepAlive,
-      badge: id === 'people'
-        ? `${online.length}/${room.members.length}`
-        : id === 'lan' ? lanBadge : undefined,
-      // The badge is read as part of the tab's accessible name, so anything whose
-      // meaning is not obvious from the label gets an explicit tooltip.
-      title: id === 'lan' && lanBadge === '!' ? t('rooms.lan.accept')
-        : id === 'people' ? t('rooms.onlineOfTotal') : undefined,
-    };
-  });
-  // Called only for MOUNTED panels. Voice and LAN are keep-alive (see the registry):
-  // Voice's unmount flushes the debounced settings push and tears down the PTT
-  // listeners; LAN's unmount loses its latched terminal-failure map.
-  const renderPanel = (id: DockPanelId): React.ReactNode => {
-    switch (id) {
-      case 'voice':
-        return <RoomVoicePanel room={room} onWatchShare={onWatchShare} />;
-      case 'lan':
-        return (
-          <RoomLanPanel
-            lan={room.lan}
-            members={room.members}
-            selfId={room.members.find((m) => m.isSelf)?.memberId}
-            onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
-            onStop={async () => { await window.api.rooms.lan.stop(room.roomId); }}
-            onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
-            onInvite={async (ids) => { await Promise.all(ids.map((id2) => window.api.rooms.lan.invite(room.roomId, id2))); }}
-            onEvict={async (id2) => { await window.api.rooms.lan.evict(room.roomId, id2); }}
-            onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
-            onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
-            onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
-          />
-        );
-      case 'people':
-        return (
-          <div className="room-rail-people">
-            {/* The scroller stays HERE, not on .dock-panel: overflow-y:auto computes
-                overflow-x to auto, which would make the panel body a clip box and cut
-                off the full-rail-width voice popover. */}
-            <div className="room-rail-people-list">
-              <RoomMembersList room={room} />
-            </div>
-          </div>
-        );
-      default:
-        return null;
-    }
-  };
-  return (
-    <DockZone
-      zoneId="rail"
-      className="room-col-rail"
-      ariaLabel={t('rooms.dock.railTabs')}
-      panels={panels}
-      activeId={activeId}
-      onSelect={onSelect}
-      renderPanel={renderPanel}
-    />
-  );
-};
+// P1 made the left rail a tab GROUP. P3 makes all three columns zones, so a panel
+// is no longer "the thing that lives in the rail": Voice, LAN, People, Files and
+// Chat are five interchangeable bodies that the persisted model places, and the
+// column supplies the framing. Both halves of that — the tab PRESENTATION and the
+// panel BODY — are resolved here, once, and handed to whichever zone (docked
+// column or torn-off window) currently owns the panel.
+//
+// A tab hides its panel's state, so anything that USED to be permanently visible
+// and needs a response must survive on the tab itself — otherwise the dock quietly
+// swallows it. Today that is the incoming LAN invite: it renders as a Join button
+// inside RoomLanPanel, so on any other tab the user would never learn they were
+// invited. An active session is also worth a mark, since it costs an adapter and
+// (possibly) relayed bandwidth.
+function dockPanelBadge(room: RoomState, id: DockPanelId): { badge?: React.ReactNode; titleKey?: RoomsTKey } {
+  if (id === 'people') {
+    const online = room.members.filter((m) => m.online).length;
+    // The People head's online/total count rides on the tab — with a tab labelled
+    // "People" right above it, a second header saying the same thing is exactly the
+    // crowding this phase removes. The badge joins the tab's accessible name, so it
+    // gets an explicit tooltip.
+    return { badge: `${online}/${room.members.length}`, titleKey: 'rooms.onlineOfTotal' };
+  }
+  if (id === 'lan') {
+    if (room.lan?.selfAdmitted && !room.lan?.active) return { badge: '!', titleKey: 'rooms.lan.accept' };
+    if (room.lan?.active) return { badge: '•' };
+  }
+  if (id === 'chat') {
+    // Unread is not modelled; the log length is not a notification. Nothing here.
+    return {};
+  }
+  return {};
+}
 
-// ── Stage (center region: files by default; inline watch / screen viewer) ──
+/** The registry-resolved tab presentation for one panel (labels already translated). */
+function dockPanelTab(t: RoomsTFn, room: RoomState, id: DockPanelId): DockZonePanel<DockPanelId> {
+  const def = PANEL_BY_ID[id];
+  const { badge, titleKey } = dockPanelBadge(room, id);
+  return {
+    id,
+    label: t(def.labelKey),
+    icon: <Icon name={def.icon} size={13} />,
+    keepAlive: def.keepAlive,
+    badge,
+    title: titleKey ? t(titleKey) : undefined,
+  };
+}
+
+// ── Stage (centre column: the centre dock zone, plus the watch / screen view) ─
+//
+// The watch player and the screen viewer are NOT dock panels and never move. They
+// are transient (created and destroyed per session, with no persistent identity),
+// so a registry entry for them would be a panel that repair keeps re-adding with
+// nothing to show. They render as an overlay bound to the CENTRE zone instead —
+// coherent precisely because an empty docked zone is now legal: move Files to a
+// second monitor and the player gets the whole column to itself.
 interface StageProps {
   room: RoomState;
   stageView: StageView;
   onCloseStage: () => void;
-  onWatch: (file: RoomFile) => void;
-  onWatchJoin: (file: RoomFile) => void;
-  watchCounts: Record<string, number>;
-  onInvite: () => void;
-  onAddFiles: (folderId?: string) => void;
-  onDropFiles: (paths: string[], folderId?: string) => void;
-  onCreateFolder: (name: string, icon: string, color: string, parentId?: string) => void;
-  onUpdateFolder: (folderId: string, patch: { name?: string; icon?: string; color?: string; parentId?: string | null }) => void;
-  onDeleteFolder: (folderId: string) => void;
-  onAssignFile: (fileId: string, folderId: string | null) => void;
-  onShared: (state: RoomState) => void;
-  onToggleAutoFetch: (autoFetch: boolean) => void;
-  busy: boolean;
+  /** The centre dock zone — what the stage shows when no watch/screen view is open. */
+  zone: React.ReactNode;
+  /**
+   * Label of the "back to the column" tab. It names whatever the centre zone is
+   * actually showing (which is Files by default but need not be), so the tab never
+   * promises a panel the user has moved elsewhere.
+   */
+  homeLabel: string;
+  homeIcon: React.ReactNode;
 }
-const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatch, onWatchJoin, watchCounts, onInvite, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onShared, onToggleAutoFetch, busy }) => {
+const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, homeLabel, homeIcon }) => {
   const { t } = useTranslation();
   const self = room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' };
   const shareName = stageView.kind === 'screen'
     ? (() => { const m = room.members.find((mm) => mm.memberId === stageView.memberId); return m?.isSelf ? t('rooms.you') : (m?.name || '?'); })()
     : '';
-  const tabs = [{ id: 'files', label: t('rooms.stage.files'), icon: <Icon name="folder-open" size={13} /> }];
+  const tabs = [{ id: 'files', label: homeLabel, icon: homeIcon }];
   if (stageView.kind === 'watch') tabs.push({ id: 'watch', label: stageView.file.name, icon: <Icon name="film" size={13} /> });
   if (stageView.kind === 'screen') tabs.push({ id: 'screen', label: shareName, icon: <Icon name="screen-share" size={13} /> });
   return (
@@ -1645,12 +1640,7 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, onWatc
       ) : stageView.kind === 'screen' ? (
         <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
       ) : (
-        <RoomFilesPanel
-          room={room} onWatch={onWatch} onWatchJoin={onWatchJoin} watchCounts={watchCounts} onInvite={onInvite}
-          onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
-          onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
-          onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} busy={busy}
-        />
+        zone
       )}
     </div>
   );
@@ -1846,7 +1836,8 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // grid-template-columns PROPERTY) still wins and stacks the columns.
   const [layout, setLayout] = useState(loadRoomLayout);
   const [railCollapsed, setRailCollapsed] = useState(false);
-  const [chatPopped, setChatPopped] = useState(false); // chat detached → collapse its column
+  // (`chatPopped` is gone with RoomChat's bespoke pop-out: a detached chat is now
+  // an ordinary empty right-hand zone, collapsed by the same rule as any other.)
   const dragRef = useRef<null | { edge: 'rail' | 'chat'; startX: number; startW: number }>(null);
   const onSplitDown = (edge: 'rail' | 'chat') => (e: React.PointerEvent) => {
     e.preventDefault();
@@ -1877,27 +1868,117 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // blob can never take the splitter widths above down with it. Persisted on
   // COMMIT (a tab switch), mirroring saveRoomLayout on pointer-up.
   const [dock, setDock] = useState(loadDockLayout);
-  // The model guarantees a zone is never empty and that `active` is one of its
-  // panels; the `??` is belt-and-braces so a future zone id typo degrades to a
-  // visible panel instead of a blank rail.
-  const railPanels = zonePanels(dock, 'rail');
-  const railActive = activePanel(dock, 'rail') ?? railPanels[0];
+  /**
+   * Focus the tab of the panel a move just landed. Without it focus falls to
+   * <body> after every move and the KEYBOARD path — the one that must work, and
+   * the only one that exists across a window boundary — is unusable in practice.
+   *
+   * This is the ONE state change a move legitimately causes, and it is once per
+   * move, not once per pointer event: nothing about a DRAG is in React state at
+   * all (hover, the insertion marker and the source dimming are DOM attributes
+   * written by dockDrag.ts and read by CSS — invariant C).
+   *
+   * It is cleared on the very next commit. Passive effects run children-first, so
+   * the destination strip's focus effect has already fired by the time this one
+   * does, and clearing re-arms the same panel being moved twice in a row.
+   */
+  const [focusPanel, setFocusPanel] = useState<DockPanelId | null>(null);
+  useEffect(() => { if (focusPanel) setFocusPanel(null); }, [focusPanel]);
+
+  /**
+   * Apply one model operation, ALWAYS against the freshest layout.
+   *
+   * Every dock mutation goes through a functional update rather than the `dock`
+   * captured in this render's closure. The concrete failure that forces it: two
+   * dock windows dying in the same React batch (close-to-tray hides the owner and
+   * closes every child at once) both computed their dock-back from the SAME stale
+   * snapshot, so the second overwrote the first and one group's panels vanished
+   * from the model — the exact stranding invariant A exists to prevent.
+   *
+   * Persisting happens in the effect below, not here: a state updater must stay
+   * pure (React may invoke it twice in StrictMode, and writing storage from inside
+   * it would double-write and, worse, could persist a layout React then discards).
+   */
+  const commitDock = (op: (prev: DockLayout) => DockLayout) => {
+    setDock((prev) => op(prev));
+  };
+  useEffect(() => { saveDockLayout(dock); }, [dock]);
+  const refusalText = (r: DockRefusal | null): string | null => (r ? t(DOCK_REFUSAL_TEXT[r]) : null);
+  /**
+   * Run one model operation. A refusal is ALWAYS surfaced with its reason — the
+   * same discipline the main process applies to a denied window, at the model
+   * boundary — and never as a silent no-op. The op receives the live layout.
+   */
+  const runDockOp = (op: (prev: DockLayout) => DockOpResult, focus?: DockPanelId) => {
+    let refused: DockRefusal | null = null;
+    let changed = false;
+    setDock((prev) => {
+      const res = op(prev);
+      if (res.refused) { refused = res.refused; return prev; }
+      changed = res.layout !== prev;
+      return res.layout;
+    });
+    if (refused) { toast.error(t(DOCK_REFUSAL_TEXT[refused])); return; }
+    if (focus && changed) setFocusPanel(focus);
+  };
   const selectDockPanel = (zone: DockZoneId, panel: DockPanelId) => {
-    const next = setActivePanel(dock, zone, panel);
-    if (next === dock) return; // already active, or not docked in that zone
-    setDock(next);
-    saveDockLayout(next);
+    commitDock((prev) => setActivePanel(prev, zone, panel));
   };
   // Head-bar chips deep-link to a PANEL, not to a zone: ask the model where the
-  // panel currently lives, so the chips keep working if a later phase moves it.
+  // panel currently lives, so the chips keep working now that it can be anywhere —
+  // including inside a torn-off window, where this still selects its tab.
   const revealDockPanel = (panel: DockPanelId) => {
     const zone = zoneOfPanel(dock, panel);
     if (zone) selectDockPanel(zone, panel);
   };
+  /**
+   * A dock window is gone, for ANY reason: the user's ✕, close-to-tray (main.ts
+   * closes every child on the owner's `hide`), owner close, quit — or it never
+   * opened at all. Every route means the same thing to the model: the group comes
+   * home, as a group, to the zone it was torn from. Uniformity is the safety
+   * property — every close path re-establishes "the room is never empty" with no
+   * special case.
+   */
+  const onDockWindowGone = (w: DockWindowZoneId, reason: DockBackReason) => {
+    // Denied by the allowlist, refused by the OS, or the slot is still dying. The
+    // panels are rendering NOWHERE at this instant, so this is not advisory.
+    if (reason === 'openFailed') toast.error(t('rooms.dock.refuse.windowBlocked'));
+    // Functional: close-to-tray kills every dock window in ONE batch, so each
+    // handler must fold its group into whatever the previous one already produced,
+    // not into the layout this render captured.
+    commitDock((prev) => {
+      const res = dockBackZone(prev, w);
+      return res.refused ? prev : res.layout; // refused = already home
+    });
+  };
+  /**
+   * MAIN-PROCESS window deaths. A dock window that dies without its renderer ever
+   * running — denied by the allowlist, killed by the OS, closed by close-to-tray
+   * before it mounted — cannot report its own death, so its panels would sit in a
+   * window zone that no longer exists and render NOWHERE. Main sees every one of
+   * those routes; this is the only path that hears about them.
+   */
+  useEffect(() => {
+    const byFrame = new Map(DOCK_WINDOW_ZONE_IDS.map((z) => [dockWindowFrameName(z), z]));
+    const offClosed = window.api.win.onPopoutClosed((frameName) => {
+      const zone = byFrame.get(frameName);
+      if (zone) onDockWindowGone(zone, 'closed');
+    });
+    const offDenied = window.api.win.onPopoutDenied(({ frameName }) => {
+      const zone = byFrame.get(frameName);
+      if (zone) onDockWindowGone(zone, 'openFailed');
+    });
+    return () => { offClosed(); offDenied(); };
+    // onDockWindowGone only ever calls setDock functionally + toast, so a stale
+    // closure cannot mis-apply the fold-back; binding once avoids re-subscribing
+    // on every dock change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // "Reset layout" (room-settings popover — deliberately OUTSIDE the dock, so it
-  // survives any dock state). Restores the default widths, un-collapses the rail
-  // and drops the stored dock arrangement. It does NOT touch chatPopped: that flag
-  // is owned by RoomChat's own pop-out window.
+  // survives any dock state, including one the user cannot click their way out of).
+  // Dropping the stored arrangement also folds every torn-off group home, which
+  // unmounts its DockWindowHost and closes the OS window with it.
   const resetLayout = () => {
     const dflt = { ...DEFAULT_ROOM_LAYOUT };
     setLayout(dflt);
@@ -1905,6 +1986,155 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     setRailCollapsed(false);
     setDock(resetDockLayout());
   };
+
+  /**
+   * THE render map — panel id → its body. One switch for all five panels and all
+   * seven zones, so a panel is wired exactly once no matter where it is placed;
+   * the zone supplies only the framing and the tab.
+   *
+   * Called only for MOUNTED panels (DockZone's mount policy). Voice, LAN and Chat
+   * are keep-alive in the registry, so they mount eagerly and survive a TAB switch:
+   * Voice's unmount flushes the debounced settings push and tears down the PTT
+   * listeners, LAN's loses its latched terminal-failure map, Chat's loses the
+   * composer draft.
+   */
+  const renderDockPanel = (id: DockPanelId): React.ReactNode => {
+    switch (id) {
+      case 'voice':
+        return <RoomVoicePanel room={room} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} />;
+      case 'lan':
+        return (
+          <RoomLanPanel
+            lan={room.lan}
+            members={room.members}
+            selfId={room.members.find((m) => m.isSelf)?.memberId}
+            onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
+            onStop={async () => { await window.api.rooms.lan.stop(room.roomId); }}
+            onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
+            onInvite={async (ids) => { await Promise.all(ids.map((id2) => window.api.rooms.lan.invite(room.roomId, id2))); }}
+            onEvict={async (id2) => { await window.api.rooms.lan.evict(room.roomId, id2); }}
+            onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
+            onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
+            onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
+          />
+        );
+      case 'people':
+        return (
+          <div className="room-rail-people">
+            {/* The scroller stays HERE, not on .dock-panel: overflow-y:auto computes
+                overflow-x to auto, which would make the panel body a clip box and cut
+                off the full-rail-width voice popover. */}
+            <div className="room-rail-people-list">
+              <RoomMembersList room={room} />
+            </div>
+          </div>
+        );
+      case 'files':
+        return (
+          <RoomFilesPanel
+            room={room}
+            onWatch={(file) => setStageView({ kind: 'watch', file })}
+            onWatchJoin={(file) => setStageView({ kind: 'watch', file, together: true })}
+            watchCounts={watchCounts} onInvite={onInvite}
+            onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
+            onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
+            onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} busy={busy}
+          />
+        );
+      case 'chat':
+        return <RoomChat room={room} onAttachRequest={() => onAddFiles()} />;
+      default:
+        return null;
+    }
+  };
+
+  /**
+   * The move surface handed to one zone's tab strip. Everything arrives already
+   * translated (the dock folder never calls `t()`), and every destination and
+   * action carries its REFUSAL text, so the menu can disable an item with the
+   * reason attached instead of letting the user click into nothing.
+   */
+  const dockInteractions = (zone: DockZoneId, windowKey?: string): DockStripInteractions => ({
+    zoneId: zone,
+    windowKey,
+    moveTargets: (panelId) => moveTargets(dock, panelId as DockPanelId).map((tg) => ({
+      zone: tg.zone,
+      label: t(DOCK_ZONE_NAME[tg.zone]),
+      refusal: refusalText(tg.refused),
+      // The panel's CURRENT zone is LISTED, marked and disabled rather than
+      // omitted: a stable menu shape needs no branching for the one-zone case
+      // (narrow single-column mode, or inside a torn-off window) and it tells the
+      // user where the panel is instead of making the feature look absent.
+      current: zoneOfPanel(dock, panelId as DockPanelId) === tg.zone,
+    })),
+    actions: (panelId) => {
+      const panel = panelId as DockPanelId;
+      const acts: DockTabAction[] = [{
+        key: 'new-window',
+        label: t('rooms.dock.newWindow'),
+        refusal: refusalText(detachTarget(dock, panel).refused),
+        onSelect: () => runDockOp((l) => detachPanel(l, panel), panel),
+      }];
+      // Tear off the whole GROUP, not one panel — this is what makes "Voice and
+      // Chat together on the second monitor" one gesture instead of two windows
+      // the user arranges by hand. Offered only where it means something: a docked
+      // zone holding more than the panel the menu is on.
+      if (isDockedZone(zone) && zonePanels(dock, zone).length > 1) {
+        acts.push({
+          key: 'tear-off',
+          label: t('rooms.dock.tearOff'),
+          refusal: refusalText(tearOffTarget(dock, zone).refused),
+          onSelect: () => runDockOp((l) => tearOffZone(l, zone), panel),
+        });
+      }
+      // Cross-window tab drag is impossible (HTML5 DnD and pointer capture do not
+      // cross a BrowserWindow), so inside a torn-off window the menu is not a
+      // convenience — it is the way home, alongside the header's Dock back button.
+      if (isWindowZone(zone)) {
+        acts.push({
+          key: 'dock-back',
+          label: t('rooms.dock.dockBack'),
+          onSelect: () => runDockOp((l) => dockBackZone(l, zone), panel),
+        });
+      }
+      return acts;
+    },
+    onMovePanel: (panelId, to, toIndex) => runDockOp(
+      (l) => movePanel(l, panelId as DockPanelId, to as DockZoneId, toIndex ?? undefined),
+      panelId as DockPanelId,
+    ),
+    labels: { moveTo: t('rooms.dock.moveTo'), tabMenu: t('rooms.dock.tabMenu') },
+    focusPanelId: focusPanel,
+  });
+
+  /**
+   * One zone. Panels are keyed by id inside DockZone and the zones themselves are
+   * rendered at FIXED tree positions keyed by zone id, so a panel joining or
+   * leaving one zone never remounts a panel in another.
+   */
+  const renderDockZone = (zone: DockZoneId, className: string, ariaLabel: string, windowKey?: string) => (
+    <DockZone<DockPanelId>
+      zoneId={zone}
+      className={className}
+      ariaLabel={ariaLabel}
+      panels={zonePanels(dock, zone).map((id) => dockPanelTab(t, room, id))}
+      activeId={activePanel(dock, zone)}
+      onSelect={(panel) => selectDockPanel(zone, panel)}
+      renderPanel={renderDockPanel}
+      dock={dockInteractions(zone, windowKey)}
+    />
+  );
+
+  // Which columns have nothing in them. An empty docked zone is LEGAL in v2 (that
+  // is what tearing a group off does to a column); the grid collapses it to zero
+  // width and re-expands it the moment a panel lands back. The centre is the one
+  // exception: it also hosts the watch/screen overlay, which is not a panel, so it
+  // stays open while a session is running even with no panel docked there.
+  const leftEmpty = zonePanels(dock, 'left').length === 0;
+  const rightEmpty = zonePanels(dock, 'right').length === 0;
+  const centreEmpty = zonePanels(dock, 'centre').length === 0 && stageView.kind === 'files';
+  const centreActive = activePanel(dock, 'centre');
+  const dockWindows = openWindowZones(dock);
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
   // The label talks about STATE only; the transport peer count (wires, not
@@ -2124,22 +2354,19 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         </div>
       )}
 
-      {/* Three-region layout: People+Voice rail | Stage (files/watch/screen) | Chat.
-          Rail/chat widths are draggable (set as CSS vars so the narrow-mode
-          @container rule, which sets the grid-template-columns PROPERTY, still wins). */}
+      {/* Three dock zones: left | centre (plus the watch/screen overlay) | right.
+          Every panel can live in any of them, so the columns are positional and the
+          model decides the contents. The two widths stay draggable CSS vars, and an
+          EMPTY zone collapses its column and its splitter (the narrow-mode
+          @container rules still set the grid-template-columns PROPERTY, so they
+          keep beating both the vars and these collapse classes). */}
       <div
-        className={`room-detail-grid${railCollapsed ? ' rail-collapsed' : ''}${chatPopped ? ' chat-popped' : ''}`}
-        style={{ '--rail-w': `${railCollapsed ? 0 : layout.railW}px`, '--chat-w': `${chatPopped ? 0 : layout.chatW}px` } as React.CSSProperties}
+        className={`room-detail-grid${railCollapsed && !leftEmpty ? ' rail-collapsed' : ''}${leftEmpty ? ' left-empty' : ''}${centreEmpty ? ' centre-empty' : ''}${rightEmpty ? ' right-empty' : ''}`}
+        style={{ '--rail-w': `${layout.railW}px`, '--chat-w': `${layout.chatW}px` } as React.CSSProperties}
       >
-        <RoomPeopleRail
-          room={room}
-          onWatchShare={(id) => setStageView({ kind: 'screen', memberId: id })}
-          panelIds={railPanels}
-          activeId={railActive}
-          onSelect={(panel) => selectDockPanel('rail', panel)}
-        />
+        {renderDockZone('left', 'room-col-rail', t(DOCK_ZONE_TABS.left))}
         <div
-          className="room-splitter"
+          className="room-splitter room-splitter-rail"
           role="separator" aria-orientation="vertical" title={t('rooms.resize')}
           onPointerDown={onSplitDown('rail')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
           onDoubleClick={() => setRailCollapsed((c) => !c)}
@@ -2148,20 +2375,43 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           room={room}
           stageView={stageView}
           onCloseStage={() => setStageView({ kind: 'files' })}
-          onWatch={(file) => setStageView({ kind: 'watch', file })}
-          onWatchJoin={(file) => setStageView({ kind: 'watch', file, together: true })}
-          watchCounts={watchCounts} onInvite={onInvite}
-          onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder} onUpdateFolder={onUpdateFolder}
-          onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile} onShared={onShared}
-          onToggleAutoFetch={onToggleAutoFetch} busy={busy}
+          zone={renderDockZone('centre', 'room-col-centre', t(DOCK_ZONE_TABS.centre))}
+          // The "back to the column" tab names what the centre is actually showing,
+          // so it cannot promise Files after the user has moved Files elsewhere.
+          homeLabel={centreActive ? t(PANEL_BY_ID[centreActive].labelKey) : t('rooms.stage.files')}
+          homeIcon={<Icon name={centreActive ? PANEL_BY_ID[centreActive].icon : 'folder-open'} size={13} />}
         />
         <div
           className="room-splitter room-splitter-chat"
           role="separator" aria-orientation="vertical" title={t('rooms.resize')}
           onPointerDown={onSplitDown('chat')} onPointerMove={onSplitMove} onPointerUp={onSplitUp}
         />
-        <RoomChat room={room} onAttachRequest={() => onAddFiles()} onPoppedChange={setChatPopped} />
+        {renderDockZone('right', 'room-col-chat', t(DOCK_ZONE_TABS.right))}
       </div>
+
+      {/* Torn-off groups. Rendered from a STABLE position (after the grid, keyed by
+          zone id) so opening or closing one never reorders the others. Each host
+          renders NOTHING in this window — it is a portal into its own OS window,
+          which carries the group's own tab strip, its Dock back button and its own
+          confirm/toast hosts. A window exists iff its zone holds panels, so there is
+          no separate open/closed state to keep in step. */}
+      {dockWindows.map((w) => {
+        const ids = zonePanels(dock, w);
+        return (
+          <DockWindowHost
+            key={w}
+            frameName={dockWindowFrameName(w)}
+            title={ids.map((id) => t(PANEL_BY_ID[id].labelKey)).join(' · ') || t('rooms.dock.windowTitle')}
+            subtitle={room.name}
+            dockBackLabel={t('rooms.dock.dockBack')}
+            onDockBack={(reason) => onDockWindowGone(w, reason)}
+          >
+            {/* No framing class: the window's own body IS the frame here (the room
+                columns' chrome belongs to the column, not to the group). */}
+            {renderDockZone(w, '', t('rooms.dock.windowTabs'), dockWindowFrameName(w))}
+          </DockWindowHost>
+        );
+      })}
     </div>
   );
 };
@@ -2577,8 +2827,8 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
 };
 
 // ── Room chat panel ───────────────────────────────────────────────────────
-// Pure text chat — the room's persistent right region. People + voice live in the
-// left rail (RoomPeopleRail); this card is just log + typing indicator + composer.
+// Pure text chat — a dock panel like any other (it merely DEFAULTS to the right
+// column); this card is just log + typing indicator + composer.
 // Highlight the current user's name inside a plain-text run (@-less mention).
 const renderWithMention = (text: string, selfName?: string): React.ReactNode => {
   if (!selfName || selfName.length < 2) return text;
@@ -2655,7 +2905,15 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
   );
 };
 
-const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPoppedChange?: (popped: boolean) => void }> = ({ room, onAttachRequest, onPoppedChange }) => {
+/**
+ * The chat panel. It is an ordinary dock panel now: detaching it is
+ * `Move to ▸ New window` on its tab, exactly like every other panel, and the
+ * right-hand column collapsing while it is away is the ordinary empty-zone
+ * rendering rather than a flag of its own. The bespoke `usePopout('havvn-room-chat')`
+ * and the `onPoppedChange` contract it needed are GONE — two mechanisms for one job
+ * is how a panel ends up open in two windows at once.
+ */
+const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({ room, onAttachRequest }) => {
   const { t } = useTranslation();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
@@ -2685,16 +2943,10 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
   const [chatCardFor, setChatCardFor] = useState<{ memberId: string; anchor: HTMLElement } | null>(null);
   const chatCardMember = chatCardFor ? room.members.find((m) => m.memberId === chatCardFor.memberId) : undefined;
   useEffect(() => { setChatCardFor(null); }, [room.roomId]);
-  // `chat` names the pop-out root as a query container, so rules written for the
-  // docked chat panel (`@container chat (…)`) keep matching once it is torn off.
-  const { popout, portal: popoutPortal, openPopout, closePopout } = usePopout('havvn-room-chat', t('rooms.chat'), 'chat');
-  // Tell the parent so it can COLLAPSE the docked chat column while detached —
-  // no empty placeholder is left where the chat was.
-  const isPopped = !!(popout && !popout.closed);
-  useEffect(() => { onPoppedChange?.(isPopped); }, [isPopped, onPoppedChange]);
-  // Detach/reattach and tab switches remount the log DOM — the card's anchor
-  // element is gone, so a surviving card would pin to the window corner.
-  useEffect(() => { setChatCardFor(null); }, [popout, zoneTab]);
+  // A zone tab switch remounts the log DOM — the card's anchor element is gone, so
+  // a surviving card would pin to the window corner. (Detach/reattach is covered
+  // too: the dock unmounts this panel when it changes realm.)
+  useEffect(() => { setChatCardFor(null); }, [zoneTab]);
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
   const selfName = room.members.find((m) => m.isSelf)?.name;
   const messages = room.chat || [];
@@ -2736,9 +2988,9 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
     if (atBottomRef.current || last.memberId === selfId) scrollToNewest();
     else setNewCount((c) => c + arrived);
   }, [room.roomId, messages, selfId, scrollToNewest]);
-  // Detach/reattach and tab switches REMOUNT the log DOM (fresh node,
-  // scrollTop=0) without the messages changing — force a re-pin.
-  useEffect(() => { scrollToNewest(); setReactFor(null); }, [zoneTab, popout, scrollToNewest]);
+  // A zone tab switch REMOUNTS the log DOM (fresh node, scrollTop=0) without the
+  // messages changing — force a re-pin.
+  useEffect(() => { scrollToNewest(); setReactFor(null); }, [zoneTab, scrollToNewest]);
 
   // The reaction palette closes on outside click — in the CHAT's document
   // (the zone may live in the detached window).
@@ -2762,7 +3014,7 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   };
-  useEffect(autosize, [text, popout]);
+  useEffect(autosize, [text]);
 
   // Typing liveness. Outbound: at most one ping per 2.5s while composing (the
   // engine rate-limits the broadcast further). Inbound: mirror the engine's
@@ -2827,7 +3079,7 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
   // intercepts Enter/Tab/arrows while open (send/indent resume when closed).
   const [mention, setMention] = useState<null | { query: string; start: number; caret: number }>(null);
   const [mentionIdx, setMentionIdx] = useState(0);
-  useEffect(() => { setMention(null); }, [room.roomId, popout, zoneTab]);
+  useEffect(() => { setMention(null); }, [room.roomId, zoneTab]);
   const mentionCandidates = useMemo(() => {
     if (!mention) return [];
     const seen = new Set<string>();
@@ -2888,10 +3140,10 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
     }
   };
 
-  // ONE class list, detached or not. The pop-out's own `.popout-root` supplies the
-  // fill-the-window layout, and the room's stacking rules are `@container room`
-  // queries that cannot reach a child window (which has no `room` ancestor) — so
-  // there is nothing left for a `.room-chat-popped` variant to undo.
+  // ONE class list wherever this panel is docked. The room's stacking rules are
+  // `@container room` queries, which cannot reach a child window (it has no `room`
+  // ancestor), and the dock window's own body supplies the fill-the-window layout —
+  // so there is nothing left for a detached variant to undo.
   const zone = (
     <div className="room-section room-chat-section">
       <div className="room-chat-zone-tabs">
@@ -2913,14 +3165,8 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
         >
           <Icon name="search" size={13} />
         </button>
-        <button
-          type="button"
-          className="room-zone-popout"
-          title={popout ? t('rooms.chatPopIn') : t('rooms.chatPopOut')}
-          onClick={() => { if (popout) closePopout(); else openPopout(); }}
-        >
-          <Icon name={popout ? 'minimize' : 'external-link'} size={13} />
-        </button>
+        {/* No detach button here: the tab's "Move to ▸ New window" is the ONE way
+            a panel leaves the room, for every panel. */}
       </div>
       {zoneTab === 'history' ? (
         <div className="room-chat room-zone-history">
@@ -3197,14 +3443,11 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
     </div>
   );
 
-  // Detached: the whole zone (tabs + log + composer) portals into the pop-out
-  // window and NOTHING is rendered in the grid — the parent collapses the docked
-  // chat column so no empty space is left. Restore from the detached window's
-  // pop-in button, or by closing that window. Same React tree either way — chat
-  // state and subscriptions are unaffected.
-  // `popoutPortal` returns null while docked/closed, and mounts the host-window
-  // provider when detached so everything below resolves to the CHILD window.
-  return popoutPortal(zone) ?? zone;
+  // ONE tree, docked or detached. When the dock moves this panel into a torn-off
+  // group, DockWindowHost portals the whole zone (strip + panels) into that window
+  // and mounts HostWindowProvider around it, so everything below resolves `document`
+  // to the CHILD window without this component knowing which realm it is in.
+  return zone;
 };
 
 // Highlight the search match inside a file name (case-insensitive, first hit).

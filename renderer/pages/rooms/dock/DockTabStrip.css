@@ -37,6 +37,9 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
+  /* Containing block for the ::before/::after insertion rule. Nothing else here
+     positions against it, so this cannot shift the tab's own layout. */
+  position: relative;
   /* Share the strip, but start from CONTENT width, not an equal slice. With
      `flex-basis: 0` every tab gets the same width regardless of what it holds,
      while the icon and badge inside are `flex: 0 0 auto` — so the tab carrying a
@@ -100,13 +103,83 @@
 }
 .dock-tab.selected .dock-tab-badge { color: var(--color-text-secondary); }
 
+/* ── P3: drag affordances ────────────────────────────────────────────────────
+   Every rule below is driven by a DOM ATTRIBUTE written imperatively during a
+   drag (dockDrag.ts), never by React state — the room re-renders on every gossip
+   push and a setState per dragover would stack on top of that. CSS is the whole
+   render path for hover feedback.
+
+   None of these change layout: opacity, an inset box-shadow and absolutely
+   positioned pseudo-elements only. A drag that reflowed the strip would move the
+   very tabs the pointer is aiming at. */
+
+/* The strip under the pointer. `--color-accent-bg` is the theme's own low-alpha
+   accent wash, so no rgba() math and no new colour. */
+.dock-tabstrip[data-dock-over] {
+  background: var(--color-accent-bg);
+  border-bottom-color: var(--color-accent-primary);
+}
+
+/* The tab being dragged. Dimmed rather than hidden: it still holds its slot, so
+   the insertion marker stays meaningful relative to it. */
+.dock-tab[data-dock-dragging] { opacity: 0.45; }
+
+/* The insertion rule. Index n (append) renders as `after` on tab n-1, so one
+   marked element covers every position in the strip. */
+.dock-tab[data-dock-insert]::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  background: var(--color-accent-primary);
+  pointer-events: none;
+}
+.dock-tab[data-dock-insert='before']::after { left: -2px; }
+.dock-tab[data-dock-insert='after']::after { right: -2px; }
+
+/* The drag image. It is appended to the OWNING document's BODY (never inside a
+   zone — `container-type` there would make it a containing block and clip the
+   snapshot), and it must be RENDERED when the snapshot is taken: display:none or
+   visibility:hidden both yield an empty drag image, so it is pushed off-screen
+   instead. The clone carries no id and no role — see buildDockDragGhost. */
+.dock-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  pointer-events: none;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-accent-primary);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-md);
+}
+
+/* The ⋮ menu hint. `visibility` rather than `display`, so the slot is reserved at
+   all times: a hint that appears on hover would reflow the strip under the
+   pointer, and an invisible-but-hit-testable glyph would swallow clicks meant for
+   the tab. It is decorative (aria-hidden) — the tab's aria-haspopup is what
+   announces the menu, and Shift+F10 / the ContextMenu key open it without it. */
+.dock-tab-menu-hint {
+  flex: 0 0 auto;
+  width: 8px;
+  margin-left: -2px;
+  line-height: 1;
+  visibility: hidden;
+  color: var(--color-text-tertiary);
+}
+.dock-tab:hover .dock-tab-menu-hint,
+.dock-tab:focus-visible .dock-tab-menu-hint,
+.dock-tab[data-menu-open] .dock-tab-menu-hint { visibility: visible; }
+
 /* At the rail's 180px minimum three labels plus a non-shrinkable badge cannot all
-   fit. Drop the AFFIX rather than clip the label: the count is a nicety, the tab
-   name is how you navigate. The zone establishes `container-name: dock`, so this
-   keys off the zone's own width and stays correct if a later phase puts the panel
-   in a wider column. The tooltip still carries the meaning. */
+   fit. Drop the AFFIXES rather than clip the label: the count and the ⋮ are
+   niceties, the tab name is how you navigate. The zone establishes
+   `container-name: dock`, so this keys off the zone's own width and stays correct
+   when a panel is moved into a wider column. The tooltip still carries the
+   meaning, and right-click / Shift+F10 still open the menu with no hint visible. */
 @container dock (max-width: 260px) {
-  .dock-tab-badge { display: none; }
+  .dock-tab-badge,
+  .dock-tab-menu-hint { display: none; }
 }
 
 /* Single-column mode: the zone spans the full page width, so stretching three
