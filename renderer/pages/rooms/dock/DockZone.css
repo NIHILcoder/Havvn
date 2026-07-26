@@ -23,7 +23,10 @@
      DockTabStrip.css's `@container room (max-width: 720px)` block keeps working
      from inside here).
      WARNING: container-type establishes containment, which traps position:fixed
-     descendants. Overlays inside a panel must portal to document.body. */
+     descendants. Overlays inside a panel must portal OUT to the body of the
+     document the zone is mounted in (the panel's realm), not to the module-scope
+     `document` — the latter is the MAIN window's body and would land the overlay
+     in the wrong window once a zone is hosted in a detached one. */
   container-type: inline-size;
   container-name: dock;
 }

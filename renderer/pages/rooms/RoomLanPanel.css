@@ -5,6 +5,25 @@
  * so the LAN widget reads as the same HUD. Theme tokens ONLY — no hardcoded
  * radius; --radius-full is reserved for the round status dots. @container-aware:
  * the tile grids wrap and the panel never forces horizontal overflow.
+ *
+ * QUERY CONTAINER: deliberately NONE. This panel adapts by wrapping (flex-wrap on
+ * the control row, the tools row and the peer grid), so it carries no @container
+ * rule of its own and therefore needs no `container-type` — its width comes from
+ * whatever shell it is mounted in (`.dock-zone`, name `dock`, in the room today; a
+ * pop-out root in a torn-off window) and it looks the same in both.
+ *   If a future rule DOES need to measure this panel, adding
+ *   `container-type: inline-size; container-name: lan;` here is safe, and this is
+ *   the audit that says so: `container-type` establishes containment, which makes
+ *   the element a containing block for `position: fixed` descendants — a fixed
+ *   overlay rendered inside would be trapped and would size to the panel instead
+ *   of the window. Nothing fixed renders inside `.room-lan`: the only overlays it
+ *   opens are LanPeerPicker and LanDiagnosticsModal, and both createPortal their
+ *   Modal to the OWNING document's <body> (they are DOM siblings of the panel's
+ *   shell, not descendants), which is exactly what keeps them clear of it. Every
+ *   `position: absolute` in this file (the status dots, the tile badges) is
+ *   anchored to a panel-local ancestor on purpose and is unaffected by
+ *   containment. That portal is load-bearing, not cosmetic — a future overlay
+ *   added inline instead of portalled would break the invariant silently.
  */
 
 .room-lan {

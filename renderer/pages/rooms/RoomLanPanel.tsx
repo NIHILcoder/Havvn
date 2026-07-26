@@ -37,12 +37,21 @@
  *      (a live "Relaying for N" line with the count) and switchable off.
  *
  * Styling uses ONLY theme tokens (no hardcoded radius; --radius-full is reserved
- * for the status dots). The peer picker portals its fixed overlay to <body>.
+ * for the status dots). The peer picker portals its fixed overlay to the owning
+ * document's <body>.
+ *
+ * REALM: this panel is a dock panel, so it can be torn off into a child window.
+ * Anything that reaches for a document or a window therefore resolves the panel's
+ * OWN realm instead of the module-scope globals — see copyIp(). The React tree
+ * still runs in the main renderer's JS realm no matter where its DOM lives, so
+ * `window.api` (every IPC call in this file) stays deliberately absolute: a child
+ * window has no preload bridge of its own.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Avatar, Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
+import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
 import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
 import { LanPeerPicker } from './LanPeerPicker';
@@ -220,6 +229,11 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled,
 }) => {
   const { t } = useTranslation();
+  const host = useHostWindow();
+  // The panel root, used only to resolve which window this DOM actually lives in.
+  // An element's ownerDocument outranks the context: it stays right even when the
+  // panel is portalled into a realm its React-tree provider knows nothing about.
+  const rootRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [pickerMode, setPickerMode] = useState<null | 'start' | 'invite'>(null);
   const [diagOpen, setDiagOpen] = useState(false);
@@ -245,7 +259,12 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
 
   const copyIp = (vip: string) => {
     if (!vip) return;
-    navigator.clipboard?.writeText(vip)
+    // Clipboard of the window the panel is really in. A detached panel writing
+    // through the MAIN window's navigator rejects with "Document is not focused"
+    // (that document is unfocused precisely because the child has focus), so the
+    // copy silently failed and the toast never appeared.
+    const win = resolveHostWindow(rootRef.current, host).window;
+    win.navigator.clipboard?.writeText(vip)
       .then(() => toast.success(t('rooms.lan.copied')))
       .catch(() => { /* clipboard blocked — silent, the IP is still shown */ });
   };
@@ -396,7 +415,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   const canStart = !startBlockedReason && !busy;
 
   return (
-    <div className="room-lan">
+    <div className="room-lan" ref={rootRef}>
       <div className="room-lan-head">
         <span className="room-lan-title">
           <Icon name="network" size={13} /> {t('rooms.lan.title')}

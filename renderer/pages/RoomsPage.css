@@ -70,10 +70,12 @@
   flex-direction: column;
   gap: var(--space-4);
   /* Query container for the room's own width. The dock squeezes the page
-     without moving the viewport, so the @media rules below never fired and the
-     hard 360px chat track + the file row's fixed chrome overflowed. Safe to
-     contain: the only position:fixed here (.room-player-backdrop) belongs to
-     RoomPlayer, which renders outside this component's tree. */
+     without moving the viewport, so the viewport @media rules this replaced never
+     fired and the hard 360px chat track + the file row's fixed chrome overflowed.
+     CONTAINMENT AUDIT: nothing position:fixed renders inside the room tree — every
+     overlay (lightbox, file context menu, dropdowns, pickers, every Modal, the
+     chat's react palette, ProfileCard) portals out to the owning document's body,
+     and fullscreen uses the top layer, which escapes containment by spec. */
   container-type: inline-size;
   container-name: room;
 }
@@ -353,9 +355,11 @@
   min-height: 0;
 }
 
+/* (.room-col-chat used to be listed here and is gone: RoomChat renders
+   `room-section room-chat-section` straight as the grid child, so the selector
+   never matched anything.) */
 .room-col-rail,
-.room-col-stage,
-.room-col-chat {
+.room-col-stage {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -387,7 +391,21 @@
 }
 .room-col-rail::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
 .room-col-rail::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
-.room-col-stage { overflow: hidden; }  /* files list / player scroll internally */
+/* NOT a query container — deliberately, until the Stage can actually be torn off
+   (that is P4; today only the chat detaches). Making it one was tried and reverted
+   for two reasons worth recording:
+     1. containment makes the column a containing block for position:fixed
+        descendants, and NOT everything fixed in here portals out — TransferPickerModal
+        (RoomShareModals.tsx) renders a bare <Modal>, whose fixed backdrop was
+        trapped inside the column instead of covering the window;
+     2. the stage box is far narrower than the viewport (roughly room − 592px), so
+        re-pointing the viewport-based rules at it made them fire at ordinary window
+        sizes — the side-by-side player layout became unreachable at 1280px.
+   When the Stage becomes detachable, convert its rules WITH re-tuned thresholds and
+   verify both realms, rather than re-pointing viewport numbers at a smaller box. */
+.room-col-stage {
+  overflow: hidden;  /* files list / player scroll internally */
+}
 
 /* Draggable region borders — a 6px grab track with a centered hairline. */
 .room-splitter {
@@ -446,7 +464,20 @@
 .room-col-stage .tabs-container { margin-bottom: var(--space-2); }
 .room-col-stage .tab-button { padding: 6px 12px; font-size: 12px; gap: 6px; }
 
-/* Chat card fills its column: zone tabs → log → composer. */
+/* Chat card fills its column: zone tabs → log → composer.
+   It is also the chat PANEL SHELL — the element that gets torn off into the
+   pop-out, where its width has nothing to do with the room's — so it carries its
+   own query container. (The pop-out root is named `chat` too, so a rule written
+   for the docked panel keeps matching there; the nearest one wins.)
+   CONTAINMENT AUDIT: the only position:fixed descendant is `.room-chat-react-pop`,
+   which already portals to `(listRef.current?.ownerDocument ?? document).body` —
+   outside this element, so it is neither trapped nor mis-realmed.
+   `.room-chat-mention-pop` and `.room-chat-copy` are position:absolute against
+   `.room-chat-compose` / `.room-chat-bubble`, both position:relative, so their
+   containing block does not move. */
+/* No container-type here either: nothing queries `chat` anywhere in the codebase,
+   so establishing containment would buy nothing while adding the position:fixed
+   containing-block hazard. Add it together with the first rule that needs it. */
 .room-chat-section {
   flex: 1 1 auto;
   min-height: 0;
@@ -494,12 +525,14 @@
   cursor: pointer;
 }
 .room-zone-popout:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
-/* The zone rendered INSIDE the pop-out window fills it edge to edge. */
-.room-chat-popped {
-  height: 100vh;
-  box-sizing: border-box;
-  border-radius: 0;
+/* A panel rendered INSIDE a pop-out window fills it edge to edge. The height comes
+   from `.popout-root` (height:100% + flex column, injected by utils/popout.ts, so
+   it exists even before this stylesheet is cloned in); only the card cosmetics are
+   left to undo. Generic on purpose — this serves any torn-off panel, not just chat,
+   which is what retires the old `.room-chat-popped` special case. */
+.popout-root > .room-section {
   border: none;
+  border-radius: 0;
 }
 /* Multiline composer: auto-grows with content up to ~6 lines. */
 .room-chat-input {
@@ -558,39 +591,39 @@
 
 /* NARROW: single-column stack rail → stage → chat. The grid-template-columns
    PROPERTY here beats the inline var-based template; the .rail-collapsed variant is
-   listed too so a collapsed rail still stacks (and re-shows) instead of staying hidden. */
+   listed too so a collapsed rail still stacks (and re-shows) instead of staying hidden.
+   This block absorbed the old `@media (max-width: 980px)` one, which asked the
+   wrong question twice over: the dock squeezes the room WITHOUT moving the
+   viewport (so it fired late, or not at all), and a ~420px pop-out window matches
+   it unconditionally (so the detached chat needed a `.room-chat-popped` hack to
+   undo it — both are gone now). */
 @container room (max-width: 720px) {
-  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: minmax(0, 1fr); flex: initial; }
+  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: minmax(0, 1fr); }
+  /* Stacked, the regions no longer share the room's height, so something has to
+     scroll: the GRID does. The old block scrolled the PAGE (.room-detail /
+     .room-detail-inner), which a container query cannot express — those two ARE
+     the `room` container and its parent, and a container never queries itself.
+     One level down is equivalent, and it keeps .room-drop-overlay anchored to the
+     top of the room, so the sticky exception the page-scroll needed is gone too. */
+  .room-detail-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   .room-splitter { display: none; }
   .room-col-rail, .room-col-stage { overflow: visible; }
   .room-rail-people-list { overflow: visible; }
-}
-
-@media (max-width: 980px) {
-  /* Single column: the page scrolls as one flow again, chat gets a capped log. */
-  .room-detail { overflow-y: auto; }
-  .room-detail-inner { height: auto; }
-  /* The page scrolls here, so an absolutely-anchored banner could sit far
-     above the viewport — stick it to the scroller's visible top instead. */
-  .room-drop-overlay { position: sticky; top: var(--space-3); left: auto; transform: none; align-self: center; }
-  .room-detail-grid, .room-detail-grid.rail-collapsed, .room-detail-grid.chat-popped, .room-detail-grid.rail-collapsed.chat-popped { grid-template-columns: 1fr; flex: initial; }
-  .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
-  .room-splitter { display: none; }
-  .room-col-rail, .room-col-stage { overflow: visible; }
-  .room-rail-people-list { overflow: visible; }
-  .room-section { flex: initial; }
-  .room-files-scroll { overflow: visible; flex: initial; }
-  .room-chat-section { flex: initial; }
-  .room-chat-section .room-chat { flex: initial; }
+  /* Cards stop stretching so the stack flows; the chat log takes a fixed cap
+     instead of filling a column it no longer has. */
+  .room-section, .room-chat-section, .room-chat-section .room-chat { flex: initial; }
   .room-chat-section .room-chat-log { flex: initial; max-height: 360px; min-height: 160px; }
+  /* Deliberately NOT `overflow: visible` here (the old block's version of this
+     rule). @tanstack/react-virtual is handed this exact element as its scroll
+     container: remove the scrollport and its used height collapses onto the
+     total-size spacer, so outerSize == totalSize, scrollOffset is pinned at 0,
+     and EVERY row mounts — the M12 regression, with a blank list whenever a
+     transient 0-height measurement lands first. Cap the height instead; it stays
+     a real scroller in every layout. (px, not cqb: inline-size containers expose
+     inline-axis units only.) */
+  .room-files-scroll { flex: initial; max-height: 420px; }
 }
-
-/* The DETACHED chat window is ~420px wide, so the cloned stylesheet's 980px
-   mobile block above always matches inside it and would cap the log at 360px.
-   Re-assert the fill layout for the popped zone (source order beats the block). */
-.room-chat-popped, .room-chat-popped .room-chat { flex: 1 1 auto; min-height: 0; }
-.room-chat-popped .room-chat-log { flex: 1; max-height: none; min-height: 0; }
 
 /* The online-count chip (People rail head). */
 .room-chat-online { font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -1565,7 +1598,12 @@
      Let the action cluster drop to its own line instead. */
   flex-wrap: wrap;
 }
-/* Below that, the name needs the whole line to itself. */
+/* Below that, the name needs the whole line to itself.
+   Keyed to `stage`, not `room`: a file row's available width is the Stage column's.
+   Kept on the ROOM container it has always used. Re-pointing it at the (much
+   narrower) stage box made it fire at ordinary window sizes — a layout change, not
+   the no-op this phase promised. Revisit with a re-tuned threshold when the stage
+   is actually detachable. */
 @container room (max-width: 420px) {
   .room-file-main { flex: 1 1 100%; order: -1; }
 }
@@ -1986,15 +2024,12 @@
 
 /* === In-app room player (the watch-together stage) === */
 /* Watch-together player — rendered INLINE in the room Stage (no fixed backdrop).
-   .room-player-backdrop is kept for reference; the stage wraps it in .room-player-inline. */
+   The old `.room-player-backdrop` theater rule (position: fixed, inset: 0) is
+   GONE: RoomPlayer renders `.room-player-inline` and no TSX ever emitted that
+   class, so it was dead — and a dead position:fixed rule under a query container
+   reads like a containment hazard on every future audit. */
 .room-player-inline { flex: 1 1 auto; min-height: 0; display: flex; }
 .room-player-inline .room-player { width: 100%; min-height: 0; border-radius: var(--radius-lg); }
-.room-player-backdrop {
-  position: fixed; inset: 0; z-index: 1000;
-  background: rgba(0,0,0,0.75);
-  display: flex; align-items: center; justify-content: center;
-  padding: 24px;
-}
 .room-player {
   width: min(1240px, 96vw);
   background: var(--color-bg-primary);
@@ -2013,6 +2048,11 @@
   background: var(--color-bg-secondary);
 }
 .room-player-side .room-player-watchers { border-bottom: 1px solid var(--color-border); }
+/* Stacked player. Stays a VIEWPORT query until the player can be torn off (P4).
+   Keying it to the stage column looked more correct but silently removed a layout:
+   the stage is roughly `room − 592px`, so at a 1280px window it is ~400px and this
+   rule matched unconditionally — side-by-side became unreachable. The right change
+   is a re-tuned threshold against the box being measured, made deliberately. */
 @media (max-width: 760px) {
   .room-player-body { flex-direction: column; overflow-y: auto; }
   .room-player-side { width: auto; border-left: none; border-top: 1px solid var(--color-border-default); }

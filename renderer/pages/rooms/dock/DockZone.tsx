@@ -63,8 +63,11 @@
  * inside a panel are unaffected: a NAMED query walks past containers carrying a
  * different name, up to `.room-detail-inner`.
  * CAUTION: `container-type` establishes containment, which traps `position:fixed`
- * descendants. Any overlay rendered inside a panel must portal to the document body
- * (LanPeerPicker, LanDiagnosticsModal and ProfileCard already do).
+ * descendants. Any overlay rendered inside a panel must portal OUT to the body of
+ * the document that panel lives in — `realm.document.body` / an anchor element's
+ * `ownerDocument.body`, never the module-scope `document`, or a zone hosted in a
+ * detached window sends its overlay to the main window instead (LanPeerPicker,
+ * LanDiagnosticsModal and ProfileCard all resolve it that way).
  *
  * No drag-and-drop, no tear-off, no reordering here — P1 is selection only.
  */

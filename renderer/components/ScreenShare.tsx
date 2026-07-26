@@ -9,10 +9,15 @@
  * (onRoomScreenSignal), we answer via rooms.screen.signal; 'end' means the
  * stream is gone and the overlay closes itself.
  *
- * The picker portals to <body> (its opener lives inside the room's container-query
- * subtree, whose containment would trap a fixed backdrop). ScreenView renders INLINE
- * in the room Stage — no fixed backdrop to trap, and it still goes fullscreen via
- * requestFullscreen() (the top layer escapes containment).
+ * The picker portals to the OWNING document's <body> (its opener lives inside the
+ * room's container-query subtree, whose containment would trap a fixed backdrop) —
+ * owning, not the main window's, because the panel that opens it can be detached
+ * into its own window. ScreenView renders INLINE in the room Stage — no fixed
+ * backdrop to trap, and it still goes fullscreen via requestFullscreen() (the top
+ * layer escapes containment). Fullscreen state is read off the STAGE ELEMENT'S
+ * document: `requestFullscreen()` sets `fullscreenElement` on that element's
+ * document, so checking any other one reports "not fullscreen" and the toggle
+ * stops toggling.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -20,6 +25,7 @@ import toast from 'react-hot-toast';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import { useHostWindow, usePortalTarget } from '../utils/hostWindow';
 import type { ScreenSourceInfo } from '../../shared/types';
 import './ScreenShare.css';
 
@@ -28,6 +34,10 @@ export const ScreenSourcePicker: React.FC<{
   onPick: (sourceId: string, withAudio: boolean) => void;
 }> = ({ onClose, onPick }) => {
   const { t } = useTranslation();
+  // No element of our own to read an ownerDocument from — the portal container
+  // is needed before anything mounts — so this is the context case. With no
+  // provider above (the whole main tree) it IS `document.body`, unchanged.
+  const portalTarget = usePortalTarget();
   const [sources, setSources] = useState<ScreenSourceInfo[] | null>(null);
   // Opt-in system audio (M20): off by default — sharing system audio shares
   // everything playing, and the call echo canceller is best-effort. Windows only.
@@ -78,7 +88,7 @@ export const ScreenSourcePicker: React.FC<{
         </>
       )}
     </Modal>,
-    document.body,
+    portalTarget,
   );
 };
 
@@ -89,6 +99,7 @@ export const ScreenView: React.FC<{
   onClose: () => void;
 }> = ({ roomId, memberId, title, onClose }) => {
   const { t } = useTranslation();
+  const host = useHostWindow();
   const videoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -143,18 +154,28 @@ export const ScreenView: React.FC<{
 
   // Escape closes the overlay (unless we're in fullscreen — there the browser's
   // Escape exits fullscreen first, matching every other dialog's muscle memory).
+  // Both halves come from the STAGE's own window: binding the key on the main
+  // window while the stage is fullscreen in a child leaves a fullscreen window
+  // with no content (main sees `fullscreenElement === null`, closes the overlay).
   useEffect(() => {
+    const el = stageRef.current;
+    const doc = el?.ownerDocument ?? host.document;
+    const win = doc.defaultView ?? host.window;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !document.fullscreenElement) { e.stopPropagation(); closeRef.current(); }
+      if (e.key === 'Escape' && !doc.fullscreenElement) { e.stopPropagation(); closeRef.current(); }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+    win.addEventListener('keydown', onKey);
+    return () => win.removeEventListener('keydown', onKey);
+  }, [host]);
 
   const fullscreen = () => {
     const el = stageRef.current;
     if (!el) return;
-    if (document.fullscreenElement) void document.exitFullscreen();
+    // Element-derived, never context-derived: requestFullscreen() sets
+    // fullscreenElement on THIS element's document, so reading it anywhere else
+    // makes the second click request fullscreen again instead of exiting.
+    const doc = el.ownerDocument;
+    if (doc.fullscreenElement) void doc.exitFullscreen();
     else void el.requestFullscreen().catch(() => { /* ignore */ });
   };
 

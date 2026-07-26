@@ -2,10 +2,25 @@
  * LanPeerPicker — choose which room members get a virtual IP.
  *
  * Mirrors ScreenSourcePicker (renderer/components/ScreenShare.tsx): a Modal (size
- * lg) portaled to <body> so the room's container-query subtree containment can't
- * trap the fixed backdrop. Members are selectable tiles; the footer carries an
- * elevation notice (Windows will prompt for admin to create the adapter) and the
- * confirm action, which re-confirms through useConfirm before firing onPick.
+ * lg) portaled to the OWNING document's <body> so the room's container-query
+ * subtree containment can't trap the fixed backdrop. Members are selectable tiles;
+ * the footer carries an elevation notice (Windows will prompt for admin to create
+ * the adapter) and the confirm action, which re-confirms through useConfirm before
+ * firing onPick.
+ *
+ * REALM: the picker opens from the LAN panel, which lives in the dock and can be
+ * torn off into a child window. `document.body` would then be the MAIN window's
+ * body and the picker would appear in the window the user is not looking at, so
+ * the target comes from useHostWindow() — it defaults to the real globals, so
+ * a docked panel behaves exactly as before. There is no element to read an
+ * ownerDocument off (the portal container is needed before anything mounts), which
+ * is precisely the case the context exists for.
+ *
+ * KNOWN GAP (not fixable here): submit() goes through useConfirm, whose provider
+ * renders at the app root in the MAIN window. From a torn-off panel the elevation
+ * confirm therefore pops in the main window while the click happened in the child.
+ * Fixing that means teaching ConfirmProvider to portal into the requesting realm
+ * (renderer/components/ConfirmDialog.tsx), which is a separate change.
  *
  * Only admitted players receive a vIP, so the selection is deliberate. The mesh
  * cap (MAX_LAN_PEERS, self included) bounds how many can be admitted at once.
@@ -14,6 +29,7 @@ import React, { useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Modal, Button, Icon, Avatar, useConfirm } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
+import { useHostWindow } from '../../utils/hostWindow';
 import type { RoomMember } from '../../../shared/types';
 import { MAX_LAN_PEERS } from '../../../shared/lan-types';
 import './RoomLanPanel.css';
@@ -37,6 +53,7 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
 }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
+  const host = useHostWindow();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const excluded = useMemo(() => new Set([selfId, ...excludeIds].filter(Boolean) as string[]), [selfId, excludeIds]);
@@ -110,7 +127,7 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
         </div>
       )}
     </Modal>,
-    document.body,
+    host.document.body,
   );
 };
 

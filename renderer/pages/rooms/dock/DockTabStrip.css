@@ -110,7 +110,13 @@
 }
 
 /* Single-column mode: the zone spans the full page width, so stretching three
-   tabs across it would look like a toolbar. Let them size to content instead. */
+   tabs across it would look like a toolbar. Let them size to content instead.
+   REALM: `room` names the three-region room page, which exists only in the main
+   window — a named query walks up looking for THAT name and simply never matches
+   when there is no such ancestor. So this block is inert inside a torn-off zone,
+   which is the wanted outcome: page-layout adaptation must not leak into a child
+   window, and the `dock` block above still handles the narrow case there because
+   the zone establishes `dock` wherever it is mounted. */
 @container room (max-width: 720px) {
   .dock-tabstrip { justify-content: flex-start; }
   .dock-tab { flex: 0 1 auto; padding: 4px 10px 6px; }

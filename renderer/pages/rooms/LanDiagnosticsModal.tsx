@@ -1,12 +1,21 @@
 /**
  * LanDiagnosticsModal — the "why isn't my LAN working?" report (Phase 2A).
  *
- * Built on the LanPeerPicker skeleton: a Modal (size lg) portaled to <body> so
- * the room rail's container-query subtree containment can't trap the fixed
- * backdrop. The body is a dumb renderer over an already-EVALUATED report — every
- * verdict, ordering and threshold lives in the pure shared evaluator
- * (shared/lan-quality + shared/lan-diagnostics); this file only picks an icon and
- * translates a key.
+ * Built on the LanPeerPicker skeleton: a Modal (size lg) portaled to the OWNING
+ * document's <body> so the room rail's container-query subtree containment can't
+ * trap the fixed backdrop. The body is a dumb renderer over an already-EVALUATED
+ * report — every verdict, ordering and threshold lives in the pure shared
+ * evaluator (shared/lan-quality + shared/lan-diagnostics); this file only picks an
+ * icon and translates a key.
+ *
+ * HOST WINDOW: both the portal target and the clipboard come from useHostWindow()
+ * rather than
+ * the module-scope globals, because the LAN panel that opens this modal can be torn
+ * off into a child window. `document.body` would then put the report in the MAIN
+ * window, and `navigator.clipboard` belongs to a document that is UNFOCUSED while
+ * the child window has focus — Chromium rejects that write with "Document is not
+ * focused" and the success toast never fires. With no provider (the docked case)
+ * the context IS the real globals, so nothing about the docked panel changes.
  *
  * The report is copy-paste-able on purpose: a user pastes it into a bug report.
  * The Copy button prefers the pre-formatted block the pure formatter produced
@@ -22,6 +31,7 @@ import toast from 'react-hot-toast';
 import { Modal, Button, Icon } from '../../components';
 import type { IconName } from '../../components/Icon';
 import { useTranslation } from '../../utils/i18nContext';
+import { useHostWindow } from '../../utils/hostWindow';
 import './RoomLanPanel.css';
 
 /** Verdict of one check. `unknown` = we could not measure it (not a failure). */
@@ -82,6 +92,7 @@ const LEVEL_MARK: Record<LanCheckLevel, string> = {
 
 export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, onClose }) => {
   const { t } = useTranslation();
+  const host = useHostWindow();
   // Evaluator-supplied keys are dynamic strings; t() is typed against en.json, so
   // the dynamic path casts once here instead of at every call site.
   const tk = (key: string) => t(key as Parameters<typeof t>[0]);
@@ -130,7 +141,9 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
   const copy = () => {
     if (!report) return;
     const text = asText(report);
-    navigator.clipboard?.writeText(text)
+    // The clipboard of the window this modal is actually displayed in — writing
+    // through an unfocused document rejects (see the REALM note in the header).
+    host.window.navigator.clipboard?.writeText(text)
       .then(() => { setCopied(true); toast.success(t('rooms.lan.copied')); })
       .catch(() => { /* clipboard blocked — the <pre> below is selectable */ });
   };
@@ -217,7 +230,7 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
         </>
       )}
     </Modal>,
-    document.body,
+    host.document.body,
   );
 };
 

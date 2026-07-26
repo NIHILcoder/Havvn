@@ -17,6 +17,7 @@ import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, Tra
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { usePopout } from '../utils/popout';
+import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/hostWindow';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
@@ -872,6 +873,9 @@ interface FilesPanelProps {
 const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
+  // Fallback host window for listeners registered before any element exists; with a
+  // ref in hand the element's own ownerDocument wins (see utils/hostWindow).
+  const host = useHostWindow();
   const [pickTransfer, setPickTransfer] = useState(false);
   // Client-side file filter/sort + bulk selection (all room-local, no engine calls).
   const [fileQuery, setFileQuery] = useState('');
@@ -899,16 +903,20 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     setViewPrefs((p) => { const next = { ...p, ...patch }; saveRoomFilesPrefs(next); return next; });
   };
   // The view popover closes like every other floating surface: outside click / Escape.
+  // Bound to the popover's OWN document (utils/hostWindow): in a detached panel the
+  // main document never sees the click, so the popover could not be dismissed from
+  // the window it is actually shown in. Identical objects in the main window.
   useEffect(() => {
     if (!viewOpen) return;
+    const doc = viewWrapRef.current?.ownerDocument ?? host.document;
     const onDown = (e: MouseEvent) => {
       if (viewWrapRef.current && !viewWrapRef.current.contains(e.target as Node)) setViewOpen(false);
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setViewOpen(false); };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
-  }, [viewOpen]);
+    doc.addEventListener('mousedown', onDown);
+    doc.addEventListener('keydown', onKey);
+    return () => { doc.removeEventListener('mousedown', onDown); doc.removeEventListener('keydown', onKey); };
+  }, [viewOpen, host]);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedFolders(room.roomId));
   const toggleCollapsed = (key: string) => {
     setCollapsed((prev) => {
@@ -1679,6 +1687,8 @@ interface DetailProps {
 
 const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onToggleNotifyMuted, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
   const { t } = useTranslation();
+  // Fallback host window (see utils/hostWindow); an element ref outranks it.
+  const host = useHostWindow();
   // Drag & drop files into the room. The depth counter survives child
   // enter/leave churn; internalDrag suppresses drags that started on this page
   // (text selections etc.) so only OS file drags light the overlay. The OS drop
@@ -1797,8 +1807,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // blur event — commit through a ref first, or the typed value is silently
   // lost while the draft keeps showing it on reopen.
   const commitLimitsRef = useRef<() => void>(() => {});
+  // Bound to the popover's OWN document: in another window these listeners would
+  // never fire, and the popover would then close by unmount — dropping the typed
+  // limit exactly as the note above warns. Commit-first ordering is unchanged.
   useEffect(() => {
     if (!settingsOpen) return;
+    const doc = settingsWrapRef.current?.ownerDocument ?? host.document;
     const onDown = (e: MouseEvent) => {
       if (settingsWrapRef.current && !settingsWrapRef.current.contains(e.target as Node)) {
         commitLimitsRef.current();
@@ -1806,10 +1820,10 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       }
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { commitLimitsRef.current(); setSettingsOpen(false); } };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
-  }, [settingsOpen]);
+    doc.addEventListener('mousedown', onDown);
+    doc.addEventListener('keydown', onKey);
+    return () => { doc.removeEventListener('mousedown', onDown); doc.removeEventListener('keydown', onKey); };
+  }, [settingsOpen, host]);
   // Speed-limit drafts: commit on blur/Enter; re-seed only on room switch so
   // live state pushes don't stomp typing. 0/empty = unlimited.
   const [upDraft, setUpDraft] = useState(String(room.upKbps || ''));
@@ -2184,6 +2198,8 @@ const isTypingTarget = (e: KeyboardEvent): boolean => {
 // per-participant volume.
 const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: string) => void }> = ({ room, onWatchShare }) => {
   const { t } = useTranslation();
+  // Fallback host window (see utils/hostWindow); an element ref outranks it.
+  const host = useHostWindow();
   const roomId = room.roomId;
   const v = room.voice;
   const [busy, setBusy] = useState(false);
@@ -2230,16 +2246,18 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [v.inVoice, rosterKey, roomId]);
 
-  // The peer popover closes like every floating surface: outside click.
+  // The peer popover closes like every floating surface: outside click — on the
+  // panel's OWN document, so a detached rail can dismiss it from its own window.
   useEffect(() => {
     if (!peerFor) return;
+    const doc = host.document;
     const onDown = (e: MouseEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && !el.closest('.room-voice-pop') && !el.closest('.room-voice-ring')) setPeerFor(null);
     };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [peerFor]);
+    doc.addEventListener('mousedown', onDown);
+    return () => doc.removeEventListener('mousedown', onDown);
+  }, [peerFor, host]);
 
   // Surface transient voice warnings from the engine (e.g. a mid-call mic fell back
   // to the system default) as a toast.
@@ -2285,23 +2303,39 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
   // Push-to-talk: hold the key to transmit (window-wide while a room is open).
   // With GLOBAL PTT actually running, the OS hook covers the focused case too —
   // skip this one (its blur-release would drop a held key on every focus change).
+  // Bound to THIS window only — see the note inside; a multi-window binding waits
+  // for a PTT-hosting panel that can actually be detached.
   useEffect(() => {
     if (!v.inVoice || prefs.inputMode !== 'ptt' || globalPttLive) return;
+    // SINGLE window on purpose. This panel lives in the rail, which is not
+    // detachable yet, so a multi-window binding here is machinery for a case that
+    // does not exist — and the deferred, focus-re-checking blur release it needed
+    // changed main-window behaviour (the mic stopped releasing immediately). When a
+    // PTT-hosting panel actually becomes detachable (P3), take the window set from
+    // the pop-out registry rather than from this panel's own host, which in the
+    // docked case is just `window` again.
+    const wins: Window[] = [window];
     let held = false;
     const set = (a: boolean) => { held = a; window.api.rooms.voice.ptt(roomId, a).catch(() => { /* ignore */ }); };
     const down = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && !held && !e.repeat && !isTypingTarget(e)) set(true); };
     const up = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && held) set(false); };
+    // Losing focus releases the key immediately: a keyup delivered to another
+    // window would never reach us, so a held mic would stay open.
     const blur = () => { if (held) set(false); };
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    window.addEventListener('blur', blur);
+    for (const w of wins) {
+      w.addEventListener('keydown', down);
+      w.addEventListener('keyup', up);
+      w.addEventListener('blur', blur);
+    }
     return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-      window.removeEventListener('blur', blur);
+      for (const w of wins) {
+        w.removeEventListener('keydown', down);
+        w.removeEventListener('keyup', up);
+        w.removeEventListener('blur', blur);
+      }
       if (held) window.api.rooms.voice.ptt(roomId, false).catch(() => { /* ignore */ });
     };
-  }, [v.inVoice, prefs.inputMode, prefs.pttKey, globalPttLive, roomId]);
+  }, [v.inVoice, prefs.inputMode, prefs.pttKey, globalPttLive, roomId, host]);
 
   // Join/leave chimes: rising when someone joins the call, falling when they go.
   const prevCount = useRef<number | null>(null);
@@ -2651,7 +2685,9 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
   const [chatCardFor, setChatCardFor] = useState<{ memberId: string; anchor: HTMLElement } | null>(null);
   const chatCardMember = chatCardFor ? room.members.find((m) => m.memberId === chatCardFor.memberId) : undefined;
   useEffect(() => { setChatCardFor(null); }, [room.roomId]);
-  const { popout, openPopout, closePopout } = usePopout('havvn-room-chat', t('rooms.chat'));
+  // `chat` names the pop-out root as a query container, so rules written for the
+  // docked chat panel (`@container chat (…)`) keep matching once it is torn off.
+  const { popout, portal: popoutPortal, openPopout, closePopout } = usePopout('havvn-room-chat', t('rooms.chat'), 'chat');
   // Tell the parent so it can COLLAPSE the docked chat column while detached —
   // no empty placeholder is left where the chat was.
   const isPopped = !!(popout && !popout.closed);
@@ -2852,8 +2888,12 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
     }
   };
 
+  // ONE class list, detached or not. The pop-out's own `.popout-root` supplies the
+  // fill-the-window layout, and the room's stacking rules are `@container room`
+  // queries that cannot reach a child window (which has no `room` ancestor) — so
+  // there is nothing left for a `.room-chat-popped` variant to undo.
   const zone = (
-    <div className={`room-section room-chat-section${popout ? ' room-chat-popped' : ''}`}>
+    <div className="room-section room-chat-section">
       <div className="room-chat-zone-tabs">
         {(['chat', 'history'] as const).map((tab) => (
           <button
@@ -3162,10 +3202,9 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void; onPopp
   // chat column so no empty space is left. Restore from the detached window's
   // pop-in button, or by closing that window. Same React tree either way — chat
   // state and subscriptions are unaffected.
-  if (popout && !popout.closed) {
-    return createPortal(zone, popout.document.body);
-  }
-  return zone;
+  // `popoutPortal` returns null while docked/closed, and mounts the host-window
+  // provider when detached so everything below resolves to the CHILD window.
+  return popoutPortal(zone) ?? zone;
 };
 
 // Highlight the search match inside a file name (case-insensitive, first hit).
@@ -3188,11 +3227,16 @@ const highlightName = (name: string, query: string): React.ReactNode => {
 // backdrop click, the × button, or Escape all close it.
 const ImageLightbox: React.FC<{ url: string; name: string; onClose: () => void }> = ({ url, name, onClose }) => {
   const { t } = useTranslation();
+  // The overlay has no element of its own before it mounts, so both the Escape
+  // listener and the portal target come from the host window (utils/hostWindow):
+  // opened from a detached Files panel it must appear — and close — in THAT window.
+  const host = useHostWindow();
   useEffect(() => {
+    const doc = host.document;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+    doc.addEventListener('keydown', onKey);
+    return () => doc.removeEventListener('keydown', onKey);
+  }, [onClose, host]);
   return createPortal(
     <div className="room-lightbox" role="dialog" aria-label={name} onClick={onClose}>
       <button type="button" className="room-lightbox-close" title={t('common.close')} onClick={onClose}>
@@ -3201,7 +3245,7 @@ const ImageLightbox: React.FC<{ url: string; name: string; onClose: () => void }
       <img className="room-lightbox-img" src={url} alt={name} onClick={(e) => e.stopPropagation()} />
       <div className="room-lightbox-name" onClick={(e) => e.stopPropagation()}>{name}</div>
     </div>,
-    document.body,
+    host.document.body,
   );
 };
 
@@ -3209,6 +3253,11 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // The row itself is the authority on which window this file lives in: the menu
+  // coordinates are measured in the row's viewport, so the menu must be planted in
+  // the row's own document (utils/hostWindow — the context is only the fallback).
+  const host = useHostWindow();
+  const rowRef = useRef<HTMLDivElement>(null);
   const folders = room.folders ?? [];
   const tr = room.transfers[file.fileId];
   const owner = room.members.find((m) => m.memberId === file.addedBy);
@@ -3256,6 +3305,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 
   return (
     <div
+      ref={rowRef}
       className={`room-file ${selecting ? 'selecting' : ''} ${selected ? 'selected' : ''}`}
       draggable={folders.length > 0}
       onDragStart={(e) => {
@@ -3447,7 +3497,10 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
             ...(haveLocally && !tr?.released ? [{ label: t('rooms.stopSeeding'), icon: 'pause' as IconName, onClick: () => { window.api.rooms.releaseFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
             ...(haveLocally && tr?.released ? [{ label: t('rooms.seedAgain'), icon: 'upload' as IconName, onClick: () => { window.api.rooms.reseedFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
             ...(awaitingFetch ? [{ label: t('rooms.fetch'), icon: 'download' as IconName, onClick: () => { window.api.rooms.fetchFile(room.roomId, file.fileId).catch((e) => toast.error(String(e instanceof Error ? e.message : e))); } }] : []),
-            { label: t('rooms.copyName'), icon: 'copy' as IconName, onClick: () => { navigator.clipboard.writeText(file.name).catch(() => { /* ignore */ }); } },
+            // The row's OWN window's clipboard: the main document is unfocused
+            // while a child window has focus, and its write rejects with
+            // "Document is not focused" (same fix as RoomChatBody's copy).
+            { label: t('rooms.copyName'), icon: 'copy' as IconName, onClick: () => { resolveHostWindow(rowRef.current, host).window.navigator.clipboard.writeText(file.name).catch(() => { /* ignore */ }); } },
             ...(folders.length > 0 ? [
               { label: '', onClick: () => { /* divider */ }, divider: true },
               ...folders.filter((fo) => fo.id !== file.folderId).map((fo) => {
@@ -3478,7 +3531,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           ]}
         />
         </div>,
-        document.body,
+        portalTargetFor(rowRef.current, host),
       )}
       <div className="room-file-status">
         {haveLocally && tr?.released ? (
@@ -3688,8 +3741,13 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const css = getComputedStyle(document.documentElement);
+    // Both reads come from the CANVAS's own realm. They agree with the main
+    // window's today only because usePopout mirrors the theme attributes onto the
+    // child's <html>; this removes that hidden dependency.
+    const vizDoc = canvas.ownerDocument;
+    const vizWin = vizDoc.defaultView ?? window;
+    const reduce = vizWin.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const css = vizWin.getComputedStyle(vizDoc.documentElement);
     const accent = css.getPropertyValue('--color-accent-primary').trim() || '#e25117';
     const olive = css.getPropertyValue('--color-accent-secondary').trim() || '#adb87c';
     let raf = 0;
@@ -3849,9 +3907,14 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   }, [roomId, current.fileId]);
 
   // Leaving the player unmounts its <video> — close any PiP window it owns
-  // instead of stranding a dead floating frame.
-  useEffect(() => () => {
-    if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
+  // instead of stranding a dead floating frame. The document is captured on SETUP:
+  // the ref is already null by cleanup time, and PiP state lives on the video's own
+  // document, so reading the main one would strand exactly the frame this prevents.
+  useEffect(() => {
+    const doc = videoRef.current?.ownerDocument ?? document;
+    return () => {
+      if (doc.pictureInPictureElement) void doc.exitPictureInPicture().catch(() => {});
+    };
   }, []);
 
   // Track who's watching (presence) + apply remote sync when "together" is on.

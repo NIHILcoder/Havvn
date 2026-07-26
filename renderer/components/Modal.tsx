@@ -10,48 +10,105 @@
  *
  * Special surfaces that are NOT centered dialogs — the media players, the
  * right-click ContextMenu, anchored dropdowns — deliberately do NOT use this.
+ *
+ * HOST WINDOW: a Modal renders IN PLACE (it does not portal — see
+ * backdropClassName), so it can end up in a detached panel's window. Every
+ * listener and every activeElement read below therefore resolves through the
+ * dialog's own document / the host-window context instead of the module-scope
+ * globals. In the main window the context default IS `window`/`document`, so
+ * nothing changes there; in a child window it is the difference between a
+ * working focus trap and a dialog that pins focus to its first control and
+ * swallows Escape.
  */
 
 import React, { useEffect, useRef } from 'react';
 import Icon, { IconName } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import { useHostWindow } from '../utils/hostWindow';
 import './Modal.css';
 
 /** Escape-to-close, suppressible (e.g. while an async action is in flight). */
 export function useEscape(onClose: () => void, active = true): void {
+  // The hook — not its ~15 call sites — consumes the host window, so every
+  // existing caller becomes window-correct with no diff of its own.
+  const host = useHostWindow();
   useEffect(() => {
     if (!active) return;
+    const win = host.window;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, active]);
+    win.addEventListener('keydown', onKey);
+    return () => win.removeEventListener('keydown', onKey);
+  }, [onClose, active, host]);
 }
 
 // Stack of currently-open modals (innermost last). Escape closes only the
 // topmost one, so a confirm/alert shown OVER another dialog doesn't dismiss the
 // layer beneath it. Each Modal registers a token while mounted.
+//
+// Deliberately module-global, i.e. SHARED ACROSS WINDOWS: the React tree is one
+// tree no matter which window its DOM lives in, so a confirm popped in a
+// detached panel is still logically "on top" of a dialog in the main window.
+// Making the stack per-window would leave Escape ordering between two windows
+// undefined. Only the key LISTENER follows the host window.
 const modalStack: object[] = [];
 function useModalEscape(token: object, onClose: () => void, active: boolean): void {
+  const host = useHostWindow();
   useEffect(() => {
     modalStack.push(token);
     return () => { const i = modalStack.indexOf(token); if (i >= 0) modalStack.splice(i, 1); };
   }, [token]);
   useEffect(() => {
     if (!active) return;
+    const win = host.window;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && modalStack[modalStack.length - 1] === token) { e.stopPropagation(); onClose(); }
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [token, onClose, active]);
+    win.addEventListener('keydown', onKey);
+    return () => win.removeEventListener('keydown', onKey);
+  }, [token, onClose, active, host]);
+}
+
+/**
+ * Where focus sits relative to the dialog when Tab is pressed. Every flag is a
+ * fact about ONE document's `activeElement` — which is exactly the read that
+ * breaks when it comes from the wrong document: a child-window dialog measured
+ * against the MAIN document reports `hasActive` with `insideDialog: false` on
+ * every keystroke, so Tab snaps back to the first control forever and the trap
+ * becomes a cage. Modelling it as data makes that failure a unit test.
+ *
+ * The flags are not mutually exclusive on purpose: a dialog with a single
+ * focusable control has `isFirst && isLast`.
+ */
+export interface TrapState {
+  /** The document reported an activeElement at all. */
+  hasActive: boolean;
+  /** …and it is the dialog or a descendant of it. */
+  insideDialog: boolean;
+  /** …and it is the dialog card itself (tabIndex={-1}), not a control. */
+  isDialog: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+}
+
+/** Pure statement of the trap's wrap-around rules. `null` = let the browser move focus. */
+export function resolveTrapMove(s: TrapState, shiftKey: boolean): 'first' | 'last' | null {
+  if (!s.hasActive) return null;
+  if (!s.insideDialog) return 'first';
+  if (shiftKey && (s.isFirst || s.isDialog)) return 'last';
+  if (!shiftKey && s.isLast) return 'first';
+  return null;
 }
 
 /** Move focus into the dialog on open, trap Tab inside it, restore focus on close. */
 export function useModalFocus(): React.RefObject<HTMLDivElement> {
   const ref = useRef<HTMLDivElement>(null);
+  const host = useHostWindow();
   useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
     const dialog = ref.current;
+    // The dialog element is the authority on which window it lives in — more so
+    // than the context, since a caller may portal this subtree elsewhere.
+    const doc = dialog?.ownerDocument ?? host.document;
+    const prev = doc.activeElement as HTMLElement | null;
     // Prefer the first field/control; fall back to the dialog itself.
     const initial = dialog?.querySelector<HTMLElement>(
       'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [data-autofocus]',
@@ -65,17 +122,26 @@ export function useModalFocus(): React.RefObject<HTMLDivElement> {
       if (focusables.length === 0) { e.preventDefault(); return; }
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
-      const active = document.activeElement as HTMLElement | null;
-      if (active && !dialog.contains(active)) { e.preventDefault(); first.focus(); }
-      else if (e.shiftKey && (active === first || active === dialog)) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+      const active = doc.activeElement as HTMLElement | null;
+      const move = resolveTrapMove({
+        hasActive: !!active,
+        insideDialog: !!active && dialog.contains(active),
+        isDialog: active === dialog,
+        isFirst: active === first,
+        isLast: active === last,
+      }, e.shiftKey);
+      if (move === 'first') { e.preventDefault(); first.focus(); }
+      else if (move === 'last') { e.preventDefault(); last.focus(); }
     };
-    document.addEventListener('keydown', onKey, true);
+    doc.addEventListener('keydown', onKey, true);
     return () => {
-      document.removeEventListener('keydown', onKey, true);
+      doc.removeEventListener('keydown', onKey, true);
+      // Restore into the SAME window we took focus from; restoring a main-window
+      // element after a child-window dialog closes can raise the main window
+      // over the child on Windows.
       prev?.focus?.();
     };
-  }, []);
+  }, [host]);
   return ref;
 }
 

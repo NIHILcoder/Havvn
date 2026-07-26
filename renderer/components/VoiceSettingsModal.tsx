@@ -15,6 +15,7 @@ import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import { VoicePrefs, loadVoicePrefs, saveVoicePrefs, keyLabel, toVoiceSettings } from '../utils/voicePrefs';
 import { usePopout } from '../utils/popout';
+import { usePortalTarget } from '../utils/hostWindow';
 import type { VoiceDeviceInfo, VoiceInputMode, NoiseSuppressionMode } from '../../shared/types';
 import './VoiceSettingsModal.css';
 
@@ -89,7 +90,8 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
   }, [testing, monitor, prefs.inputDeviceId, prefs.echoCancellation, prefs.noiseSuppressionMode, prefs.autoGainControl]);
 
   // Detach into an OS window (the content portals there; state stays here).
-  const { popout, openPopout, closePopout } = usePopout('havvn-voice-settings', t('rooms.voice.settings'));
+  const { popout, portal: popoutPortal, openPopout, closePopout } = usePopout('havvn-voice-settings', t('rooms.voice.settings'));
+  const portalTarget = usePortalTarget();
 
   // Escape in the pop-out steps back to the docked modal (parity with the Modal's
   // own Escape). Skipped while capturing a PTT key — Escape cancels the capture.
@@ -303,28 +305,31 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
   // Detached: the content lives in its own OS window with a slim header; the
   // React tree (and every IPC subscription) stays in the main renderer realm.
   // Closing the OS window returns to the modal; the ✕ closes settings entirely.
-  if (popout && !popout.closed) {
-    return createPortal(
-      <div className="vsm-popout">
-        <div className="vsm-popout-head">
-          <span className="vsm-popout-title"><Icon name="headphones" size={14} /> {t('rooms.voice.settings')}</span>
-          <span className="vsm-popout-acts">
-            <button className="vsm-popout-btn" onClick={closePopout} title={t('rooms.voice.popIn')}>
-              <Icon name="minimize" size={13} />
-            </button>
-            <button className="vsm-popout-btn" onClick={() => { closePopout(); onClose(); }} title={t('common.close')}>
-              <Icon name="x" size={13} />
-            </button>
-          </span>
-        </div>
-        <div className="vsm-body vsm-popout-body">{content}</div>
-      </div>,
-      popout.document.body,
-    );
-  }
+  // popoutPortal is null while docked/closed, and mounts the host-window provider
+  // when detached so the subtree resolves to the CHILD window.
+  const detached = popoutPortal(
+    <div className="vsm-popout">
+      <div className="vsm-popout-head">
+        <span className="vsm-popout-title"><Icon name="headphones" size={14} /> {t('rooms.voice.settings')}</span>
+        <span className="vsm-popout-acts">
+          <button className="vsm-popout-btn" onClick={closePopout} title={t('rooms.voice.popIn')}>
+            <Icon name="minimize" size={13} />
+          </button>
+          <button className="vsm-popout-btn" onClick={() => { closePopout(); onClose(); }} title={t('common.close')}>
+            <Icon name="x" size={13} />
+          </button>
+        </span>
+      </div>
+      <div className="vsm-body vsm-popout-body">{content}</div>
+    </div>,
+  );
+  if (detached) return detached;
 
-  // Docked: portal to <body> — the opener (voice panel) lives inside the room's
-  // container-query subtree, whose containment would trap the fixed backdrop.
+  // Docked: portal to the OWNING document's body — the opener (voice panel) lives
+  // inside the room's container-query subtree, whose containment would trap the
+  // fixed backdrop. Resolved through the host context so that if the opener is ever
+  // itself inside a detached window the dialog follows it; with no provider above
+  // (today's docked case) this resolves to the real document.body, unchanged.
   return createPortal(
     <Modal
       onClose={onClose} title={t('rooms.voice.settings')} icon="headphones" size="md" bodyClassName="vsm-body"
@@ -336,6 +341,6 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
     >
       {content}
     </Modal>,
-    document.body,
+    portalTarget,
   );
 };
