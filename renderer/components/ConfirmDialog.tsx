@@ -82,6 +82,13 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
           icon={req.icon || (req.kind === 'confirm' && req.danger ? 'alert-triangle' : undefined)}
           title={req.title || (req.kind === 'confirm' ? t('common.confirm') : t('common.notice'))}
           onClose={() => close(false)}
+          // A confirm is asked ABOUT whatever is already open, so it must never
+          // land underneath it. Without this it does: Modal renders in place, and
+          // this provider sits near the app root, so a dialog that portals to
+          // <body> (e.g. a picker) comes later in the DOM and wins at equal
+          // z-index — the confirm appears BEHIND the modal that requested it and
+          // the user has to close that modal to reach it.
+          backdropClassName="um-backdrop-top"
           bodyClassName="um-body-plain"
           footer={req.kind === 'confirm' ? (
             <>

@@ -99,6 +99,15 @@ export interface ModalProps {
   closeOnBackdrop?: boolean;
   /** Extra class on the card (e.g. a bespoke width). */
   className?: string;
+  /**
+   * Extra class on the BACKDROP — the element that carries the z-index. Needed
+   * because a Modal renders in place rather than portalling, so two open modals
+   * at the same z-index are ordered by DOM position: one portalled to <body>
+   * lands after (and therefore above) one rendered from a provider near the app
+   * root. A dialog that must sit on top regardless (see ConfirmProvider) raises
+   * its own layer here.
+   */
+  backdropClassName?: string;
   /** Extra class on the scrolling body. */
   bodyClassName?: string;
   /** aria-label when there is no visible title. */
@@ -108,7 +117,7 @@ export interface ModalProps {
 
 export const Modal: React.FC<ModalProps> = ({
   onClose, title, icon, size = 'md', footer, hideClose = false, busy = false,
-  closeOnBackdrop = true, className = '', bodyClassName = '', ariaLabel, children,
+  closeOnBackdrop = true, className = '', backdropClassName = '', bodyClassName = '', ariaLabel, children,
 }) => {
   const { t } = useTranslation();
   const ref = useModalFocus();
@@ -120,7 +129,7 @@ export const Modal: React.FC<ModalProps> = ({
   };
 
   return (
-    <div className="um-backdrop" onClick={onBackdrop}>
+    <div className={`um-backdrop${backdropClassName ? ` ${backdropClassName}` : ''}`} onClick={onBackdrop}>
       <div
         ref={ref}
         className={`um-card um-${size} ${className}`}

@@ -17,6 +17,19 @@
   animation: um-fade 150ms ease;
 }
 
+/**
+ * The always-on-top modal layer (ConfirmProvider). A confirm/alert is asked ABOUT
+ * a dialog that is usually already open, so it has to outrank it — and it cannot
+ * rely on DOM order to do that: Modal renders in place, so a dialog portalled to
+ * <body> comes later than one rendered from a provider near the app root and wins
+ * at equal z-index, leaving the confirm stranded behind the modal that asked for it.
+ * Derived from --z-modal with calc() rather than a new token, so it tracks whatever
+ * the theme sets and can never be themed BELOW the layer it must cover.
+ */
+.um-backdrop.um-backdrop-top {
+  z-index: calc(var(--z-modal) + 10);
+}
+
 .um-card {
   position: relative;
   display: flex;
