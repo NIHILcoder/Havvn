@@ -5,7 +5,9 @@ import {
   DOCK_PANEL_IDS,
   DOCK_REGISTRY,
   DOCK_SCHEMA_VERSION,
+  DOCK_SOLO_HOST_IDS,
   DOCK_WINDOW_FRAME_NAMES,
+  DOCK_WINDOW_POOL_SIZE,
   DOCK_WINDOW_ZONE_IDS,
   DOCK_ZONE_IDS,
   PANELS,
@@ -31,7 +33,6 @@ import {
   nonEmptyDockedZones,
   openWindowZones,
   parseDockLayout,
-  reconcileWindows,
   repairDockLayout,
   repairLayout,
   resetDockLayout,
@@ -47,6 +48,9 @@ import {
   type DockRegistry,
   type DockZoneId,
 } from './dockModel';
+// Imported from the SOURCE of truth as well, so "derived, not restated" is proved
+// against the file the main process allowlists from rather than against ourselves.
+import { DOCK_WINDOW_FRAME_NAMES as SHARED_FRAME_NAMES } from '../../../../shared/dock-windows';
 
 // The module reads localStorage only inside load/save/reset; these tests run in
 // Node, so stub it per case (same shape as utils/voicePrefs.test.ts).
@@ -86,6 +90,22 @@ describe('the registry itself', () => {
     // most PANELS.length - 1 window zones are reachable. Adding a 6th panel without
     // a 5th slot must fail HERE rather than at a user's fifth tear-off.
     expect(DOCK_WINDOW_ZONE_IDS.length).toBeGreaterThanOrEqual(PANELS.length - 1);
+    // ...and the SHARED constant is the one that has to hold, since it is what the
+    // main process allowlists. shared/dock-windows.ts's header claims this
+    // assertion exists; before P4 it did not, and nothing imported that file.
+    expect(DOCK_WINDOW_POOL_SIZE).toBeGreaterThanOrEqual(PANELS.length - 1);
+    expect(DOCK_WINDOW_ZONE_IDS.length).toBe(DOCK_WINDOW_POOL_SIZE);
+  });
+
+  it('declares which panels host their own solo affordance', () => {
+    // A DOCKED zone holding exactly one of these hides its tab strip, so the
+    // default room keeps the single header row it had before the dock existed.
+    // Panels with no header of their own must NOT be listed: the zone body is a
+    // drop target, never a drag source, so they would become unmovable.
+    expect([...DOCK_SOLO_HOST_IDS]).toEqual(['files', 'chat']);
+    expect(PANEL_BY_ID.people.soloHost).toBeUndefined();
+    expect(PANEL_BY_ID.voice.soloHost).toBeUndefined();
+    expect(PANEL_BY_ID.lan.soloHost).toBeUndefined();
   });
 
   it('lists docked zones first, then window zones', () => {
@@ -106,6 +126,11 @@ describe('the registry itself', () => {
     expect(dockWindowFrameName('w1')).toBe('havvn-dock-1');
     expect(dockWindowFrameName('w4')).toBe('havvn-dock-4');
     expect(DOCK_WINDOW_FRAME_NAMES).toEqual(['havvn-dock-1', 'havvn-dock-2', 'havvn-dock-3', 'havvn-dock-4']);
+    // DERIVED from shared/dock-windows.ts, not restated: zone w{n} IS pool slot n.
+    // Before P4 this file hand-wrote the map while three comments claimed it was
+    // imported, so the two halves could drift with nothing to catch it.
+    expect(DOCK_WINDOW_ZONE_IDS.map(dockWindowFrameName)).toEqual([...DOCK_WINDOW_FRAME_NAMES]);
+    expect(DOCK_WINDOW_FRAME_NAMES).toEqual([...SHARED_FRAME_NAMES]);
     expect(new Set(DOCK_WINDOW_FRAME_NAMES).size).toBe(DOCK_WINDOW_ZONE_IDS.length);
     // The persisted blob must never carry an Electron naming convention.
     expect(DOCK_WINDOW_ZONE_IDS.some((z) => (DOCK_WINDOW_FRAME_NAMES as string[]).includes(z))).toBe(false);
@@ -597,6 +622,32 @@ describe('detachPanel / tearOffZone / dockBackZone', () => {
     expect(r.layout.zones.right.panels).toEqual([]);
   });
 
+  it('refuses "new window" for a panel that ALREADY has a window to itself', () => {
+    // Honouring it would allocate the next free slot and MOVE the panel there: the
+    // current window closes and a different one opens, at a different remembered
+    // geometry (bounds persist per slot). The user asked for a new window and would
+    // get their existing one teleported.
+    const alone = ok(detachPanel(base(), 'chat'));
+    expect(zonePanels(alone, 'w1')).toEqual(['chat']);
+    const again = detachPanel(alone, 'chat');
+    expect(again.refused).toBe('already-own-window');
+    expect(again.layout).toBe(alone);
+    // ...and the menu learns it through the same path, so the item disables itself
+    // with the reason attached instead of silently doing the wrong thing.
+    expect(detachTarget(alone, 'chat').refused).toBe('already-own-window');
+  });
+
+  it('still allows "new window" for a panel SHARING a window with another', () => {
+    // Splitting a torn-off group is a real request: the panel gets its own slot and
+    // the original window keeps the rest.
+    const grouped = ok(movePanel(base(), 'chat', 'left'));
+    const torn = ok(tearOffZone(grouped, 'left'));
+    const split = detachPanel(torn, 'chat');
+    expect(split.refused).toBeNull();
+    expect(split.zone).toBe('w2');
+    expect(zonePanels(split.layout, 'w1')).toEqual(['voice', 'lan', 'people']);
+  });
+
   it('tears off the WHOLE group, order and active tab intact', () => {
     const b = setActivePanel(base(), 'left', 'people');
     const r = tearOffZone(b, 'left');
@@ -707,25 +758,41 @@ describe('detachPanel / tearOffZone / dockBackZone', () => {
   });
 });
 
-describe('reconcileWindows — the only bridge to real OS windows', () => {
-  it('is identity when the model and the live windows agree', () => {
+// `reconcileWindows` was deleted in P4 (see the note where it used to live). What
+// it existed to guarantee — N simultaneous window deaths collapsing into one
+// correct repair — is a property of dockBackZone being IDEMPOTENT plus the room
+// committing dock ops as functional updates, so that is what is pinned here.
+describe('window death is repaired one frame at a time, idempotently', () => {
+  it('dockBackZone on an already-empty window zone is identity', () => {
     const b = base();
-    expect(reconcileWindows(b, [])).toBe(b);
     const torn = ok(tearOffZone(b, 'left'));
-    expect(reconcileWindows(torn, ['w1'])).toBe(torn);
-    expect(reconcileWindows(torn, ['w1', 'w3'])).toBe(torn); // a live window we do not use
+    const home = ok(dockBackZone(torn, 'w1'));
+    // The second signal for the same window (beforeunload AND win:popoutClosed both
+    // arrive for a user-closed window) must change nothing at all.
+    const again = dockBackZone(home, 'w1');
+    expect(again.refused).toBe('unknown-zone');
+    expect(again.layout).toBe(home);
+    // ...and a slot that never held anything is the same case.
+    expect(dockBackZone(b, 'w3').layout).toBe(b);
   });
 
-  it('docks back every group whose window is gone (close-to-tray closes them all)', () => {
+  it('two windows dying in one batch both come home when chained through prev', () => {
+    // This is exactly what a functional `setDock(prev => ...)` does; the hazard the
+    // deleted helper addressed was the NON-functional update, not the model.
     let l = ok(tearOffZone(base(), 'left'));
     l = ok(tearOffZone(l, 'centre'));
-    const out = reconcileWindows(l, []);
+    expect(openWindowZones(l)).toEqual(['w1', 'w2']);
+    const out = ok(dockBackZone(ok(dockBackZone(l, 'w1')), 'w2'));
     expect(openWindowZones(out)).toEqual([]);
     expect(out.zones.left.panels).toEqual(['voice', 'lan', 'people']);
     expect(out.zones.centre.panels).toEqual(['files']);
     expect(holdsA(out)).toBe(true);
-    // a window that failed to OPEN is the same case, one slot at a time
-    const one = reconcileWindows(l, ['w1']);
+  });
+
+  it('a window that failed to OPEN is the same single-slot repair', () => {
+    let l = ok(tearOffZone(base(), 'left'));
+    l = ok(tearOffZone(l, 'centre'));
+    const one = ok(dockBackZone(l, 'w2'));
     expect(openWindowZones(one)).toEqual(['w1']);
     expect(one.zones.centre.panels).toEqual(['files']);
   });

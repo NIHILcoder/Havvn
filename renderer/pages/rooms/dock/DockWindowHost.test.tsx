@@ -95,6 +95,16 @@ describe('DockWindowShell markup', () => {
     expect(render({ frameName: 'havvn-dock-3' })).toContain('data-rht-toaster="havvn-dock-3"');
   });
 
+  it('mounts a live region scoped to THIS window (the third realm surface)', () => {
+    // A screen reader only voices the live regions of the window its virtual cursor
+    // is in, so "Chat moved to Left column" raised by a panel on this monitor has to
+    // be spoken here. Two regions, because the announcer alternates them so a
+    // REPEATED message still counts as a content change.
+    const html = render();
+    expect(html.match(/aria-live="polite"/g)).toHaveLength(2);
+    expect(html).toMatch(/class="sr-only" aria-live="polite" aria-atomic="true"/);
+  });
+
   it('mounts with no DOM at all', () => {
     // Nothing here may dereference a global at render time: the toast host falls
     // back to rendering in place when there is no body to portal into, and the

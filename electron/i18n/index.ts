@@ -53,8 +53,10 @@ const en: Dict = {
   'dialog.importRoomIdentity': 'Import Room Identity',
   'dialog.exportTheme': 'Export Theme',
   'dialog.importTheme': 'Import Theme',
+  'dialog.lanAllowApp': 'Choose the game executable',
   'dialog.filter.torrent': 'Torrent Files',
   'dialog.filter.json': 'JSON Files',
+  'dialog.filter.exe': 'Applications',
 
   // System notifications
   'notify.downloadComplete.title': 'Download Complete',
@@ -144,8 +146,10 @@ const ru: Dict = {
   'dialog.importRoomIdentity': 'Импорт identity комнат',
   'dialog.exportTheme': 'Экспорт темы',
   'dialog.importTheme': 'Импорт темы',
+  'dialog.lanAllowApp': 'Выберите исполняемый файл игры',
   'dialog.filter.torrent': 'Торрент-файлы',
   'dialog.filter.json': 'Файлы JSON',
+  'dialog.filter.exe': 'Приложения',
 
   // System notifications
   'notify.downloadComplete.title': 'Загрузка завершена',

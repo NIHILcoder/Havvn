@@ -59,6 +59,21 @@
    keep-alive panel would otherwise stay visible behind the active one. */
 .dock-panel[hidden] { display: none; }
 
+/* P4 — the hoisted mount container.
+   Every live panel owns ONE of these for its whole lifetime; the zone slot adopts
+   it with a single appendChild instead of React remounting the panel. It must
+   generate NO box, so the panel's own root stays the direct flex item of
+   `.dock-panel` and the layout is byte-identical to the pre-hoist tree.
+   If a future zone-level overlay ever needs to anchor to a panel, swap this for a
+   flex passthrough (`flex:1 1 auto; min-height:0; display:flex; flex-direction:
+   column`) rather than styling the container ad hoc. */
+.dock-mount { display: contents; }
+
+/* The stage overlay hides the centre zone instead of unmounting it (unmounting
+   would tear down the slots, the strip, the keyboard path and the ARIA tablist
+   mid-session). `display: flex` above outranks the UA `[hidden]` rule here too. */
+.dock-zone[hidden] { display: none; }
+
 /* A tab drag is hovering this zone's BODY (the strip writes data-dock-over="" on
    itself instead, and stops propagation, so the two never light at once).
    An INSET shadow rather than a border or an inserted element: zero layout shift,

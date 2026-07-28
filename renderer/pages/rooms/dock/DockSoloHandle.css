@@ -1,0 +1,53 @@
+/*
+ * DockSoloHandle styling.
+ *
+ * Visual lineage: the room's own small header controls (`.room-zone-action`,
+ * `.room-section-title-actions` buttons) — a 24px transparent icon button that only
+ * gains a wash on hover. It sits INSIDE a panel's existing header row, so it must
+ * add no height of its own: that is the entire point of hiding the strip.
+ *
+ * Theme tokens ONLY. Radius comes from --radius-* (strict square at the default
+ * --radius-scale: 0) — never a literal. No bespoke focus ring: base.css gives
+ * :focus-visible a --shadow-focus box-shadow, and adding one here would double it.
+ */
+
+.dock-solo-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-tertiary);
+  /* `grab` rather than `pointer`: this control's primary gesture is a drag, and
+     the cursor is the only affordance saying so before the pointer is pressed. */
+  cursor: grab;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.dock-solo-handle:hover,
+.dock-solo-handle[data-menu-open] {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-hover);
+}
+
+/* While the drag is in flight the pointer is captured; matching the tab's own
+   dimming keeps the two paths reading as one gesture. */
+.dock-solo-handle:active { cursor: grabbing; }
+.dock-solo-handle[data-dock-dragging] { opacity: 0.45; }
+
+.dock-solo-grip {
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+/* Deliberately NOT hidden at narrow widths, unlike the strip's badges and ⋮ hint.
+   Those are affixes to a control that remains; this IS the control. With the strip
+   gone, hiding it would leave a solo panel movable IN (the zone body is a drop
+   target) and never OUT — and `display: none` would take it out of the tab order
+   too, so the keyboard path would go with it. 20px is the whole cost. */

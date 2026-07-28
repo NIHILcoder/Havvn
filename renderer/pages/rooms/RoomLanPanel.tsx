@@ -46,12 +46,28 @@
  * still runs in the main renderer's JS realm no matter where its DOM lives, so
  * `window.api` (every IPC call in this file) stays deliberately absolute: a child
  * window has no preload bridge of its own.
+ *
+ * TOASTS follow the same rule and for the same reason. `toast` from
+ * react-hot-toast is a module singleton that dispatches into the DEFAULT store,
+ * which only the main window's <Toaster> subscribes to — so "IP copied", a failed
+ * Stop and the firewall result were all drawn in the main window while the user
+ * was looking at the torn-off panel on another monitor. `useHostToast()` binds the
+ * whole API to this subtree's realm and deliberately SHADOWS the import, so no
+ * call site below changed. With no realm above it (the docked case, and every
+ * test) it returns the module singleton ITSELF, so the docked panel is unchanged
+ * by construction rather than by inspection.
+ *
+ * The two overlays this panel opens (LanPeerPicker, LanDiagnosticsModal) portal to
+ * the OWNING document's <body>, never inside this subtree: a fixed backdrop
+ * rendered under an ancestor with `container-type` is trapped by it. This panel
+ * sets no `container-type` of its own (see RoomLanPanel.css's header), but the
+ * dock zone and `.popout-root` above it both do.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
 import { Avatar, Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
+import { useHostToast } from '../../utils/hostToast';
 import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
 import { LanPeerPicker } from './LanPeerPicker';
@@ -230,6 +246,9 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
 }) => {
   const { t } = useTranslation();
   const host = useHostWindow();
+  // Shadows the module singleton on purpose (see the TOAST note in the header):
+  // every `toast.*` call below now lands in the window this panel is displayed in.
+  const toast = useHostToast();
   // The panel root, used only to resolve which window this DOM actually lives in.
   // An element's ownerDocument outranks the context: it stays right even when the
   // panel is portalled into a realm its React-tree provider knows nothing about.

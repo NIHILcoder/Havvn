@@ -21,11 +21,11 @@
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import toast from 'react-hot-toast';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import { useHostWindow, usePortalTarget } from '../utils/hostWindow';
+import { useHostToast } from '../utils/hostToast';
 import type { ScreenSourceInfo } from '../../shared/types';
 import './ScreenShare.css';
 
@@ -34,6 +34,11 @@ export const ScreenSourcePicker: React.FC<{
   onPick: (sourceId: string, withAudio: boolean) => void;
 }> = ({ onClose, onPick }) => {
   const { t } = useTranslation();
+  // Shadows the module import so no call site changes (utils/hostToast.tsx). The
+  // picker is opened by the room's voice panel, which can be torn off onto another
+  // monitor — "could not list your screens" belongs in the window the user clicked
+  // in. With no realm above it this IS the module singleton, unchanged.
+  const toast = useHostToast();
   // No element of our own to read an ownerDocument from — the portal container
   // is needed before anything mounts — so this is the context case. With no
   // provider above (the whole main tree) it IS `document.body`, unchanged.
@@ -48,6 +53,10 @@ export const ScreenSourcePicker: React.FC<{
       .then(setSources)
       .catch((e) => { toast.error(String(e instanceof Error ? e.message : e)); setSources([]); });
   };
+  // Mount only. `refresh` closes over `toast`, but re-listing every screen and
+  // re-grabbing every thumbnail because the panel changed windows would be a
+  // visible stall for nothing — the picker is a modal and lives one realm.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(refresh, []);
 
   const group = (display: boolean) => (sources || []).filter((s) => s.display === display);
@@ -104,6 +113,12 @@ export const ScreenView: React.FC<{
   const stageRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // Through a ref for the same reason `onClose` is: the signalling effect must NOT
+  // re-run when the realm changes (it would tear down the loopback peer connection
+  // mid-stream), and it must still toast into whichever window it is in NOW.
+  const toast = useHostToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
 
   useEffect(() => {
     let dead = false;
@@ -141,7 +156,7 @@ export const ScreenView: React.FC<{
       if (candidate) void window.api.rooms.screen.signal(roomId, memberId, 'ice', candidate.toJSON()).catch(() => { /* ignore */ });
     };
     window.api.rooms.screen.watchStart(roomId, memberId).catch((e) => {
-      toast.error(String(e instanceof Error ? e.message : e));
+      toastRef.current.error(String(e instanceof Error ? e.message : e));
       closeRef.current();
     });
     return () => {

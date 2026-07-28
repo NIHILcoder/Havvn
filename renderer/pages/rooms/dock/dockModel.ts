@@ -72,6 +72,11 @@
  */
 
 import type { IconName } from '../../../components/Icon';
+import {
+  DOCK_WINDOW_POOL_SIZE,
+  DOCK_WINDOW_FRAME_NAMES as SHARED_DOCK_WINDOW_FRAME_NAMES,
+  dockWindowFrameName as sharedDockWindowFrameName,
+} from '../../../../shared/dock-windows';
 
 // Pure type query (no runtime import) — same idiom as utils/i18nContext.tsx, so
 // en.json is not pulled into the bundle by this module.
@@ -124,25 +129,35 @@ export function isWindowZone(z: string): z is DockWindowZoneId {
 
 /**
  * Model id -> Electron frameName. Keeps the naming convention out of the stored
- * blob and out of the model, and keeps main.ts's allowlist a LITERAL record (four
- * more entries) rather than a regex — the security surface does not change shape,
- * and per-frameName bounds persistence keeps working unmodified, with the pleasant
- * side effect that `havvn-dock-1` always reopens where the user last parked it.
+ * blob and out of the model, while per-frameName bounds persistence keeps working
+ * unmodified — with the pleasant side effect that `havvn-dock-1` always reopens
+ * where the user last parked it.
+ *
+ * DERIVED from `shared/dock-windows.ts`, never restated. That file exists so the
+ * main-process allowlist and this model cannot drift, and both its header and
+ * main.ts's said the renderer imported it — which was not true until the map below
+ * was built from `dockWindowFrameName(slot)`. Zone `w{n}` is pool slot `n`, and
+ * dockModel.test.ts pins `DOCK_WINDOW_ZONE_IDS.length === DOCK_WINDOW_POOL_SIZE`
+ * plus `DOCK_WINDOW_POOL_SIZE >= PANELS.length - 1`, so adding a sixth panel or a
+ * fifth zone fails the suite instead of silently producing an unallocatable slot.
  */
-const DOCK_WINDOW_FRAME_BY_ZONE: Readonly<Record<DockWindowZoneId, string>> = {
-  w1: 'havvn-dock-1',
-  w2: 'havvn-dock-2',
-  w3: 'havvn-dock-3',
-  w4: 'havvn-dock-4',
-};
+const DOCK_WINDOW_FRAME_BY_ZONE: Readonly<Record<DockWindowZoneId, string>> =
+  DOCK_WINDOW_ZONE_IDS.reduce((acc, z, i) => {
+    const name = sharedDockWindowFrameName(i + 1);
+    // null only if the zone list outgrew the pool, which the test above forbids.
+    if (name) acc[z] = name;
+    return acc;
+  }, {} as Record<DockWindowZoneId, string>);
 
 export function dockWindowFrameName(z: DockWindowZoneId): string {
   return DOCK_WINDOW_FRAME_BY_ZONE[z];
 }
 
 /** All four, in pool order — main.ts's allowlist must contain exactly these. */
-export const DOCK_WINDOW_FRAME_NAMES: readonly string[] =
-  DOCK_WINDOW_ZONE_IDS.map((z) => DOCK_WINDOW_FRAME_BY_ZONE[z]);
+export const DOCK_WINDOW_FRAME_NAMES: readonly string[] = SHARED_DOCK_WINDOW_FRAME_NAMES;
+
+/** Re-exported so a caller asserting the pool relation does not reach past us. */
+export { DOCK_WINDOW_POOL_SIZE };
 
 // ── panels ──────────────────────────────────────────────────────────────────
 
@@ -178,6 +193,25 @@ export interface DockPanelDef extends DockPanelPlacement<DockPanelId, DockDocked
    * It has NO effect on the persisted model.
    */
   readonly keepAlive?: boolean;
+  /**
+   * This panel renders its OWN header row, so a DOCKED zone holding only this panel
+   * hides the tab strip and the panel's header hosts a `DockSoloHandle` instead.
+   *
+   * Why it is a per-panel FACT and not a blanket rule: the centre column's files
+   * card already draws `SHARED FILES · N` as `.room-section-title`, and the right
+   * column already draws the CHAT | HISTORY switcher — both 11px/700 uppercase HUD
+   * eyebrows, which is exactly what `.dock-tabstrip` is styled as. A one-tab strip
+   * above either is a second, near-identical row: ~26px plus a border of pure
+   * duplication per column, and the default room stops looking like the room the
+   * user had before the dock existed.
+   *
+   * People, Voice and LAN render no header of their own, so they are deliberately
+   * NOT solo hosts: the zone body is a drop TARGET, never a drag SOURCE, and a
+   * strip-less solo Voice column would leave no way to move that panel at all.
+   *
+   * Like `keepAlive`, it has NO effect on the persisted model.
+   */
+  readonly soloHost?: boolean;
 }
 
 /**
@@ -189,9 +223,18 @@ export const PANELS: readonly DockPanelDef[] = [
   { id: 'voice', labelKey: 'rooms.voice.title', icon: 'headphones', defaultZone: 'left', keepAlive: true },
   { id: 'lan', labelKey: 'rooms.lan.title', icon: 'network', defaultZone: 'left', keepAlive: true },
   { id: 'people', labelKey: 'rooms.people', icon: 'users', defaultZone: 'left' },
-  { id: 'files', labelKey: 'rooms.sharedFiles', icon: 'folder-open', defaultZone: 'centre' },
-  { id: 'chat', labelKey: 'rooms.chat', icon: 'message-square', defaultZone: 'right', keepAlive: true },
+  { id: 'files', labelKey: 'rooms.sharedFiles', icon: 'folder-open', defaultZone: 'centre', soloHost: true },
+  { id: 'chat', labelKey: 'rooms.chat', icon: 'message-square', defaultZone: 'right', keepAlive: true, soloHost: true },
 ];
+
+/**
+ * The panels a solo DOCKED zone may hide its strip for — hand this to
+ * `DockZone.soloHostIds` for docked zones ONLY (a window zone always keeps its
+ * strip; there is no pre-dock look to preserve there and the per-tab menu is the
+ * way home).
+ */
+export const DOCK_SOLO_HOST_IDS: readonly DockPanelId[] =
+  PANELS.filter((p) => p.soloHost).map((p) => p.id);
 
 export const PANEL_BY_ID: Readonly<Record<DockPanelId, DockPanelDef>> = PANELS.reduce(
   (acc, p) => { acc[p.id] = p; return acc; },
@@ -635,7 +678,15 @@ export type DockRefusal =
   /** Invariant A would break: the main window would be left with nothing. */
   | 'last-docked-group'
   /** Every window slot is in use. */
-  | 'window-pool-exhausted';
+  | 'window-pool-exhausted'
+  /**
+   * "Open in new window" on a panel that is ALREADY alone in a window. Honouring it
+   * would allocate the next free slot and MOVE the panel there — the current window
+   * closes and a different one opens, at a different remembered geometry (bounds are
+   * persisted per slot). The user asked for a new window and would get their
+   * existing window teleported.
+   */
+  | 'already-own-window';
 
 export interface DockOpResult {
   /** The INPUT object itself when refused, or when the op resolved to a no-op. */
@@ -761,9 +812,19 @@ export function detachPanel(
   reg: DockRegistry = DOCK_REGISTRY,
 ): DockOpResult {
   if (!reg.panels.some((p) => p.id === panel)) return refuse(l, 'unknown-panel');
+  const from = zoneOfPanel(l, panel);
+  // Refused FIRST, because it is the most specific reason and the only one whose
+  // "success" would be actively wrong rather than merely impossible: a panel alone
+  // in a window would be teleported to a different pool slot (different remembered
+  // bounds) instead of getting a new window. Refusing in the MODEL rather than in
+  // the menu is what makes `detachTarget` report it, so the item disables itself
+  // with the reason attached — the same shape as the tear-off guard.
+  if (from && reg.windowZoneIds.includes(from as DockWindowZoneId)
+    && (l.zones[from]?.panels.length ?? 0) === 1) {
+    return refuse(l, 'already-own-window');
+  }
   // Invariant A is checked BEFORE the pool, so the refusal names the real reason:
   // "this is the last group" is honest, "no windows left" would be a red herring.
-  const from = zoneOfPanel(l, panel);
   const fromDocked = !!from && reg.dockedZoneIds.includes(from as DockDockedZoneId);
   if (dockedPanelCount(l, reg) - (fromDocked ? 1 : 0) <= 0) return refuse(l, 'last-docked-group');
   const slot = firstFreeWindowZone(l, reg);
@@ -872,23 +933,29 @@ export function tearOffTarget(
   return { refused: tearOffZone(l, from, reg).refused };
 }
 
-/**
- * The ONLY bridge between the model and real OS windows: dock back every non-empty
- * window zone whose id is not in `live`. Identity when consistent, which is what
- * keeps the two-way liveness loop from oscillating — the MODEL drives window
- * creation (`openWindowZones` grows, so open it) and WINDOW DEATH drives the model
- * (a `beforeunload` recomputes `live`, so reconcile it).
+/*
+ * `reconcileWindows(layout, liveSlots)` used to live here, documented as "the ONLY
+ * bridge between the model and real OS windows". It was exported and tested and
+ * never called, and it is deleted rather than wired, because both claims stopped
+ * being true:
+ *
+ *  - Liveness now arrives PER FRAME, not as a set. `DockWindowHost` reports every
+ *    death route (the user's ✕, close-to-tray via the owner's `hide`, owner close,
+ *    quit, crash) as `onDockBack('closed')`, and the main process additionally
+ *    pushes `win:popoutClosed` for the one case a renderer cannot see. Both map
+ *    straight to `dockBackZone(prev, zone)`.
+ *  - The race it was meant to collapse is already closed. `dockBackZone` refuses
+ *    (returns the input layout) for an already-empty zone, so it is idempotent, and
+ *    the room commits dock ops as FUNCTIONAL updates — N simultaneous window deaths
+ *    chain correctly through `prev` instead of overwriting each other.
+ *
+ * Wiring it instead would have required inventing state nothing maintains (a live
+ * slot Set) and re-implementing `stepDockWindowLiveness`'s "not open YET" guard per
+ * slot: the host defers `openPopout` by one macrotask, so a set-based reconcile
+ * running in that gap would see the just-torn-off slot as dead and fold the group
+ * home instantly, making tear-off look broken.
+ *
+ * If a future phase ever needs poll-based liveness (a child that fires neither
+ * `beforeunload` nor `closed`), reintroducing it is a smaller change than carrying
+ * a misleading export that points a reader away from the two paths that do the job.
  */
-export function reconcileWindows(
-  l: DockLayout,
-  live: readonly DockWindowZoneId[],
-  reg: DockRegistry = DOCK_REGISTRY,
-): DockLayout {
-  const stale = reg.windowZoneIds.filter(
-    (w) => (l.zones[w]?.panels.length ?? 0) > 0 && !live.includes(w),
-  );
-  if (stale.length === 0) return l;
-  let out = l;
-  for (const w of stale) out = dockBackZone(out, w, undefined, reg).layout;
-  return out;
-}

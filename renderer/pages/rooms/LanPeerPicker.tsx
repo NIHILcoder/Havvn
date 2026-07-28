@@ -16,11 +16,15 @@
  * ownerDocument off (the portal container is needed before anything mounts), which
  * is precisely the case the context exists for.
  *
- * KNOWN GAP (not fixable here): submit() goes through useConfirm, whose provider
- * renders at the app root in the MAIN window. From a torn-off panel the elevation
- * confirm therefore pops in the main window while the click happened in the child.
- * Fixing that means teaching ConfirmProvider to portal into the requesting realm
- * (renderer/components/ConfirmDialog.tsx), which is a separate change.
+ * The elevation confirm follows the picker. submit() goes through useConfirm,
+ * whose provider renders at the app root in the MAIN window — which used to mean
+ * the question popped in the main window while the click happened in the child.
+ * That is fixed at the provider (renderer/components/ConfirmDialog.tsx): useConfirm
+ * captures the REQUESTING realm at call time from useHostWindow(), and the head of
+ * the queue is portalled into that window's <body> wrapped in HostWindowProvider.
+ * So this file needs nothing for it — but it does mean the picker must keep its own
+ * realm honest: this component's position in the React tree is what decides where
+ * its confirm appears, exactly as it decides where the picker itself is portalled.
  *
  * Only admitted players receive a vIP, so the selection is deliberate. The mesh
  * cap (MAX_LAN_PEERS, self included) bounds how many can be admitted at once.

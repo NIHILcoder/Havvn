@@ -457,8 +457,15 @@
    Re-expansion is automatic — the class comes off the moment a panel lands back. */
 .room-detail-grid.left-empty { --col-left: 0; --gut-left: 0; }
 .room-detail-grid.right-empty { --col-right: 0; --gut-right: 0; }
+/* `visibility: hidden`, NEVER `display: none`. This grid places its five children
+   by AUTO-PLACEMENT (no child declares grid-column), so an element with no box is
+   not a grid item and EVERY LATER CHILD SHIFTS ONE TRACK LEFT: hiding the rail
+   splitter moved the stage into the gutter track, the chat splitter into the stage
+   track and the chat column off the end. The gutter track is already 0 in this
+   state, so a hidden-but-present splitter costs no width, and `visibility: hidden`
+   also takes it out of hit-testing. Do not "tidy" this back to display:none. */
 .room-detail-grid.left-empty .room-splitter-rail,
-.room-detail-grid.right-empty .room-splitter-chat { display: none; }
+.room-detail-grid.right-empty .room-splitter-chat { visibility: hidden; }
 /* The centre is the one column that cannot simply shrink: it is the flexible
    track, so when it empties the slack has to go somewhere. It goes to the RIGHT
    column, or to the left when the right is empty too. (All three empty is
@@ -472,6 +479,39 @@
    is entirely present and entirely invisible. The template above already hands
    that column all the width; this puts it back on screen. */
 .room-detail-grid.rail-collapsed.centre-empty.right-empty .room-col-rail { visibility: visible; }
+
+/* WHILE A DOCK DRAG IS IN FLIGHT, an emptied column grows a thin drop rail.
+   Without it a column emptied by a tear-off — which is exactly the gesture that
+   empties one — is zero pixels wide, so the zone-body drop target DockZone installs
+   has no hit area and the only way to put a panel back is the per-tab "Move to ▸"
+   menu. The strip's own header advertises drag as one of two equal paths.
+   CSS-ONLY and drag-scoped, so it costs nothing on the drag path: dockDrag.ts marks
+   the dragged tab with `data-dock-dragging` ONCE per drag (never per pointer move),
+   and `:has()` reads it. No React state, no re-render. Cross-window drag is
+   impossible, so a drag started in a torn-off window correctly lights nothing here.
+   Each selector is one class more specific than the collapse rule it overrides, and
+   the two hardcoded centre-empty TEMPLATES have to be restated because a template
+   property ignores the vars entirely. */
+.room-detail-grid:has([data-dock-dragging]) { --drop-rail: 18px; }
+.room-detail-grid:has([data-dock-dragging]).left-empty { --col-left: var(--drop-rail); --gut-left: 6px; }
+.room-detail-grid:has([data-dock-dragging]).right-empty { --col-right: var(--drop-rail); --gut-right: 6px; }
+.room-detail-grid:has([data-dock-dragging]).centre-empty {
+  grid-template-columns: var(--col-left) var(--gut-left) var(--drop-rail) var(--gut-right) minmax(0, 1fr);
+}
+.room-detail-grid:has([data-dock-dragging]).centre-empty.right-empty {
+  grid-template-columns: minmax(0, 1fr) 6px var(--drop-rail) 6px var(--drop-rail);
+}
+/* Visible as a target, not just present: a dashed accent strip the pointer can
+   aim at. The zone's own `data-dock-over="zone"` wash still lights on top of it. */
+.room-detail-grid:has([data-dock-dragging]) .dock-zone[data-dock-empty] {
+  border: 1px dashed color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-accent-primary) 8%, transparent);
+}
+/* Deliberately nothing for `rail-collapsed`: that class is only ever applied when
+   the rail is NOT empty (`railCollapsed && !leftEmpty`), so the two states never
+   meet, and widening a collapsed-but-populated rail would show a clipped sliver of
+   a real panel rather than a drop target. */
 
 /* People panel of the rail dock: the member list fills + scrolls. The online/total
    count is not a header here — it rides on the People tab, so the panel is all list.
@@ -503,7 +543,13 @@
    would draw a second box inside it once the user moves it here, so the card
    chrome is dropped for whatever lands in the rail. Generic on purpose: this is
    about the COLUMN, not about which panel happens to be in it. */
-.room-col-rail .dock-panel > .room-section {
+/* `> .dock-mount >` is load-bearing, not noise: the hoisted mount inserts a stable
+   container between the slot and the panel root. It is `display: contents`, which
+   removes its BOX but not the element, so a child combinator still has to step
+   through it. Kept as a child chain rather than widened to a descendant selector
+   because Files nests `.room-section` per folder, and a descendant match would
+   strip the chrome off those too. */
+.room-col-rail .dock-panel > .dock-mount > .room-section {
   border: none;
   border-radius: 0;
   padding: 0;
@@ -564,10 +610,12 @@
 .room-chat-section .room-zone-history { overflow-y: auto; }
 .room-history-zone { display: flex; flex-direction: column; }
 
-/* Icon button at the right edge of the zone tabs. It was the chat's own detach
-   toggle (retired — detaching is `Move to ▸ New window` on the panel's tab, like
-   every other panel); the search toggle keeps the shape. */
-.room-zone-popout {
+/* Icon button at the right edge of the zone tabs. It was `.room-zone-popout` — the
+   chat's own detach toggle, retired in P3 because detaching is `Move to ▸ New
+   window` on the panel's tab like every other panel. The class kept the shape but
+   the NAME said the opposite of what the button does (it is the search toggle), so
+   it is `.room-zone-action` now: whatever icon action the zone tabs carry. */
+.room-zone-action {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
@@ -578,7 +626,10 @@
   color: var(--color-text-tertiary);
   cursor: pointer;
 }
-.room-zone-popout:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+.room-zone-action:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
+/* The solo-zone move handle rides in the same row when the strip is hidden, at the
+   same 24px rhythm, immediately after the search toggle. */
+.room-chat-zone-tabs .dock-solo-handle { margin-left: 2px; }
 /* A panel rendered INSIDE a pop-out window fills it edge to edge. The height comes
    from `.popout-root` (height:100% + flex column, injected by utils/popout.ts, so
    it exists even before this stylesheet is cloned in); only the card cosmetics are
@@ -589,7 +640,7 @@
    window's own body supplies the frame, so a card border inside it is a box in a
    box. Both selectors, because a group window nests one level deeper than the
    single-panel pop-out this rule was written for. */
-.popout-root .dock-panel > .room-section {
+.popout-root .dock-panel > .dock-mount > .room-section {
   border: none;
   border-radius: 0;
 }
@@ -664,7 +715,13 @@
      template ignores those vars entirely. */
   .room-detail-grid,
   .room-detail-grid.centre-empty,
-  .room-detail-grid.centre-empty.right-empty { grid-template-columns: minmax(0, 1fr); }
+  .room-detail-grid.centre-empty.right-empty,
+  /* The drop-rail rules set the TEMPLATE too, and they are MORE specific than the
+     plain ones above, so without these two counterparts a drag started while the
+     room is narrow would restore the five-column layout mid-gesture. Same
+     selectors, same block, per this block's own restatement contract. */
+  .room-detail-grid:has([data-dock-dragging]).centre-empty,
+  .room-detail-grid:has([data-dock-dragging]).centre-empty.right-empty { grid-template-columns: minmax(0, 1fr); }
   /* Stacked, the regions no longer share the room's height, so something has to
      scroll: the GRID does. The old block scrolled the PAGE (.room-detail /
      .room-detail-inner), which a container query cannot express — those two ARE
@@ -765,6 +822,10 @@
   align-items: center;
   gap: var(--space-3);
 }
+/* The solo-zone move handle joins this row when the zone's tab strip is hidden.
+   Only its HEIGHT is restated, to the 26px the row's pills share below — the grip's
+   own width, cursor and hover wash stay with the component. */
+.room-section-title-actions .dock-solo-handle { height: 26px; }
 
 /* ── The files-zone control archetype ────────────────────────────────────
    Every control in the title row / toolbar / bulk bar (Вид, Запросить файл,
@@ -1273,9 +1334,10 @@
 /* Wrapper carries the focus ring (:focus-within) — mute the global
    :focus-visible shadow on the inner input or the frame doubles. */
 .room-chat-search input:focus-visible { box-shadow: none; }
-/* The search toggle takes the tab row's right side; the pop-out follows it. */
+/* The search toggle takes the tab row's right side. (The `+ .room-zone-popout`
+   sibling rule that used to follow it is gone with the chat's bespoke pop-out —
+   the search button IS the only such button now, so the pair could never match.) */
 .room-zone-search { margin-left: auto; }
-.room-zone-search + .room-zone-popout { margin-left: 0; }
 .room-zone-search.active { color: var(--color-accent-primary); }
 
 /* Chat-message reactions: pills under the bubble + a hover "+" palette. */
@@ -1665,12 +1727,22 @@
   flex-wrap: wrap;
 }
 /* Below that, the name needs the whole line to itself.
-   Keyed to `stage`, not `room`: a file row's available width is the Stage column's.
-   Kept on the ROOM container it has always used. Re-pointing it at the (much
-   narrower) stage box made it fire at ordinary window sizes — a layout change, not
-   the no-op this phase promised. Revisit with a re-tuned threshold when the stage
-   is actually detachable. */
-@container room (max-width: 420px) {
+   Keyed to `dock` — the ZONE the row is in — not to `room`. This rule is about the
+   ROW, and the row's available width is the zone's. It used to name `room` because
+   the stage was not detachable and `room` was the only container that tracked it;
+   P3 made the Files panel tear-off-able into a window whose default width is 460px
+   and whose minimum is 320px, and a torn-off window has no `room` ancestor by
+   design, so the narrow layout could never match there — name, size and holders
+   stayed on one squashed line. Every zone sets `container-name: dock` in BOTH
+   realms (DockZone.css), so this now fires wherever the panel lives.
+   THE THRESHOLD IS RE-TUNED, not carried over, which is the trap this file warns
+   about twice: the zone is a much smaller box than the room, so reusing 420 would
+   have fired at ordinary window sizes. 372 = 420 − the room's own 24px horizontal
+   padding, i.e. the zone width at the exact room width the old rule triggered at
+   (in the single-column stack, the only layout where `room ≤ 420` was reachable).
+   It also fires in a 320px-minimum torn-off window, which is the whole point, and
+   in a genuinely cramped centre column between the 720px stack and ~930px. */
+@container dock (max-width: 372px) {
   .room-file-main { flex: 1 1 100%; order: -1; }
 }
 .room-file:last-child { border-bottom: 0; }

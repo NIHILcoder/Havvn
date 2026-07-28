@@ -17,6 +17,11 @@ import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, Tra
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/hostWindow';
+// Per-window toast routing. `useHostToast()` deliberately SHADOWS the module import
+// above inside a component, so no call site changes: a panel torn onto the second
+// monitor raises its toast in the window the user is actually looking at.
+import { useHostToast, bindToastRealm } from '../utils/hostToast';
+import { LiveAnnouncer } from '../utils/liveAnnouncer';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
@@ -24,12 +29,18 @@ import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
 import type { DockStripInteractions, DockTabAction } from './rooms/dock/DockTabStrip';
 import { DockWindowHost } from './rooms/dock/DockWindowHost';
 import type { DockBackReason } from './rooms/dock/DockWindowHost';
+import { DockPanelMounts } from './rooms/dock/DockPanelMounts';
+import { DockSoloHandle } from './rooms/dock/DockSoloHandle';
+import { useDockMountRegistry } from './rooms/dock/dockMountRegistry';
+import { resolveLiveMounts, liveMountsIn } from './rooms/dock/dockMounts';
 import {
   PANEL_BY_ID, DockPanelId, DockZoneId, DockDockedZoneId, DockWindowZoneId, DockLayout, DockOpResult, DockRefusal,
   isDockedZone, isWindowZone, dockWindowFrameName, openWindowZones, DOCK_WINDOW_ZONE_IDS,
+  DOCK_ZONE_IDS, DOCK_PANEL_IDS, DOCK_SOLO_HOST_IDS,
   loadDockLayout, saveDockLayout, resetDockLayout, setActivePanel, zonePanels, activePanel, zoneOfPanel,
   movePanel, detachPanel, tearOffZone, dockBackZone, moveTargets, detachTarget, tearOffTarget,
 } from './rooms/dock/dockModel';
+import { soloHandleZone, pttWindowSet } from './rooms/roomDock';
 import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
@@ -123,6 +134,10 @@ const DOCK_ZONE_TABS: Record<DockDockedZoneId, RoomsTKey> = {
 const DOCK_REFUSAL_TEXT: Record<DockRefusal, RoomsTKey> = {
   'last-docked-group': 'rooms.dock.refuse.lastGroup',
   'window-pool-exhausted': 'rooms.dock.refuse.poolExhausted',
+  // "Open in new window" on a panel that is ALREADY alone in one used to teleport
+  // that window to a different pool slot (and therefore to different remembered
+  // bounds). The model refuses it now, so the menu disables the item with a reason.
+  'already-own-window': 'rooms.dock.refuse.alreadyOwnWindow',
   'unknown-panel': 'rooms.dock.refuse.unknown',
   'unknown-zone': 'rooms.dock.refuse.unknown',
 };
@@ -902,11 +917,21 @@ interface FilesPanelProps {
   onShared: (state: RoomState) => void;
   onToggleAutoFetch: (autoFetch: boolean) => void;
   busy: boolean;
+  /**
+   * The dock's move affordance when this panel is ALONE in a docked zone, where the
+   * tab strip is hidden precisely because the title row below is already the eyebrow
+   * a one-tab strip would duplicate. Null in every other arrangement — the strip is
+   * showing and owns the gesture.
+   */
+  soloHandle?: React.ReactNode;
 }
 
-const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy }) => {
+const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy, soloHandle }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
+  // Realm-routed toasts: this panel can be torn onto another monitor, and the
+  // module singleton would draw its errors in the main window. Shadows the import.
+  const toast = useHostToast();
   // Fallback host window for listeners registered before any element exists; with a
   // ref in hand the element's own ownerDocument wins (see utils/hostWindow).
   const host = useHostWindow();
@@ -1234,6 +1259,9 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
           )}
         </div>
         <div className="room-section-title-actions">
+          {/* First in the action cluster, so the grip sits next to the title it
+              moves. Present only when the zone's tab strip is hidden. */}
+          {soloHandle}
           <div className="room-view-wrap" ref={viewWrapRef}>
             <button
               type="button"
@@ -1609,7 +1637,11 @@ interface StageProps {
   room: RoomState;
   stageView: StageView;
   onCloseStage: () => void;
-  /** The centre dock zone — what the stage shows when no watch/screen view is open. */
+  /**
+   * The centre dock zone. ALWAYS rendered — see the render body. The caller hands
+   * DockZone `hidden` while a session runs, so the zone keeps its slots, its strip,
+   * its keyboard path and its ARIA tablist instead of being torn down mid-session.
+   */
   zone: React.ReactNode;
   /**
    * Label of the "back to the column" tab. It names whatever the centre zone is
@@ -1633,18 +1665,44 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
       {tabs.length > 1 && (
         <Tabs tabs={tabs} activeTab={stageView.kind} onTabChange={(id) => { if (id === 'files') onCloseStage(); }} />
       )}
-      {/* Conditional render (never display:none) so the player/viewer unmounts on
-          tab switch and fires its presence leave / watchStop cleanup. */}
+      {/* The PLAYER and the VIEWER stay conditionally rendered (never display:none)
+          so each unmounts on tab switch and fires its presence-leave / watchStop
+          cleanup. That is deliberate and unchanged. */}
       {stageView.kind === 'watch' ? (
         <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} />
       ) : stageView.kind === 'screen' ? (
         <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
-      ) : (
-        zone
-      )}
+      ) : null}
+      {/* The ZONE is the opposite case, and conflating the two was a bug. Before P3
+          the centre always held Files, which was disposable; now ANY panel can live
+          here, and unmounting the zone to show a player killed a keep-alive panel
+          mid-call — the voice panel's PTT listeners and debounced settings flush,
+          the LAN panel's failure latch, the chat draft. So it is rendered
+          UNCONDITIONALLY and merely hidden (`hidden` on DockZone, set by the owner),
+          which also takes it out of the a11y tree while the player is showing.
+          Cost, stated: a hidden zone has no layout boxes, so a centre panel's inner
+          scroll resets when the session ends — exactly what a keep-alive panel
+          already does on a tab switch, so no new semantics. */}
+      {zone}
     </div>
   );
 };
+
+/**
+ * The dock arrangement for THIS app session, including torn-off windows.
+ *
+ * The durable blob (`saveDockLayout`) folds every window zone home on write, and
+ * that rule stays: an app that launches with three surprise windows is not what
+ * anyone asked for. But it only ever argued about LAUNCH. In-session, `renderPage()`
+ * swaps pages by conditional render, so one click on Downloads unmounts RoomsPage →
+ * every DockWindowHost → usePopout's cleanup closes every torn-off OS window, and
+ * coming back restored a fully docked room with no notice and nothing to click.
+ *
+ * Module scope, so it outlives the page switch; seeded into `dock` on mount, which
+ * re-renders the same DockWindowHosts and therefore reopens the same windows.
+ * Deliberately NOT persisted anywhere — it dies with the process, like the windows.
+ */
+let sessionDock: DockLayout | null = null;
 
 // ── Room detail panel ─────────────────────────────────────────────────────
 interface DetailProps {
@@ -1688,6 +1746,24 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   const internalDrag = useRef(false);
   const isFileDrag = (e: React.DragEvent) =>
     !internalDrag.current && !room.kicked && Array.from(e.dataTransfer?.types || []).includes('Files');
+  /**
+   * Did this drag happen in THIS window?
+   *
+   * React synthetic events propagate along the REACT tree, not the DOM one, and
+   * every hoisted panel — including the ones displayed in a torn-off window — is
+   * mounted inside `.room-detail-inner`. So an OS file drag over a detached Files
+   * panel on the second monitor bubbles to the handlers below and used to light the
+   * "drop files here" banner in the MAIN window, plus run a per-dragenter setState
+   * from a window the user is not even looking at.
+   *
+   * Only the BANNER is gated. The drop itself is realm-independent (the files join
+   * the room either way), so `handleDrop` and the `dragover` preventDefault that
+   * makes a drop possible at all stay unconditional.
+   */
+  const isOwnRealm = (e: React.DragEvent) => {
+    const el = e.target as Element | null;
+    return !el || !el.ownerDocument || el.ownerDocument === document;
+  };
   const handleDrop = (e: React.DragEvent) => {
     internalDrag.current = false;
     if (!isFileDrag(e)) return;
@@ -1867,7 +1943,30 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // Its own localStorage key, versioned + self-repaired on load, so a corrupt dock
   // blob can never take the splitter widths above down with it. Persisted on
   // COMMIT (a tab switch), mirroring saveRoomLayout on pointer-up.
-  const [dock, setDock] = useState(loadDockLayout);
+  //
+  // Seeded from the SESSION cache first (see `sessionDock`): the durable blob
+  // deliberately drops window zones, so without this a sidebar click to Downloads
+  // and back would silently flatten "Voice and Chat on the second monitor" into a
+  // fully docked room with nothing to click to get it back.
+  const [dock, setDock] = useState<DockLayout>(() => sessionDock ?? loadDockLayout());
+  /**
+   * The OS window each torn-off group actually lives in, published upward by its
+   * DockWindowHost. It is what makes the HOISTED mounts resolve the right realm:
+   * a panel mounted in the main tree but displayed in a child window must portal,
+   * listen and toast into THAT window.
+   *
+   * Changes once per tear-off / close — never on a render or a pointer path.
+   */
+  const [realms, setRealms] = useState<Partial<Record<DockWindowZoneId, Window | null>>>({});
+  /**
+   * Pool slots this component instance has actually seen open. It is what lets the
+   * main-process `popoutClosed` push be trusted: see the subscription below.
+   */
+  const openedRef = useRef<Set<DockWindowZoneId>>(new Set());
+  const onDockRealm = useCallback((w: DockWindowZoneId, win: Window | null) => {
+    if (win) openedRef.current.add(w); else openedRef.current.delete(w);
+    setRealms((prev) => (prev[w] === win ? prev : { ...prev, [w]: win }));
+  }, []);
   /**
    * Focus the tab of the panel a move just landed. Without it focus falls to
    * <body> after every move and the KEYBOARD path — the one that must work, and
@@ -1902,14 +2001,79 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   const commitDock = (op: (prev: DockLayout) => DockLayout) => {
     setDock((prev) => op(prev));
   };
-  useEffect(() => { saveDockLayout(dock); }, [dock]);
+  useEffect(() => { sessionDock = dock; saveDockLayout(dock); }, [dock]);
   const refusalText = (r: DockRefusal | null): string | null => (r ? t(DOCK_REFUSAL_TEXT[r]) : null);
+
+  /**
+   * ── P4: THE HOIST ─────────────────────────────────────────────────────────
+   * Panels are mounted ONCE, from `<DockPanelMounts>` at the bottom of this
+   * component, and portalled into their zone's slot. Before this, each DockZone
+   * rendered the panel bodies in its OWN subtree, so a cross-zone move changed the
+   * panel's React tree position and React unmounted it in the source and mounted a
+   * FRESH instance in the destination — destroying exactly what keepAlive exists to
+   * protect (the voice panel's PTT listeners, voice-warning subscription and
+   * debounced settings flush; the LAN panel's latched failure map; the chat draft,
+   * reply target and scroll pin).
+   *
+   * Two pieces make it work, and neither is optional:
+   *   • `resolveLiveMounts` decides the live set for EVERY zone at once. It is the
+   *     P1 policy verbatim, one level up — live = each zone's active panel ∪ every
+   *     keep-alive panel — so a NON-keep-alive panel still unmounts when its tab is
+   *     not active. Nothing here silently promotes a panel to keep-alive.
+   *   • the registry gives each live panel ONE stable container that is the portal
+   *     target forever. A move is then `slot.appendChild(container)` — a DOM
+   *     reparent, which React never sees. (Portalling straight into the slot would
+   *     NOT work: React recreates a portal fiber when its container changes.)
+   *
+   * Cost per dock change: one `useMemo` over five panels and one `appendChild`.
+   * Nothing about a DRAG touches this — hover, the insertion marker and the source
+   * dimming are DOM attributes written by dockDrag.ts and read by CSS.
+   */
+  /**
+   * Every OS window this room currently occupies — the main one plus every LIVE
+   * torn-off group, taken from the pop-out registry above rather than from any one
+   * panel's host.
+   *
+   * This is what push-to-talk binds to. A key event goes to the FOCUSED window, and
+   * with the voice panel docked in the rail but the user typing in a torn-off Chat
+   * on the second monitor, a main-window-only listener never sees the key at all —
+   * so PTT was simply dead there whenever global PTT was unavailable (the native
+   * hook missing, or a key that is not globally expressible).
+   *
+   * Memoized on `realms`, which changes once per tear-off / close, so the voice
+   * panel's PTT effect re-binds then and never on a gossip push.
+   */
+  const pttWindows = useMemo(
+    () => pttWindowSet(window, DOCK_WINDOW_ZONE_IDS.map((z) => realms[z])),
+    [realms],
+  );
+
+  const mounts = useDockMountRegistry<DockPanelId>();
+  const live = useMemo(
+    () => resolveLiveMounts<DockPanelId>(
+      DOCK_ZONE_IDS.map((z) => ({ zoneId: z, panels: zonePanels(dock, z), active: activePanel(dock, z) })),
+      (p) => !!PANEL_BY_ID[p].keepAlive,
+      DOCK_PANEL_IDS,
+    ),
+    [dock],
+  );
   /**
    * Run one model operation. A refusal is ALWAYS surfaced with its reason — the
    * same discipline the main process applies to a denied window, at the model
    * boundary — and never as a silent no-op. The op receives the live layout.
    */
-  const runDockOp = (op: (prev: DockLayout) => DockOpResult, focus?: DockPanelId) => {
+  const runDockOp = (
+    op: (prev: DockLayout) => DockOpResult,
+    focus?: DockPanelId,
+    /**
+     * Where the refusal is SHOWN. RoomDetail lives in the main tree, so the module
+     * singleton would draw "no detached window left" in the main window even when
+     * the user picked the refused item in a torn-off window's own menu, on another
+     * monitor. The caller (`dockInteractions`) binds the realm from the zone's
+     * frame name — no hook needed, because the frame name IS the toaster id.
+     */
+    notify: typeof toast = toast,
+  ) => {
     let refused: DockRefusal | null = null;
     let changed = false;
     setDock((prev) => {
@@ -1918,7 +2082,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       changed = res.layout !== prev;
       return res.layout;
     });
-    if (refused) { toast.error(t(DOCK_REFUSAL_TEXT[refused])); return; }
+    if (refused) { notify.error(t(DOCK_REFUSAL_TEXT[refused])); return; }
     if (focus && changed) setFocusPanel(focus);
   };
   const selectDockPanel = (zone: DockZoneId, panel: DockPanelId) => {
@@ -1962,7 +2126,18 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     const byFrame = new Map(DOCK_WINDOW_ZONE_IDS.map((z) => [dockWindowFrameName(z), z]));
     const offClosed = window.api.win.onPopoutClosed((frameName) => {
       const zone = byFrame.get(frameName);
-      if (zone) onDockWindowGone(zone, 'closed');
+      if (!zone) return;
+      // Only for a window THIS RoomDetail has actually seen open. Leaving the Rooms
+      // page closes every dock window and the session cache reopens them on return,
+      // so a `closed` push for the previous instance's window can easily arrive
+      // after the new one has mounted — and folding on it would slam the group home
+      // the moment the user came back, or worse, close a window that had just
+      // reopened. A child whose renderer never ran (the case this channel exists
+      // for) still produced a real Window object, so it is in this set; a window
+      // that never opened at all reports `openFailed` instead.
+      if (!openedRef.current.has(zone)) return;
+      openedRef.current.delete(zone);
+      onDockWindowGone(zone, 'closed');
     });
     const offDenied = window.api.win.onPopoutDenied(({ frameName }) => {
       const zone = byFrame.get(frameName);
@@ -1998,10 +2173,25 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
    * listeners, LAN's loses its latched terminal-failure map, Chat's loses the
    * composer draft.
    */
+  /**
+   * The move affordance a strip-less solo zone gets instead of a tab, rendered by
+   * the panel INSIDE its own header row. The condition mirrors DockZone's `soloHost`
+   * test exactly — docked zone, one panel, and that panel declares it hosts its own
+   * handle — so the handle appears precisely when the strip is hidden and never
+   * alongside it. Returns null for every other arrangement, including inside a
+   * torn-off window (which always keeps its strip).
+   */
+  const soloHandleFor = (id: DockPanelId): React.ReactNode => {
+    const zone = soloHandleZone(dock, id);
+    return zone
+      ? <DockSoloHandle panelId={id} dock={dockInteractions(zone)} label={t('rooms.dock.movePanel')} />
+      : null;
+  };
+
   const renderDockPanel = (id: DockPanelId): React.ReactNode => {
     switch (id) {
       case 'voice':
-        return <RoomVoicePanel room={room} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} />;
+        return <RoomVoicePanel room={room} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} pttWindows={pttWindows} />;
       case 'lan':
         return (
           <RoomLanPanel
@@ -2039,10 +2229,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
             onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
             onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} busy={busy}
+            soloHandle={soloHandleFor('files')}
           />
         );
       case 'chat':
-        return <RoomChat room={room} onAttachRequest={() => onAddFiles()} />;
+        return <RoomChat room={room} onAttachRequest={() => onAddFiles()} soloHandle={soloHandleFor('chat')} />;
       default:
         return null;
     }
@@ -2054,7 +2245,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
    * action carries its REFUSAL text, so the menu can disable an item with the
    * reason attached instead of letting the user click into nothing.
    */
-  const dockInteractions = (zone: DockZoneId, windowKey?: string): DockStripInteractions => ({
+  const dockInteractions = (zone: DockZoneId, windowKey?: string): DockStripInteractions => {
+  // The realm this zone's chrome lives in. For a window zone the frame name IS the
+  // toaster id, so a refusal raised from that window's menu is drawn in it.
+  const zoneToast = isWindowZone(zone) ? bindToastRealm(dockWindowFrameName(zone)) : toast;
+  return {
     zoneId: zone,
     windowKey,
     moveTargets: (panelId) => moveTargets(dock, panelId as DockPanelId).map((tg) => ({
@@ -2073,7 +2268,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         key: 'new-window',
         label: t('rooms.dock.newWindow'),
         refusal: refusalText(detachTarget(dock, panel).refused),
-        onSelect: () => runDockOp((l) => detachPanel(l, panel), panel),
+        onSelect: () => runDockOp((l) => detachPanel(l, panel), panel, zoneToast),
       }];
       // Tear off the whole GROUP, not one panel — this is what makes "Voice and
       // Chat together on the second monitor" one gesture instead of two windows
@@ -2084,7 +2279,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           key: 'tear-off',
           label: t('rooms.dock.tearOff'),
           refusal: refusalText(tearOffTarget(dock, zone).refused),
-          onSelect: () => runDockOp((l) => tearOffZone(l, zone), panel),
+          onSelect: () => runDockOp((l) => tearOffZone(l, zone), panel, zoneToast),
         });
       }
       // Cross-window tab drag is impossible (HTML5 DnD and pointer capture do not
@@ -2094,7 +2289,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         acts.push({
           key: 'dock-back',
           label: t('rooms.dock.dockBack'),
-          onSelect: () => runDockOp((l) => dockBackZone(l, zone), panel),
+          onSelect: () => runDockOp((l) => dockBackZone(l, zone), panel, zoneToast),
         });
       }
       return acts;
@@ -2102,15 +2297,51 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     onMovePanel: (panelId, to, toIndex) => runDockOp(
       (l) => movePanel(l, panelId as DockPanelId, to as DockZoneId, toIndex ?? undefined),
       panelId as DockPanelId,
+      zoneToast,
     ),
+    /**
+     * What a screen reader is told when a move lands. A move is a purely visual
+     * change: the panel is simply gone from one column and present in another, and
+     * nothing else says so. `useDockMove` (the ONE commit path in the dock folder)
+     * delivers this through the realm-routed announcer, so it is spoken in the
+     * window the gesture happened in.
+     *
+     * Says nothing for two cases, both deliberate:
+     *   • a REORDER inside the zone the panel is already in — "Chat moved to Right
+     *     column" would be a lie about what changed (`dock` here is still the
+     *     pre-move layout, because the commit is a queued state update);
+     *   • a destination with no name, i.e. a window zone. Those are never "Move to"
+     *     targets and a drop inside a torn-off window is a reorder, so silence is
+     *     right — and it means a raw zone id can never be read out.
+     */
+    announceMove: (panelId, to) => {
+      const panel = PANEL_BY_ID[panelId as DockPanelId];
+      const zoneKey = DOCK_ZONE_NAME[to as DockDockedZoneId];
+      if (!panel || !zoneKey) return null;
+      if (zoneOfPanel(dock, panelId as DockPanelId) === to) return null;
+      return t('rooms.dock.moved').replace('{panel}', t(panel.labelKey)).replace('{zone}', t(zoneKey));
+    },
     labels: { moveTo: t('rooms.dock.moveTo'), tabMenu: t('rooms.dock.tabMenu') },
     focusPanelId: focusPanel,
-  });
+  };
+  };
 
   /**
-   * One zone. Panels are keyed by id inside DockZone and the zones themselves are
-   * rendered at FIXED tree positions keyed by zone id, so a panel joining or
-   * leaving one zone never remounts a panel in another.
+   * One zone. The zones are rendered at FIXED tree positions keyed by zone id, and
+   * since P4 they render SLOTS rather than panel bodies — `mounts` hands each zone
+   * its share of the globally-resolved live set plus the registry's per-panel
+   * callback ref, and the panels themselves are mounted once at the bottom of this
+   * component. A move is therefore a DOM reparent that React never sees.
+   *
+   * `soloHostIds` is passed for DOCKED zones only: a docked zone holding exactly one
+   * files/chat panel hides its strip, because both of those panels already draw an
+   * 11px/700 uppercase header row of their own and a one-tab strip above it is a
+   * second, near-identical line — which is what made the untouched default room stop
+   * looking like the room users had. They host a `DockSoloHandle` in that row
+   * instead (see `soloHandleFor`). A WINDOW zone always keeps its strip: there is no
+   * pre-P3 look to preserve there, and panels that draw no header of their own
+   * (People, Voice, LAN) are not in the list at all, so a solo Voice column keeps
+   * the only affordance that can move it out.
    */
   const renderDockZone = (zone: DockZoneId, className: string, ariaLabel: string, windowKey?: string) => (
     <DockZone<DockPanelId>
@@ -2120,7 +2351,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       panels={zonePanels(dock, zone).map((id) => dockPanelTab(t, room, id))}
       activeId={activePanel(dock, zone)}
       onSelect={(panel) => selectDockPanel(zone, panel)}
-      renderPanel={renderDockPanel}
+      mounts={{ mounted: liveMountsIn(live, zone), slotRef: mounts.slotRef }}
+      soloHostIds={isDockedZone(zone) ? DOCK_SOLO_HOST_IDS : undefined}
+      // The stage overlay takes the centre column by HIDING the zone, never by
+      // unmounting it — see RoomStage.
+      hidden={zone === 'centre' && stageView.kind !== 'files'}
       dock={dockInteractions(zone, windowKey)}
     />
   );
@@ -2159,9 +2394,9 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       // (so the room-level add can't double-fire), which would strand the
       // overlay open — capture runs regardless and clears it.
       onDropCapture={() => { dragDepth.current = 0; setDropping(false); }}
-      onDragEnter={(e) => { if (!isFileDrag(e)) return; e.preventDefault(); dragDepth.current += 1; setDropping(true); }}
+      onDragEnter={(e) => { if (!isFileDrag(e)) return; e.preventDefault(); if (!isOwnRealm(e)) return; dragDepth.current += 1; setDropping(true); }}
       onDragOver={(e) => { if (!isFileDrag(e)) return; e.preventDefault(); }}
-      onDragLeave={(e) => { if (!isFileDrag(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDropping(false); }}
+      onDragLeave={(e) => { if (!isFileDrag(e)) return; if (!isOwnRealm(e)) return; dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDropping(false); }}
       onDrop={handleDrop}
     >
       {/* A slim banner, not a full-cover sheet — the section drop targets
@@ -2405,6 +2640,10 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             subtitle={room.name}
             dockBackLabel={t('rooms.dock.dockBack')}
             onDockBack={(reason) => onDockWindowGone(w, reason)}
+            // The realm, published upward: the panels this window DISPLAYS are
+            // mounted in the main tree (the hoist), so they cannot inherit the host
+            // window from portal()'s provider — they are handed this one instead.
+            onRealm={(win) => onDockRealm(w, win)}
           >
             {/* No framing class: the window's own body IS the frame here (the room
                 columns' chrome belongs to the column, not to the group). */}
@@ -2412,6 +2651,26 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           </DockWindowHost>
         );
       })}
+
+      {/* ── THE panel mounts ──────────────────────────────────────────────────
+          Every live panel, mounted exactly ONCE, portalled into its zone's slot.
+          Renders no DOM of its own, and its position here is load-bearing:
+            • INSIDE `.room-detail-inner`, so the room's OS-file drag handlers and
+              `onDragStartCapture` keep receiving panel events by React bubbling;
+            • OUTSIDE the grid, RoomStage and every branch that depends on `dock`,
+              so no layout change can move it — which is the whole point.
+          Last child, unconditional. Do not wrap it in anything. */}
+      <DockPanelMounts<DockPanelId>
+        live={live}
+        registry={mounts}
+        renderPanel={renderDockPanel}
+        realmOf={(z) => (isWindowZone(z) ? (realms[z] ?? null) : null)}
+        toasterIdOf={(z) => (isWindowZone(z) ? dockWindowFrameName(z) : undefined)}
+      />
+      {/* The MAIN window's live region. Each dock window mounts its own inside
+          DockWindowShell; without this one a move made in the room itself would be
+          announced to nobody. Two empty divs until something is said. */}
+      <LiveAnnouncer />
     </div>
   );
 };
@@ -2446,10 +2705,24 @@ const isTypingTarget = (e: KeyboardEvent): boolean => {
 // Serverless mesh voice channel: a live roster (glowing ring while talking), self
 // mute/deafen/leave, mic-live indicator, input-mode + push-to-talk settings, and
 // per-participant volume.
-const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: string) => void }> = ({ room, onWatchShare }) => {
+const RoomVoicePanel: React.FC<{
+  room: RoomState;
+  onWatchShare: (memberId: string) => void;
+  /**
+   * Every OS window the room currently occupies — the main one plus every live
+   * torn-off group, from the pop-out registry the owner keeps. Push-to-talk binds
+   * ALL of them; see the effect below for why this panel's own host is not enough.
+   * Identity is stable between tear-offs, so the effect re-binds only when the set
+   * really changes.
+   */
+  pttWindows: readonly Window[];
+}> = ({ room, onWatchShare, pttWindows }) => {
   const { t } = useTranslation();
   // Fallback host window (see utils/hostWindow); an element ref outranks it.
   const host = useHostWindow();
+  // Realm-routed toasts: this panel is detachable, and `fail()` plus the mid-call
+  // mic-fallback warning must appear where the user is looking. Shadows the import.
+  const toast = useHostToast();
   const roomId = room.roomId;
   const v = room.voice;
   const [busy, setBusy] = useState(false);
@@ -2511,10 +2784,16 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
 
   // Surface transient voice warnings from the engine (e.g. a mid-call mic fell back
   // to the system default) as a toast.
+  //
+  // `toast` is in the deps because it CHANGES when this panel moves between realms
+  // (useHostToast memoizes on the toaster id), and a warning raised after a move
+  // must appear in the window the panel is in now. Re-subscribing an IPC listener
+  // is free; that is why this one takes the dependency rather than reading through a
+  // ref the way the mic-test and loopback effects have to.
   useEffect(() => {
     const off = window.api.onVoiceWarning((msg) => { if (msg) toast(msg, { icon: '⚠️' }); });
     return off;
-  }, []);
+  }, [toast]);
 
   // Tell the engine our input mode whenever we're in voice (and when it changes).
   useEffect(() => { if (v.inVoice) window.api.rooms.voice.inputMode(roomId, prefs.inputMode).catch(() => { /* ignore */ }); }, [v.inVoice, prefs.inputMode, roomId]);
@@ -2553,18 +2832,26 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
   // Push-to-talk: hold the key to transmit (window-wide while a room is open).
   // With GLOBAL PTT actually running, the OS hook covers the focused case too —
   // skip this one (its blur-release would drop a held key on every focus change).
-  // Bound to THIS window only — see the note inside; a multi-window binding waits
-  // for a PTT-hosting panel that can actually be detached.
   useEffect(() => {
     if (!v.inVoice || prefs.inputMode !== 'ptt' || globalPttLive) return;
-    // SINGLE window on purpose. This panel lives in the rail, which is not
-    // detachable yet, so a multi-window binding here is machinery for a case that
-    // does not exist — and the deferred, focus-re-checking blur release it needed
-    // changed main-window behaviour (the mic stopped releasing immediately). When a
-    // PTT-hosting panel actually becomes detachable (P3), take the window set from
-    // the pop-out registry rather than from this panel's own host, which in the
-    // docked case is just `window` again.
-    const wins: Window[] = [window];
+    /**
+     * EVERY window the room occupies, not just this panel's own.
+     *
+     * A key event is delivered to the FOCUSED window and nowhere else, and the
+     * window the user is typing in is very often not the one the voice panel is in:
+     * dock Voice in the rail, tear Chat onto the second monitor, and holding the PTT
+     * key while writing a message reached no listener at all. Binding only
+     * `host.window` has the mirror-image hole (Voice detached, focus in the room).
+     * So the set comes from the owner's pop-out registry — which is exactly what the
+     * P2 note deferring this asked for, now that a PTT-hosting panel can really be
+     * detached — plus this panel's own realm as belt and braces.
+     *
+     * `blur` releasing immediately stays as it was: a keyup delivered to a different
+     * window never reaches the listener that saw the keydown, so a held mic would
+     * stay open. With several windows bound, `held` is shared state across all of
+     * them, so a release in any window releases the mic exactly once.
+     */
+    const wins = pttWindowSet(pttWindows[0], [...pttWindows.slice(1), host.window]);
     let held = false;
     const set = (a: boolean) => { held = a; window.api.rooms.voice.ptt(roomId, a).catch(() => { /* ignore */ }); };
     const down = (e: KeyboardEvent) => { if (e.code === prefs.pttKey && !held && !e.repeat && !isTypingTarget(e)) set(true); };
@@ -2585,7 +2872,7 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
       }
       if (held) window.api.rooms.voice.ptt(roomId, false).catch(() => { /* ignore */ });
     };
-  }, [v.inVoice, prefs.inputMode, prefs.pttKey, globalPttLive, roomId, host]);
+  }, [v.inVoice, prefs.inputMode, prefs.pttKey, globalPttLive, roomId, host, pttWindows]);
 
   // Join/leave chimes: rising when someone joins the call, falling when they go.
   const prevCount = useRef<number | null>(null);
@@ -2737,6 +3024,11 @@ const RoomVoicePanel: React.FC<{ room: RoomState; onWatchShare: (memberId: strin
 // card's collapsible panel. Markup and handlers are unchanged.
 const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
   const { t } = useTranslation();
+  // Realm-bound, and it SHADOWS the module import on purpose: this list is inside
+  // a hoisted panel, so it can be looking at the user from a torn-off window while
+  // the module singleton draws into the main one. Docked, the hook returns that
+  // singleton itself, so nothing below changes.
+  const toast = useHostToast();
   const { confirm } = useConfirm();
   // Click a member → their profile card, anchored to the clicked row.
   const [cardFor, setCardFor] = useState<{ memberId: string; anchor: HTMLElement } | null>(null);
@@ -2874,6 +3166,7 @@ const highlightRun = (text: string, selfName: string | undefined, query?: string
 // button for anything multiline (pasted scripts etc.).
 const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string; selfName?: string; query?: string }> = ({ text, copyLabel, copiedLabel, selfName, query }) => {
   const segments = useMemo(() => parseChatSegments(text), [text]);
+  const toast = useHostToast(); // same realm rule as the rest of the chat subtree
   const copy = (e: React.MouseEvent) => {
     // Use the clicked element's OWN realm: in the detached chat window the main
     // document is unfocused and ITS clipboard would reject ('not focused').
@@ -2913,8 +3206,19 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
  * and the `onPoppedChange` contract it needed are GONE — two mechanisms for one job
  * is how a panel ends up open in two windows at once.
  */
-const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({ room, onAttachRequest }) => {
+const RoomChat: React.FC<{
+  room: RoomState;
+  onAttachRequest?: () => void;
+  /**
+   * The dock's move affordance when chat is ALONE in a docked zone. It lands in the
+   * CHAT | HISTORY row, which is the eyebrow a one-tab strip above it would
+   * duplicate — so the strip hides and this takes over the gesture.
+   */
+  soloHandle?: React.ReactNode;
+}> = ({ room, onAttachRequest, soloHandle }) => {
   const { t } = useTranslation();
+  // Realm-routed toasts — chat is the panel most likely to be on another monitor.
+  const toast = useHostToast();
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [zoneTab, setZoneTab] = useState<'chat' | 'history'>('chat');
@@ -3159,14 +3463,16 @@ const RoomChat: React.FC<{ room: RoomState; onAttachRequest?: () => void }> = ({
         ))}
         <button
           type="button"
-          className={`room-zone-popout room-zone-search${searchOpen ? ' active' : ''}`}
+          className={`room-zone-action room-zone-search${searchOpen ? ' active' : ''}`}
           title={t('rooms.chatSearch')}
           onClick={() => { setZoneTab('chat'); setSearchOpen((o) => { if (o) setChatQuery(''); return !o; }); }}
         >
           <Icon name="search" size={13} />
         </button>
         {/* No detach button here: the tab's "Move to ▸ New window" is the ONE way
-            a panel leaves the room, for every panel. */}
+            a panel leaves the room, for every panel — and when this zone holds only
+            chat its strip is hidden, so the handle below IS that tab's menu. */}
+        {soloHandle}
       </div>
       {zoneTab === 'history' ? (
         <div className="room-chat room-zone-history">
@@ -3495,6 +3801,9 @@ const ImageLightbox: React.FC<{ url: string; name: string; onClose: () => void }
 const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onWatchJoin?: (file: RoomFile) => void; watchCount?: number; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string) => void; getDragIds?: (fileId: string) => string[]; viewPrefs?: RoomFilesPrefs; highlightQuery?: string }> = ({ file, room, onWatch, onWatchJoin, watchCount = 0, onAssignFile, selecting = false, selected = false, onToggleSelect, getDragIds, viewPrefs, highlightQuery }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
+  // Same realm rule as the row's context menu below: fetch/reveal/release/reseed
+  // failures belong in the window the row is in. Shadows the module import.
+  const toast = useHostToast();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   // The row itself is the authority on which window this file lives in: the menu
   // coordinates are measured in the row's viewport, so the menu must be planted in

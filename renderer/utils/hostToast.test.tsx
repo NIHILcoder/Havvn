@@ -134,6 +134,23 @@ describe('useHostToast / useToastRealm', () => {
       <ToastRealmProvider toasterId="havvn-dock-1"><Probe /></ToastRealmProvider>,
     )).toBe('<i>havvn-dock-1:bound</i>');
   });
+
+  it('an UNDEFINED realm provider is indistinguishable from no provider', () => {
+    // The dock's mount host wraps every hoisted panel in this provider always —
+    // `undefined` for a docked zone — because a conditional wrapper would change
+    // the child's element type on a docked↔window move and React would remount the
+    // panel, which is the exact thing the mount hoist exists to prevent. So the
+    // undefined case has to be the plain main-window case, by value.
+    expect(renderToStaticMarkup(
+      <ToastRealmProvider toasterId={undefined}><Probe /></ToastRealmProvider>,
+    )).toBe('<i>none:singleton</i>');
+  });
+
+  it('re-parenting between realms changes the VALUE, never the element type', () => {
+    const docked = <ToastRealmProvider toasterId={undefined}><Probe /></ToastRealmProvider>;
+    const detached = <ToastRealmProvider toasterId="havvn-dock-1"><Probe /></ToastRealmProvider>;
+    expect(docked.type).toBe(detached.type);
+  });
 });
 
 describe('HostToaster', () => {

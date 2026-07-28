@@ -5,9 +5,8 @@
  * capture pipeline needs). Every change saves to localStorage voicePrefs and fires
  * VOICE_PREFS_EVENT; the voice panel pushes the engine-side subset over IPC.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import toast from 'react-hot-toast';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { Toggle } from './Toggle';
@@ -16,6 +15,7 @@ import { useTranslation } from '../utils/i18nContext';
 import { VoicePrefs, loadVoicePrefs, saveVoicePrefs, keyLabel, toVoiceSettings } from '../utils/voicePrefs';
 import { usePopout } from '../utils/popout';
 import { usePortalTarget } from '../utils/hostWindow';
+import { useHostToast } from '../utils/hostToast';
 import type { VoiceDeviceInfo, VoiceInputMode, NoiseSuppressionMode } from '../../shared/types';
 import './VoiceSettingsModal.css';
 
@@ -25,6 +25,15 @@ const METER_MAX = 96;
 
 export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { t } = useTranslation();
+  // Shadows the module import (utils/hostToast.tsx): the gear that opens this modal
+  // lives in the room's voice panel, which can be torn off onto another monitor, so
+  // "the mic test could not start" must be drawn where the user pressed Test. With
+  // no realm above it this IS the module singleton — the main window is unchanged.
+  // Read through a ref inside the mic-test effect, which must not re-run (and
+  // recapture the microphone) just because the panel changed windows.
+  const toast = useHostToast();
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
   const [prefs, setPrefs] = useState<VoicePrefs>(loadVoicePrefs);
   const [devices, setDevices] = useState<VoiceDeviceInfo[]>([]);
   const [testing, setTesting] = useState(false);
@@ -71,7 +80,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
     // Pass the current settings explicitly — the engine's cached settings are
     // debounced 200ms, so they'd lag a device/processing change made just now.
     window.api.rooms.voice.micTestStart(toVoiceSettings(prefs), monitor).catch((e) => {
-      if (!dead) { setTesting(false); toast.error(String(e instanceof Error ? e.message : e)); }
+      if (!dead) { setTesting(false); toastRef.current.error(String(e instanceof Error ? e.message : e)); }
     });
     const off = window.api.onVoiceMicLevel((lv) => {
       if (dead) return;

@@ -37,6 +37,30 @@
  * window with a dialog queued would otherwise leave `await confirm()` pending
  * forever in the main JS realm — a silent deadlock inside a handler. In the main
  * window that provider never unmounts, so this changes nothing there either.
+ *
+ * ── A DIALOG CAN OUTLIVE THE WINDOW IT IS SHOWING IN ─────────────────────────
+ * The dock's hoisted panels changed which provider answers them. A panel is now
+ * mounted ONCE in the MAIN React tree and its DOM re-parented into whichever zone
+ * claims it, so a panel showing on the second monitor is no longer INSIDE the dock
+ * shell's own <ConfirmProvider> — the nearest provider is the app root's, in the
+ * main window, and only the REQUESTING REALM says otherwise. Two consequences:
+ *
+ *  - the shell's provider now serves the shell's own UI only, and closing a dock
+ *    window no longer unmounts a provider with the panel's question in it, so the
+ *    unmount drain above does not cover this case;
+ *  - the dialog is portalled into a window that can die while it is open, and
+ *    `resolveDialogRealm`'s fallback to the provider's realm can only take effect
+ *    on a RENDER. Nothing re-renders this provider when a child window closes —
+ *    the death is observed by the dock's host, several subtrees away — so without
+ *    the watch below the dialog stays portalled into a torn-down document: not
+ *    visible anywhere, and the `await confirm()` behind it never settles.
+ *
+ * So the head request's realm is WATCHED (`dialogRealmWatch` + the effect that
+ * consumes it), and the dialog re-homes to this provider's own window when that
+ * realm dies. The question moves to the main window rather than being answered
+ * `false` behind the user's back — a question they can still see and still answer.
+ * Watching costs two listeners on ONE window, and only ever a window that is not
+ * this provider's own, so the main-window path adds nothing at all.
  */
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
@@ -133,6 +157,26 @@ export function resolveDialogRealm(provider: HostWindow, request: HostWindow | n
   return target;
 }
 
+/**
+ * Pure: the foreign window whose death must re-home the open dialog, or null when
+ * there is nothing to watch.
+ *
+ * Null in every case that is not "this dialog is currently drawn in a window this
+ * provider does not own":
+ *  - nothing queued, or the dialog renders in place  → no realm to lose;
+ *  - the dialog is already in the provider's own window → losing it takes the
+ *    provider with it, and the unmount drain is the mechanism for that;
+ *  - no DOM at all (Node tests) → `resolveDialogRealm` answered "in place".
+ * That is what keeps the undetached app free of any listener whatsoever.
+ */
+export function dialogRealmWatch(provider: HostWindow, request: HostWindow | null | undefined): Window | null {
+  const realm = resolveDialogRealm(provider, request);
+  if (!realm) return null;
+  const win = realm.window as Window | undefined;
+  if (!win || win === (provider.window as Window | undefined)) return null;
+  return win;
+}
+
 /** The parts of a queued request that settling needs. */
 type Settleable =
   | { kind: 'confirm'; resolve: (v: boolean) => void }
@@ -185,6 +229,34 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
   // Never strand an awaiting caller when this provider goes away with the window
   // that mounted it. Empty deps: this runs on unmount only.
   useEffect(() => () => { drainRequests(queue.current); }, []);
+
+  // Re-home an open dialog when the window it is drawn in dies (see the header).
+  // Null for every main-window case, so this effect is inert in an undetached app.
+  const watched = dialogRealmWatch(providerHost, req?.host);
+  useEffect(() => {
+    if (!watched) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // `beforeunload`/`pagehide` fire BEFORE `closed` flips, so re-deciding
+    // synchronously would pick the dying window all over again. One macrotask
+    // later `usableRealm` sees `closed` and falls back to this provider's realm.
+    // (Same reason usePopout defers its own force-close by a tick.)
+    const onGone = () => { if (timer === undefined) timer = setTimeout(() => { timer = undefined; bump(); }, 0); };
+    try {
+      watched.addEventListener('pagehide', onGone);
+      watched.addEventListener('beforeunload', onGone);
+    } catch { /* window already torn down — the bump below covers it */ }
+    // It may ALREADY be gone: the close can land between the render that computed
+    // `watched` and this effect. Re-deciding once is safe and cannot loop — the
+    // deps do not change, so a bump does not re-run this.
+    if ((watched as Window & { closed?: boolean }).closed) onGone();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+      try {
+        watched.removeEventListener('pagehide', onGone);
+        watched.removeEventListener('beforeunload', onGone);
+      } catch { /* window gone */ }
+    };
+  }, [watched]);
 
   const close = (value: boolean) => {
     const head = queue.current.shift();

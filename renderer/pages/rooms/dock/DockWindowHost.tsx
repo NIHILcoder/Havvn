@@ -34,11 +34,29 @@
  *     surface identically as `onDockBack('closed')`, and the owner returns the
  *     group to the zone it was torn from. Uniformity is the safety property: every
  *     close path re-establishes "the room is never empty" with no special case.
- *  4. THE PER-WINDOW REALM SURFACES (invariant F). A confirm or a toast raised by a
- *     detached panel must appear in ITS window, not in the one the user is not
- *     looking at. Both hosts are mounted HERE, by the shell, rather than at the
- *     call site — the same discipline as `portal()` mounting HostWindowProvider:
- *     detaching a group cannot silently forget them.
+ *  4. THE PER-WINDOW REALM SURFACES (invariant F). A confirm, a toast or a live-
+ *     region announcement raised by a detached panel must land in ITS window, not
+ *     in the one the user is not looking at. All three hosts are mounted HERE, by
+ *     the shell, rather than at the call site — the same discipline as `portal()`
+ *     mounting HostWindowProvider: detaching a group cannot silently forget them.
+ *
+ * ── P4: the panels are no longer in this subtree ─────────────────────────────
+ * Panel BODIES are mounted once, high in the main tree, and portalled into their
+ * zone's slot (DockPanelMounts.tsx) so a move cannot remount them. `children` is
+ * now the zone's CHROME — its tab strip and its slots — not the panels themselves.
+ * Two consequences, both handled rather than discovered:
+ *  • The realm no longer reaches a panel through `portal()`'s HostWindowProvider
+ *    (React context follows the REACT parent). This host therefore publishes its
+ *    window upward via `onRealm`, and the mount host wraps each panel in it.
+ *  • Neither does this shell's ConfirmProvider. A confirm raised by a detached
+ *    panel now sits in the MAIN provider's queue and is portalled into this window,
+ *    because `useConfirm()` captures the requesting realm at CALL time — so the
+ *    dialog still appears where the user is. The behavioural difference is at the
+ *    end of life: if this window dies with a dialog queued, the main provider falls
+ *    back to its own realm and the question reappears in the room window instead of
+ *    being drained to false. That is arguably an improvement, and it is stated here
+ *    rather than left to be found. The shell's own ConfirmProvider now serves only
+ *    the shell's UI.
  *
  * ── What this file deliberately does NOT do ──────────────────────────────────
  * It holds no model state. It never decides WHERE a group docks back to; it
@@ -57,10 +75,11 @@
  * `dockWindowFrameName(zoneId)` so the model's opaque `w1` and Electron's
  * `havvn-dock-1` cannot drift apart.
  */
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { Icon } from '../../../components/Icon';
 import { ConfirmProvider } from '../../../components/ConfirmDialog';
 import { HostToastRealm, bindToastRealm } from '../../../utils/hostToast';
+import { LiveAnnouncer } from '../../../utils/liveAnnouncer';
 import { usePopout } from '../../../utils/popout';
 import './DockWindowHost.css';
 
@@ -188,6 +207,13 @@ export const DockWindowShell: React.FC<DockWindowShellProps> = ({
             </span>
           </header>
           <div className="dock-window-body">{children}</div>
+          {/* The third realm surface. A screen reader only voices the live regions
+              of the window its virtual cursor is in, so "Chat moved to Left column"
+              raised by a panel on this monitor has to be spoken HERE — a region in
+              the main tree would say it to nobody. Mounted by the shell for the
+              same reason as the other two: detaching a group cannot silently forget
+              it. Costs two empty divs until something is said. */}
+          <LiveAnnouncer />
         </div>
       </ConfirmProvider>
     </HostToastRealm>
@@ -208,6 +234,19 @@ export interface DockWindowHostProps extends Omit<DockWindowShellProps, 'onDockB
    * cleanup closes the OS window.
    */
   onDockBack: (reason: DockBackReason) => void;
+  /**
+   * This host's OS window as it opens and closes; `null` on close and on unmount.
+   *
+   * P4: panel BODIES are no longer children of this host — they are mounted once,
+   * high in the main tree, and portalled into their zone's slot (DockPanelMounts).
+   * A hoisted panel therefore cannot inherit the realm from `portal()`'s
+   * HostWindowProvider, because context follows the REACT parent and its React
+   * parent is the main tree. The owner hands it this window instead.
+   *
+   * Fired from a LAYOUT effect so the realm lands in the same commit the slot
+   * adopts the container — before paint, never a frame late.
+   */
+  onRealm?: (win: Window | null) => void;
 }
 
 export const DockWindowHost: React.FC<DockWindowHostProps> = ({
@@ -217,6 +256,7 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
   dockBackLabel,
   containerName,
   onDockBack,
+  onRealm,
   children,
 }) => {
   const { popout, portal, openPopout } = usePopout(frameName, title, containerName);
@@ -227,7 +267,8 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
   // reopen the window or re-arm the close detection dozens of times a minute.
   const goneRef = useRef(onDockBack);
   const openRef = useRef(openPopout);
-  useEffect(() => { goneRef.current = onDockBack; openRef.current = openPopout; });
+  const realmRef = useRef(onRealm);
+  useEffect(() => { goneRef.current = onDockBack; openRef.current = openPopout; realmRef.current = onRealm; });
 
   const seenRef = useRef(false);
 
@@ -267,6 +308,19 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
     seenRef.current = step.seen;
     if (step.closed) goneRef.current('closed');
   }, [popout]);
+
+  // THE REALM, published upward for the hoisted mounts (see `onRealm`).
+  // A LAYOUT effect, so the owner's `setState` and the resulting re-render land in
+  // the same commit cycle the slot adopts the container: a passive effect would
+  // paint one frame with the panel's DOM inside this window but its React context
+  // still pointing at the main one, i.e. portals and click-away listeners aimed at
+  // the wrong document for a frame.
+  useLayoutEffect(() => {
+    realmRef.current?.(popout && !popout.closed ? popout : null);
+  }, [popout]);
+  // Unmount is the owner taking the group back; the realm is gone with the window.
+  // Separate from the effect above so a reopen does not emit a spurious null first.
+  useEffect(() => () => { realmRef.current?.(null); }, []);
 
   // Keep the OS title bar honest: the group's title changes whenever a panel is
   // dragged in or out, and usePopout only sets it at open time.

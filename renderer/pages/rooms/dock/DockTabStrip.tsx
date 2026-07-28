@@ -74,6 +74,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useHostWindow, resolveHostWindow, portalTargetFor } from '../../../utils/hostWindow';
+import { useAnnounce } from '../../../utils/liveAnnouncer';
 import { DockTabMenu } from './DockTabMenu';
 import type { DockMenuItem } from './DockTabMenu';
 import {
@@ -156,6 +157,17 @@ export interface DockStripInteractions {
    * append. A drop that resolves to a no-op does not call this at all.
    */
   onMovePanel: (panelId: string, toZone: string, toIndex: number | null) => void;
+  /**
+   * What to SAY when that move lands, ALREADY TRANSLATED (e.g. "Chat moved to
+   * Centre column"). Return null to say nothing.
+   *
+   * A move is a purely visual change: the panel is gone from one column and present
+   * in another, and a screen reader is told nothing beyond whatever the focus move
+   * happens to announce. `useDockMove` delivers this through the realm-routed
+   * announcer, so the message is spoken in the window the gesture happened in — a
+   * region in the main tree says nothing to a reader working on the second monitor.
+   */
+  announceMove?: (panelId: string, toZone: string) => string | null;
   /** Already-translated menu chrome. The strip never calls t(). */
   labels: {
     /** The group header, e.g. "Move to". */
@@ -243,7 +255,100 @@ export function nextDockTabIndex(
  */
 export function dockCycleIndex(ev: DockTabKeyEvent, current: number, count: number): number | null {
   if (ev.key !== 'PageUp' && ev.key !== 'PageDown') return null;
+  // A zone with ONE panel has nothing to cycle to. Without this it would still
+  // return 0 — `(0 ± 1) % 1 === 0` — and the zone would preventDefault +
+  // stopPropagation for a no-op, swallowing Ctrl/Cmd+PageUp/PageDown inside the
+  // files list and the chat composer (where it did nothing before the dock) and
+  // blocking any future app-level binding. `nextDockTabIndex` already declines
+  // `count <= 0`, so this only adds the one-panel case.
+  if (!Number.isInteger(count) || count <= 1) return null;
   return nextDockTabIndex(ev, current, count);
+}
+
+/**
+ * Pure: a cheap signature of everything in `tabs` that can change a tab's WIDTH.
+ * The per-drag rect cache is keyed on it, so a gossip push that flips People from
+ * `9/10` to `10/10` (or makes LAN's badge appear) re-measures instead of serving
+ * midpoints from the previous layout.
+ *
+ * A non-primitive badge collapses to a single `#`: an element badge is a fixed-size
+ * dot in practice, and stringifying React nodes on the drag path would cost more
+ * than the re-measure it saves. Labels are included because a re-render can change
+ * them too (a room rename, a language switch mid-drag).
+ */
+export function dockTabSignature(tabs: readonly DockTabItem[]): string {
+  return tabs
+    .map((t) => {
+      const b = t.badge;
+      const text = b === null || b === undefined || b === false
+        ? ''
+        : (typeof b === 'string' || typeof b === 'number') ? String(b) : '#';
+      return `${t.id} ${t.label} ${text}`;
+    })
+    .join('');
+}
+
+/**
+ * THE one way to commit a move from anywhere in this folder: commit, then announce
+ * in the caller's OWN window.
+ *
+ * Every path — a drop on a strip, a drop on a zone body, a "Move to ▸" pick, a solo
+ * handle's menu — goes through this, so a move can never land silently for a screen
+ * reader in one place and be announced in another. `useAnnounce` reads its realm
+ * from `useHostWindow()` at CALL time, which for a strip inside a torn-off window
+ * (or for a zone in one) is that window.
+ *
+ * Returns a stable callback so it is safe in a dependency array, and it is a no-op
+ * without `dock` — the P1 zone has no move to commit.
+ */
+export function useDockMove(
+  dock?: DockStripInteractions,
+): (panelId: string, toZone: string, toIndex: number | null) => void {
+  const announce = useAnnounce();
+  return useCallback((panelId: string, toZone: string, toIndex: number | null) => {
+    if (!dock) return;
+    dock.onMovePanel(panelId, toZone, toIndex);
+    const said = dock.announceMove?.(panelId, toZone);
+    if (said) announce(said);
+  }, [dock, announce]);
+}
+
+/**
+ * Pure: the "Move to ▸" menu's contents for one panel, built from the interaction
+ * surface. Shared by the tab menu and by `DockSoloHandle` (the affordance a
+ * strip-less solo zone gets instead), so the two can never offer different moves.
+ *
+ * `onMove` defaults to `dock.onMovePanel`, but every component in this folder hands
+ * it `useDockMove(dock)` so the menu path announces exactly like the drag path.
+ *
+ * The panel's CURRENT zone is LISTED, marked and disabled rather than omitted: a
+ * stable menu shape needs no branching for the one-zone case (single-column mode,
+ * or inside a torn-off window), and it tells the user where the panel is instead of
+ * making the feature look absent.
+ *
+ * A menu move APPENDS — there is no pointer, so there is no meaningful insertion
+ * index to infer. The destination makes it active either way.
+ */
+export function buildDockMenuItems(
+  dock: DockStripInteractions,
+  panel: string,
+  onMove: (panelId: string, toZone: string, toIndex: number | null) => void = dock.onMovePanel,
+): { targets: DockMenuItem[]; actions: DockMenuItem[] } {
+  const targets: DockMenuItem[] = dock.moveTargets(panel).map((t) => ({
+    key: t.zone,
+    label: t.label,
+    checked: t.current,
+    disabled: t.current === true,
+    refusal: t.refusal ?? null,
+    onSelect: () => onMove(panel, t.zone, null),
+  }));
+  const actions: DockMenuItem[] = (dock.actions?.(panel) ?? []).map((a) => ({
+    key: a.key,
+    label: a.label,
+    refusal: a.refusal ?? null,
+    onSelect: a.onSelect,
+  }));
+  return { targets, actions };
 }
 
 /**
@@ -355,6 +460,8 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
   const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const stripRef = useRef<HTMLDivElement>(null);
   const host = useHostWindow();
+  // Commit + announce, in this strip's own window. Every move path uses it.
+  const move = useDockMove(dock);
   const activeIndex = tabs.findIndex((t) => t.id === activeId);
   const windowKey = dock?.windowKey ?? DOCK_MAIN_WINDOW_KEY;
 
@@ -381,17 +488,22 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
     if (el && el.isConnected) el.focus();
   }, []);
 
-  // Tab rects, measured ONCE per drag per strip. `dragover` fires ~60Hz and each
-  // measurement is a forced layout; nothing re-renders during a drag, so the rects
-  // cannot go stale within one. Keyed on the session seq, so the next drag remeasures.
+  // Tab rects, measured once per drag per strip PER LAYOUT. `dragover` fires ~60Hz
+  // and each measurement is a forced layout, so caching is not optional — but the
+  // strip is NOT static during a drag: the room re-renders on every gossip push
+  // (~700ms at best) and two tabs carry width-changing badges (People renders
+  // `${online}/${total}`, LAN's appears and disappears). A push mid-drag re-lays
+  // out the strip, and rects cached on the session seq alone would leave the
+  // insertion marker pointing at one gap while `insertionIndexAt` computed another.
+  // So the key is the seq AND a cheap signature of what can change the widths.
   // Each rect carries its tab id: a tab whose ref has not landed contributes no
   // rect, so rect index and `tabs` index are not interchangeable and the marker
   // must be looked up by id rather than by position.
-  const rectsRef = useRef<{ seq: number; rects: (DockTabRect & { id: string })[] } | null>(null);
+  const rectsRef = useRef<{ key: string; rects: (DockTabRect & { id: string })[] } | null>(null);
   const tabRects = useCallback((): (DockTabRect & { id: string })[] => {
-    const seq = currentDockDrag()?.seq ?? -1;
+    const key = `${currentDockDrag()?.seq ?? -1}|${dockTabSignature(tabs)}`;
     const cached = rectsRef.current;
-    if (cached && cached.seq === seq) return cached.rects;
+    if (cached && cached.key === key) return cached.rects;
     const rects: (DockTabRect & { id: string })[] = [];
     for (const t of tabs) {
       const el = btnRefs.current[t.id];
@@ -399,7 +511,7 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
       const r = el.getBoundingClientRect();
       rects.push({ id: t.id, left: r.left, width: r.width });
     }
-    rectsRef.current = { seq, rects };
+    rectsRef.current = { key, rects };
     return rects;
   }, [tabs]);
 
@@ -472,8 +584,8 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
     // refused during the drag: dropEffect='none' would suppress the drop event
     // entirely in Chromium and split teardown across two paths.
     if (!plan || plan.kind === 'noop') return;
-    dock.onMovePanel(plan.panel, plan.to, plan.index);
-  }, [dock, tabRects, tabs, windowKey]);
+    move(plan.panel, plan.to, plan.index);
+  }, [dock, move, tabRects, tabs, windowKey]);
 
   // ── keyboard ──────────────────────────────────────────────────────────────
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -518,26 +630,7 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
   // ── the menu ──────────────────────────────────────────────────────────────
   const menuNode = ((): React.ReactNode => {
     if (!dock || !menu) return null;
-    const targets: DockMenuItem[] = dock.moveTargets(menu.panel).map((t) => ({
-      key: t.zone,
-      label: t.label,
-      checked: t.current,
-      // The current zone is LISTED, marked and disabled rather than omitted: a
-      // stable menu shape needs no branching for the one-zone case (single-column
-      // mode, or inside a torn-off window), and it tells the user where the panel
-      // is instead of making the feature look absent.
-      disabled: t.current === true,
-      refusal: t.refusal ?? null,
-      // A menu move APPENDS — there is no pointer, so there is no meaningful
-      // insertion index to infer. The destination makes it active either way.
-      onSelect: () => dock.onMovePanel(menu.panel, t.zone, null),
-    }));
-    const actions: DockMenuItem[] = (dock.actions?.(menu.panel) ?? []).map((a) => ({
-      key: a.key,
-      label: a.label,
-      refusal: a.refusal ?? null,
-      onSelect: a.onSelect,
-    }));
+    const { targets, actions } = buildDockMenuItems(dock, menu.panel, move);
     return (
       <DockTabMenu
         idPrefix={`${idPrefix}-menu-${menu.panel}`}

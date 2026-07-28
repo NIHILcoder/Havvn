@@ -48,6 +48,25 @@
  * a `{ document, window }` object literal here would throw ReferenceError at import
  * time in every module that imports this one, and a bare-identifier getter would
  * throw on any later read.
+ *
+ * TWO PROVIDERS, AND WHY — <HostWindowProvider> vs <HostWindowRealm>.
+ * `HostWindowProvider` takes a window that EXISTS: it is mounted by usePopout's
+ * `portal()`, which only runs once there is a child window, so "no window" is
+ * expressible only as "no provider". That is exactly right for a subtree that
+ * lives inside the child.
+ *
+ * The dock's hoisted panels are the other shape. A panel is mounted ONCE, from a
+ * fixed position in the MAIN React tree, and its DOM container is re-parented into
+ * whichever zone slot currently claims it — including a slot inside a torn-off
+ * window. Its host window therefore CHANGES over the panel's lifetime, and "docked"
+ * (the real globals) is one of the values it changes to. Wrapping conditionally —
+ * `w ? <HostWindowProvider window={w}>{p}</HostWindowProvider> : p` — would put a
+ * DIFFERENT ELEMENT TYPE at the same child position, and React unmounts and
+ * remounts a child whose type changes. That is precisely the remount the hoist
+ * exists to prevent, and it would fire on the one move that matters most (docked ↔
+ * window). So the realm wrapper must be UNCONDITIONAL and must accept `null`:
+ * `<HostWindowRealm window={realmOrNull}>{panel}</HostWindowRealm>`, always, with
+ * null meaning REAL_HOST — value-identical to no provider at all.
  */
 import React, { createContext, useContext, useMemo } from 'react';
 
@@ -116,5 +135,27 @@ export function usePortalTarget(anchor?: Element | null): HTMLElement {
  */
 export const HostWindowProvider: React.FC<{ window: Window; children: React.ReactNode }> = ({ window: w, children }) => {
   const value = useMemo<HostWindow>(() => ({ document: w.document, window: w }), [w]);
+  return <HostWindowContext.Provider value={value}>{children}</HostWindowContext.Provider>;
+};
+
+/**
+ * Provide a host that can CHANGE — including back to the real globals — without
+ * ever changing the subtree's SHAPE. See the "TWO PROVIDERS" note in the header:
+ * this is the wrapper for a subtree that is mounted once and re-parented between
+ * windows, where a conditional <HostWindowProvider> would remount the child on the
+ * very move it is there to survive.
+ *
+ * `null` provides REAL_HOST, which is the SAME VALUE `useHostWindow()` falls back
+ * to with no provider at all — so a panel that never leaves the main window behaves
+ * identically to one rendered outside this wrapper, by construction rather than by
+ * inspection. REAL_HOST's lazy getters keep that case DOM-less-safe too: nothing is
+ * dereferenced here, so a `renderToStaticMarkup` test can render the wrapper.
+ *
+ * A closed window is deliberately NOT special-cased: `resolveHostWindow` already
+ * falls back through a null `defaultView`, and a host whose window has just died is
+ * a transient the owner resolves by handing down a new realm.
+ */
+export const HostWindowRealm: React.FC<{ window: Window | null; children: React.ReactNode }> = ({ window: w, children }) => {
+  const value = useMemo<HostWindow>(() => (w ? { document: w.document, window: w } : REAL_HOST), [w]);
   return <HostWindowContext.Provider value={value}>{children}</HostWindowContext.Provider>;
 };

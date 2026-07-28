@@ -8,14 +8,17 @@
  * evaluator (shared/lan-quality + shared/lan-diagnostics); this file only picks an
  * icon and translates a key.
  *
- * HOST WINDOW: both the portal target and the clipboard come from useHostWindow()
- * rather than
- * the module-scope globals, because the LAN panel that opens this modal can be torn
- * off into a child window. `document.body` would then put the report in the MAIN
- * window, and `navigator.clipboard` belongs to a document that is UNFOCUSED while
- * the child window has focus — Chromium rejects that write with "Document is not
- * focused" and the success toast never fires. With no provider (the docked case)
- * the context IS the real globals, so nothing about the docked panel changes.
+ * HOST WINDOW: the portal target, the clipboard AND the toast all come from this
+ * subtree's realm rather than from the module-scope globals, because the LAN panel
+ * that opens this modal can be torn off into a child window. `document.body` would
+ * then put the report in the MAIN window; `navigator.clipboard` belongs to a
+ * document that is UNFOCUSED while the child window has focus — Chromium rejects
+ * that write with "Document is not focused"; and the module-singleton `toast`
+ * dispatches into the DEFAULT store, which only the main window's <Toaster>
+ * subscribes to, so the "copied" confirmation appeared on the monitor the user was
+ * not looking at. `useHostToast()` shadows the import so no call site changed.
+ * With no provider (the docked case) the context IS the real globals and the toast
+ * API IS the module singleton, so nothing about the docked panel changes.
  *
  * The report is copy-paste-able on purpose: a user pastes it into a bug report.
  * The Copy button prefers the pre-formatted block the pure formatter produced
@@ -27,11 +30,11 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import toast from 'react-hot-toast';
 import { Modal, Button, Icon } from '../../components';
 import type { IconName } from '../../components/Icon';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow } from '../../utils/hostWindow';
+import { useHostToast } from '../../utils/hostToast';
 import './RoomLanPanel.css';
 
 /** Verdict of one check. `unknown` = we could not measure it (not a failure). */
@@ -93,6 +96,9 @@ const LEVEL_MARK: Record<LanCheckLevel, string> = {
 export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, onClose }) => {
   const { t } = useTranslation();
   const host = useHostWindow();
+  // Shadows the module singleton on purpose — the "copied" toast belongs in the
+  // window this report is displayed in (see the HOST WINDOW note in the header).
+  const toast = useHostToast();
   // Evaluator-supplied keys are dynamic strings; t() is typed against en.json, so
   // the dynamic path casts once here instead of at every call site.
   const tk = (key: string) => t(key as Parameters<typeof t>[0]);

@@ -27,6 +27,25 @@
  * Components that can never be detached keep the bare import — that is
  * main-window UI and routing it would be noise.
  *
+ * ONE CAVEAT, and it bites in exactly one shape. A bound api is a VALUE captured
+ * by whatever closure reads it, so an effect that must NOT re-run when the panel
+ * changes windows (a live capture, a peer connection, a subscription) has to read
+ * it through a ref — `const toastRef = useRef(toast); toastRef.current = toast;` —
+ * rather than list it in the dependency array. Putting it in the deps would tear
+ * the effect down and rebuild it on a dock move; leaving it out without the ref
+ * would keep toasting into the window the panel used to be in. ScreenView and the
+ * voice settings mic test are the two cases in the tree today.
+ *
+ * WHO MOUNTS THE PROVIDER, after the dock's mount hoist. <HostToastRealm> below
+ * wraps a dock window's SHELL, which is what mounts that window's <Toaster>. It no
+ * longer wraps the panels: they are mounted once from a fixed position in the MAIN
+ * React tree and re-parented into whichever zone slot claims them, so the nearest
+ * provider in the React tree is the main one. The mount host therefore wraps every
+ * panel in its own <ToastRealmProvider toasterId={…}> — UNCONDITIONALLY, with
+ * `undefined` for a docked zone, so the wrapper's element type never changes and a
+ * docked↔window move cannot remount the panel. `undefined` reads as "no realm"
+ * exactly like no provider at all, which is what keeps the docked case unchanged.
+ *
  * MAIN WINDOW IS UNCHANGED BY CONSTRUCTION. With no realm provider above it the
  * context value is `undefined`, `bindToastRealm` returns the module singleton
  * ITSELF (not a wrapper), and `withToasterId` returns the caller's options
