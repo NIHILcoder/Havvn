@@ -857,6 +857,17 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         enablePEX: updated.enablePEX,
         enableLSD: updated.enableLSD,
         enableUtp: updated.enableUtp,
+        // Seeding defaults. The ratio is a session key on the daemon; the time
+        // limit is enforced per-torrent in the native stats tick, which reads
+        // `this.settings.defaultSeedTimeLimitMinutes` — both were reading a
+        // value frozen at engine start.
+        defaultSeedRatioLimit: updated.defaultSeedRatioLimit,
+        defaultSeedTimeLimitMinutes: updated.defaultSeedTimeLimitMinutes,
+        // Auto-move on completion. Real on the webtorrent engine, which is what
+        // this unblocks; the native engine has no implementation, so the fields
+        // land in its settings and go unread — see the note in the commit.
+        autoMoveEnabled: updated.autoMoveEnabled,
+        autoMovePath: updated.autoMovePath,
         dohEnabled: updated.dohEnabled,
         dohTemplateId: updated.dohTemplateId,
         dohCustomTemplates: updated.dohCustomTemplates,
