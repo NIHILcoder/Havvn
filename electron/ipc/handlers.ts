@@ -830,14 +830,33 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, settings) => {
       const updated = await db.updateSettings(settings);
 
-      // Update torrent manager with new settings
+      // Update torrent manager with new settings.
+      //
+      // Every field an engine can act on has to be listed here. A field left out
+      // is not a no-op: it is a control that moves in the UI, persists to the DB
+      // and never reaches the engine — which is exactly what the protocol
+      // toggles and the alt-speed VALUES did. The native engine re-applies its
+      // whole session from `this.settings` on each call, so an absent key means
+      // it re-sends the stale one it already had.
       await torrentManager.updateSettings({
         maxActiveDownloads: updated.maxActiveDownloads,
         maxDownKbps: updated.maxDownKbps,
         maxUpKbps: updated.maxUpKbps,
+        // Alt ("turbo"/turtle) ceilings. The alt MODE has its own live path
+        // (setAltSpeed); these are the values that mode switches to, and without
+        // them a re-tuned turtle limit only took effect after a restart.
+        altSpeedEnabled: updated.altSpeedEnabled,
+        altDownKbps: updated.altDownKbps,
+        altUpKbps: updated.altUpKbps,
         maxConnections: updated.maxConnections,
         maxConnectionsGlobal: updated.maxConnectionsGlobal,
         adaptiveUpload: updated.adaptiveUpload,
+        // Protocol toggles. transmission applies all four live over RPC; the
+        // webtorrent client reads them at construction and says so.
+        enableDHT: updated.enableDHT,
+        enablePEX: updated.enablePEX,
+        enableLSD: updated.enableLSD,
+        enableUtp: updated.enableUtp,
         dohEnabled: updated.dohEnabled,
         dohTemplateId: updated.dohTemplateId,
         dohCustomTemplates: updated.dohCustomTemplates,

@@ -205,6 +205,14 @@ export class TorrentManager {
   private adaptiveUploadEnabled = false;
   private adaptiveUpBytes = -1;
   private adaptive: AdaptiveThrottle | null = null;
+  // Transport flags AS THE CLIENT WAS CONSTRUCTED with them. WebTorrent reads
+  // utp and dht once, in its constructor, and exposes no live setter, so a later
+  // change genuinely cannot be applied to a running client. Kept so updateSettings
+  // can compare and say so out loud — the alternative is a switch that moves in
+  // the UI and quietly does nothing. (transmission applies all four over RPC;
+  // the asymmetry belongs to the engine, not to the setting.)
+  private constructedTransport: { utp: boolean; dht: boolean } | null = null;
+  private transportRestartPending = false;
   // DNS-over-HTTPS: resolve tracker/peer hostnames through an encrypted resolver
   // instead of the OS/router DNS. State mirrors the relevant settings so live
   // changes (toggle / template / custom list) can be re-applied without restart.
@@ -327,6 +335,7 @@ export class TorrentManager {
       catch { enableUtp = false; log.warn('µTP requested but utp-native is not installed — staying TCP-only'); }
     }
     log.info('Transport', { utp: enableUtp });
+    this.constructedTransport = { utp: enableUtp, dht: settings.enableDHT !== false };
     this.configuredPort = settings.portMin > 0 ? settings.portMin : 0;
     this.client = new WebTorrent({
       peerId: this.generateEphemeralPeerId(),
@@ -2926,11 +2935,20 @@ export class TorrentManager {
     maxConnections?: number;
     maxConnectionsGlobal?: number;
     adaptiveUpload?: boolean;
+    // Protocol toggles. Declared because the IPC layer forwards them to whichever
+    // engine is running and this one must not silently swallow the field; see
+    // noteTransportRestart for why only some of them can ever act here.
+    enableDHT?: boolean;
+    enablePEX?: boolean;
+    enableLSD?: boolean;
+    enableUtp?: boolean;
     dohEnabled?: boolean;
     dohTemplateId?: string;
     dohCustomTemplates?: DohTemplate[];
   }): Promise<void> {
     log.debug('Updating settings', settings);
+
+    this.noteTransportRestart(settings);
 
     let dohDirty = false;
     if (settings.dohEnabled !== undefined) { this.dohEnabled = settings.dohEnabled; dohDirty = true; }
@@ -2972,6 +2990,44 @@ export class TorrentManager {
     }
 
     await this.processQueue();
+  }
+
+  /**
+   * WebTorrent reads `utp` and `dht` in its constructor and exposes no live
+   * setter, so a changed transport toggle genuinely cannot take effect until the
+   * client is rebuilt. Say so, instead of accepting the field and doing nothing —
+   * "the switch moved and nothing happened, and nobody told me" is precisely the
+   * failure this forwarding path was broken by. The native engine applies all
+   * four of these live over RPC; the asymmetry is the engine's, not the setting's.
+   *
+   * Logged on TRANSITIONS only (both directions), so toggling back to the running
+   * client's values retracts the notice rather than leaving a stale warning, and
+   * an unrelated settings save does not re-log it.
+   *
+   * PEX and LSD are deliberately not compared: WebTorrent has no PEX switch and
+   * no LSD implementation at all, which is why those UI toggles were removed
+   * rather than left as placebo. Their fields are accepted and dropped on purpose.
+   */
+  private noteTransportRestart(s: { enableUtp?: boolean; enableDHT?: boolean }): void {
+    const built = this.constructedTransport;
+    if (!built) return; // client not constructed yet — it will pick up the new values itself
+
+    // An absent field means "not being changed", not "turn it off".
+    const wantUtp = s.enableUtp !== undefined ? s.enableUtp : built.utp;
+    const wantDht = s.enableDHT !== undefined ? s.enableDHT !== false : built.dht;
+
+    const pending = wantUtp !== built.utp || wantDht !== built.dht;
+    if (pending === this.transportRestartPending) return;
+    this.transportRestartPending = pending;
+
+    if (pending) {
+      log.warn('Transport toggle changed — webtorrent fixes utp/dht at client construction, so this applies on the next app start', {
+        utp: { running: built.utp, wanted: wantUtp },
+        dht: { running: built.dht, wanted: wantDht },
+      });
+    } else {
+      log.info('Transport toggles match the running client again — no restart pending');
+    }
   }
 
   // ── Speed limits (normal vs alternative/"turbo") ──────────────────────────
