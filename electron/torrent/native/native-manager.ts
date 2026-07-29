@@ -39,6 +39,8 @@ import { extractInfoHashFromMagnet } from '../../../shared/magnet';
 import { classifyMediaKind, isDirectlyPlayable } from '../../../shared/media';
 import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
 import { selectVpnIPv4, resolveBindOverrides } from '../../../shared/vpn-bind';
+import { composeUploadLimits } from '../../../shared/upload-limits';
+import { AdaptiveThrottle } from '../adaptive-throttle';
 import type {
   AppSettings, Download, DownloadStats, FilePriority, NetworkHealth, PeerInfo, SourceType,
   SwarmGeo, TorrentFile, TorrentInfo, TrackerInfo, VpnBindStatus,
@@ -92,6 +94,15 @@ export class NativeTorrentManager {
   private statsTimer: NodeJS.Timeout | null = null;
   private persistCounter = 0;
   private altSpeedEnabled = false;
+
+  // Adaptive upload throttle (bufferbloat protection). The class itself is
+  // engine-agnostic — it asks for the current upload rate and hands back a
+  // ceiling — so the native engine runs its own instance rather than sharing
+  // one. `adaptiveUpBytes` is the throttle's current ceiling (-1 = none) and is
+  // merged with the manual caps by composeUploadLimits on every apply.
+  private adaptive: AdaptiveThrottle | null = null;
+  private adaptiveUploadEnabled = false;
+  private adaptiveUpBytes = -1;
   private readonly ffmpegPath = resolveFfmpeg();
   private geoReady = false;
   private vpnBind: VpnBindStatus = { enabled: false, boundIp: null, iface: null, fallback: false };
@@ -163,6 +174,10 @@ export class NativeTorrentManager {
     await this.applySessionSettings(this.settings);
     await this.reconcile();
     this.statsTimer = setInterval(() => { void this.tick().catch((e) => log.warn('stats tick failed', { error: String(e) })); }, STATS_INTERVAL_MS);
+    // After the stats loop: the throttle reads its upload rate from lastStats,
+    // so starting it first would just feed it zeros for the first tick.
+    this.adaptiveUploadEnabled = this.settings.adaptiveUpload ?? false;
+    if (this.adaptiveUploadEnabled) this.startAdaptiveThrottle();
     for (const cb of this.listeningCbs) { try { cb(); } catch { /* ignore */ } }
   }
 
@@ -174,6 +189,11 @@ export class NativeTorrentManager {
 
   async destroy(): Promise<void> {
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+    // Before the RPC handle goes: stop() can fire onCap, and that write would
+    // otherwise land on a null rpc (applyUploadLimits no-ops, but the probe
+    // interval must not outlive the manager either way).
+    this.adaptive?.stop();
+    this.adaptive = null;
     this.mediaServer?.close();
     this.mediaServer = null;
     if (this.blocklistServer) { try { this.blocklistServer.close(); } catch { /* ignore */ } this.blocklistServer = null; }
@@ -193,14 +213,16 @@ export class NativeTorrentManager {
       'peer-limit-per-torrent': s.maxConnections ?? 100,
       'peer-limit-global': s.maxConnectionsGlobal ?? 300,
       'speed-limit-down-enabled': (s.maxDownKbps ?? 0) > 0,
-      'speed-limit-up-enabled': (s.maxUpKbps ?? 0) > 0,
       'alt-speed-enabled': s.altSpeedEnabled ?? false,
       'seed-ratio-limited': (s.defaultSeedRatioLimit ?? 0) > 0,
+      // BOTH upload ceilings (and the limiter switch) come from one composition
+      // of the manual caps with the adaptive one — never from s.maxUpKbps
+      // directly. Writing the raw setting here would stomp the adaptive cap on
+      // every settings change and make it flap. See shared/upload-limits.ts.
+      ...this.uploadLimitArgs(s),
     };
     if ((s.maxDownKbps ?? 0) > 0) args['speed-limit-down'] = s.maxDownKbps;   // both sides are kB/s
-    if ((s.maxUpKbps ?? 0) > 0) args['speed-limit-up'] = s.maxUpKbps;
     if ((s.altDownKbps ?? 0) > 0) args['alt-speed-down'] = s.altDownKbps;
-    if ((s.altUpKbps ?? 0) > 0) args['alt-speed-up'] = s.altUpKbps;
     if ((s.defaultSeedRatioLimit ?? 0) > 0) args['seedRatioLimit'] = s.defaultSeedRatioLimit;
     await this.rpc!.sessionSet(args);
     this.altSpeedEnabled = s.altSpeedEnabled ?? false;
@@ -215,10 +237,66 @@ export class NativeTorrentManager {
     }
   }
 
+  /** Both upload ceilings, manual ∪ adaptive, in the shape session-set wants. */
+  private uploadLimitArgs(s: AppSettings): Record<string, unknown> {
+    return composeUploadLimits({
+      maxUpKbps: s.maxUpKbps ?? 0,
+      altUpKbps: s.altUpKbps ?? 0,
+      adaptiveUpBytes: this.adaptiveUpBytes,
+    }) as unknown as Record<string, unknown>;
+  }
+
+  /**
+   * Push ONLY the upload ceilings. The adaptive throttle re-caps every couple of
+   * seconds, and a full applySessionSettings per tick would re-send a dozen
+   * unrelated keys (and re-run the DoH warning path) for no reason.
+   */
+  private async applyUploadLimits(): Promise<void> {
+    if (!this.rpc) return; // capped before the daemon is up — doInit applies it
+    await this.rpc.sessionSet(this.uploadLimitArgs(this.settings));
+  }
+
   async updateSettings(partial: Partial<AppSettings>): Promise<void> {
     await this.whenReady();
     this.settings = { ...this.settings, ...partial };
+    // Adaptive on/off takes effect live, like the webtorrent manager's does.
+    // Checked BEFORE applySessionSettings so a just-stopped throttle has already
+    // cleared its ceiling and the apply below writes the manual caps alone.
+    const wantAdaptive = this.settings.adaptiveUpload ?? false;
+    if (wantAdaptive !== this.adaptiveUploadEnabled) {
+      this.adaptiveUploadEnabled = wantAdaptive;
+      if (wantAdaptive) this.startAdaptiveThrottle();
+      else this.stopAdaptiveThrottle();
+    }
     await this.applySessionSettings(this.settings);
+  }
+
+  // ── Adaptive upload throttle (bufferbloat protection) ───────────────────────
+
+  private startAdaptiveThrottle(): void {
+    if (!this.adaptive) {
+      this.adaptive = new AdaptiveThrottle({
+        // Aggregate upload across every torrent, straight out of the stats tick
+        // we already run — rateUpload is in ENGINE_STAT_FIELDS, so this costs no
+        // extra RPC round trip.
+        getUploadBps: () => this.lastStats.reduce((a, s) => a + s.upSpeedBps, 0),
+        onCap: (bytes) => {
+          this.adaptiveUpBytes = bytes;
+          // onCap is sync by contract; the RPC write is not. Never let a failed
+          // write reject into the throttle's tick — it would kill the interval.
+          void this.applyUploadLimits().catch((e) => {
+            log.warn('Failed to apply adaptive upload cap', { error: e instanceof Error ? e.message : String(e) });
+          });
+        },
+      });
+    }
+    this.adaptive.start();
+  }
+
+  /** Stop the throttle and clear its ceiling so the manual caps alone apply. */
+  private stopAdaptiveThrottle(): void {
+    this.adaptive?.stop();   // fires onCap(-1) if a cap was live
+    this.adaptiveUpBytes = -1;
   }
 
   async setAltSpeed(enabled: boolean): Promise<{ altSpeedEnabled: boolean }> {
@@ -1042,10 +1120,17 @@ export class NativeTorrentManager {
     });
   }
 
-  // ── Network health (no adaptive throttle in the native engine — benign shape) ──
+  /** Live snapshot for the adaptive-throttle indicator in the UI. */
   getNetworkHealth(): NetworkHealth {
+    const st = this.adaptive?.getState() ?? null;
     return {
-      adaptive: { active: false, latencyMs: null, baselineMs: null, capKbps: -1, congested: false },
+      adaptive: {
+        active: this.adaptiveUploadEnabled && !!st?.active,
+        latencyMs: st?.latencyMs ?? null,
+        baselineMs: st?.baselineMs != null ? Math.round(st.baselineMs) : null,
+        capKbps: st && st.capBytes > 0 ? Math.round(st.capBytes / 1024) : -1,
+        congested: st?.congested ?? false,
+      },
       uploadBps: this.lastStats.reduce((a, s) => a + s.upSpeedBps, 0),
     };
   }
