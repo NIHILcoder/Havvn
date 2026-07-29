@@ -1060,6 +1060,7 @@
   "settings.grp.autoMove": "COMPLETED DOWNLOADS",
   "settings.autoMove": "Move completed to folder",
   "settings.autoMove.desc": "When a download finishes, move its files to another folder and keep seeding from there.",
+  "settings.autoMove.engineOnly": "Requires the Classic (WebTorrent) engine — the native engine cannot move completed downloads.",
   "settings.autoMovePath": "Completed folder",
   "settings.autoMovePath.desc": "Where finished downloads are moved",
   "settings.autoMovePath.placeholder": "e.g. D:\\Media\\Completed",

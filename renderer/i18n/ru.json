@@ -1060,6 +1060,7 @@
   "settings.grp.autoMove": "ЗАВЕРШЁННЫЕ ЗАГРУЗКИ",
   "settings.autoMove": "Перемещать завершённые в папку",
   "settings.autoMove.desc": "По завершении загрузки перенести файлы в другую папку и продолжить раздачу оттуда.",
+  "settings.autoMove.engineOnly": "Требуется классический движок (WebTorrent) — нативный не умеет перемещать завершённые загрузки.",
   "settings.autoMovePath": "Папка для завершённых",
   "settings.autoMovePath.desc": "Куда переносить завершённые загрузки",
   "settings.autoMovePath.placeholder": "напр. D:\\Media\\Completed",

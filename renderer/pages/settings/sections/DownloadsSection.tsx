@@ -29,7 +29,15 @@ export const DownloadsSection: React.FC = () => {
     autoMovePath, setAutoMovePath,
     diskGuardEnabled, setDiskGuardEnabled,
     diskGuardMinFreeMB, setDiskGuardMinFreeMB,
+    engine, runningEngine,
   } = useSettings();
+
+  // Auto-move-on-completion exists only in the webtorrent manager; the native
+  // engine has no implementation, so the setting reached it and went unread.
+  // Gated on the engine actually RUNNING, like the speed note and the VPN bind:
+  // "configured" would promise the feature the moment the picker moved, before
+  // the restart that makes it true.
+  const autoMoveSupported = (runningEngine ?? engine) === 'webtorrent';
 
   return (
     <>
@@ -151,18 +159,26 @@ export const DownloadsSection: React.FC = () => {
 
       {/* Auto-move completed */}
       <SettingsCard title={t('settings.grp.autoMove')} icon="arrow-right">
+        {/* Disabled WITH ITS REASON rather than hidden. A control that vanishes
+            teaches nothing — a native-engine user would never learn the feature
+            exists, nor that the classic engine has it. Same treatment the
+            native-only VPN bind gets in Privacy, inverted. */}
         <SettingRow
           label={t('settings.autoMove')}
-          description={t('settings.autoMove.desc')}
+          description={autoMoveSupported ? t('settings.autoMove.desc') : t('settings.autoMove.engineOnly')}
           control={
             <Toggle
-              checked={autoMoveEnabled}
+              checked={autoMoveEnabled && autoMoveSupported}
+              disabled={!autoMoveSupported}
               onChange={(v) => applyToggle(v, setAutoMoveEnabled, { autoMoveEnabled: v })}
               ariaLabel={t('settings.autoMove')}
             />
           }
         />
-        {autoMoveEnabled && (
+        {/* The path row would be dead weight under an unavailable feature — and
+            a stored `autoMoveEnabled: true` from a webtorrent session survives
+            the engine switch, so this cannot lean on the toggle alone. */}
+        {autoMoveSupported && autoMoveEnabled && (
           <SettingRow
             label={t('settings.autoMovePath')}
             description={t('settings.autoMovePath.desc')}
