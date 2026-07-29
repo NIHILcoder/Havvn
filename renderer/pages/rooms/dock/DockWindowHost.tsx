@@ -81,6 +81,12 @@ import { ConfirmProvider } from '../../../components/ConfirmDialog';
 import { HostToastRealm, bindToastRealm } from '../../../utils/hostToast';
 import { LiveAnnouncer } from '../../../utils/liveAnnouncer';
 import { usePopout } from '../../../utils/popout';
+// Imported from the FILE, not from `layout/index.ts`: the barrel pulls in
+// TitleBar/Sidebar/StatusBar (and with them the i18n context and the whole app
+// shell), which this folder is deliberately free of.
+import { WindowControls, IS_MAC, type WindowControlLabels } from '../../../layout/WindowControls';
+import { DOCK_AT_CURSOR_FEATURE_STR } from '../../../../shared/dock-windows';
+import { useDockWindowMaximized, minimizeDockWindow, toggleMaximizeDockWindow } from './dockWindowChrome';
 import './DockWindowHost.css';
 
 /**
@@ -116,6 +122,25 @@ export function stepDockWindowLiveness(seen: boolean, present: boolean): DockWin
   return { seen: false, closed: seen };
 }
 
+/**
+ * The window-management half of the header bar: everything the shell needs to draw
+ * the app's own minimise/maximise controls for THIS window.
+ *
+ * Resolved by the host (dockWindowChrome.ts) rather than by the shell, so the
+ * shell stays plain markup — no `window.api`, no `t()` — and can be rendered from
+ * a harness with neither. There is deliberately no `onClose`: ✕ is the OS
+ * vocabulary for "this group comes home", so it reuses `onDockBack` and there is
+ * still exactly ONE teardown path.
+ */
+export interface DockWindowChrome {
+  /** Drives the maximise/restore glyph and its label. */
+  maximized: boolean;
+  /** Already-translated accessible names (this folder never calls `t()`). */
+  labels?: WindowControlLabels;
+  onMinimize: () => void;
+  onToggleMaximize: () => void;
+}
+
 export interface DockWindowShellProps {
   /**
    * The pool frame name (`havvn-dock-1`…). Identity of the OS window, the
@@ -141,6 +166,12 @@ export interface DockWindowShellProps {
    * reachable from the node test harness.
    */
   toastTarget?: HTMLElement | null;
+  /**
+   * Window controls for THIS window. Optional so the bar degrades to its pre-
+   * frameless form (title + dock-back) wherever the chrome cannot be resolved —
+   * and so the existing static-markup tests keep rendering it without a bridge.
+   */
+  chrome?: DockWindowChrome;
 }
 
 /**
@@ -157,6 +188,7 @@ export const DockWindowShell: React.FC<DockWindowShellProps> = ({
   children,
   onDockBack,
   toastTarget,
+  chrome,
 }) => {
   // Pool slots are RECYCLED: dock back, tear off again, and `havvn-dock-1`
   // returns. react-hot-toast keeps a store per `toasterId` that OUTLIVES its
@@ -183,18 +215,39 @@ export const DockWindowShell: React.FC<DockWindowShellProps> = ({
     <HostToastRealm toasterId={frameName} target={toastTarget}>
       <ConfirmProvider>
         <div className="dock-window" data-dock-window={frameName}>
-          <header className="dock-window-head">
+          {/*
+            THE APP'S OWN TITLE BAR, not a lookalike. The window is frameless
+            (main.ts gives the dock pool the same platform treatment as the main
+            window), so this header replaces the OS caption — and it carries
+            `.titlebar` so its height, background, blaze line, hover washes and
+            control metrics are the ones defined once in layout.css. `--mac`
+            reserves room for the traffic lights that `hiddenInset` keeps.
+
+            DRAG REGION, and why the tab strip is safe. `.titlebar` sets
+            `-webkit-app-region: drag`, which INHERITS. This header is a SIBLING
+            above `.dock-window-body`, and the group's tab strip lives in the
+            body — so the strip, an HTML5 drag SOURCE that a drag region would
+            silently kill, never inherits it. Moving the strip up here would break
+            tab dragging in every torn-off window; the test file asserts the
+            separation for exactly that reason.
+          */}
+          <header className={`titlebar dock-window-head${IS_MAC ? ' titlebar--mac' : ''}`}>
             <span className="dock-window-title">
               <span className="dock-window-title-text" title={title}>{title}</span>
               {subtitle ? <span className="dock-window-sub" title={subtitle}>{subtitle}</span> : null}
             </span>
+            {/* The flexible middle IS the drag handle, exactly as in the app bar;
+                double-click toggles maximise where there is a window to toggle. */}
+            <div className="titlebar-drag" onDoubleClick={chrome?.onToggleMaximize} />
             <span className="dock-window-acts">
               {/* The ONLY way home. Cross-window tab drag is impossible — HTML5
                   DnD and pointer capture do not cross BrowserWindow boundaries —
                   so this is not a convenience, it is the mechanism. A real
                   <button>, reachable by Tab and announced by name inside THIS
                   window (where the panel's own "Move to ▸" menu is the other
-                  keyboard path home). */}
+                  keyboard path home). It KEEPS its place beside the OS-style
+                  controls because it NAMES the outcome: ✕ says "close", this says
+                  "dock back", and they happen to do the same thing. */}
               <button
                 type="button"
                 className="dock-window-btn"
@@ -204,6 +257,24 @@ export const DockWindowShell: React.FC<DockWindowShellProps> = ({
               >
                 <Icon name="minimize" size={13} />
               </button>
+              {chrome ? (
+                <>
+                  <span className="dock-window-sep" aria-hidden="true" />
+                  {/* ✕ is `onDockBack`, NOT a close IPC. Closing a dock window has
+                      always meant "the group comes home", and that path is proven:
+                      report → the owner unmounts this host → usePopout's cleanup
+                      closes the OS window. One direction of control, so a refused
+                      dock-back still cannot leave an open window with nothing
+                      rendering into it. */}
+                  <WindowControls
+                    maximized={chrome.maximized}
+                    labels={chrome.labels}
+                    onMinimize={chrome.onMinimize}
+                    onToggleMaximize={chrome.onToggleMaximize}
+                    onClose={onDockBack}
+                  />
+                </>
+              ) : null}
             </span>
           </header>
           <div className="dock-window-body">{children}</div>
@@ -220,7 +291,16 @@ export const DockWindowShell: React.FC<DockWindowShellProps> = ({
   );
 };
 
-export interface DockWindowHostProps extends Omit<DockWindowShellProps, 'onDockBack' | 'toastTarget'> {
+export interface DockWindowHostProps extends Omit<DockWindowShellProps, 'onDockBack' | 'toastTarget' | 'chrome'> {
+  /**
+   * Accessible names for the three window controls, ALREADY TRANSLATED (this
+   * folder never calls `t()`): `window.minimize` / `window.maximize` /
+   * `window.restore` / `window.close`.
+   *
+   * Optional, and English if omitted — the window is FRAMELESS, so a caller that
+   * has not wired this yet must still get usable controls rather than none at all.
+   */
+  windowLabels?: WindowControlLabels;
   /**
    * Optional `container-name` for `.popout-root`, so `@container <name> (…)` rules
    * written for the docked panel keep matching once it is torn off. The zone
@@ -234,6 +314,23 @@ export interface DockWindowHostProps extends Omit<DockWindowShellProps, 'onDockB
    * cleanup closes the OS window.
    */
   onDockBack: (reason: DockBackReason) => void;
+  /**
+   * Open this window UNDER THE CURSOR instead of at its remembered bounds — the
+   * drag-out tear-off, where the user has just let go of a tab somewhere on the
+   * desktop and the window has to appear there.
+   *
+   * Read exactly ONCE, at mount. The open is deferred by a macrotask (see below)
+   * while the owner clears its one-shot on the next commit, so a prop read at open
+   * time would already be false and the window would silently appear in the old
+   * place. Mount is the moment the slot became non-empty, which is precisely when
+   * the flag is true.
+   *
+   * No coordinate crosses the boundary: this only sets a flag in the `window.open`
+   * features string. `screenX` in a renderer is CSS px and the app scales its UI
+   * through `webFrame.setZoomFactor`, so main resolves the actual point from
+   * `screen.getCursorScreenPoint()` (see shared/dock-windows.ts).
+   */
+  placeAtCursor?: boolean;
   /**
    * This host's OS window as it opens and closes; `null` on close and on unmount.
    *
@@ -254,12 +351,19 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
   title,
   subtitle,
   dockBackLabel,
+  windowLabels,
   containerName,
+  placeAtCursor,
   onDockBack,
   onRealm,
   children,
 }) => {
   const { popout, portal, openPopout } = usePopout(frameName, title, containerName);
+
+  // The maximise glyph for THIS pool slot. Re-queried whenever the window comes
+  // or goes, because slots are recycled and a stale flag would draw "restore" on
+  // a window that has never been maximised.
+  const maximized = useDockWindowMaximized(frameName, !!popout && !popout.closed);
 
   // Both callbacks live in refs so the lifecycle effects below can have EMPTY /
   // minimal dependency lists. The room re-renders on every gossip push (~700ms
@@ -271,6 +375,9 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
   useEffect(() => { goneRef.current = onDockBack; openRef.current = openPopout; realmRef.current = onRealm; });
 
   const seenRef = useRef(false);
+  // Captured at MOUNT, deliberately not in the every-render ref above: the owner's
+  // one-shot is cleared before the deferred open runs (see `placeAtCursor`).
+  const atCursorRef = useRef(placeAtCursor === true);
 
   // OPEN — deferred by one macrotask, which is not a nicety.
   //
@@ -288,7 +395,8 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
       // Denied by main.ts's allowlist, refused by the OS, or the pool slot is
       // still dying. The panels are rendering nowhere at this instant, so the
       // owner has to dock them back NOW — a refusal, never a silent no-op.
-      if (!openRef.current()) goneRef.current('openFailed');
+      const features = atCursorRef.current ? DOCK_AT_CURSOR_FEATURE_STR : undefined;
+      if (!openRef.current(features)) goneRef.current('openFailed');
     }, 0);
     return () => {
       cancelled = true;
@@ -341,6 +449,15 @@ export const DockWindowHost: React.FC<DockWindowHostProps> = ({
       subtitle={subtitle}
       dockBackLabel={dockBackLabel}
       onDockBack={() => goneRef.current('button')}
+      // Frame-name-addressed, because this subtree runs in the MAIN renderer's
+      // realm even though its DOM is in the child window — `window.api` here is
+      // the room window's bridge (dockWindowChrome.ts spells the trap out).
+      chrome={{
+        maximized,
+        labels: windowLabels,
+        onMinimize: () => minimizeDockWindow(frameName),
+        onToggleMaximize: () => toggleMaximizeDockWindow(frameName),
+      }}
     >
       {children}
     </DockWindowShell>,

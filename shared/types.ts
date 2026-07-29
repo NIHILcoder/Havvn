@@ -1083,6 +1083,26 @@ export interface IpcApi {
     onPopoutClosed: (callback: (frameName: string) => void) => () => void;
     /** A pop-out was refused, with the reason, so the UI can explain it. */
     onPopoutDenied: (callback: (info: { frameName: string; reason: string }) => void) => () => void;
+    /**
+     * Controls for a FRAMELESS dock pop-out, addressed BY FRAME NAME.
+     *
+     * Not by sender: a pop-out's React tree lives in the MAIN renderer's realm
+     * (the room window portals DOM into an about:blank child), so every send from
+     * that window's title bar carries the room window as its sender.
+     */
+    popoutMinimize: (frameName: string) => void;
+    popoutToggleMaximize: (frameName: string) => void;
+    popoutIsMaximized: (frameName: string) => Promise<boolean>;
+    onPopoutMaximizeChange: (callback: (info: { frameName: string; maximized: boolean }) => void) => () => void;
+    /**
+     * Is the pointer inside ANY window of this app? The dock's drag-out tear-off
+     * asks before turning a released tab into a window.
+     *
+     * It has to be main's answer: renderer screen coordinates are CSS px under
+     * `webFrame.setZoomFactor` (so not DIP, and not comparable with window bounds),
+     * and a renderer cannot enumerate windows it did not open itself.
+     */
+    pointerOverApp: () => Promise<boolean>;
   };
   // Mirror the renderer's UI language to main (localizes tray/dialogs/notifications)
   setLanguage: (lang: string) => void;

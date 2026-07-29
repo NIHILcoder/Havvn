@@ -98,7 +98,15 @@ export interface Popout {
    * or null while docked/closed. Call sites read `return portal(view) ?? view;`.
    */
   portal: (children: React.ReactNode) => React.ReactPortal | null;
-  openPopout: () => boolean;
+  /**
+   * Open (or focus) the window. `features` is passed straight to `window.open` and
+   * is read by the MAIN process, not by Electron's own feature interpretation — the
+   * dock's tear-off sets `havvnAtCursor=1` there so main can place the new window
+   * under the pointer (shared/dock-windows.ts). A window that is ALREADY open is
+   * only focused: features describe a fresh open, and re-placing a window the user
+   * has since moved would be a surprise.
+   */
+  openPopout: (features?: string) => boolean;
   closePopout: () => void;
 }
 
@@ -120,10 +128,10 @@ export function usePopout(frameName: string, title: string, containerName?: stri
   // The base reset stays LAST in the child's head; late clones insert before it.
   const baseRef = useRef<HTMLStyleElement | null>(null);
 
-  const openPopout = (): boolean => {
+  const openPopout = (features?: string): boolean => {
     const existing = popoutRef.current;
     if (existing && !existing.closed) { existing.focus(); return true; }
-    const w = window.open('about:blank', frameName);
+    const w = window.open('about:blank', frameName, features);
     if (!w) return false; // blocked / denied by the window-open handler
     w.document.title = title;
     const clones = clonesRef.current;

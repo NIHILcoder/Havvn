@@ -451,6 +451,38 @@ const api: IpcApi = {
       ipcRenderer.on('win:popoutDenied', handler);
       return () => { ipcRenderer.removeListener('win:popoutDenied', handler); };
     },
+
+    /**
+     * The same three controls, for a FRAMELESS dock pop-out — addressed BY FRAME
+     * NAME, never by sender.
+     *
+     * A pop-out is an about:blank child the room window portals DOM into, so its
+     * title bar's IPC leaves the MAIN renderer: `event.sender` is always the room
+     * window and a sender-derived lookup in main would minimise the wrong window.
+     * The frame name is already this window's identity everywhere else (allowlist,
+     * saved bounds, toasterId, the popoutClosed payload).
+     */
+    popoutMinimize: (frameName: string): void => ipcRenderer.send('win:popoutMinimize', frameName),
+    popoutToggleMaximize: (frameName: string): void => ipcRenderer.send('win:popoutToggleMaximize', frameName),
+    popoutIsMaximized: (frameName: string): Promise<boolean> => ipcRenderer.invoke('win:popoutIsMaximized', frameName),
+    /** A pop-out's maximise state flipped (button, double-click, or an OS gesture). */
+    onPopoutMaximizeChange: (callback: (info: { frameName: string; maximized: boolean }) => void): (() => void) => {
+      const handler = (_e: IpcRendererEvent, p: { frameName: string; maximized: boolean }) => {
+        callback({ frameName: p?.frameName ?? '', maximized: !!p?.maximized });
+      };
+      ipcRenderer.on('win:popoutMaximizeChanged', handler);
+      return () => { ipcRenderer.removeListener('win:popoutMaximizeChanged', handler); };
+    },
+    /**
+     * Is the pointer inside one of this app's windows right now?
+     *
+     * The dock's drag-out tear-off asks this before committing: a tab released over
+     * the room's head bar, a splitter, another dock window or a pop-out is not a
+     * tear-off. The renderer cannot answer it — a drag event's screenX/screenY are
+     * CSS px under a user-settable `webFrame` zoom, so they are not DIP, and a
+     * renderer can only enumerate windows it opened itself.
+     */
+    pointerOverApp: (): Promise<boolean> => ipcRenderer.invoke('win:pointerOverApp'),
   },
 
   // Mirror the renderer's UI language to main so the tray, native dialogs, and

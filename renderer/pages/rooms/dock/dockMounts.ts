@@ -17,7 +17,18 @@
  * DOM reparent instead of a React remount.
  *
  * ── The policy is unchanged (P1, verbatim, one level up) ─────────────────────
- *   live = { the active panel of each zone } ∪ { every keep-alive panel in a zone }
+ *   live = { the active panel of each zone } ∪ { every keep-alive panel in a zone
+ *                                                OR HIDDEN }
+ *
+ * The last two words are the only widening this file has ever had, and they are what
+ * makes HIDING a panel safe: a hidden panel is in no zone at all (that is the model's
+ * whole encoding), so without them hiding Voice would UNMOUNT it — silently tearing
+ * down the PTT listeners and the voice-warning subscription of a user who is in a
+ * call, which is exactly the failure `keepAlive` exists to prevent. Hidden panels
+ * arrive as one PARKED pseudo-zone (`parkedMountZone`), and the rule below then
+ * mounts precisely the keep-alive ones. A hidden panel is therefore never worse off
+ * than a panel whose tab is simply not selected — which is the property that makes
+ * hiding a LAYOUT act rather than a lifecycle one.
  *
  * which is precisely `resolveDockMount`'s rule, unioned across zones:
  *   • a NON-keep-alive panel that is not its zone's active tab is NOT mounted —
@@ -50,6 +61,17 @@ export interface DockMountZone<P extends string = string> {
   panels: readonly P[];
   /** The selected panel; '' iff the zone is empty. Repaired here, not trusted. */
   active: P | '';
+  /**
+   * PARKED: these panels have NO SLOT anywhere (they are hidden). Mount only the
+   * keep-alive members and resolve NO active panel.
+   *
+   * The flag is not decoration. Without it `resolveZoneActive`'s "fall back to
+   * panels[0]" would mount the FIRST hidden panel even when it is not keep-alive,
+   * and that mount would then portal into a container no slot will ever adopt —
+   * a running panel nobody can see, which is the exact state the one-decider rule
+   * exists to make impossible.
+   */
+  parked?: boolean;
 }
 
 /** One mounted panel and where it currently lives. */
@@ -61,6 +83,25 @@ export interface DockLiveMount<P extends string = string> {
   panel: P;
   /** The zone whose slot this panel's container is parked in. */
   zoneId: string;
+  /**
+   * This mount came from a PARKED zone: it is mounted and running, but no slot
+   * exists for it. The host detaches its container into limbo (`registry.park`)
+   * instead of leaving it inside a slot that is being deleted.
+   */
+  parked?: boolean;
+}
+
+/**
+ * The zone id parked mounts carry. Not a real zone: `liveMountsIn` can never match
+ * it (no DockZone renders with this id), and both `isDockedZone` and `isWindowZone`
+ * are false for it — so the owner's `realmOf`/`toasterIdOf` already resolve it to
+ * the main realm with no toaster, which is correct for a panel with no window.
+ */
+export const DOCK_PARKED_ZONE = '__parked';
+
+/** The hidden panels as one pseudo-zone, ready to append to `resolveLiveMounts`. */
+export function parkedMountZone<P extends string>(hidden: readonly P[]): DockMountZone<P> {
+  return { zoneId: DOCK_PARKED_ZONE, panels: hidden, active: '', parked: true };
 }
 
 /**
@@ -93,26 +134,36 @@ export function resolveLiveMounts<P extends string>(
 ): DockLiveMount<P>[] {
   /** panel -> zone, first zone wins. */
   const zoneOf = new Map<P, string>();
+  /** Panels whose zone has no slots at all. */
+  const parked = new Set<P>();
   /** Insertion order, used for panels the registry order does not mention. */
   const seen: P[] = [];
 
   for (const z of zones) {
-    const active = resolveZoneActive(z.panels, z.active);
+    // A parked zone resolves NO active panel: it has no slots, so "the tab this zone
+    // shows" is meaningless there and only keep-alive membership can mount anything.
+    const active = z.parked ? '' : resolveZoneActive(z.panels, z.active);
     for (const panel of z.panels) {
       if (zoneOf.has(panel)) continue;
       if (panel !== active && !keepAlive(panel)) continue;
       zoneOf.set(panel, z.zoneId);
+      if (z.parked) parked.add(panel);
       seen.push(panel);
     }
   }
 
+  const emit = (panel: P): DockLiveMount<P> => {
+    const m: DockLiveMount<P> = { panel, zoneId: zoneOf.get(panel) as string };
+    if (parked.has(panel)) m.parked = true;
+    return m;
+  };
+
   const out: DockLiveMount<P>[] = [];
   const emitted = new Set<P>();
   for (const panel of order) {
-    const zoneId = zoneOf.get(panel);
-    if (zoneId === undefined || emitted.has(panel)) continue;
+    if (zoneOf.get(panel) === undefined || emitted.has(panel)) continue;
     emitted.add(panel);
-    out.push({ panel, zoneId });
+    out.push(emit(panel));
   }
   // Anything the caller's `order` did not mention still gets mounted — a panel that
   // is missing from the registry order is a wiring bug, and dropping its mount
@@ -120,7 +171,7 @@ export function resolveLiveMounts<P extends string>(
   for (const panel of seen) {
     if (emitted.has(panel)) continue;
     emitted.add(panel);
-    out.push({ panel, zoneId: zoneOf.get(panel) as string });
+    out.push(emit(panel));
   }
   return out;
 }

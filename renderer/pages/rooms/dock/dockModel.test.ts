@@ -14,6 +14,7 @@ import {
   PANEL_BY_ID,
   ROOM_DOCK_KEY,
   activePanel,
+  canHidePanel,
   canMovePanel,
   defaultDockLayout,
   defaultLayout,
@@ -25,7 +26,11 @@ import {
   dockWindowFrameName,
   dockedPanelCount,
   firstFreeWindowZone,
+  hidePanel,
+  hiddenPanels,
+  hideTarget,
   isDockedZone,
+  isPanelHidden,
   isWindowZone,
   loadDockLayout,
   movePanel,
@@ -36,10 +41,15 @@ import {
   repairDockLayout,
   repairLayout,
   resetDockLayout,
+  restoreAllPanels,
+  restorePanel,
+  restoreTargetZone,
+  restoreTargets,
   saveDockLayout,
   setActivePanel,
   tearOffTarget,
   tearOffZone,
+  visiblePanels,
   zoneIsEmpty,
   zoneOfPanel,
   zonePanels,
@@ -71,6 +81,15 @@ afterEach(() => { delete (globalThis as any).localStorage; });
 const base = () => defaultDockLayout();
 /** The load-bearing predicate: invariant A. */
 const holdsA = (l: DockLayout) => dockedPanelCount(l) > 0 && nonEmptyDockedZones(l).length > 0;
+/**
+ * The hidden-panel encoding, as a predicate: every panel is in EXACTLY ONE zone or in
+ * `hidden`, never both and never neither. Everything else about hiding follows from
+ * this holding on every path.
+ */
+const accountsForEveryPanel = (l: DockLayout) => {
+  const placed = [...DOCK_ZONE_IDS.flatMap((z) => l.zones[z].panels), ...l.hidden.map((h) => h.id)];
+  expect([...placed].sort()).toEqual([...DOCK_PANEL_IDS].sort());
+};
 const ok = (r: { layout: DockLayout; refused: unknown }) => {
   expect(r.refused).toBeNull();
   return r.layout;
@@ -169,7 +188,9 @@ describe('defaults', () => {
       expect(l.zones[w].origin).toBeUndefined();
     }
     expect(openWindowZones(l)).toEqual([]);
+    expect(l.hidden).toEqual([]); // a fresh install hides nothing
     expect(holdsA(l)).toBe(true);
+    accountsForEveryPanel(l);
   });
 
   it('hands out a fresh object each call (state is held and replaced, never shared)', () => {
@@ -321,11 +342,13 @@ describe('repairDockLayout — validate and repair', () => {
     const out = repairDockLayout({
       v: 2,
       zones: { left: { panels: ['voice'], active: 'voice', junk: 1 }, w1: { panels: ['chat'], origin: 'right', junk: 2 } },
+      hidden: [{ id: 'files', from: 'centre', junk: 3 }],
       extra: 'nope',
     }) as unknown as Record<string, any>;
-    expect(Object.keys(out).sort()).toEqual(['v', 'zones']);
+    expect(Object.keys(out).sort()).toEqual(['hidden', 'v', 'zones']);
     expect(Object.keys(out.zones.left).sort()).toEqual(['active', 'panels']);
     expect(Object.keys(out.zones.w1).sort()).toEqual(['active', 'origin', 'panels']);
+    expect(Object.keys(out.hidden[0]).sort()).toEqual(['from', 'id']);
   });
 
   it('keeps a window zone origin only when it names a real docked zone', () => {
@@ -460,6 +483,525 @@ describe('invariant A — the room can never be empty', () => {
     expect(openWindowZones(out)).toEqual([]);
     expect(out.zones.left.panels).toEqual(['voice', 'lan', 'people']);
     expect(out.zones.right.panels).toEqual(['chat']);
+  });
+});
+
+// ── hidden panels ───────────────────────────────────────────────────────────
+// The encoding under test: a hidden panel is in NO zone and in `hidden`. Every
+// assertion below is really one of two questions — does the panel stay accounted
+// for exactly once, and can hiding ever leave the room with nothing to click.
+
+describe('hidePanel', () => {
+  it('removes the panel from its zone entirely and records where it came from', () => {
+    const r = hidePanel(base(), 'lan');
+    expect(r.refused).toBeNull();
+    expect(r.zone).toBe('left');
+    expect(r.layout.zones.left.panels).toEqual(['voice', 'people']);
+    expect(r.layout.hidden).toEqual([{ id: 'lan', from: 'left' }]);
+    expect(isPanelHidden(r.layout, 'lan')).toBe(true);
+    expect(zoneOfPanel(r.layout, 'lan')).toBeUndefined(); // in NO zone — that is the encoding
+    expect(zonePanels(r.layout, 'left')).not.toContain('lan');
+    expect(dockedPanelCount(r.layout)).toBe(4); // the count that guards A is VISIBLE-only
+    accountsForEveryPanel(r.layout);
+    expect(holdsA(r.layout)).toBe(true);
+  });
+
+  it("hands the source's active tab to the SAME INDEX, exactly like a move", () => {
+    const b = setActivePanel(base(), 'left', 'lan'); // index 1 of 3
+    expect(ok(hidePanel(b, 'lan')).zones.left.active).toBe('people'); // right-hand neighbour
+    const last = setActivePanel(base(), 'left', 'people'); // index 2 of 3
+    expect(ok(hidePanel(last, 'people')).zones.left.active).toBe('lan'); // else the left one
+    expect(ok(hidePanel(b, 'voice')).zones.left.active).toBe('lan'); // untouched active stays
+    // a zone emptied by hiding is legal and encodes as ''
+    const emptied = ok(hidePanel(base(), 'chat'));
+    expect(emptied.zones.right).toEqual({ panels: [], active: '' });
+    expect(zoneIsEmpty(emptied, 'right')).toBe(true);
+  });
+
+  it('leaves untouched zones referentially identical and never mutates the input', () => {
+    const b = base();
+    const out = ok(hidePanel(b, 'chat'));
+    expect(out.zones.left).toBe(b.zones.left);
+    expect(out.zones.centre).toBe(b.zones.centre);
+    for (const w of DOCK_WINDOW_ZONE_IDS) expect(out.zones[w]).toBe(b.zones[w]);
+    expect(b.zones.right.panels).toEqual(['chat']);
+    expect(b.hidden).toEqual([]);
+  });
+
+  it('REFUSES to hide the last visible panel, with the same reason every other op gives', () => {
+    let l = ok(hidePanel(base(), 'voice'));
+    l = ok(hidePanel(l, 'lan'));
+    l = ok(hidePanel(l, 'people'));
+    l = ok(hidePanel(l, 'files'));
+    expect(nonEmptyDockedZones(l)).toEqual(['right']);
+    expect(dockedPanelCount(l)).toBe(1);
+    const r = hidePanel(l, 'chat');
+    expect(r.refused).toBe('last-docked-group');
+    expect(r.layout).toBe(l);            // byte-identical: a refusal never half-applies
+    expect(r.zone).toBeNull();
+    expect(canHidePanel(l, 'chat')).toBe('last-docked-group');
+    expect(hideTarget(l, 'chat').refused).toBe('last-docked-group'); // the menu learns it too
+    expect(holdsA(l)).toBe(true);
+    accountsForEveryPanel(l);
+  });
+
+  it('counts only DOCKED panels as visible — four torn-off windows do not save the last tab', () => {
+    // Window zones are never persisted, so a rule that counted them would be true at
+    // runtime and false at every storage boundary: the model would refuse on reload
+    // the arrangement it had permitted a second earlier.
+    let l = ok(tearOffZone(base(), 'left'));   // w1 = voice/lan/people
+    l = ok(tearOffZone(l, 'centre'));          // w2 = files
+    expect(openWindowZones(l)).toEqual(['w1', 'w2']);
+    expect(visiblePanels(l).length).toBe(5);   // five panels ARE on screen...
+    expect(hidePanel(l, 'chat').refused).toBe('last-docked-group'); // ...and chat still cannot go
+    // ...but a panel inside a window may be hidden, because the main window keeps chat
+    const inWindow = ok(hidePanel(l, 'people'));
+    expect(inWindow.zones.w1.panels).toEqual(['voice', 'lan']);
+    expect(inWindow.hidden).toEqual([{ id: 'people', from: 'left' }]); // the window's ORIGIN
+    accountsForEveryPanel(inWindow);
+  });
+
+  it('hiding the last VISIBLE panel of a window zone closes that window and remembers its origin', () => {
+    // A hidden panel must never be stranded in a window zone that no longer exists —
+    // that is what makes "show it where it was" free rather than a repair case.
+    const torn = ok(detachPanel(base(), 'chat'));  // w1 = [chat], origin right
+    expect(openWindowZones(torn)).toEqual(['w1']);
+    const out = ok(hidePanel(torn, 'chat'));
+    expect(out.zones.w1).toEqual({ panels: [], active: '' });
+    expect(out.zones.w1.origin).toBeUndefined();   // the slot is clean for the next tear-off
+    expect(openWindowZones(out)).toEqual([]);
+    expect(out.hidden).toEqual([{ id: 'chat', from: 'right' }]);
+    expect(restoreTargetZone(out, 'chat')).toBe('right');
+    accountsForEveryPanel(out);
+  });
+
+  it('falls back to the panel default when a window group has no origin to remember', () => {
+    const l = repairDockLayout({
+      v: 2,
+      zones: { left: { panels: ['voice', 'lan', 'people'] }, centre: { panels: ['files'] }, w1: { panels: ['chat'] } },
+    });
+    expect(l.zones.w1.origin).toBeUndefined();
+    expect(ok(hidePanel(l, 'chat')).hidden).toEqual([{ id: 'chat', from: 'right' }]); // chat's defaultZone
+  });
+
+  it('is idempotent: hiding an already-hidden panel is a no-op, not a refusal', () => {
+    const once = ok(hidePanel(base(), 'files'));
+    const twice = hidePanel(once, 'files');
+    expect(twice.refused).toBeNull();
+    expect(twice.layout).toBe(once);
+    expect(twice.layout.hidden).toEqual([{ id: 'files', from: 'centre' }]);
+    expect(canHidePanel(once, 'files')).toBeNull();
+  });
+
+  it('refuses an unknown panel without touching the layout', () => {
+    const b = base();
+    const r = hidePanel(b, 'nope' as DockPanelId);
+    expect(r.refused).toBe('unknown-panel');
+    expect(r.layout).toBe(b);
+    expect(canHidePanel(b, 'nope' as DockPanelId)).toBe('unknown-panel');
+    expect(hideTarget(b, 'nope' as DockPanelId).refused).toBe('unknown-panel');
+  });
+
+  it('records the hidden list in HIDE ORDER, most recent last', () => {
+    let l = ok(hidePanel(base(), 'files'));
+    l = ok(hidePanel(l, 'voice'));
+    l = ok(hidePanel(l, 'chat'));
+    expect(l.hidden.map((h) => h.id)).toEqual(['files', 'voice', 'chat']);
+    expect(hiddenPanels(l)).toBe(l.hidden);
+    expect(visiblePanels(l)).toEqual(['lan', 'people']);
+  });
+
+  it('asking whether a panel can be hidden never mutates anything', () => {
+    const b = base();
+    const snapshot = JSON.stringify(b);
+    canHidePanel(b, 'chat');
+    hideTarget(b, 'chat');
+    restoreTargets(b);
+    restoreTargetZone(b, 'chat');
+    expect(JSON.stringify(b)).toBe(snapshot);
+  });
+});
+
+describe('restorePanel / restoreAllPanels', () => {
+  it('brings a panel back to the zone it was hidden from, appended and ACTIVE', () => {
+    const hiddenL = ok(hidePanel(setActivePanel(base(), 'left', 'voice'), 'lan'));
+    expect(restoreTargetZone(hiddenL, 'lan')).toBe('left');
+    const r = restorePanel(hiddenL, 'lan');
+    expect(r.refused).toBeNull();
+    expect(r.zone).toBe('left');
+    // appended, not re-inserted at its old index — "where it was" is the ZONE, and a
+    // restore that lands behind another tab reads as a no-op
+    expect(r.layout.zones.left.panels).toEqual(['voice', 'people', 'lan']);
+    expect(r.layout.zones.left.active).toBe('lan');
+    expect(r.layout.hidden).toEqual([]);
+    expect(isPanelHidden(r.layout, 'lan')).toBe(false);
+    accountsForEveryPanel(r.layout);
+  });
+
+  it('restores into a DOCKED zone even when the panel was hidden out of a window', () => {
+    const torn = ok(tearOffZone(base(), 'left'));      // w1 = voice/lan/people, origin left
+    const hid = ok(hidePanel(torn, 'voice'));
+    expect(hid.zones.w1.panels).toEqual(['lan', 'people']);
+    const back = ok(restorePanel(hid, 'voice'));
+    expect(back.zones.left.panels).toEqual(['voice']); // home, not into the window
+    expect(back.zones.w1.panels).toEqual(['lan', 'people']);
+    expect(openWindowZones(back)).toEqual(['w1']);
+    accountsForEveryPanel(back);
+  });
+
+  it('honours an explicit docked target and refuses anything that is not one', () => {
+    const hid = ok(hidePanel(base(), 'files'));
+    expect(ok(restorePanel(hid, 'files', 'left')).zones.left.panels).toEqual(['voice', 'lan', 'people', 'files']);
+    expect(ok(restorePanel(hid, 'files', 'left')).zones.centre.panels).toEqual([]);
+    expect(restorePanel(hid, 'files', 'w1' as never).refused).toBe('unknown-zone');
+    expect(restorePanel(hid, 'files', 'nowhere' as never).refused).toBe('unknown-zone');
+    expect(restorePanel(hid, 'files', 'w1' as never).layout).toBe(hid);
+    expect(restorePanel(hid, 'nope' as DockPanelId).refused).toBe('unknown-panel');
+  });
+
+  it('is a no-op for a panel that is not hidden, and reports where it already lives', () => {
+    const b = base();
+    const r = restorePanel(b, 'chat');
+    expect(r.refused).toBeNull();
+    expect(r.layout).toBe(b);
+    expect(r.zone).toBe('right');
+    expect(restoreTargetZone(b, 'chat')).toBeNull(); // null IFF not hidden
+  });
+
+  it('never refuses last-docked-group — showing a panel cannot empty anything', () => {
+    let l = ok(hidePanel(base(), 'voice'));
+    l = ok(hidePanel(l, 'lan'));
+    l = ok(hidePanel(l, 'people'));
+    l = ok(hidePanel(l, 'files'));
+    for (const id of ['voice', 'lan', 'people', 'files'] as DockPanelId[]) {
+      expect(restorePanel(l, id).refused).toBeNull();
+    }
+  });
+
+  it('shows every hidden panel at once, each in its own remembered zone', () => {
+    let l = ok(hidePanel(base(), 'files'));
+    l = ok(hidePanel(l, 'voice'));
+    l = ok(hidePanel(l, 'chat'));
+    expect(restoreTargets(l)).toEqual([
+      { panel: 'files', zone: 'centre' },
+      { panel: 'voice', zone: 'left' },
+      { panel: 'chat', zone: 'right' },
+    ]);
+    const all = ok(restoreAllPanels(l));
+    expect(all.hidden).toEqual([]);
+    expect(all.zones.left.panels).toEqual(['lan', 'people', 'voice']);
+    expect(all.zones.centre.panels).toEqual(['files']);
+    expect(all.zones.right.panels).toEqual(['chat']);
+    accountsForEveryPanel(all);
+    expect(holdsA(all)).toBe(true);
+    // and it is the INPUT object when there is nothing to show
+    const b = base();
+    expect(restoreAllPanels(b).layout).toBe(b);
+    expect(restoreAllPanels(b).refused).toBeNull();
+  });
+
+  it('hide then show is a round trip for a whole-zone hide', () => {
+    const b = base();
+    let l = ok(hidePanel(b, 'voice'));
+    l = ok(hidePanel(l, 'lan'));
+    l = ok(hidePanel(l, 'people'));
+    expect(l.zones.left).toEqual({ panels: [], active: '' });
+    const back = ok(restoreAllPanels(l));
+    expect(back.zones.left.panels).toEqual(['voice', 'lan', 'people']);
+    expect(back.zones.left.active).toBe('people'); // the last one shown is the active one
+    expect(back.hidden).toEqual([]);
+  });
+
+  it('moving a hidden panel into a zone un-hides it — both at once is unrepresentable', () => {
+    // Nothing in the UI can do this (a hidden panel has no tab to drag), but the model
+    // must not be able to produce "in a zone AND hidden" by any route at all.
+    const hid = ok(hidePanel(base(), 'chat'));
+    const moved = ok(movePanel(hid, 'chat', 'left'));
+    expect(moved.hidden).toEqual([]);
+    expect(moved.zones.left.panels).toEqual(['voice', 'lan', 'people', 'chat']);
+    accountsForEveryPanel(moved);
+    const detached = ok(detachPanel(hid, 'chat'));
+    expect(detached.hidden).toEqual([]);
+    expect(detached.zones.w1.panels).toEqual(['chat']);
+    accountsForEveryPanel(detached);
+  });
+});
+
+describe('hiding cannot launder a move past invariant A', () => {
+  it('every move guard reads the VISIBLE docked count, so hiding four does not free the fifth', () => {
+    let l = ok(hidePanel(base(), 'voice'));
+    l = ok(hidePanel(l, 'lan'));
+    l = ok(hidePanel(l, 'people'));
+    l = ok(hidePanel(l, 'files'));
+    expect(l.hidden.length).toBe(4);
+    expect(dockedPanelCount(l)).toBe(1);
+    // ...the counter used to be "docked panels", and hidden panels are not in zones,
+    // so it silently became "VISIBLE docked panels" — which is what A always meant.
+    expect(canMovePanel(l, 'chat', 'w1')).toBe('last-docked-group');
+    expect(movePanel(l, 'chat', 'w1').layout).toBe(l);
+    expect(detachPanel(l, 'chat').refused).toBe('last-docked-group');
+    expect(detachTarget(l, 'chat').refused).toBe('last-docked-group');
+    expect(tearOffZone(l, 'right').refused).toBe('last-docked-group');
+    expect(tearOffTarget(l, 'right').refused).toBe('last-docked-group');
+    expect(hidePanel(l, 'chat').refused).toBe('last-docked-group');
+    // docked -> docked is still fine, and every listed target agrees
+    expect(moveTargets(l, 'chat').every((t) => t.refused === null)).toBe(true);
+    expect(holdsA(ok(movePanel(l, 'chat', 'left')))).toBe(true);
+  });
+
+  it('holds A and the accounting through a long hide / tear-off / dock-back interleaving', () => {
+    let l: DockLayout = base();
+    const step = (next: DockLayout) => { l = next; expect(holdsA(l)).toBe(true); accountsForEveryPanel(l); };
+    step(ok(hidePanel(l, 'people')));                 // hide out of a docked zone
+    step(ok(tearOffZone(l, 'left')));                 // w1 = voice/lan, origin left
+    step(ok(hidePanel(l, 'lan')));                    // hide out of a window zone
+    step(ok(hidePanel(l, 'files')));                  // centre empties; only chat is docked now
+    expect(l.hidden.map((h) => h.id)).toEqual(['people', 'lan', 'files']);
+    expect(nonEmptyDockedZones(l)).toEqual(['right']);
+    // chat is the last visible docked panel, so EVERY route out of the room refuses
+    expect(detachPanel(l, 'chat').refused).toBe('last-docked-group');
+    expect(hidePanel(l, 'chat').refused).toBe('last-docked-group');
+    expect(tearOffZone(l, 'right').refused).toBe('last-docked-group');
+    step(ok(dockBackZone(l, 'w1')));                  // voice comes home to left
+    expect(l.zones.left.panels).toEqual(['voice']);
+    step(ok(restorePanel(l, 'lan')));                 // shown in left (the window's origin)
+    expect(l.zones.left.panels).toEqual(['voice', 'lan']);
+    step(ok(restoreAllPanels(l)));
+    expect(l.hidden).toEqual([]);
+    expect(dockedPanelCount(l)).toBe(5);
+  });
+});
+
+describe('repair — the hidden list', () => {
+  // `files` is deliberately in NO zone here, so a blob may legitimately claim it is
+  // hidden; every other panel is claimed by a zone.
+  const repairHidden = (hidden: unknown, zones: Record<string, unknown> = { left: { panels: ['voice', 'lan', 'people'] }, right: { panels: ['chat'] } }) =>
+    repairDockLayout({ v: 2, zones, hidden });
+
+  it('reads a well-formed list and keeps a docked `from`', () => {
+    const out = repairHidden(
+      [{ id: 'files', from: 'centre' }, { id: 'lan' }],
+      { left: { panels: ['voice', 'people'] }, right: { panels: ['chat'] } },
+    );
+    expect(out.hidden).toEqual([{ id: 'files', from: 'centre' }, { id: 'lan' }]);
+    expect(out.zones.centre.panels).toEqual([]);       // NOT re-added by rule (3)
+    expect(out.zones.left.panels).toEqual(['voice', 'people']);
+    accountsForEveryPanel(out);
+  });
+
+  it('drops junk entries: non-objects, unknown ids, duplicates, and bare strings', () => {
+    const out = repairHidden([
+      'files',                       // a bare string is not guessed at — it fails toward visible
+      null, 7, ['lan'], undefined,
+      { id: 'ghost' }, { id: 42 }, {},
+      { id: 'files' }, { id: 'files', from: 'left' },  // the SECOND claim is dropped
+    ]);
+    expect(out.hidden).toEqual([{ id: 'files' }]);
+    expect(out.zones.centre.panels).toEqual([]);
+    accountsForEveryPanel(out);
+  });
+
+  it('keeps `from` only when it names a real docked zone', () => {
+    const mk = (from: unknown) => repairHidden([{ id: 'files', from }]).hidden[0];
+    expect(mk('left')).toEqual({ id: 'files', from: 'left' });
+    expect(mk('w1')).toEqual({ id: 'files' });         // never a window
+    expect(mk('rail')).toEqual({ id: 'files' });       // v1's dead name
+    expect(mk(7)).toEqual({ id: 'files' });
+    expect(mk(undefined)).toEqual({ id: 'files' });
+    // ...and the fallback is the panel's own default, so "Show" always has a target
+    expect(restoreTargetZone(repairHidden([{ id: 'files', from: 'w1' }]), 'files')).toBe('centre');
+  });
+
+  it('leaves a panel VISIBLE when a blob claims it is both in a zone and hidden', () => {
+    // Same tie-break as a panel claimed by two zones: ambiguity fails toward visibility.
+    const out = repairHidden([{ id: 'voice' }, { id: 'files' }]);
+    expect(out.hidden).toEqual([{ id: 'files' }]);
+    expect(out.zones.left.panels).toEqual(['voice', 'lan', 'people']);
+    expect(isPanelHidden(out, 'voice')).toBe(false);
+    accountsForEveryPanel(out);
+  });
+
+  it('leaves a panel visible when the zone claiming it is a WINDOW zone', () => {
+    // The dangerous shape: a torn-off window whose only panel is also marked hidden.
+    // If hidden won, the window would open with nothing in it.
+    const out = repairDockLayout({
+      v: 2,
+      zones: { left: { panels: ['voice', 'lan', 'people'] }, w1: { panels: ['chat'], origin: 'right' } },
+      hidden: [{ id: 'chat', from: 'right' }, { id: 'files' }],
+    });
+    expect(out.zones.w1.panels).toEqual(['chat']);
+    expect(out.zones.w1.origin).toBe('right');
+    expect(isPanelHidden(out, 'chat')).toBe(false);
+    expect(out.hidden).toEqual([{ id: 'files' }]);
+    expect(openWindowZones(out)).toEqual(['w1']);
+    accountsForEveryPanel(out);
+  });
+
+  it('survives a `hidden` that is not an array at all', () => {
+    for (const junk of [undefined, null, 'files', 7, {}, { 0: { id: 'files' } }]) {
+      const out = repairHidden(junk);
+      expect(out.hidden).toEqual([]);
+      accountsForEveryPanel(out);
+    }
+  });
+
+  it('UN-HIDES the most recent hide when a blob claims every panel is hidden', () => {
+    const out = repairDockLayout({
+      v: 2,
+      zones: { left: { panels: [] }, centre: { panels: [] }, right: { panels: [] } },
+      hidden: [{ id: 'voice', from: 'left' }, { id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat', from: 'right' }],
+    });
+    // ONE, not all: the minimum repair that satisfies A preserves the most user
+    // intent, and undoing the most recent hide is the smallest explicable undo.
+    expect(out.zones.right.panels).toEqual(['chat']);
+    expect(out.zones.right.active).toBe('chat');
+    expect(out.hidden.map((h) => h.id)).toEqual(['voice', 'lan', 'people', 'files']);
+    expect(holdsA(out)).toBe(true);
+    accountsForEveryPanel(out);
+    expect(repairDockLayout(out)).toEqual(out); // and it is stable
+  });
+
+  it('un-hides into the panel default when the last entry remembers nothing', () => {
+    const out = repairDockLayout({
+      v: 2,
+      zones: {},
+      hidden: DOCK_PANEL_IDS.map((id) => ({ id })),
+    });
+    expect(out.zones.right.panels).toEqual(['chat']); // chat's defaultZone
+    expect(out.hidden.length).toBe(DOCK_PANEL_IDS.length - 1);
+    expect(holdsA(out)).toBe(true);
+  });
+
+  it('prefers FOLDING a window home over overriding an explicit hide', () => {
+    // Both repairs would satisfy A; folding is the smaller intervention, so a
+    // deliberate hide survives a blob whose docked zones are all empty.
+    const out = repairDockLayout({
+      v: 2,
+      zones: { left: { panels: [] }, centre: { panels: [] }, right: { panels: [] }, w1: { panels: ['voice'], origin: 'left' } },
+      hidden: [{ id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat' }],
+    });
+    expect(out.zones.left.panels).toEqual(['voice']);
+    expect(openWindowZones(out)).toEqual([]);
+    expect(out.hidden.map((h) => h.id)).toEqual(['lan', 'people', 'files', 'chat']); // untouched
+    expect(holdsA(out)).toBe(true);
+  });
+
+  it('re-establishes A and the accounting for every nasty hidden blob, idempotently', () => {
+    const nasty: unknown[] = [
+      { v: 2, zones: {}, hidden: [{ id: 'voice' }, { id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat' }] },
+      { v: 2, zones: { left: { panels: ['voice'] } }, hidden: [{ id: 'voice' }] },
+      { v: 2, zones: { left: { panels: [] } }, hidden: [{ id: 'chat', from: 'w1' }, { id: 'chat' }] },
+      { v: 2, zones: { w1: { panels: ['voice', 'lan', 'people', 'files', 'chat'] } }, hidden: [{ id: 'voice' }, { id: 'chat' }] },
+      { v: 2, zones: { left: { panels: [] }, centre: { panels: [] }, right: { panels: [] }, w9: { panels: ['voice'] } }, hidden: [{ id: 'voice' }, { id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat' }] },
+      { v: 2, zones: { left: 'nope' }, hidden: 'nope' },
+      { v: 2, hidden: [{ id: 'files' }] },
+    ];
+    for (const raw of nasty) {
+      const out = repairDockLayout(raw);
+      expect(holdsA(out)).toBe(true);
+      accountsForEveryPanel(out);
+      expect(repairDockLayout(out)).toEqual(out);
+      expect(repairDockLayout(JSON.parse(JSON.stringify(out)))).toEqual(out);
+    }
+  });
+
+  it('un-hides for a registry of a different shape too (the rule is not hard-coded)', () => {
+    type P = 'a' | 'b' | 'c';
+    const REG: DockRegistry<P, 'main' | 'side', 'x1'> = {
+      version: DOCK_SCHEMA_VERSION,
+      dockedZoneIds: ['main', 'side'],
+      windowZoneIds: ['x1'],
+      panels: [{ id: 'a', defaultZone: 'main' }, { id: 'b', defaultZone: 'main' }, { id: 'c', defaultZone: 'side' }],
+    };
+    const out = repairLayout({ zones: {}, hidden: [{ id: 'a' }, { id: 'b' }, { id: 'c', from: 'main' }] }, REG);
+    expect(out.zones.main.panels).toEqual(['c']); // the LAST entry, into its remembered zone
+    expect(out.hidden).toEqual([{ id: 'a' }, { id: 'b' }]);
+    expect(repairLayout(out, REG)).toEqual(out);
+  });
+});
+
+describe('persistence — hidden panels', () => {
+  it('round-trips the hidden list through localStorage', () => {
+    const box = stubStorage(null);
+    let l = ok(hidePanel(base(), 'files'));
+    l = ok(hidePanel(l, 'voice'));
+    saveDockLayout(l);
+    const written = JSON.parse(box.value!);
+    expect(written.hidden).toEqual([{ id: 'files', from: 'centre' }, { id: 'voice', from: 'left' }]);
+    const back = loadDockLayout();
+    expect(back.hidden).toEqual(l.hidden);
+    expect(back.zones.centre.panels).toEqual([]);
+    expect(back.zones.left.panels).toEqual(['lan', 'people']);
+    accountsForEveryPanel(back);
+  });
+
+  it('reads a blob written BEFORE the field existed as "nothing hidden" — no version bump', () => {
+    expect(DOCK_SCHEMA_VERSION).toBe(2); // adding `hidden` is not a shape old blobs cannot be read as
+    const old = JSON.stringify({ v: 2, zones: { left: { panels: ['people', 'voice', 'lan'], active: 'voice' } } });
+    const out = parseDockLayout(old);
+    expect(out.hidden).toEqual([]);
+    expect(out.zones.left.panels).toEqual(['people', 'voice', 'lan']);
+    accountsForEveryPanel(out);
+  });
+
+  it('degrades safely in the DOWNGRADE direction: dropping the key un-hides everything', () => {
+    // An older build rebuilds field by field, so it drops `hidden`; the panels are then
+    // in no zone and ITS repair re-adds them to their defaults. Simulate that here.
+    const box = stubStorage(null);
+    saveDockLayout(ok(hidePanel(ok(hidePanel(base(), 'files')), 'chat')));
+    const { hidden, ...withoutHidden } = JSON.parse(box.value!);
+    expect(hidden).toHaveLength(2);
+    const out = parseDockLayout(JSON.stringify(withoutHidden));
+    expect(out.hidden).toEqual([]);
+    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.right.panels).toEqual(['chat']);
+    expect(holdsA(out)).toBe(true);
+  });
+
+  it('a persisted blob can never claim every panel is hidden (the shape, not a rule)', () => {
+    const box = stubStorage(null);
+    // Not reachable through the ops — hiding the last visible panel is refused — so
+    // hand the writer a layout that only a corrupt blob could produce.
+    saveDockLayout({
+      v: DOCK_SCHEMA_VERSION,
+      zones: Object.fromEntries(DOCK_ZONE_IDS.map((z) => [z, { panels: [], active: '' }])),
+      hidden: DOCK_PANEL_IDS.map((id) => ({ id })),
+    } as unknown as DockLayout);
+    const written = JSON.parse(box.value!);
+    expect(written.hidden.map((h: { id: string }) => h.id)).toEqual(['voice', 'lan', 'people', 'files']);
+    expect(written.zones.right.panels).toEqual(['chat']);
+    const back = loadDockLayout();
+    expect(holdsA(back)).toBe(true);
+    accountsForEveryPanel(back);
+  });
+
+  it('folds a torn-off group home WITHOUT un-hiding anything on the way out', () => {
+    const box = stubStorage(null);
+    let l = ok(hidePanel(base(), 'people'));
+    l = ok(tearOffZone(l, 'left'));
+    saveDockLayout(l);
+    const written = JSON.parse(box.value!);
+    expect(Object.keys(written.zones)).toEqual([...DOCK_DOCKED_ZONE_IDS]);
+    expect(written.zones.left.panels).toEqual(['voice', 'lan']); // the group came home
+    expect(written.hidden).toEqual([{ id: 'people', from: 'left' }]); // the hide survived
+  });
+
+  it('resetDockLayout shows every hidden panel again (the guaranteed escape)', () => {
+    const box = stubStorage(null);
+    saveDockLayout(ok(hidePanel(ok(hidePanel(base(), 'voice')), 'files')));
+    expect(JSON.parse(box.value!).hidden).toHaveLength(2);
+    const out = resetDockLayout();
+    expect(out.hidden).toEqual([]);
+    expect(out).toEqual(base());
+    expect(box.removed).toBe(true);
+  });
+
+  it('a v1 blob has no hidden list and gets an empty one', () => {
+    const out = parseDockLayout(JSON.stringify({ v: 1, zones: { rail: { panels: ['people', 'lan', 'voice'] } }, hidden: [{ id: 'files' }] }));
+    // v1 never had the field, so a v1 blob carrying one is a forgery — the migration
+    // rebuilds `{v, zones}` and the claim is dropped rather than honoured.
+    expect(out.hidden).toEqual([]);
+    expect(out.zones.centre.panels).toEqual(['files']);
   });
 });
 

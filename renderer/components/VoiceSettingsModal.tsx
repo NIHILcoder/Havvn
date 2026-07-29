@@ -343,7 +343,10 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
     <Modal
       onClose={onClose} title={t('rooms.voice.settings')} icon="headphones" size="md" bodyClassName="vsm-body"
       footer={
-        <button className="vsm-detach" onClick={openPopout} title={t('rooms.voice.popOut')}>
+        // Wrapped, not passed directly: `openPopout` takes an optional window
+        // FEATURES string (the dock's tear-off uses it to ask for cursor
+        // placement), and a click event is not that.
+        <button className="vsm-detach" onClick={() => { openPopout(); }} title={t('rooms.voice.popOut')}>
           <Icon name="external-link" size={13} /> {t('rooms.voice.popOut')}
         </button>
       }

@@ -99,3 +99,84 @@ export interface PopoutDeniedEvent {
 export interface PopoutClosedEvent {
   readonly frameName: string;
 }
+
+// ── tear-off placement: "open this one under the cursor" ────────────────────
+//
+// The drag-out gesture ends with a window that must appear WHERE THE USER LET GO,
+// and the renderer cannot say where that is: `screenX` on a drag event is CSS
+// pixels, and this app scales its UI through `webFrame.setZoomFactor`, so a
+// renderer coordinate is not DIP and would land the window somewhere the user
+// never pointed. Main owns `screen`, where the cursor point, the display pick and
+// window bounds are all DIP in one process.
+//
+// So the renderer sends a FLAG, not a coordinate: `window.open`'s features string
+// carries `havvnAtCursor=1`, which arrives as `details.features` in
+// `setWindowOpenHandler`, and main resolves the rect itself. The flag is parsed by
+// the strict reader below rather than by Electron's own feature interpretation,
+// which is version-dependent and not a contract we want to rest on.
+
+/** The feature flag a tear-off sets to ask for cursor placement. */
+export const DOCK_AT_CURSOR_FEATURE = 'havvnAtCursor';
+
+/** The whole features string for a tear-off open. */
+export const DOCK_AT_CURSOR_FEATURE_STR = `${DOCK_AT_CURSOR_FEATURE}=1`;
+
+/** Strictly: did the opener ask for cursor placement? Unknown keys are ignored. */
+export function wantsCursorPlacement(features: string | undefined | null): boolean {
+  if (typeof features !== 'string' || features === '') return false;
+  return features.split(',').some((part) => {
+    const [k, v] = part.split('=');
+    return k?.trim() === DOCK_AT_CURSOR_FEATURE && (v === undefined || v.trim() === '1');
+  });
+}
+
+/** A screen rectangle. Matches Electron's `Rectangle` field-for-field. */
+export interface DockScreenRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Where the cursor sits inside the new window, in DIP.
+ *
+ * The window is anchored so the pointer lands on its TITLE area rather than its
+ * top-left corner — the same feel as a browser tab tear-off, where the tab you are
+ * holding stays under your finger. 120 across is roughly half a tab; 16 down puts
+ * the cursor inside the titlebar rather than on its edge.
+ */
+export const DOCK_TEAROFF_GRAB = { x: 120, y: 16 };
+
+/**
+ * PURE: the bounds a torn-off window should get for a release at `cursor`.
+ *
+ * `cursor` and `workArea` must already be in the SAME coordinate space — the caller
+ * is the main process, where `screen.getCursorScreenPoint()` and
+ * `screen.getDisplayNearestPoint(...).workArea` are both DIP.
+ *
+ * Clamping into the work area is what makes a second monitor and a taskbar edge
+ * correct by construction rather than by luck (including a display whose origin is
+ * NEGATIVE — a monitor to the left of the primary), and the size clamp handles the
+ * case that actually bites on small laptop displays: a window taller than the work
+ * area would otherwise be positioned with its titlebar off-screen and unreachable.
+ */
+export function dockWindowBoundsAtCursor(
+  cursor: { x: number; y: number },
+  size: { width: number; height: number },
+  workArea: DockScreenRect,
+  grab: { x: number; y: number } = DOCK_TEAROFF_GRAB,
+): DockScreenRect {
+  const width = Math.max(1, Math.min(Math.round(size.width), Math.round(workArea.width)));
+  const height = Math.max(1, Math.min(Math.round(size.height), Math.round(workArea.height)));
+  const wantX = Math.round(cursor.x - grab.x);
+  const wantY = Math.round(cursor.y - grab.y);
+  const maxX = Math.round(workArea.x + workArea.width) - width;
+  const maxY = Math.round(workArea.y + workArea.height) - height;
+  return {
+    x: Math.max(Math.round(workArea.x), Math.min(wantX, maxX)),
+    y: Math.max(Math.round(workArea.y), Math.min(wantY, maxY)),
+    width,
+    height,
+  };
+}

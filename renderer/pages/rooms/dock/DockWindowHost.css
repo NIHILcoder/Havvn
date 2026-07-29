@@ -13,10 +13,12 @@
  * exactly like the rest of the HUD. No literal colours, no literal radii, no
  * hardcoded font stacks.
  *
- * Lineage: the header is the same 11px/700 uppercase display eyebrow as
- * `.dock-tab` / `.room-section-title`, and the icon button matches
- * `.vsm-popout-btn` (the voice-settings pop-out) so the two detached windows in
- * the app do not look like they came from different products.
+ * Lineage: the header IS the app's title bar — it carries `.titlebar` and renders
+ * the shared `WindowControls`, so a torn-off group looks like Havvn rather than
+ * like a second product. What is added on top is dock-specific and nothing else:
+ * the title is the same 11px/700 uppercase display eyebrow as `.dock-tab` /
+ * `.room-section-title`, and the dock-back button matches `.vsm-popout-btn` (the
+ * voice-settings pop-out).
  *
  * NO `container-type` HERE. `.popout-root` already establishes one, and the zone
  * establishes `dock`; a third containing block between them would trap any
@@ -35,18 +37,28 @@
   color: var(--color-text-primary);
 }
 
-/* Chrome: never shrinks, never scrolls away. The group below takes the slack. */
-.dock-window-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+/*
+ * THE HEADER IS THE APP'S TITLE BAR.
+ *
+ * The window is frameless (main.ts gives the dock pool the same platform
+ * treatment as the main window: `frame: false`, `hiddenInset` on macOS), so this
+ * bar REPLACES the OS caption — and it does that by wearing `.titlebar` itself
+ * (renderer/styles/layout.css), not by imitating it. Height (`--titlebar-h`),
+ * background, the blaze `::after` signal, the drag region and the 46px control
+ * metrics therefore stay defined in exactly one place, and the app bar and the
+ * dock bar cannot drift apart.
+ *
+ * Only the layout differs, so only the layout is overridden here. Note the
+ * specificity: `.titlebar.dock-window-head` (0,2,0) beats `.titlebar--mac`'s
+ * padding-left (0,1,0), which is why the mac case is restated below rather than
+ * inherited.
+ */
+.titlebar.dock-window-head {
   gap: var(--space-2);
-  flex: 0 0 auto;
+  padding-left: var(--space-3);
   min-width: 0;
-  padding: 6px 6px 6px var(--space-3);
-  border-bottom: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-secondary);
 }
+.titlebar.dock-window-head.titlebar--mac { padding-left: 78px; } /* clear the traffic lights */
 
 .dock-window-title {
   display: inline-flex;
@@ -83,17 +95,36 @@
   color: var(--color-text-tertiary);
 }
 
+/* `align-items: stretch` so the OS-style controls run the bar's full height, the
+   way they do in the app window; the dock-back button centres itself. */
 .dock-window-acts {
   display: inline-flex;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
   flex: 0 0 auto;
+  /* NOT decoration: `-webkit-app-region` INHERITS from `.titlebar`'s `drag`, and a
+     button inside a drag region cannot be clicked — the press moves the window.
+     Every interactive thing in this header must opt out; `.titlebar-controls`
+     carries its own `no-drag` for the same reason. */
+  -webkit-app-region: no-drag;
+}
+
+/* Hairline between "bring the group home" and the OS window verbs. They sit
+   together because ✕ does the same thing as dock-back; the rule says they are
+   different vocabularies for it, not the same button twice. */
+.dock-window-sep {
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--color-border-subtle);
 }
 
 .dock-window-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  align-self: center; /* the cluster stretches; this one stays a 26px square */
   width: 26px;
   height: 26px;
   border: none;
@@ -113,7 +144,12 @@
    box-shadow, and a second one here would double it (commit e35d5af). */
 
 /* The group's own box. Padding lives here rather than on the zone because the
-   zone must stay frame-agnostic — docked, its column already pads it. */
+   zone must stay frame-agnostic — docked, its column already pads it.
+
+   NEVER give this (or anything in it) `-webkit-app-region: drag`. It is a
+   SIBLING of the header, which is the only reason the tab strip inside it still
+   works: a drag region over an HTML5 drag source swallows the drag whole, and the
+   failure is silent — tabs simply stop being draggable in torn-off windows only. */
 .dock-window-body {
   display: flex;
   flex-direction: column;

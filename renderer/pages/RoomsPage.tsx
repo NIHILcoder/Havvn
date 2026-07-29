@@ -21,7 +21,7 @@ import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/host
 // above inside a component, so no call site changes: a panel torn onto the second
 // monitor raises its toast in the window the user is actually looking at.
 import { useHostToast, bindToastRealm } from '../utils/hostToast';
-import { LiveAnnouncer } from '../utils/liveAnnouncer';
+import { LiveAnnouncer, announcerHub } from '../utils/liveAnnouncer';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
@@ -32,13 +32,16 @@ import type { DockBackReason } from './rooms/dock/DockWindowHost';
 import { DockPanelMounts } from './rooms/dock/DockPanelMounts';
 import { DockSoloHandle } from './rooms/dock/DockSoloHandle';
 import { useDockMountRegistry } from './rooms/dock/dockMountRegistry';
-import { resolveLiveMounts, liveMountsIn } from './rooms/dock/dockMounts';
+import { resolveLiveMounts, liveMountsIn, parkedMountZone } from './rooms/dock/dockMounts';
+import { DockHiddenPanels } from './rooms/dock/DockHiddenPanels';
+import { withHidePanelAction } from './rooms/dock/dockHidden';
 import {
   PANEL_BY_ID, DockPanelId, DockZoneId, DockDockedZoneId, DockWindowZoneId, DockLayout, DockOpResult, DockRefusal,
   isDockedZone, isWindowZone, dockWindowFrameName, openWindowZones, DOCK_WINDOW_ZONE_IDS,
   DOCK_ZONE_IDS, DOCK_PANEL_IDS, DOCK_SOLO_HOST_IDS,
   loadDockLayout, saveDockLayout, resetDockLayout, setActivePanel, zonePanels, activePanel, zoneOfPanel,
   movePanel, detachPanel, tearOffZone, dockBackZone, moveTargets, detachTarget, tearOffTarget,
+  hidePanel, hideTarget, restorePanel, restoreAllPanels, restoreTargets, hiddenPanels, isPanelHidden,
 } from './rooms/dock/dockModel';
 import { soloHandleZone, pttWindowSet } from './rooms/roomDock';
 import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
@@ -1983,6 +1986,25 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
    */
   const [focusPanel, setFocusPanel] = useState<DockPanelId | null>(null);
   useEffect(() => { if (focusPanel) setFocusPanel(null); }, [focusPanel]);
+  /**
+   * The panel a DRAG-OUT just tore off, so its brand-new window opens under the
+   * cursor instead of at the slot's remembered bounds.
+   *
+   * Same one-shot shape and the same clear-on-next-commit as `focusPanel`, and keyed
+   * on the PANEL rather than on a window slot: the slot is allocated by the model op
+   * itself, and resolving it here from the committed layout means a layout change
+   * between the plan and the commit cannot point the placement at the wrong window.
+   *
+   * The HOST captures this at MOUNT, not at open time — it defers `window.open` by a
+   * macrotask (StrictMode protection) while this clears on the next commit, so a
+   * prop read at open time would already be false and the window would quietly
+   * appear in the old place.
+   */
+  const [cursorPanel, setCursorPanel] = useState<DockPanelId | null>(null);
+  useEffect(() => { if (cursorPanel) setCursorPanel(null); }, [cursorPanel]);
+  /** False after the room unmounts — the tear-off commits AFTER an await. */
+  const aliveRef = useRef(true);
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false; }; }, []);
 
   /**
    * Apply one model operation, ALWAYS against the freshest layout.
@@ -2051,7 +2073,17 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   const mounts = useDockMountRegistry<DockPanelId>();
   const live = useMemo(
     () => resolveLiveMounts<DockPanelId>(
-      DOCK_ZONE_IDS.map((z) => ({ zoneId: z, panels: zonePanels(dock, z), active: activePanel(dock, z) })),
+      [
+        ...DOCK_ZONE_IDS.map((z) => ({ zoneId: z, panels: zonePanels(dock, z), active: activePanel(dock, z) })),
+        // HIDDEN panels, as one parked pseudo-zone. A hidden panel is in no zone at
+        // all — that is the model's whole encoding — so without this it would simply
+        // UNMOUNT, and hiding Voice mid-call would silently tear down push-to-talk
+        // and the voice-warning subscription. The resolver mounts only the keep-alive
+        // members of a parked zone, so People and Files still release on hide,
+        // exactly as they do on a tab switch: "hidden means released" stays true for
+        // the panels it was ever true for.
+        parkedMountZone(hiddenPanels(dock).map((h) => h.id)),
+      ],
       (p) => !!PANEL_BY_ID[p].keepAlive,
       DOCK_PANEL_IDS,
     ),
@@ -2073,7 +2105,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
      * frame name — no hook needed, because the frame name IS the toaster id.
      */
     notify: typeof toast = toast,
-  ) => {
+  ): boolean => {
     let refused: DockRefusal | null = null;
     let changed = false;
     setDock((prev) => {
@@ -2082,8 +2114,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       changed = res.layout !== prev;
       return res.layout;
     });
-    if (refused) { notify.error(t(DOCK_REFUSAL_TEXT[refused])); return; }
+    if (refused) { notify.error(t(DOCK_REFUSAL_TEXT[refused])); return false; }
     if (focus && changed) setFocusPanel(focus);
+    // Applied? Callers that ANNOUNCE (hide has no other visible trace — the panel
+    // simply stops existing on screen) must not speak about a refusal, and must not
+    // speak about a no-op either.
+    return changed;
   };
   const selectDockPanel = (zone: DockZoneId, panel: DockPanelId) => {
     commitDock((prev) => setActivePanel(prev, zone, panel));
@@ -2092,6 +2128,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // panel currently lives, so the chips keep working now that it can be anywhere —
   // including inside a torn-off window, where this still selects its tab.
   const revealDockPanel = (panel: DockPanelId) => {
+    // HIDDEN first: a hidden panel lives in no zone, so `zoneOfPanel` returns
+    // undefined and the chip would be a DEAD control — the user clicks "LAN" and
+    // nothing whatsoever happens, which is the silent no-op this dock forbids
+    // everywhere else. `restorePanel` also activates, so nothing more is needed.
+    if (isPanelHidden(dock, panel)) { runDockOp((l) => restorePanel(l, panel), panel); return; }
     const zone = zoneOfPanel(dock, panel);
     if (zone) selectDockPanel(zone, panel);
   };
@@ -2239,6 +2280,89 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     }
   };
 
+  /** The realm a zone's chrome lives in — where its announcements must be spoken. */
+  const zoneRealm = (zone: DockZoneId): Window | undefined =>
+    (isWindowZone(zone) ? (realms[zone] ?? undefined) : undefined) ?? window;
+
+  /**
+   * Hide one panel: gone from the UI, not merely inactive.
+   *
+   * Two things this does beyond running the op, both of which the plain
+   * `runDockOp(...)` call would get wrong:
+   *
+   *  • FOCUS. Every other dock op focuses the panel it just moved. A hide has no
+   *    destination, so focusing the hidden panel would aim at a tab React is about
+   *    to delete and focus would land on <body>. It focuses the tab that INHERITS
+   *    the selection instead — the neighbour at the same index, clamped, which is
+   *    the model's own source-side rule — and nothing at all when the zone empties.
+   *  • THE ANNOUNCEMENT. A panel vanishing is exactly as invisible to a screen
+   *    reader as a move is, and it is also the one moment to say where the way back
+   *    lives. Spoken in the realm the gesture happened in, so a hide performed in a
+   *    torn-off window's own menu is not announced on another monitor.
+   */
+  const hideDockPanel = (zone: DockZoneId, panel: DockPanelId, notify: typeof toast = toast) => {
+    const ids = zonePanels(dock, zone);
+    const at = ids.indexOf(panel);
+    const rest = ids.filter((p) => p !== panel);
+    const focusAfter = at >= 0 && rest.length ? rest[Math.min(at, rest.length - 1)] : undefined;
+    if (!runDockOp((l) => hidePanel(l, panel), focusAfter, notify)) return;
+    announcerHub.announce(
+      zoneRealm(zone),
+      t('rooms.dock.hiddenAnnounce').replace('{panel}', t(PANEL_BY_ID[panel].labelKey)),
+    );
+  };
+
+  /**
+   * Show a hidden panel again, from the room-settings popover.
+   *
+   * The announcement NAMES THE COLUMN, and that is not decoration: the panel comes
+   * back into a docked zone that may be off to one side, collapsed, or (in the
+   * centre) sitting behind a running watch/screen overlay — in all of which "Show"
+   * would otherwise look like a no-op the user has no explanation for.
+   */
+  const showDockPanel = (panel: DockPanelId) => {
+    const target = restoreTargets(dock).find((r) => r.panel === panel);
+    if (!runDockOp((l) => restorePanel(l, panel), panel)) return;
+    if (!target) return;
+    announcerHub.announce(window, t('rooms.dock.restored')
+      .replace('{panel}', t(PANEL_BY_ID[panel].labelKey))
+      .replace('{zone}', t(DOCK_ZONE_NAME[target.zone])));
+  };
+
+  /**
+   * THE DRAG-OUT TEAR-OFF. The strip has decided everything decidable from the drag
+   * itself (a live session, a refused drop, a released button, ≥64px travelled) and
+   * PROPOSES a tear-off; the last question is one only the main process can answer.
+   *
+   * A tab released over the room's own head bar, over a splitter, over another dock
+   * window or over a pop-out this tree never opened is NOT a tear-off — the same way
+   * dropping a browser tab on its own toolbar is not. The renderer cannot test that:
+   * a drag event's screenX/screenY are CSS pixels under a user-settable zoom factor,
+   * so they are not DIP and cannot be compared with window bounds, and a renderer can
+   * only enumerate the windows it opened itself.
+   *
+   * It commits the SAME op the "Open in new window" menu item commits, through the
+   * same `runDockOp`, so every refusal (`window-pool-exhausted`, `last-docked-group`,
+   * `already-own-window`) is surfaced with its reason in the source zone's own realm,
+   * and the room-never-empty invariant needs no separate enforcement here. A refusal
+   * is not a rollback either: the drag never touched the model, so a refused tear-off
+   * leaves the layout byte-identical and the panel simply stays where it was.
+   */
+  const tearOutDockPanel = (panel: DockPanelId, notify: typeof toast = toast) => {
+    void (async () => {
+      try {
+        if (await window.api.win.pointerOverApp()) return; // released ON the app
+      } catch {
+        return; // the probe is the guard — no answer means no window
+      }
+      if (!aliveRef.current) return; // the user left the room mid-gesture
+      // Set BEFORE the commit: the host reads it at mount, and the mount happens in
+      // the very commit this op causes.
+      setCursorPanel(panel);
+      if (!runDockOp((l) => detachPanel(l, panel), panel, notify)) setCursorPanel(null);
+    })();
+  };
+
   /**
    * The move surface handed to one zone's tab strip. Everything arrives already
    * translated (the dock folder never calls `t()`), and every destination and
@@ -2292,7 +2416,21 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           onSelect: () => runDockOp((l) => dockBackZone(l, zone), panel, zoneToast),
         });
       }
-      return acts;
+      // HIDE, appended LAST — every action above is a PLACEMENT (where the panel
+      // goes); this is the one that makes it go away, so it sits furthest from the
+      // item reached for by muscle memory. Offered for every panel and NEVER
+      // omitted when refused: the menu renders a refused item focusable, muted and
+      // explained, and an item that simply vanishes teaches nothing.
+      //
+      // Routing it through `actions` rather than adding a dedicated leg is what puts
+      // it in BOTH menus from one construction site — `buildDockMenuItems` is shared
+      // with `DockSoloHandle`, so a strip-less solo Files or Chat column is not the
+      // one place a panel cannot be hidden.
+      return withHidePanelAction(acts, {
+        label: t('rooms.dock.hidePanel'),
+        refusal: refusalText(hideTarget(dock, panel).refused),
+        onHide: () => hideDockPanel(zone, panel, zoneToast),
+      });
     },
     onMovePanel: (panelId, to, toIndex) => runDockOp(
       (l) => movePanel(l, panelId as DockPanelId, to as DockZoneId, toIndex ?? undefined),
@@ -2321,6 +2459,11 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       if (zoneOfPanel(dock, panelId as DockPanelId) === to) return null;
       return t('rooms.dock.moved').replace('{panel}', t(panel.labelKey)).replace('{zone}', t(zoneKey));
     },
+    // A PROPOSAL from the strip, not a commit — see `tearOutDockPanel`. The menu
+    // path above is untouched by it: it stays the accessible route, and it is still
+    // the only one that works across a window boundary (cross-window HTML5 drag is
+    // impossible in Electron), so this adds a gesture without replacing anything.
+    onTearOut: (panelId) => tearOutDockPanel(panelId as DockPanelId, zoneToast),
     labels: { moveTo: t('rooms.dock.moveTo'), tabMenu: t('rooms.dock.tabMenu') },
     focusPanelId: focusPanel,
   };
@@ -2370,6 +2513,10 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   const centreEmpty = zonePanels(dock, 'centre').length === 0 && stageView.kind === 'files';
   const centreActive = activePanel(dock, 'centre');
   const dockWindows = openWindowZones(dock);
+  // How many panels are gone from the UI entirely. Drives the head-bar indicator —
+  // the only ambient sign that hiding has happened, and deliberately the only one:
+  // anything inside the dock would disappear along with the zone it sits in.
+  const hiddenCount = hiddenPanels(dock).length;
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
   // The label talks about STATE only; the transport peer count (wires, not
@@ -2505,8 +2652,24 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             <Button
               variant="ghost" size="sm" iconOnly onClick={() => setSettingsOpen((o) => !o)}
               icon={<Icon name="settings" size={14} />}
-              aria-label={t('rooms.roomSettings')} title={t('rooms.roomSettings')}
+              // The count rides the ACCESSIBLE NAME rather than a decorative dot
+              // alone, so the one ambient signal that something is hidden is not
+              // purely visual. The dot below is its sighted half.
+              aria-label={hiddenCount > 0
+                ? `${t('rooms.roomSettings')} — ${t('rooms.dock.hiddenCount').replace('{n}', String(hiddenCount))}`
+                : t('rooms.roomSettings')}
+              title={t('rooms.roomSettings')}
             />
+            {/* Discoverability without clutter: it exists ONLY in the state that
+                needs it, it lives in the head bar (so it cannot die with a zone),
+                and it points at the popover that holds the list. */}
+            {hiddenCount > 0 && (
+              <span
+                className="room-settings-badge"
+                aria-hidden="true"
+                title={t('rooms.dock.hiddenCount').replace('{n}', String(hiddenCount))}
+              />
+            )}
             {settingsOpen && (
               <div className="room-settings-pop">
                 {/* Encryption state — read-only for everyone (E2E is fixed at
@@ -2558,8 +2721,36 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
                     <Icon name="edit-2" size={13} /> {t('rooms.rename')}
                   </button>
                 )}
+                {/* HIDDEN PANELS — the way back, for the same reason "Reset layout"
+                    is here: the head bar is never detachable, so this survives every
+                    dock state, including the one this list exists for. Anything
+                    anchored to a zone (a badge on a strip, a chip in a column) dies
+                    with its zone, which is exactly when the user needs it.
+                    Renders nothing while nothing is hidden. */}
+                {hiddenPanels(dock).length > 0 && <div className="room-settings-sep" />}
+                <DockHiddenPanels
+                  items={restoreTargets(dock).map(({ panel, zone }) => ({
+                    id: panel,
+                    label: t(PANEL_BY_ID[panel].labelKey),
+                    icon: <Icon name={PANEL_BY_ID[panel].icon} size={13} />,
+                    // Where it will land. Not decoration: a panel restored into a
+                    // column the user is not looking at reads as a dead control.
+                    where: t(DOCK_ZONE_NAME[zone]),
+                    showLabel: t('rooms.dock.showPanel').replace('{panel}', t(PANEL_BY_ID[panel].labelKey)),
+                  }))}
+                  title={t('rooms.dock.hiddenGroup')}
+                  onShow={(id) => { setSettingsOpen(false); showDockPanel(id as DockPanelId); }}
+                  showAllLabel={t('rooms.dock.showAll')}
+                  onShowAll={() => { setSettingsOpen(false); runDockOp(restoreAllPanels); }}
+                  // The rows ARE popover rows — same class as Copy code / Rename /
+                  // Reset layout, so they cannot drift from the menu they are in.
+                  itemClassName="room-settings-item"
+                />
                 {/* Lives here, not in the dock: the way out of a layout the user
-                    cannot click their way out of must not depend on the dock. */}
+                    cannot click their way out of must not depend on the dock. It is
+                    also the guaranteed escape that lets the list above afford to be
+                    the only other route — resetting drops the stored blob, and the
+                    defaults hide nothing. */}
                 <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); resetLayout(); }}>
                   <Icon name="rotate-ccw" size={13} /> {t('rooms.dock.resetLayout')}
                 </button>
@@ -2639,6 +2830,20 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             title={ids.map((id) => t(PANEL_BY_ID[id].labelKey)).join(' · ') || t('rooms.dock.windowTitle')}
             subtitle={room.name}
             dockBackLabel={t('rooms.dock.dockBack')}
+            // The window is FRAMELESS and wears the app's own title bar, so its
+            // minimise/maximise/close need names in the user's language — the same
+            // four strings the main window's bar uses.
+            windowLabels={{
+              minimize: t('window.minimize'),
+              maximize: t('window.maximize'),
+              restore: t('window.restore'),
+              close: t('window.close'),
+            }}
+            // Opened by a DRAG-OUT: place it under the cursor rather than at this
+            // slot's remembered bounds. Resolved from the COMMITTED layout, so a
+            // layout change between the gesture and the commit cannot aim the
+            // placement at the wrong window.
+            placeAtCursor={cursorPanel !== null && ids.includes(cursorPanel)}
             onDockBack={(reason) => onDockWindowGone(w, reason)}
             // The realm, published upward: the panels this window DISPLAYS are
             // mounted in the main tree (the hoist), so they cannot inherit the host

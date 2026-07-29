@@ -4,11 +4,14 @@ import {
   DOCK_DND_TYPE,
   beginDockDrag,
   currentDockDrag,
+  dockDragSnapshot,
   encodeDockDrag,
   endDockDrag,
   insertionIndexAt,
   isDockDrag,
+  isUsableDragPoint,
   markerTargetFor,
+  noteDockDragPoint,
   parseDockDragPayload,
   resolveDockDrop,
   setAttrIfChanged,
@@ -219,17 +222,18 @@ describe('setAttrIfChanged', () => {
 
 describe('the drag session', () => {
   beforeEach(() => { endDockDrag(); });
+  const start = { startX: 500, startY: 400 };
 
   it('remembers what is being dragged (getData() is unreadable during dragover)', () => {
     expect(currentDockDrag()).toBeNull();
-    const s = beginDockDrag({ panel: 'chat', from: 'right', win: 'main' });
+    const s = beginDockDrag({ panel: 'chat', from: 'right', win: 'main', ...start });
     expect(currentDockDrag()).toEqual(s);
     expect(s.panel).toBe('chat');
   });
 
   it('bumps `seq` per drag, so a strip remeasures its tab rects exactly once', () => {
-    const a = beginDockDrag({ panel: 'chat', from: 'right', win: 'main' });
-    const b = beginDockDrag({ panel: 'lan', from: 'left', win: 'main' });
+    const a = beginDockDrag({ panel: 'chat', from: 'right', win: 'main', ...start });
+    const b = beginDockDrag({ panel: 'lan', from: 'left', win: 'main', ...start });
     expect(b.seq).toBeGreaterThan(a.seq);
   });
 
@@ -252,7 +256,7 @@ describe('the drag session', () => {
 
   it('clears every mark on end — a cancelled drag must not strand one', () => {
     const tab = el(); const strip = el(); const marker = el();
-    beginDockDrag({ panel: 'chat', from: 'right', win: 'main' });
+    beginDockDrag({ panel: 'chat', from: 'right', win: 'main', ...start });
     setDockDragTab(tab);
     setDockDragOver(strip);
     setDockInsertMarker(marker, 'before');
@@ -267,7 +271,7 @@ describe('the drag session', () => {
 
   it('is idempotent, because dragend AND drop both call it', () => {
     const tab = el();
-    beginDockDrag({ panel: 'chat', from: 'right', win: 'main' });
+    beginDockDrag({ panel: 'chat', from: 'right', win: 'main', ...start });
     setDockDragTab(tab);
     endDockDrag();
     expect(() => endDockDrag()).not.toThrow();
@@ -276,9 +280,90 @@ describe('the drag session', () => {
 
   it('cleans up the previous drag when a new one starts', () => {
     const tab = el();
-    beginDockDrag({ panel: 'chat', from: 'right', win: 'main' });
+    beginDockDrag({ panel: 'chat', from: 'right', win: 'main', ...start });
     setDockDragTab(tab);
-    beginDockDrag({ panel: 'lan', from: 'left', win: 'main' });
+    beginDockDrag({ panel: 'lan', from: 'left', win: 'main', ...start });
     expect(tab.hasAttribute('data-dock-dragging')).toBe(false);
+  });
+});
+
+describe('the tear-off bookkeeping the session carries', () => {
+  beforeEach(() => { endDockDrag(); });
+  const begin = () => beginDockDrag({ panel: 'chat', from: 'right', win: 'main', startX: 500, startY: 400 });
+
+  it('records the dragstart point — the origin of the distance test', () => {
+    const s = begin();
+    expect([s.startX, s.startY]).toEqual([500, 400]);
+    expect(dockDragSnapshot()).toMatchObject({ panel: 'chat', startX: 500, startY: 400 });
+  });
+
+  it('seeds tracking from the start point, so a drag that never moves measures zero', () => {
+    begin();
+    const snap = dockDragSnapshot()!;
+    expect([snap.lastX, snap.lastY]).toEqual([500, 400]);
+    expect(snap.moved).toBe(false);
+    expect(snap.sawButtonsDown).toBe(false);
+  });
+
+  it('follows the pointer through `drag` — the fallback when dragend reports 0,0', () => {
+    begin();
+    noteDockDragPoint(900, 700, 1);
+    noteDockDragPoint(1200, 900, 1);
+    expect(dockDragSnapshot()).toMatchObject({ lastX: 1200, lastY: 900, moved: true });
+  });
+
+  it('CALIBRATES on the platform rather than assuming it reports buttons', () => {
+    begin();
+    noteDockDragPoint(900, 700, 0); // a platform that does not populate `buttons`
+    expect(dockDragSnapshot()!.sawButtonsDown).toBe(false);
+    noteDockDragPoint(910, 700, 1); // ...and one that does
+    expect(dockDragSnapshot()!.sawButtonsDown).toBe(true);
+    // Once proven, it stays proven: a later 0 is a RELEASE, not a retraction.
+    noteDockDragPoint(920, 700, 0);
+    expect(dockDragSnapshot()!.sawButtonsDown).toBe(true);
+  });
+
+  it('refuses to believe an unusable point, so a 0,0 report cannot poison the fallback', () => {
+    begin();
+    noteDockDragPoint(900, 700, 1);
+    noteDockDragPoint(0, 0, 1);         // Chromium outside-the-window reading
+    noteDockDragPoint(NaN, NaN, 1);
+    expect(dockDragSnapshot()).toMatchObject({ lastX: 900, lastY: 700, moved: true });
+  });
+
+  it('ignores points once the drag is over — a stray event cannot resurrect it', () => {
+    begin();
+    endDockDrag();
+    expect(() => noteDockDragPoint(900, 700, 1)).not.toThrow();
+    expect(dockDragSnapshot()).toBeNull();
+  });
+
+  it('is null after a DROP — which is how dragend learns a target consumed the drag', () => {
+    // drop fires before dragend, and every drop path of ours calls endDockDrag().
+    begin();
+    endDockDrag();
+    expect(dockDragSnapshot()).toBeNull();
+  });
+
+  it('starts each drag with clean tracking', () => {
+    begin();
+    noteDockDragPoint(1200, 900, 1);
+    const s = beginDockDrag({ panel: 'lan', from: 'left', win: 'main', startX: 10, startY: 20 });
+    expect(dockDragSnapshot()).toMatchObject({
+      panel: 'lan', seq: s.seq, lastX: 10, lastY: 20, moved: false, sawButtonsDown: false,
+    });
+  });
+});
+
+describe('isUsableDragPoint', () => {
+  it('rejects the 0,0 Chromium reports for a drop outside the window', () => {
+    expect(isUsableDragPoint(0, 0)).toBe(false);
+    expect(isUsableDragPoint(NaN, 5)).toBe(false);
+    expect(isUsableDragPoint(5, Infinity)).toBe(false);
+  });
+
+  it('accepts everything else, including a real point on an axis', () => {
+    expect(isUsableDragPoint(0, 40)).toBe(true);
+    expect(isUsableDragPoint(-1920, 300)).toBe(true); // a monitor left of the primary
   });
 });

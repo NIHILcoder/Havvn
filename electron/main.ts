@@ -20,6 +20,7 @@ import { isHavvnUrl, parseHavvnInvite } from './utils/deep-link';
 import { t, initMainI18n, setMainLanguage } from './i18n';
 import {
   DOCK_WINDOW_FRAME_NAMES, LEGACY_CHAT_FRAME_NAME, isPopoutFrameName,
+  wantsCursorPlacement, dockWindowBoundsAtCursor,
   type PopoutDenyReason,
 } from '../shared/dock-windows';
 
@@ -127,6 +128,67 @@ ipcMain.on('win:toggleMaximize', () => {
 });
 ipcMain.on('win:close', () => mainWindow?.close());
 ipcMain.handle('win:isMaximized', () => !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()));
+
+// === The SAME controls, for a frameless dock pop-out ===
+//
+// A torn-off dock group draws the app's own title bar (renderer/layout/
+// WindowControls), so its minimise/maximise must reach the CHILD window.
+//
+// THE TRAP THIS AVOIDS: a pop-out is an about:blank child the room window
+// portals DOM into — its React tree runs in the MAIN renderer's realm — so every
+// send from that bar arrives with `event.sender === mainWindow.webContents`. A
+// sender-derived lookup would minimise the ROOM window. The frame NAME is the
+// only usable address, and it is already this window's identity everywhere else
+// (POPOUTS allowlist key, bounds key, toasterId, the win:popoutClosed payload).
+//
+// The map is filled ONLY from the owner's own `did-create-window`, for names
+// already in POPOUTS, and cleared when the child dies — so these three channels
+// can never be pointed at a window the renderer did not legitimately open. Keep
+// it that way: a prefix match or a renderer-supplied lookup would turn them into
+// a way to drive arbitrary windows.
+const dockPopouts = new Map<string, BrowserWindow>();
+const popoutWin = (frameName: unknown): BrowserWindow | null => {
+  if (typeof frameName !== 'string') return null;
+  const w = dockPopouts.get(frameName);
+  return w && !w.isDestroyed() ? w : null;
+};
+ipcMain.on('win:popoutMinimize', (_e, frameName) => popoutWin(frameName)?.minimize());
+ipcMain.on('win:popoutToggleMaximize', (_e, frameName) => {
+  const w = popoutWin(frameName);
+  if (!w) return;
+  if (w.isMaximized()) w.unmaximize(); else w.maximize();
+});
+ipcMain.handle('win:popoutIsMaximized', (_e, frameName) => !!popoutWin(frameName)?.isMaximized());
+
+// Is the pointer inside ANY window of this app right now?
+//
+// The dock's drag-out tear-off asks this once, at the end of a drag that already
+// looks like a release outside: a tab let go over the room's own head bar, over a
+// splitter, over another dock window or over a pop-out is NOT a tear-off, exactly
+// as releasing a browser tab on its own toolbar is not.
+//
+// It cannot be answered in the renderer, for two independent reasons: a drag
+// event's screenX/screenY are CSS pixels and this app scales its UI through
+// `webFrame.setZoomFactor`, so they are not DIP and cannot be compared with window
+// bounds; and a renderer can only enumerate the windows it opened itself, so it
+// would be blind to the theme-editor and voice-settings pop-outs. Here the cursor
+// point and every window's bounds are DIP in one process.
+//
+// Returns a bare boolean — the cursor position itself never leaves main.
+ipcMain.handle('win:pointerOverApp', () => {
+  try {
+    const p = screen.getCursorScreenPoint();
+    return BrowserWindow.getAllWindows().some((w) => {
+      if (w.isDestroyed() || !w.isVisible() || w.isMinimized()) return false;
+      const b = w.getBounds();
+      return p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+    });
+  } catch {
+    // No screen access (headless CI, a display being reconfigured): claim the
+    // pointer IS over the app, so an undecidable case never spawns a window.
+    return true;
+  }
+});
 
 // === Single Instance Lock ===
 // Isolated test copies (TH_INSTANCE) skip the lock so they run alongside the
@@ -613,8 +675,16 @@ async function createWindow(): Promise<void> {
   // condition: a slot the allocator should never hand out (`havvn-dock-5`, or a
   // retired name from a stale renderer) falls through to the deny branch below,
   // which reports a REASON on `win:popoutDenied` rather than denying silently.
-  const DOCK_WINDOW_OPTS: Electron.BrowserWindowConstructorOptions =
-    { width: 460, height: 700, minWidth: 320, minHeight: 380 };
+  //
+  // FRAMELESS, exactly like the main window (line ~543): a torn-off group draws
+  // the app's own HUD title bar (DockWindowHost's header reuses `.titlebar` and
+  // WindowControls), so the OS caption would be a second, mismatched bar above
+  // ours. Chrome is all that changes — every protection below (bounds
+  // persistence, removeMenu, will-navigate, close-with-owner) is frame-agnostic.
+  const DOCK_WINDOW_OPTS: Electron.BrowserWindowConstructorOptions = {
+    width: 460, height: 700, minWidth: 320, minHeight: 380,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : { frame: false }),
+  };
   const POPOUTS: Record<string, Electron.BrowserWindowConstructorOptions> = {
     'havvn-theme-editor': { width: 480, height: 900, minWidth: 360, minHeight: 480 },
     // 'havvn-room-chat' is DELETED with RoomChat's bespoke pop-out: chat is an
@@ -666,14 +736,48 @@ async function createWindow(): Promise<void> {
     }
   };
 
-  mainWindow.webContents.setWindowOpenHandler(({ url, frameName }) => {
+  // TEAR-OFF PLACEMENT. A window opened by the drag-out gesture must appear where
+  // the user let go, and only this process can know where that is (the renderer's
+  // screen coordinates are CSS px under a user-settable zoom factor, not DIP). The
+  // renderer therefore sends a FLAG in the features string and we resolve the rect
+  // from the live cursor, clamped into the work area of the display it is on — the
+  // same discipline `savedPopoutBounds` and the main window's `restoredBounds`
+  // already apply, so a second monitor or a taskbar edge is handled by one rule.
+  //
+  // SIZE still comes from the slot's saved bounds; only the POSITION is overridden.
+  // The user's manual move is what `savePopoutBounds` records on close, so this is a
+  // one-shot for the gesture and never a permanent change to where a slot opens.
+  const cursorPlacement = (
+    frameName: string,
+    base: Partial<Electron.Rectangle>,
+  ): Partial<Electron.Rectangle> => {
+    try {
+      const opts = POPOUTS[frameName];
+      const cursor = screen.getCursorScreenPoint();
+      const { workArea } = screen.getDisplayNearestPoint(cursor);
+      return dockWindowBoundsAtCursor(
+        cursor,
+        {
+          width: base.width ?? opts?.width ?? 460,
+          height: base.height ?? opts?.height ?? 700,
+        },
+        workArea,
+      );
+    } catch {
+      return base; // no screen info — the saved bounds are still a sane answer
+    }
+  };
+
+  mainWindow.webContents.setWindowOpenHandler(({ url, frameName, features }) => {
     const opts = POPOUTS[frameName];
     if (opts && (url === 'about:blank' || url === '')) {
+      const bounds = savedPopoutBounds(frameName);
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
           ...opts,
-          ...savedPopoutBounds(frameName),
+          ...bounds,
+          ...(wantsCursorPlacement(features) ? cursorPlacement(frameName, bounds) : {}),
           autoHideMenuBar: true,
           backgroundColor: '#141519',
           title: 'Havvn',
@@ -708,14 +812,37 @@ async function createWindow(): Promise<void> {
     // that means per POOL SLOT, which is why the allocator hands out the lowest
     // free slot: the common single-group case always reuses slot 1's geometry).
     if (POPOUTS[details.frameName]) {
+      // Addressable by frame name, so the child's own custom title bar can
+      // minimise/maximise IT rather than the room window (see the win:popout*
+      // handlers at module scope).
+      dockPopouts.set(details.frameName, child);
       child.on('close', () => {
+        // getNormalBounds(), not getBounds(): the un-maximised rect. The new
+        // maximise button therefore cannot poison the saved slot geometry — a
+        // window left maximised reopens at the size the user actually chose.
         try { savePopoutBounds(details.frameName, child.getNormalBounds()); } catch { /* ignore */ }
       });
+      // The maximise glyph lives in the OWNER's realm (the child's bar is DOM
+      // portalled from the room window), so the state push goes to mainWindow —
+      // the same shape and the same reason as win:popoutClosed below.
+      const pushPopoutMax = () => {
+        if (mainWindow && !mainWindow.isDestroyed() && !child.isDestroyed()) {
+          mainWindow.webContents.send('win:popoutMaximizeChanged', {
+            frameName: details.frameName, maximized: child.isMaximized(),
+          });
+        }
+      };
+      child.on('maximize', pushPopoutMax);
+      child.on('unmaximize', pushPopoutMax);
       // Tell the renderer the slot is free again, for ANY cause of death —
       // user close, close-to-tray, owner closed, crash. The child's own
       // beforeunload covers the common cases; this is the one signal that
       // still arrives when the child's renderer never got to run.
       child.on('closed', () => {
+        // Pool slots are RECYCLED (`havvn-dock-1` comes back), and a new window
+        // can register before the dead one's 'closed' arrives — so only drop the
+        // entry if it is still THIS child, or the live window loses its controls.
+        if (dockPopouts.get(details.frameName) === child) dockPopouts.delete(details.frameName);
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('win:popoutClosed', { frameName: details.frameName });
         }

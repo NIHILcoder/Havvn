@@ -212,3 +212,66 @@ describe('release / retain', () => {
     expect(b.kids).toHaveLength(0);
   });
 });
+
+describe('park — hidden, but still mounted and still running', () => {
+  it('takes the container out of its slot without touching the React mount', () => {
+    const { reg } = registry();
+    const slot = node();
+    reg.slotRef('chat')(slot);
+    const c = reg.container('chat');
+    reg.park('chat');
+    expect(slot.kids).toEqual([]);
+    expect(reg.slotOf('chat')).toBeNull();
+    // The SAME container: React is still portalling into it, so the panel's state,
+    // effects and subscriptions are untouched. That is the whole difference between
+    // hiding Voice and dropping the user's push-to-talk.
+    expect(reg.container('chat')).toBe(c);
+    expect(c.parentNode).not.toBeNull();
+  });
+
+  it('rescues the container into the MAIN document, not the dying one', () => {
+    // A panel hidden out of a TORN-OFF window leaves its container inside that
+    // window's DOM. The window then closes, and without this the node would be
+    // stranded in a destroyed document.
+    const { reg } = registry();
+    const childWindowSlot = node('popout');
+    reg.slotRef('chat')(childWindowSlot);
+    reg.park('chat');
+    expect((reg.container('chat') as FakeNode).parentNode?.doc).toBe('main');
+  });
+
+  it('is idempotent and preserves scroll across the reparent', () => {
+    const { reg } = registry();
+    const slot = node();
+    reg.slotRef('chat')(slot);
+    const c = reg.container('chat') as FakeNode;
+    c.scrollTop = 240;
+    reg.park('chat');
+    expect(c.scrollTop).toBe(240);
+    const parent = c.parentNode;
+    expect(() => reg.park('chat')).not.toThrow();
+    expect(c.parentNode).toBe(parent); // no second reparent, no scroll reset
+    expect(c.scrollTop).toBe(240);
+  });
+
+  it('lets a later slot adopt the SAME container straight out of limbo', () => {
+    // Show is one appendChild, exactly like a move — the P3 mount contract holds
+    // across hide/show, not just across a move.
+    const { reg, made } = registry();
+    const before = node();
+    reg.slotRef('chat')(before);
+    const c = reg.container('chat');
+    reg.park('chat');
+    const after = node();
+    reg.slotRef('chat')(after);
+    expect(after.kids).toEqual([c]);
+    expect(reg.container('chat')).toBe(c);
+    expect(made()).toBe(2); // the chat container + the one limbo node
+  });
+
+  it('does nothing for a panel that was never mounted', () => {
+    const { reg, made } = registry();
+    expect(() => reg.park('voice')).not.toThrow();
+    expect(made()).toBe(0); // not even a limbo node — nothing asked to be parked
+  });
+});

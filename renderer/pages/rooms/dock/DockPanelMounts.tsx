@@ -90,6 +90,12 @@ export function DockPanelMounts<P extends string = string>({
   useCommitEffect(() => {
     for (const id of prevRef.current) if (!ids.includes(id)) registry.release(id);
     prevRef.current = ids;
+    // PARKED mounts (a HIDDEN keep-alive panel) have no slot to be adopted by, so
+    // nothing else would ever move their container off the slot React just deleted.
+    // Park them explicitly — which also rescues a container hidden out of a torn-off
+    // window before that window's document dies. Order matters: departed panels are
+    // released first, so a panel that left the live set entirely is not parked.
+    for (const m of live) if (m.parked) registry.park(m.panel);
   });
 
   if (!HAS_DOM || live.length === 0) return null;

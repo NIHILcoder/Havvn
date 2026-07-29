@@ -41,10 +41,13 @@ import {
   DOCK_MAIN_WINDOW_KEY,
   beginDockDrag,
   buildDockDragGhost,
+  dockDragSnapshot,
   encodeDockDrag,
   endDockDrag,
+  noteDockDragPoint,
   setDockDragTab,
 } from './dockDrag';
+import { planDockTearOff } from './dockTearOff';
 import './DockSoloHandle.css';
 
 export interface DockSoloHandleProps {
@@ -122,17 +125,45 @@ export const DockSoloHandle: React.FC<DockSoloHandleProps> = ({
         realm.window.requestAnimationFrame(() => ghost.remove());
       }
     }
-    beginDockDrag({ panel: panelId, from: dock.zoneId, win: windowKey });
+    // The tear-off's distance test measures from here; see dockTearOff.ts.
+    beginDockDrag({
+      panel: panelId, from: dock.zoneId, win: windowKey, startX: e.screenX, startY: e.screenY,
+    });
     setDockDragTab(el);
     // NOT stopped: `.room-detail-inner`'s onDragStartCapture must still set
     // internalDrag (and could not be stopped from a bubble handler anyway).
   }, [dock.zoneId, host, panelId, windowKey]);
 
-  const onDragEnd = useCallback(() => {
+  /** Module writes only — no React state during a drag (invariant C). */
+  const onDrag = useCallback((e: React.DragEvent<HTMLButtonElement>) => {
+    noteDockDragPoint(e.screenX, e.screenY, e.buttons);
+  }, []);
+
+  /**
+   * Teardown, plus the drag-out tear-off — the SAME decision the strip makes, and not
+   * optional polish here: this handle is the only drag affordance a strip-less solo
+   * zone has, so omitting it would make the gesture mysteriously absent for exactly
+   * the files/chat single-panel columns most people look at.
+   *
+   * The snapshot is read BEFORE teardown: a null session proves a drop target of ours
+   * consumed the drag (its own `drop` handler already called `endDockDrag`).
+   */
+  const onDragEnd = useCallback((e: React.DragEvent<HTMLButtonElement>) => {
+    const snap = dockDragSnapshot();
     // dragend ALWAYS fires in the source window — including Esc-cancel and a drop
     // outside any target — which is why teardown lives here as well as in onDrop.
     endDockDrag();
-  }, []);
+    if (!dock.onTearOut) return;
+    const plan = planDockTearOff({
+      snap,
+      endX: e.screenX,
+      endY: e.screenY,
+      dropEffect: e.dataTransfer?.dropEffect ?? 'none',
+      buttons: e.buttons,
+    });
+    if (!plan.tear) return;
+    dock.onTearOut(plan.tear.panel, { screenX: plan.tear.screenX, screenY: plan.tear.screenY });
+  }, [dock]);
 
   const { targets, actions } = menu
     ? buildDockMenuItems(dock, panelId, move)
@@ -152,6 +183,7 @@ export const DockSoloHandle: React.FC<DockSoloHandleProps> = ({
         aria-expanded={menu ? true : undefined}
         draggable
         onDragStart={onDragStart}
+        onDrag={onDrag}
         onDragEnd={onDragEnd}
         onClick={(e) => { e.preventDefault(); e.stopPropagation(); openAtButton(); }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); openAtButton(); }}

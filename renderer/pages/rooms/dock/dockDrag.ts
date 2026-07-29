@@ -31,6 +31,12 @@
  * always fires in the source window — including Esc-cancel and drop-outside) and
  * `drop`. One teardown path, called twice, rather than two paths.
  *
+ * That double call is also load-bearing for the DRAG-OUT TEAR-OFF gesture: `drop`
+ * runs before `dragend`, so a session that is still alive at `dragend` proves no
+ * drop target of ours accepted the drag. A `dragend` handler therefore reads
+ * `dockDragSnapshot()` BEFORE tearing down — see the ordering invariant there, and
+ * `dockTearOff.ts` for the decision it feeds.
+ *
  * DOM discipline: nothing here dereferences `document`/`window` at module scope,
  * and every DOM reach takes its element or document as an ARGUMENT. Renderer tests
  * run under plain node (renderToStaticMarkup, no jsdom), so a bare global would
@@ -246,10 +252,69 @@ export interface DockDragSession {
    * measures each strip once instead of once per pointer move.
    */
   readonly seq: number;
+  /**
+   * The `dragstart` point in SCREEN coordinates, as the source frame reports them.
+   *
+   * Only ever compared against another point from the SAME frame (see
+   * dockTearOff's distance test), and never handed to Electron: `screenX` is CSS
+   * pixels, and this app ships a UI-scale setting wired to `webFrame.setZoomFactor`,
+   * so CSS px is not DIP whenever the user has scaled the UI — and a strip inside a
+   * torn-off window is a different frame with its own zoom. A difference of two
+   * points from one frame is consistent under any zoom; an absolute coordinate
+   * crossing into the main process is not.
+   */
+  readonly startX: number;
+  readonly startY: number;
 }
 
+/**
+ * What the SOURCE observed while the drag was in flight. Separate from the session
+ * because it is rewritten continuously and the session is not — and because the two
+ * have different lifetimes conceptually: the session is "what is being dragged", this
+ * is "what the platform told us about the pointer".
+ */
+export interface DockDragTracking {
+  /**
+   * The last usable point seen on a source `drag` event. `dragend` is documented to
+   * report screenX/screenY of 0,0 on some outside drops in Chromium, so the tear-off
+   * planner falls back to this.
+   */
+  readonly lastX: number;
+  readonly lastY: number;
+  /** False until any `drag` event reported a usable point. */
+  readonly moved: boolean;
+  /**
+   * True once ANY drag event of this drag reported a pressed button — platform
+   * calibration, not an assumption. Chromium is not contractually obliged to
+   * populate `buttons` on drag events, so the tear-off planner only applies the
+   * "button must be released" test when this drag proved the platform reports it.
+   */
+  readonly sawButtonsDown: boolean;
+}
+
+/** Everything a `dragend` handler needs to decide what the drag MEANT. */
+export type DockDragSnapshot = DockDragSession & DockDragTracking;
+
 let session: DockDragSession | null = null;
+let tracking: DockDragTracking = { lastX: 0, lastY: 0, moved: false, sawButtonsDown: false };
 let seq = 0;
+
+/**
+ * Is this screen point worth believing?
+ *
+ * Chromium reports 0,0 for `dragend` (and occasionally for `drag`) when the pointer
+ * is outside the window — the exact situation a tear-off cares about. Treating that
+ * as a real coordinate would both invent a huge drag distance and place a window in
+ * the top-left corner of the primary display, so a 0,0 reading is discarded instead.
+ *
+ * The cost is that a release at the literal screen origin refuses to tear off. That
+ * is the right direction to fail: the menu path still works, and no window appears
+ * where the user did not point.
+ */
+export function isUsableDragPoint(x: number, y: number): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return !(x === 0 && y === 0);
+}
 
 // Exactly one live element per attribute — that is the "single writer" rule that
 // removes the need for dragleave bookkeeping.
@@ -257,17 +322,69 @@ let draggingTabEl: Element | null = null;
 let overStripEl: Element | null = null;
 let insertEl: Element | null = null;
 
-/** Start a drag. Returns the session so the caller can read its `seq`. */
-export function beginDockDrag(s: { panel: string; from: string; win: string }): DockDragSession {
+/**
+ * Start a drag. Returns the session so the caller can read its `seq`.
+ *
+ * The start point is REQUIRED rather than optional: it is the origin of the
+ * tear-off distance test, and a caller that forgot it would get a gesture that is
+ * either silently dead or measured from nowhere. A type error is the loud version
+ * of both.
+ */
+export function beginDockDrag(
+  s: { panel: string; from: string; win: string; startX: number; startY: number },
+): DockDragSession {
   endDockDrag();
   seq += 1;
-  session = { panel: s.panel, from: s.from, win: s.win, seq };
+  session = { panel: s.panel, from: s.from, win: s.win, seq, startX: s.startX, startY: s.startY };
+  tracking = { lastX: s.startX, lastY: s.startY, moved: false, sawButtonsDown: false };
   return session;
 }
 
 /** The drag in flight, or null. Reading this NEVER triggers a render. */
 export function currentDockDrag(): DockDragSession | null {
   return session;
+}
+
+/**
+ * Record where the pointer is and whether a button is down. Called from the SOURCE
+ * element's `drag` event, which fires while the drag is in flight.
+ *
+ * Invariant C: this writes two numbers and two booleans into a module record. No
+ * React state, no attribute writes, no layout reads — `drag` fires at roughly the
+ * same rate as `dragover`, and this runs in addition to it.
+ *
+ * A no-op with no drag in flight, so a stray event after teardown cannot resurrect
+ * tracking for a drag that has already been decided.
+ */
+export function noteDockDragPoint(x: number, y: number, buttons: number): void {
+  if (!session) return;
+  const down = Number.isFinite(buttons) && (buttons & 1) !== 0;
+  const usable = isUsableDragPoint(x, y);
+  if (!usable && !down) return;
+  tracking = {
+    lastX: usable ? x : tracking.lastX,
+    lastY: usable ? y : tracking.lastY,
+    moved: tracking.moved || usable,
+    sawButtonsDown: tracking.sawButtonsDown || down,
+  };
+}
+
+/**
+ * The whole drag as one value, or null when there is no drag in flight.
+ *
+ * ORDERING INVARIANT — a `dragend` handler MUST read this BEFORE calling
+ * `endDockDrag()`, which is the reverse of the obvious teardown-first shape.
+ *
+ * That ordering is what makes "did one of our drop targets take this?" free: `drop`
+ * fires before `dragend`, and every accepted drop path (the strip's `onStripDrop`,
+ * the zone body's native `onDrop`) already calls `endDockDrag()` itself. So a null
+ * session at `dragend` MEANS a target consumed the drop — including a drop back on
+ * the origin strip that resolved to 'noop', which is exactly the cancelled-gesture
+ * case a tear-off must not fire on. No new bookkeeping, no second flag that could
+ * disagree with the session.
+ */
+export function dockDragSnapshot(): DockDragSnapshot | null {
+  return session ? { ...session, ...tracking } : null;
 }
 
 /** Dim the source tab. Single writer: the previous one is cleared. */
@@ -311,12 +428,17 @@ export function setDockInsertMarker(el: Element | null, side: 'before' | 'after'
  * End the drag and clear every mark. IDEMPOTENT, and called from both `dragend`
  * and `drop` — a cancelled drag (Esc, drop outside the window) only ever fires
  * `dragend`, and a completed drop fires both.
+ *
+ * Nulling `session` is load-bearing beyond cleanup: it is the record that a drop
+ * target consumed this drag (see `dockDragSnapshot`). A `dragend` handler that
+ * wants to know what the drag meant must snapshot first.
  */
 export function endDockDrag(): void {
   setDockInsertMarker(null, null);
   setDockDragOver(null);
   setDockDragTab(null);
   session = null;
+  tracking = { lastX: 0, lastY: 0, moved: false, sawButtonsDown: false };
 }
 
 /**

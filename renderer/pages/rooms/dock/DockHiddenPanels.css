@@ -1,0 +1,92 @@
+/*
+ * DockHiddenPanels styling.
+ *
+ * Two jobs only, because this section is a GUEST: it is mounted inside somebody
+ * else's popover (the room-settings one), and the rows wear the HOST's item class
+ * whenever the host provides one (`itemClassName`). So:
+ *
+ *   1. `.dock-hidden` / `.dock-hidden-title` — the section frame and its eyebrow,
+ *      matching the 11px/700 uppercase HUD heading used by `.dock-tab-menu-header`
+ *      and `.room-section-title`.
+ *   2. `.dock-hidden-item` / `-label` / `-where` — layout the row needs whichever
+ *      surface it wears: truncation of a long panel name and the right-aligned
+ *      destination hint. Deliberately NO background, padding, colour or hover
+ *      here: those belong to the host's class, and restating them would produce
+ *      two rules of equal specificity whose winner depends on CSS import order.
+ *
+ * `.dock-hidden-btn` is the STANDALONE fallback, used only when the host passes no
+ * item class. It is the one place a surface is drawn, and it is drawn from theme
+ * tokens with radius from the --radius-* scale (strict square at the default
+ * --radius-scale: 0), never a literal. No bespoke focus ring: base.css already
+ * gives :focus-visible a --shadow-focus box-shadow.
+ */
+
+.dock-hidden {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dock-hidden-title {
+  padding: var(--space-1) var(--space-2);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--color-text-tertiary);
+}
+
+/* Layout only — see the header. Safe on top of any flex row class. */
+.dock-hidden-item {
+  min-width: 0;
+}
+
+.dock-hidden-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* The panel name. Truncates rather than widening the popover: CSS truncation does
+   not change the accessible name, and the row's aria-label carries the full text. */
+.dock-hidden-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Where showing it will put it. Pushed right with margin rather than
+   justify-content so the host's own gap/alignment keeps working. */
+.dock-hidden-where {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: var(--space-2);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+/* Standalone row look — ONLY when the host gave no item class of its own. */
+.dock-hidden-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.dock-hidden-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}

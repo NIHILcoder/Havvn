@@ -46,6 +46,13 @@
  *      for a panel in a torn-off window it is the ONLY path: an HTML5 drag cannot
  *      cross an Electron BrowserWindow boundary, so dragging back is not merely
  *      unpolished, it is impossible.
+ *   3. DRAG A TAB OUT of the app entirely and let go — the browser gesture, wired
+ *      through the optional `onTearOut`. It is an addition, not a replacement: the
+ *      menu keeps every route it had, remains the accessible one, and remains the
+ *      ONLY one that can bring a panel back across a window boundary. The decision
+ *      is made at `dragend` from data (see dockTearOff.ts) and handed to the owner
+ *      as a PROPOSAL, because "was that release inside one of our own windows?" is a
+ *      question only the main process can answer honestly.
  *
  * PERFORMANCE (invariant C) — during a drag this component performs ZERO state
  * updates. Not throttled, not batched: zero. The room re-renders on every gossip
@@ -83,11 +90,13 @@ import {
   beginDockDrag,
   buildDockDragGhost,
   currentDockDrag,
+  dockDragSnapshot,
   encodeDockDrag,
   endDockDrag,
   insertionIndexAt,
   isDockDrag,
   markerTargetFor,
+  noteDockDragPoint,
   parseDockDragPayload,
   resolveDockDrop,
   setDockDragTab,
@@ -95,6 +104,7 @@ import {
   setDockDragOver,
 } from './dockDrag';
 import type { DockTabRect } from './dockDrag';
+import { planDockTearOff } from './dockTearOff';
 import './DockTabStrip.css';
 
 export interface DockTabItem {
@@ -175,6 +185,29 @@ export interface DockStripInteractions {
     /** Accessible name for the menu, e.g. "Panel actions". */
     tabMenu: string;
   };
+  /**
+   * PROPOSED tear-off: the user dragged this tab out and released it with no drop
+   * target of ours taking it. Optional — absent means the strip keeps today's
+   * behaviour and a drag that lands nowhere simply snaps back.
+   *
+   * It is a proposal, not a commit, and the split is deliberate. This folder decides
+   * everything decidable from the drag itself (see dockTearOff.ts: a live session, a
+   * refused drop, a released button, a distance ≥ 64px). What it CANNOT decide is
+   * whether the release landed inside one of the app's own windows — over the room's
+   * head bar, another dock window, a pop-out this tree never opened. `screenX` is CSS
+   * pixels and the app scales its UI through `webFrame.setZoomFactor`, so a renderer
+   * coordinate is not DIP and cannot be tested against window bounds; and a renderer
+   * cannot enumerate windows it did not open. THE OWNER must make that check (a
+   * main-process cursor-vs-windows probe) before committing the model op.
+   *
+   * `at` is the release point in the SOURCE frame's screen coordinates — enough to
+   * know which way the user pulled, but not a value to hand to Electron as a window
+   * position for the same CSS-px reason. The window's actual rect is main's job; the
+   * arithmetic is `dockTearOffWindowBounds` in dockTearOff.ts.
+   *
+   * Called at most ONCE per drag, and never during one.
+   */
+  onTearOut?: (panelId: string, at: { screenX: number; screenY: number }) => void;
   /**
    * Focus this tab once it lands in this strip — the owner sets it to the panel it
    * just moved. Without it, focus falls to <body> after every move and the keyboard
@@ -371,6 +404,12 @@ interface DockTabButtonProps {
   /** P3: present ⇒ the tab is a drag source and carries the ⋮ menu hint. */
   draggable?: boolean;
   onTabDragStart?: (e: React.DragEvent<HTMLButtonElement>, id: string) => void;
+  /**
+   * `drag` on the SOURCE — the only event that keeps reporting the pointer once the
+   * OS drag loop has taken over. It feeds the tear-off's fallback point and the
+   * platform's button-reporting calibration; it writes no React state.
+   */
+  onTabDrag?: (e: React.DragEvent<HTMLButtonElement>) => void;
   onTabDragEnd?: (e: React.DragEvent<HTMLButtonElement>) => void;
   /** Opens the "Move to" menu at a point in the tab's own window. */
   onOpenMenu?: (id: string, x: number, y: number) => void;
@@ -392,7 +431,7 @@ interface DockTabButtonProps {
 export const DockTabButton = React.forwardRef<HTMLButtonElement, DockTabButtonProps>(
   ({
     tab, selected, tabDomId, panelDomId, onSelect,
-    draggable, onTabDragStart, onTabDragEnd, onOpenMenu, menuOpen,
+    draggable, onTabDragStart, onTabDrag, onTabDragEnd, onOpenMenu, menuOpen,
   }, ref) => (
     <button
       ref={ref}
@@ -411,6 +450,7 @@ export const DockTabButton = React.forwardRef<HTMLButtonElement, DockTabButtonPr
       title={tab.title ?? tab.label}
       draggable={draggable || undefined}
       onDragStart={onTabDragStart ? (e) => onTabDragStart(e, tab.id) : undefined}
+      onDrag={onTabDrag}
       onDragEnd={onTabDragEnd}
       onContextMenu={onOpenMenu ? (e) => {
         e.preventDefault();
@@ -534,18 +574,46 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
         realm.window.requestAnimationFrame(() => ghost.remove());
       }
     }
-    beginDockDrag({ panel: id, from: dock.zoneId, win: windowKey });
+    // The start point is the origin of the tear-off distance test. Both it and the
+    // point read at dragend come from THIS frame, so their difference is consistent
+    // under any webFrame zoom factor.
+    beginDockDrag({ panel: id, from: dock.zoneId, win: windowKey, startX: e.screenX, startY: e.screenY });
     setDockDragTab(el);
     // NOT stopped: `.room-detail-inner`'s onDragStartCapture must still set
     // internalDrag (and could not be stopped from a bubble handler anyway).
   }, [dock, host, windowKey]);
 
-  const onTabDragEnd = useCallback(() => {
+  /**
+   * The source's own `drag` event — the last channel still reporting the pointer once
+   * the OS drag loop owns it. Two module writes and no React state (invariant C): the
+   * fallback release point (Chromium reports `dragend` at 0,0 on some outside drops)
+   * and whether this platform reports `buttons` on drag events at all.
+   */
+  const onTabDrag = useCallback((e: React.DragEvent<HTMLButtonElement>) => {
+    noteDockDragPoint(e.screenX, e.screenY, e.buttons);
+  }, []);
+
+  const onTabDragEnd = useCallback((e: React.DragEvent<HTMLButtonElement>) => {
+    // ORDER MATTERS. The snapshot has to be taken BEFORE teardown: a drop that one of
+    // our targets accepted already called endDockDrag() from its own `drop` handler
+    // (drop fires first), so a null session here is exactly the proof that nothing
+    // took this drag. Tearing down first would erase the evidence.
+    const snap = dockDragSnapshot();
     // dragend ALWAYS fires in the source window — including Esc-cancel and a drop
     // outside any target — which is why teardown lives here as well as in onDrop.
     endDockDrag();
     rectsRef.current = null;
-  }, []);
+    if (!dock?.onTearOut) return;
+    const plan = planDockTearOff({
+      snap,
+      endX: e.screenX,
+      endY: e.screenY,
+      dropEffect: e.dataTransfer?.dropEffect ?? 'none',
+      buttons: e.buttons,
+    });
+    if (!plan.tear) return;
+    dock.onTearOut(plan.tear.panel, { screenX: plan.tear.screenX, screenY: plan.tear.screenY });
+  }, [dock]);
 
   // ── drop target ───────────────────────────────────────────────────────────
   const onStripDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -666,6 +734,7 @@ export const DockTabStrip: React.FC<DockTabStripProps> = ({
           onSelect={onSelect}
           draggable={dock ? true : undefined}
           onTabDragStart={dock ? onTabDragStart : undefined}
+          onTabDrag={dock ? onTabDrag : undefined}
           onTabDragEnd={dock ? onTabDragEnd : undefined}
           onOpenMenu={dock ? openMenu : undefined}
           menuOpen={menu?.panel === tab.id}

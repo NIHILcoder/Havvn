@@ -287,6 +287,23 @@
   cursor: pointer;
 }
 .room-settings-item:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+/* Something is hidden. The ONE ambient sign that a panel was removed from the UI —
+   it has to live in the head bar, because anything drawn inside the dock would
+   vanish along with the zone it sits in, which is the state it exists to report.
+   --radius-full keeps it round under the strict-square invariant (the square rule
+   zeroes --radius-sm…2xl and deliberately leaves --radius-full alone for exactly
+   these dot indicators). Pointer-events off: the gear underneath is the control. */
+.room-settings-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-bg-primary);
+  pointer-events: none;
+}
 .room-settings-item.danger:hover { background: color-mix(in srgb, var(--color-error) 12%, transparent); color: var(--color-error); }
 
 /* ── Empty-room onboarding (the files zone's first-run face) ─────────────── */

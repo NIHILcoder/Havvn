@@ -5,6 +5,8 @@ import {
   resolveZoneActive,
   liveMountsIn,
   liveZoneOf,
+  parkedMountZone,
+  DOCK_PARKED_ZONE,
   type DockMountZone,
 } from './dockMounts';
 
@@ -177,5 +179,57 @@ describe('liveMountsIn / liveZoneOf', () => {
   it('reports where a mounted panel is, and undefined when it is not mounted', () => {
     expect(liveZoneOf(live, 'chat')).toBe('right');
     expect(liveZoneOf(live, 'people')).toBeUndefined();
+  });
+});
+
+describe('parked panels — HIDDEN, but not necessarily released', () => {
+  const parked = (...ids: Id[]) => parkedMountZone<Id>(ids);
+
+  it('mounts ONLY the keep-alive members of a parked zone', () => {
+    // The whole point: hiding Voice must not tear down its PTT listeners and its
+    // voice-warning subscription mid-call. Hiding People, which owns nothing, must
+    // release it exactly as switching away from its tab does.
+    const live = resolveLiveMounts(
+      [zone('left', ['voice'], 'voice'), zone('centre', ['files'], 'files'), parked('lan', 'people')],
+      KEEP,
+      ORDER,
+    );
+    expect(live.map((m) => m.panel)).toEqual(['voice', 'lan', 'files']);
+    expect(live.find((m) => m.panel === 'lan')?.parked).toBe(true);
+    expect(live.some((m) => m.panel === 'people')).toBe(false);
+  });
+
+  it('resolves NO active panel for a parked zone', () => {
+    // Without the flag, resolveZoneActive's "fall back to panels[0]" would mount the
+    // first hidden panel even when it is not keep-alive — a running panel portalled
+    // into a container no slot will ever adopt.
+    const live = resolveLiveMounts(
+      [zone('left', ['voice'], 'voice'), parked('people', 'files')],
+      KEEP,
+      ORDER,
+    );
+    expect(live.map((m) => m.panel)).toEqual(['voice']);
+  });
+
+  it('never lends a parked mount to a real zone', () => {
+    const live = resolveLiveMounts([zone('left', ['files'], 'files'), parked('chat')], KEEP, ORDER);
+    expect(liveMountsIn(live, 'left')).toEqual(['files']);
+    expect(liveMountsIn(live, 'right')).toEqual([]);
+    expect(liveZoneOf(live, 'chat')).toBe(DOCK_PARKED_ZONE);
+  });
+
+  it('lets a REAL zone win over the parked one for a doubly-claimed panel', () => {
+    // The model forbids "in a zone AND hidden", but a corrupt blob could claim it.
+    // Zone order decides, and the parked pseudo-zone is appended last on purpose:
+    // the tie-break fails toward VISIBLE, matching repair.
+    const live = resolveLiveMounts([zone('left', ['chat'], 'chat'), parked('chat')], KEEP, ORDER);
+    expect(live).toHaveLength(1);
+    expect(live[0].zoneId).toBe('left');
+    expect(live[0].parked).toBeUndefined();
+  });
+
+  it('marks nothing parked when nothing is hidden', () => {
+    const live = resolveLiveMounts([...DEFAULT_ZONES, parked()], KEEP, ORDER);
+    expect(live.some((m) => m.parked)).toBe(false);
   });
 });

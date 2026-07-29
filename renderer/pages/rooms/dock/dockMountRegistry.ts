@@ -80,6 +80,21 @@ export interface DockMountRegistry<P extends string = string> {
   slotRef(panel: P): (el: DockMountNode | null) => void;
   /** The panel left the live set: detach its container, keep the node for reuse. */
   release(panel: P): void;
+  /**
+   * HIDDEN but still mounted. The panel has no slot anywhere, so its container is
+   * moved into a limbo node owned by the MAIN document; the React mount, its
+   * effects, its state and its subscriptions all keep running (that is the whole
+   * point — hiding Voice must not drop push-to-talk).
+   *
+   * Re-parenting rather than simply leaving the container where the deleted slot
+   * left it is what removes a real class of bug: a panel hidden out of a TORN-OFF
+   * window has its container inside THAT window's DOM, and when the window closes
+   * the container would be stranded in a destroyed document. Restoring is then one
+   * `appendChild` out of limbo — hide and show cost exactly what a move costs.
+   *
+   * Idempotent, and scroll is preserved across the reparent, like `adopt`.
+   */
+  park(panel: P): void;
   /** Release every panel not in `live`. Convenience for the mount host's diff. */
   retain(live: readonly P[]): void;
   /** Panels this registry has ever built a container for (containers are reused). */
@@ -157,8 +172,10 @@ export function createDockMountRegistry<P extends string = string>(
           // destination's attach (mutation phase, then layout phase), so doing
           // anything here would just be undone one phase later. Leaving the
           // container where it is also means a panel whose zone is not rendered at
-          // all is simply PARKED: mounted, running, invisible, adopted the instant
-          // a slot appears.
+          // all is simply parked: mounted, running, invisible, adopted the instant
+          // a slot appears. HIDING makes that state explicit and durable — see
+          // `park`, which additionally rescues the container from a document that
+          // is about to die.
           slots.delete(panel);
           return;
         }
@@ -168,6 +185,28 @@ export function createDockMountRegistry<P extends string = string>(
       refs.set(panel, ref);
     }
     return ref;
+  };
+
+  /**
+   * Where parked containers wait. Created lazily by `opts.createElement`, i.e. in
+   * the MAIN document, and never attached to anything — a detached node is not
+   * rendered, not measured and not in the tab order, which is precisely what
+   * "hidden but running" needs.
+   */
+  let limbo: DockMountNode | null = null;
+
+  const park = (panel: P): void => {
+    const c = containers.get(panel);
+    if (!c) return; // never mounted — nothing to park
+    if (!limbo) {
+      limbo = opts.createElement();
+      limbo.className = `${className}-limbo`;
+    }
+    slots.delete(panel);
+    if (parentOf(c) === limbo) return; // already parked
+    const saved = captureScroll(c);
+    limbo.appendChild(c);
+    restoreScroll(saved);
   };
 
   const release = (panel: P): void => {
@@ -185,6 +224,7 @@ export function createDockMountRegistry<P extends string = string>(
     container,
     slotRef,
     release,
+    park,
     retain(live) {
       for (const panel of Array.from(containers.keys())) {
         if (!live.includes(panel)) release(panel);

@@ -31,6 +31,33 @@
  * A registry test asserts that relation, so adding a 6th panel fails the suite
  * instead of silently making tear-off refusable in a legal state.
  *
+ * ── HIDDEN PANELS ────────────────────────────────────────────────────────────
+ *
+ * A panel the user has hidden is REMOVED FROM EVERY ZONE and recorded in one
+ * top-level, ordered `hidden` list (most recently hidden LAST). That encoding is
+ * the whole feature:
+ *
+ *        A PANEL IS IN EXACTLY ONE ZONE, OR IN `hidden`. NEVER BOTH, NEVER NEITHER.
+ *
+ * `zones[z].panels` is read as "the tabs this zone shows" by ~10 consumers (the zone
+ * component, the mount resolver, `dockedPanelCount`, `zoneOfPanel`, `openWindowZones`,
+ * the solo-handle test, the emptiness flags, the window title...). Removing a hidden
+ * panel from its zone keeps every one of them correct with ZERO edits, and makes
+ * `dockedPanelCount` mean "VISIBLE docked panels" — which is exactly the quantity
+ * invariant A always meant. A per-panel `hidden: true` flag would instead turn each of
+ * those ten readers into a filter site, and a missed filter is the catastrophic case
+ * (a torn-off window that opens showing nothing, a zone claiming a tab it renders no
+ * slot for, an invariant counting panels nobody can see).
+ *
+ * `from` on a hidden entry is ALWAYS a DOCKED zone id, resolved AT HIDE TIME (a panel
+ * hidden out of a torn-off window records that window's `origin`, else the panel's
+ * `defaultZone`) — the same discipline `DockZoneState.origin` follows, and it means
+ * "show it again where it was" never needs a window to still exist.
+ *
+ * The word "hidden" is overloaded in this folder — always disambiguate in prose:
+ * PANEL-HIDDEN is this feature; a zone is COVERED when the stage overlay is over it;
+ * a mounted-but-not-selected tab is INACTIVE.
+ *
  * ── INVARIANT A ──────────────────────────────────────────────────────────────
  *
  *        AT LEAST ONE DOCKED ZONE HAS AT LEAST ONE PANEL.
@@ -42,13 +69,23 @@
  *
  *  1. STORAGE SHAPE — a stored blob can never contain a non-empty window zone
  *     (`saveDockLayout` folds them home before writing, `parseDockLayout` folds
- *     again after repair), so every LOADED layout is fully docked BY CONSTRUCTION.
- *     "A persisted layout with everything torn off, plus child windows that fail to
- *     open" is therefore not a state the schema can express.
+ *     again after repair), so every LOADED layout is fully docked BY CONSTRUCTION,
+ *     and it can never claim EVERY panel is hidden (repair un-hides one on the way
+ *     out). "A persisted layout with everything torn off, plus child windows that
+ *     fail to open" is therefore not a state the schema can express, and neither is
+ *     "a persisted layout with nothing left to click".
  *  2. OPERATIONS — every mutating op refuses `'last-docked-group'` rather than
- *     performing a move that would empty the main window.
+ *     performing a move — or a HIDE — that would empty the main window.
  *  3. REPAIR — `repairLayout` folds every window zone home when no docked zone
- *     holds a panel.
+ *     holds a panel, and un-hides one panel if that still left nothing docked.
+ *
+ * Hiding deliberately reuses `'last-docked-group'` rather than inventing a
+ * `'last-visible-panel'` synonym: if the docked count AFTER the hide is > 0 then at
+ * least one panel is visible in the main window, so the docked check strictly implies
+ * the visibility check, and the user gets one explanation across hide, move, detach
+ * and tear-off. Panels in torn-off WINDOWS deliberately do not count as "visible" for
+ * that guard — window zones are never persisted, so a rule that counted them would be
+ * true at runtime and false at every storage boundary.
  *
  * ── persistence discipline (unchanged from v1) ────────────────────────────────
  *
@@ -85,6 +122,15 @@ type TranslationKey = keyof typeof import('../../../i18n/en.json');
 /**
  * Bump ONLY on a shape change that old blobs cannot be read as. An unrecognised
  * stamp DISCARDS; a stamp listed in DOCK_MIGRATABLE_VERSIONS is migrated forward.
+ *
+ * `hidden` was ADDED WITHOUT A BUMP, on purpose. A blob written before it exists
+ * reads as `hidden: []` — every panel visible, which is correct — so a migration
+ * would be the identity function. The DOWNGRADE direction is what settles it: an
+ * older build's field-by-field rebuild drops the unknown key, the hidden panels are
+ * then in no zone, and its own repair re-adds them to their default zones. A
+ * downgrade un-hides everything, which is the only safe way to fail. Bumping would
+ * instead make that build hit the unrecognised-stamp branch and DISCARD the user's
+ * whole arrangement to "fix" something that degrades gracefully on its own.
  */
 export const DOCK_SCHEMA_VERSION = 2;
 
@@ -273,6 +319,21 @@ export interface DockZoneState<P extends string = DockPanelId, D extends string 
   origin?: D;
 }
 
+/**
+ * One PANEL-HIDDEN panel, and the DOCKED zone "Show" puts it back into.
+ *
+ * A hidden panel is in NO zone — that is the encoding, not an implementation detail.
+ */
+export interface DockHiddenPanel<P extends string = DockPanelId, D extends string = DockDockedZoneId> {
+  readonly id: P;
+  /**
+   * Resolved at HIDE time: the docked zone it left, or (hidden out of a window) that
+   * window's `origin`, else the panel's `defaultZone`. Repair drops it unless it names
+   * a real docked zone, so `restorePanel` never needs a window to exist.
+   */
+  readonly from?: D;
+}
+
 export interface DockLayout<
   P extends string = DockPanelId,
   Z extends string = DockZoneId,
@@ -281,6 +342,13 @@ export interface DockLayout<
   v: number;
   /** TOTAL: every zone id is a key. A window zone EXISTS iff panels.length > 0. */
   zones: Record<Z, DockZoneState<P, D>>;
+  /**
+   * Panels removed from the UI entirely, in HIDE ORDER (most recent LAST — repair
+   * un-hides from this end, so a repair undoes the most recent hide).
+   * REQUIRED, never optional: an optional field means every reader needs `?? []` and
+   * the one place that forgets is a silent bug.
+   */
+  hidden: DockHiddenPanel<P, D>[];
 }
 
 // ── internals ───────────────────────────────────────────────────────────────
@@ -387,6 +455,42 @@ function sealZones<P extends string, D extends string, W extends string>(
   return out;
 }
 
+/**
+ * Read the raw `hidden` list. Entries survive only when they are plain objects
+ * naming a panel the registry still declares, that no ZONE already claimed (`seen`)
+ * and that no earlier entry already claimed. `from` survives only when it names a
+ * real docked zone.
+ *
+ * Claimed-by-a-zone-wins is deliberate and is the SAME tie-break repair rule (2)
+ * already makes for a panel claimed by two zones: ambiguity fails toward VISIBILITY.
+ * A blob that says a panel is both in the left column and hidden leaves it on screen.
+ *
+ * A bare string entry (`hidden: ['voice']`) is dropped rather than guessed at, which
+ * costs a hand-crafted blob one un-hidden panel — again, failing toward visible.
+ */
+function readHidden<P extends string, D extends string, W extends string>(
+  raw: unknown,
+  reg: DockRegistry<P, D, W>,
+  seen: Set<string>,
+): DockHiddenPanel<P, D>[] {
+  if (!Array.isArray(raw)) return [];
+  const known = new Set<string>(reg.panels.map((p) => p.id));
+  const out: DockHiddenPanel<P, D>[] = [];
+  for (const entry of raw) {
+    if (!isPlainObject(entry)) continue;
+    const id = entry.id;
+    if (typeof id !== 'string' || !known.has(id) || seen.has(id)) continue;
+    seen.add(id);
+    const from = entry.from;
+    out.push(
+      typeof from === 'string' && (reg.dockedZoneIds as readonly string[]).includes(from)
+        ? { id: id as P, from: from as D }
+        : { id: id as P },
+    );
+  }
+  return out;
+}
+
 /** A mutable draft copy of a live layout (arrays copied, so ops never mutate input). */
 function draftOf<P extends string, D extends string, W extends string>(
   l: DockLayout<P, D | W, D>,
@@ -434,12 +538,22 @@ export function defaultDockLayout(): DockLayout {
  *  2. a panel that appears more than once keeps only its FIRST occurrence in that
  *     order — so a panel claimed by both a docked and a window zone resolves in
  *     favour of DOCKED. The tie-break fails toward visibility, on purpose;
- *  3. any known panel that survived nowhere is RE-ADDED to its default zone (which
- *     is docked by type), in registry order;
+ *  2b. `hidden` is read AFTER every zone, so a panel claimed by a zone AND by the
+ *     hidden list stays VISIBLE (same tie-break), and BEFORE (3), or (3) would
+ *     re-add hidden panels to zones and make them visible AND hidden at once.
+ *     Unknown ids, duplicates, non-objects and a `from` that is not a docked zone
+ *     are dropped;
+ *  3. any known panel that survived nowhere — neither in a zone nor hidden — is
+ *     RE-ADDED to its default zone (which is docked by type), in registry order;
  *  4. a window zone's `origin` is kept only when it names a real docked zone, and
  *     only while the zone is non-empty (empty window zone == no window zone);
  *  5. INVARIANT A — an empty DOCKED zone is legal (v1's reclaim rule is deleted),
  *     but if NO docked zone holds a panel, every window zone is folded home;
+ *  5b. if that STILL left no docked panel (a blob claiming every panel is hidden),
+ *     exactly ONE panel is un-hidden — the LAST entry, i.e. the most recent hide —
+ *     into `from ?? defaultZone`. One, not all: the minimum repair that satisfies
+ *     invariant A preserves the most user intent, and undoing the most recent hide
+ *     is the smallest, most explicable undo;
  *  6. each zone's active tab is resolved LAST: kept if still in that zone, else the
  *     zone's first panel, else '' (the empty-zone encoding).
  *
@@ -484,6 +598,10 @@ export function repairLayout<P extends string, D extends string, W extends strin
     zones[z] = zone;
   }
 
+  // (2b) — read the hidden list AFTER the zones (visible wins) and BEFORE the
+  // re-add (or a hidden panel would be resurrected into a zone as well).
+  const hidden = readHidden(src.hidden, reg, seen);
+
   // (3) — re-add panels the stored blob lost, into their default (docked) zone.
   for (const p of reg.panels) {
     if (seen.has(p.id)) continue;
@@ -495,13 +613,28 @@ export function repairLayout<P extends string, D extends string, W extends strin
   }
 
   // (5) — INVARIANT A. Empty docked zones are fine; ZERO docked panels are not.
-  const dockedHasPanels = reg.dockedZoneIds.some((d) => (zones[d]?.panels.length ?? 0) > 0);
-  if (!dockedHasPanels) foldWindowsInto(zones, reg);
+  const anyDocked = (): boolean => reg.dockedZoneIds.some((d) => (zones[d]?.panels.length ?? 0) > 0);
+  if (!anyDocked()) foldWindowsInto(zones, reg);
+
+  // (5b) — the fold is the smaller intervention, so it goes first; if there was
+  // nothing to fold (every panel hidden), un-hide the most recent hide. One is
+  // always enough: it lands in a docked zone, which is what A asks for.
+  if (!anyDocked() && hidden.length > 0) {
+    const last = hidden[hidden.length - 1];
+    const target =
+      last.from && reg.dockedZoneIds.includes(last.from) ? last.from : homeZoneFor(reg, last.id);
+    const zone = target !== undefined ? zones[target] : undefined;
+    if (zone) {
+      zone.panels.push(last.id);
+      hidden.pop();
+    }
+    // No docked zone at all — the same degradation as (3); the registry test forbids it.
+  }
 
   // (6) — resolve the active tab last.
   resolveActives(zones, reg, (z) => storedZone(z).active);
 
-  return { v: reg.version, zones: sealZones(zones, reg) };
+  return { v: reg.version, zones: sealZones(zones, reg), hidden };
 }
 
 /** Validate-and-repair against the real registry. */
@@ -526,7 +659,11 @@ export function dockAllWindowZones<P extends string, D extends string, W extends
   const zones = draftOf(l, reg);
   foldWindowsInto(zones, reg);
   resolveActives(zones, reg, (z) => l.zones[z]?.active);
-  return { v: l.v, zones: sealZones(zones, reg) };
+  // Hidden panels are in NO zone, so folding windows home cannot touch them — and a
+  // fold must never un-hide, or closing the last child window would silently undo a
+  // deliberate hide. Repair's (5b) is the only un-hider, and it only fires when the
+  // fold left nothing docked.
+  return { v: l.v, zones: sealZones(zones, reg), hidden: l.hidden };
 }
 
 /** Fold every window zone home, against the real registry. */
@@ -598,13 +735,21 @@ function toPersisted(l: DockLayout): unknown {
   for (const z of DOCK_DOCKED_ZONE_IDS) {
     zones[z] = { panels: [...l.zones[z].panels], active: l.zones[z].active };
   }
-  return { v: l.v, zones };
+  // `hidden` IS persisted — a user who hid Voice expects it hidden next launch, and
+  // unlike a torn-off arrangement there is nothing to reconcile at boot: the panel is
+  // simply not there. `from` is written only when it survived repair, so it always
+  // names a docked zone (the caller is the canonical layout, folded and repaired).
+  const hidden = l.hidden.map((h) => (h.from ? { id: h.id, from: h.from } : { id: h.id }));
+  return { v: l.v, zones, hidden };
 }
 
 /**
  * Persist. The layout is folded home and then repaired on the way out, so storage
- * is always canonical, always carries the current stamp, and NEVER contains a
- * non-empty window zone. Cheap (a handful of panels), and it means a caller can
+ * is always canonical, always carries the current stamp, NEVER contains a non-empty
+ * window zone and NEVER claims every panel is hidden (repair's (5b) un-hides one
+ * first). Both halves of invariant A therefore hold in their strongest form on
+ * storage — a shape that cannot exist, not a rule that has to be applied correctly.
+ * Cheap (a handful of panels), and it means a caller can
  * never write a blob that its own loader would have to repair.
  * Mirror roomLayout: call this on COMMIT (a tab switch, a drop), not every render.
  */
@@ -622,6 +767,10 @@ export function saveDockLayout(l: DockLayout): void {
  *
  * It lives OUTSIDE the dock (the room head bar is never detachable), which makes it
  * the last-resort escape reachable in every state — the braces to invariant A's belt.
+ *
+ * It also SHOWS EVERY HIDDEN PANEL, for free and by construction (defaults carry an
+ * empty `hidden`). That is what lets the restore list afford to sit next to it: even
+ * a user who cannot find the list has a guaranteed way back.
  */
 export function resetDockLayout(): DockLayout {
   try { localStorage.removeItem(ROOM_DOCK_KEY); } catch { /* ignore */ }
@@ -658,8 +807,46 @@ export function nonEmptyDockedZones(l: DockLayout): DockDockedZoneId[] {
   return DOCK_DOCKED_ZONE_IDS.filter((d) => (l.zones[d]?.panels.length ?? 0) > 0);
 }
 
+/**
+ * How many panels the MAIN window is showing. Hidden panels are in no zone, so this
+ * counts VISIBLE docked panels without a filter — which is the quantity invariant A
+ * has always meant, and the reason hiding cannot be used to launder a move past the
+ * guard (`canMovePanel`, `detachPanel` and `tearOffZone` all read it).
+ */
 export function dockedPanelCount(l: DockLayout, reg: DockRegistry = DOCK_REGISTRY): number {
   return reg.dockedZoneIds.reduce((n, d) => n + (l.zones[d]?.panels.length ?? 0), 0);
+}
+
+// ── hidden-panel queries ────────────────────────────────────────────────────
+
+/** The hidden list itself, in HIDE ORDER (most recent last). */
+export function hiddenPanels(l: DockLayout): readonly DockHiddenPanel[] {
+  return l.hidden;
+}
+
+export function isPanelHidden(l: DockLayout, panel: DockPanelId): boolean {
+  return l.hidden.some((h) => h.id === panel);
+}
+
+/** Every panel that is in a zone — docked or torn off — in zone order. */
+export function visiblePanels(l: DockLayout): DockPanelId[] {
+  return DOCK_ZONE_IDS.flatMap((z) => l.zones[z]?.panels ?? []);
+}
+
+/**
+ * Where `restorePanel` would put this panel: its remembered zone, else its default,
+ * else the first docked zone. `null` IFF the panel is not hidden — so the popover can
+ * name the destination ("Files shown in Centre column") without simulating the op.
+ */
+export function restoreTargetZone(
+  l: DockLayout,
+  panel: DockPanelId,
+  reg: DockRegistry = DOCK_REGISTRY,
+): DockDockedZoneId | null {
+  const entry = l.hidden.find((h) => h.id === panel);
+  if (!entry) return null;
+  if (entry.from && reg.dockedZoneIds.includes(entry.from)) return entry.from;
+  return homeZoneFor(reg, panel) ?? null;
 }
 
 /** The lowest free pool slot, or null when every slot is in use. */
@@ -675,7 +862,12 @@ export function firstFreeWindowZone(
 export type DockRefusal =
   | 'unknown-panel'
   | 'unknown-zone'
-  /** Invariant A would break: the main window would be left with nothing. */
+  /**
+   * Invariant A would break: the main window would be left with nothing. Shared by
+   * move, detach, tear-off AND hide — a hide that leaves no docked panel is the same
+   * failure with the same explanation, so it deliberately does not get a synonym of
+   * its own to say the same thing in different words.
+   */
   | 'last-docked-group'
   /** Every window slot is in use. */
   | 'window-pool-exhausted'
@@ -697,6 +889,37 @@ export interface DockOpResult {
 }
 
 const refuse = (l: DockLayout, refused: DockRefusal): DockOpResult => ({ layout: l, refused, zone: null });
+
+/**
+ * The SOURCE half of every relocation — a move, and a hide — as one function, so the
+ * two can never drift. Returns the zone state after `panel` leaves it:
+ *
+ *  - if the departing panel was active, the new active is the panel now at the SAME
+ *    INDEX, clamped to the last (the right-hand neighbour, else the left). Not "the
+ *    first panel": jumping to tab 1 when you move tab 3 reads as a bug;
+ *  - a zone left empty gets `active: ''`;
+ *  - an emptied WINDOW zone ceases to exist — its `origin` goes with it, so the pool
+ *    slot is clean for the next tear-off.
+ *
+ * Returns the input state untouched when the panel is not in it.
+ */
+function zoneWithoutPanel(src: DockZoneState, from: DockZoneId, panel: DockPanelId): DockZoneState {
+  const at = src.panels.indexOf(panel);
+  if (at < 0) return src;
+  const panels = src.panels.filter((p) => p !== panel);
+  let active: DockPanelId | '' = src.active;
+  if (active === panel || !panels.includes(active as DockPanelId)) {
+    active = panels.length ? panels[Math.min(at, panels.length - 1)] : '';
+  }
+  const kept: DockZoneState = { panels, active };
+  if (panels.length > 0 && isWindowZone(from) && src.origin) kept.origin = src.origin;
+  return kept;
+}
+
+/** `hidden` minus one panel, keeping IDENTITY when it was not in there. */
+function hiddenWithout(l: DockLayout, panel: DockPanelId): DockHiddenPanel[] {
+  return l.hidden.some((h) => h.id === panel) ? l.hidden.filter((h) => h.id !== panel) : l.hidden;
+}
 
 /**
  * Select a tab. Returns the SAME object when nothing changes (already active, or the
@@ -739,14 +962,16 @@ export function canMovePanel(
  * the same zone and the index is past the tab's own position.) Absent = append.
  *
  * Active-tab consequences, both ends:
- *  - SOURCE: if the moved panel was active, the new active is the panel now at the
- *    SAME INDEX, clamped to the last — the right-hand neighbour, else the left. Not
- *    "the first panel": jumping to tab 1 when you move tab 3 reads as a bug. A
- *    source left empty gets ''; an emptied window zone ceases to exist (its origin
- *    is dropped with it, so the slot is clean for the next tear-off).
+ *  - SOURCE: see `zoneWithoutPanel` — same index, clamped; an emptied window zone
+ *    ceases to exist.
  *  - DESTINATION: the moved panel ALWAYS becomes active. Non-negotiable — you
  *    dragged it there to look at it, and landing it behind another tab makes the
  *    whole gesture look like a no-op.
+ *
+ * A HIDDEN panel moved into a zone is un-hidden by the same act: a panel is in
+ * exactly one zone or in `hidden`, so putting it in a zone takes it out of `hidden`.
+ * That keeps "both at once" unrepresentable instead of relying on every caller to
+ * remember, and it is why `restorePanel` is this function plus a destination rule.
  *
  * Returns the INPUT layout object when nothing would change, so a no-op drop costs
  * no re-render and no storage write.
@@ -768,18 +993,7 @@ export function movePanel(
 
   // ── source
   if (from !== undefined && from !== to) {
-    const src = l.zones[from];
-    const at = src.panels.indexOf(panel);
-    const panels = src.panels.filter((p) => p !== panel);
-    let active: DockPanelId | '' = src.active;
-    if (active === panel || !panels.includes(active as DockPanelId)) {
-      active = panels.length ? panels[Math.min(at, panels.length - 1)] : '';
-    }
-    const kept: DockZoneState = { panels, active };
-    // An emptied window zone ceases to exist — its origin goes with it, so the slot
-    // is clean for the next tear-off. `origin` is meaningless on a docked zone.
-    if (panels.length > 0 && isWindowZone(from) && src.origin) kept.origin = src.origin;
-    zones[from] = kept;
+    zones[from] = zoneWithoutPanel(l.zones[from], from, panel);
   }
 
   // ── destination
@@ -802,7 +1016,7 @@ export function movePanel(
   }
   zones[to] = next;
 
-  return { layout: { ...l, zones }, refused: null, zone: to };
+  return { layout: { ...l, zones, hidden: hiddenWithout(l, panel) }, refused: null, zone: to };
 }
 
 /** "Move to > New window": allocate a slot and move ONE panel into it. */
@@ -931,6 +1145,137 @@ export function tearOffTarget(
   reg: DockRegistry = DOCK_REGISTRY,
 ): { refused: DockRefusal | null } {
   return { refused: tearOffZone(l, from, reg).refused };
+}
+
+// ── hide / show ─────────────────────────────────────────────────────────────
+
+/**
+ * The hide guard as a pure predicate, so the per-tab menu item can disable itself
+ * with the reason attached — the same shape as `detachTarget`/`tearOffTarget`.
+ *
+ * `'last-docked-group'` is REUSED rather than a new `'last-visible-panel'` invented:
+ * see the header. Already-hidden is `null`, not a refusal — hiding twice is a no-op,
+ * the same precedent `movePanel` sets for a same-zone move.
+ */
+export function canHidePanel(
+  l: DockLayout,
+  panel: DockPanelId,
+  reg: DockRegistry = DOCK_REGISTRY,
+): DockRefusal | null {
+  if (!reg.panels.some((p) => p.id === panel)) return 'unknown-panel';
+  if (isPanelHidden(l, panel)) return null;
+  const from = zoneOfPanel(l, panel);
+  const fromDocked = !!from && reg.dockedZoneIds.includes(from as DockDockedZoneId);
+  return dockedPanelCount(l, reg) - (fromDocked ? 1 : 0) <= 0 ? 'last-docked-group' : null;
+}
+
+/**
+ * Remove a panel from the UI entirely: no tab, no strip entry, nowhere.
+ *
+ * It leaves its zone through the SAME source-side rule a move uses, so an emptied
+ * window zone ceases to exist and its group's window closes — a hidden panel is never
+ * stranded in a window that no longer exists, which is what makes "show it where it
+ * was" free and correct.
+ *
+ * This is a LAYOUT act, not a lifecycle one. What happens to the panel's React mount
+ * is the mount layer's business (keep-alive panels are PARKED — still mounted, still
+ * running — precisely so hiding Voice does not silently drop push-to-talk).
+ *
+ * Returns the INPUT layout when the panel is already hidden. `zone` is the zone it
+ * left, or null.
+ */
+export function hidePanel(
+  l: DockLayout,
+  panel: DockPanelId,
+  reg: DockRegistry = DOCK_REGISTRY,
+): DockOpResult {
+  const refused = canHidePanel(l, panel, reg);
+  if (refused) return refuse(l, refused);
+  if (isPanelHidden(l, panel)) return { layout: l, refused: null, zone: null };
+
+  const from = zoneOfPanel(l, panel);
+  // The docked zone "Show" will put it back into, decided NOW while we still know
+  // where it lived: a window's `origin` outlives the window; the window id would not.
+  const fromDocked = !!from && reg.dockedZoneIds.includes(from as DockDockedZoneId);
+  const origin = from !== undefined ? l.zones[from]?.origin : undefined;
+  const back: DockDockedZoneId | undefined = fromDocked
+    ? (from as DockDockedZoneId)
+    : origin && reg.dockedZoneIds.includes(origin)
+      ? origin
+      : homeZoneFor(reg, panel);
+
+  const zones = { ...l.zones } as Record<DockZoneId, DockZoneState>;
+  if (from !== undefined) zones[from] = zoneWithoutPanel(l.zones[from], from, panel);
+  const entry: DockHiddenPanel = back ? { id: panel, from: back } : { id: panel };
+  return { layout: { ...l, zones, hidden: [...l.hidden, entry] }, refused: null, zone: from ?? null };
+}
+
+/**
+ * Bring one back: appended to `to ?? from ?? defaultZone ?? the first docked zone`,
+ * and made ACTIVE. Always a DOCKED zone, never a window — the same discipline that
+ * refuses to persist a torn-off arrangement, and it means "Show" cannot depend on a
+ * window still existing.
+ *
+ * Activating is non-negotiable, for `movePanel`'s reason: landing behind another tab
+ * makes "Show" look like a no-op.
+ *
+ * Returns the INPUT layout when the panel is not hidden. Never refuses
+ * `'last-docked-group'` — showing a panel cannot empty anything.
+ */
+export function restorePanel(
+  l: DockLayout,
+  panel: DockPanelId,
+  to?: DockDockedZoneId,
+  reg: DockRegistry = DOCK_REGISTRY,
+): DockOpResult {
+  if (!reg.panels.some((p) => p.id === panel)) return refuse(l, 'unknown-panel');
+  if (to !== undefined && !reg.dockedZoneIds.includes(to)) return refuse(l, 'unknown-zone');
+  if (!isPanelHidden(l, panel)) return { layout: l, refused: null, zone: zoneOfPanel(l, panel) ?? null };
+  const target = to ?? restoreTargetZone(l, panel, reg) ?? undefined;
+  if (target === undefined) return refuse(l, 'unknown-zone'); // a registry with no docked zones
+  // movePanel appends, activates, and drops the panel from `hidden` — a restore IS a
+  // move out of nowhere, so it must not restate any of those three rules.
+  return movePanel(l, panel, target, undefined, reg);
+}
+
+/** Show every hidden panel, each in its own remembered zone. Never refuses. */
+export function restoreAllPanels(l: DockLayout, reg: DockRegistry = DOCK_REGISTRY): DockOpResult {
+  if (l.hidden.length === 0) return { layout: l, refused: null, zone: null };
+  let out = l;
+  let last: DockZoneId | null = null;
+  // Snapshot: `restorePanel` shortens `hidden` under us.
+  for (const h of [...l.hidden]) {
+    const r = restorePanel(out, h.id, undefined, reg);
+    if (r.refused) continue; // unreachable for a repaired layout; skipping beats throwing
+    out = r.layout;
+    last = r.zone ?? last;
+  }
+  return { layout: out, refused: null, zone: last };
+}
+
+/** The "Hide this panel" menu item's state, without hiding. */
+export function hideTarget(
+  l: DockLayout,
+  panel: DockPanelId,
+  reg: DockRegistry = DOCK_REGISTRY,
+): { refused: DockRefusal | null } {
+  return { refused: canHidePanel(l, panel, reg) };
+}
+
+/**
+ * The restore list: what is hidden, and where each would come back to. In hide order,
+ * so the list reads as a history the user can undo from the bottom.
+ */
+export function restoreTargets(
+  l: DockLayout,
+  reg: DockRegistry = DOCK_REGISTRY,
+): readonly { panel: DockPanelId; zone: DockDockedZoneId }[] {
+  const out: { panel: DockPanelId; zone: DockDockedZoneId }[] = [];
+  for (const h of l.hidden) {
+    const zone = restoreTargetZone(l, h.id, reg);
+    if (zone) out.push({ panel: h.id, zone });
+  }
+  return out;
 }
 
 /*

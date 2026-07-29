@@ -9,6 +9,7 @@ vi.mock('../../../utils/i18nContext', () => ({
 }));
 
 import { DockWindowShell, stepDockWindowLiveness } from './DockWindowHost';
+import { IS_MAC } from '../../../layout/WindowControls';
 
 // DockWindowHost itself is unreachable from this harness by construction: it is
 // nothing but a portal into a window that does not exist here, and
@@ -103,6 +104,75 @@ describe('DockWindowShell markup', () => {
     const html = render();
     expect(html.match(/aria-live="polite"/g)).toHaveLength(2);
     expect(html).toMatch(/class="sr-only" aria-live="polite" aria-atomic="true"/);
+  });
+
+  it('wears the app\'s own title bar rather than a lookalike', () => {
+    // The window is frameless, so this header REPLACES the OS caption. Carrying
+    // `.titlebar` is what keeps its height, background, blaze line and control
+    // metrics defined in exactly one place (layout.css) — a bespoke bar here
+    // would drift from the app's the first time either is touched.
+    const html = render();
+    expect(html).toMatch(/<header class="titlebar dock-window-head/);
+    // The flexible middle is the drag handle, exactly as in the app bar.
+    expect(html).toContain('class="titlebar-drag"');
+  });
+
+  it('keeps the tab strip OUT of the drag region', () => {
+    // `-webkit-app-region: drag` inherits, and a drag region over an HTML5 drag
+    // source swallows the drag whole — tabs would silently stop being draggable
+    // in torn-off windows only. The separation is structural: the header is a
+    // SIBLING of the body, and the group (its strip included) lives in the body.
+    const html = render();
+    const head = html.slice(html.indexOf('<header'), html.indexOf('</header>'));
+    expect(head).not.toContain('dock-zone');
+    expect(html).toMatch(/<\/header><div class="dock-window-body">/);
+  });
+
+  const chrome = {
+    maximized: false,
+    labels: { minimize: 'Minimize', maximize: 'Maximize', restore: 'Restore', close: 'Close' },
+    onMinimize: () => {},
+    onToggleMaximize: () => {},
+  };
+
+  it.runIf(!IS_MAC)('draws the app\'s window controls for THIS window', () => {
+    const html = render({ chrome });
+    expect(html).toContain('class="titlebar-controls"');
+    expect(html).toContain('aria-label="Minimize"');
+    expect(html).toContain('aria-label="Maximize"');
+    expect(html).toContain('aria-label="Close"');
+  });
+
+  it.runIf(!IS_MAC)('flips the maximize control to restore', () => {
+    const html = render({ chrome: { ...chrome, maximized: true } });
+    expect(html).toContain('aria-label="Restore"');
+    expect(html).not.toContain('aria-label="Maximize"');
+  });
+
+  it.runIf(!IS_MAC)('keeps dock-back reachable beside the OS-style controls', () => {
+    // ✕ and "Dock back" do the same thing, but only one of them SAYS so. The
+    // named, keyboard-reachable button is the accessible route home and must not
+    // be dropped just because the window now has a close box.
+    const html = render({ chrome });
+    expect(html).toContain('aria-label="Dock back"');
+    expect(html).toContain('class="dock-window-sep"');
+    // Order matters for tab traversal: home first, then the window verbs.
+    expect(html.indexOf('aria-label="Dock back"')).toBeLessThan(html.indexOf('aria-label="Close"'));
+  });
+
+  it('degrades to title + dock-back when no chrome is supplied', () => {
+    // The bar must render without a preload bridge (and in this harness), so the
+    // controls are opt-in rather than a hard dependency.
+    const html = render();
+    expect(html).not.toContain('titlebar-controls');
+    expect(html).toContain('aria-label="Dock back"');
+  });
+
+  it('marks the action cluster no-drag through its own class', () => {
+    // The drag region inherits, so the buttons opt out via `.dock-window-acts`
+    // (CSS) — assert the hook exists, since losing the class makes every control
+    // in this bar unclickable in a way nothing else would catch.
+    expect(render({ chrome })).toContain('class="dock-window-acts"');
   });
 
   it('mounts with no DOM at all', () => {
