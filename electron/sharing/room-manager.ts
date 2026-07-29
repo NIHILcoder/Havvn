@@ -32,7 +32,7 @@ const log = logger.child('RoomManager');
 
 // Same relay set as share links — friends behind symmetric NATs need TURN to
 // connect. Honors the existing "Use TURN relays" privacy toggle.
-import { customTurnToIce } from './ice-servers';
+import { customTurnToIce, resolveTrackers } from './ice-servers';
 import { showOsNotification } from '../utils/os-notify';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
@@ -483,11 +483,13 @@ export class RoomManager {
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     let useTurn = true;
     let turnServers: ReturnType<typeof customTurnToIce> = [];
+    let trackers = resolveTrackers();
     try {
       const s = await db.getSettings();
       useTurn = s.shareUseTurn !== false;
       turnServers = customTurnToIce(s.customTurnUrl, s.customTurnUsername, s.customTurnCredential);
-    } catch { /* default on, no custom TURN */ }
+      trackers = resolveTrackers(s.customTrackers);
+    } catch { /* default on, no custom TURN, public trackers */ }
     return {
       type: 'join',
       payload: {
@@ -495,6 +497,7 @@ export class RoomManager {
         self: { memberId: profile.memberId, name: profile.name, avatarSeed: profile.avatarSeed, color: profile.color ?? '', status: profile.status ?? '', avatarImg: profile.avatarImg ?? '', pub: identity.pub, priv: identity.priv },
         useTurn,
         turnServers,
+        trackers,
         tombstones: db.getRoomTombstones(roomId),
         tombSigs: db.getRoomTombstoneProofs(roomId),
         revives: db.getRoomRevives(roomId),

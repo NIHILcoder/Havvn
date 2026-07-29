@@ -25,8 +25,6 @@ const TrackerClient = require('bittorrent-tracker') as any;
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 
-const TRACKERS = RENDEZVOUS_TRACKERS;
-
 const w = window as any;
 const nativeWrtc = {
   RTCPeerConnection: w.RTCPeerConnection,
@@ -109,7 +107,7 @@ function attachViewer(session: Session, peer: any): void {
   log('Viewer connected to ' + session.id.slice(0, 8));
 }
 
-function startSession(p: { id: string; contentPath: string; ffmpeg: string; useTurn: boolean; turnServers?: any[] }): { id: string; topic: string } {
+function startSession(p: { id: string; contentPath: string; ffmpeg: string; useTurn: boolean; turnServers?: any[]; trackers?: string[] }): { id: string; topic: string } {
   let session = sessions.get(p.id);
   if (session) return { id: session.id, topic: session.topic };
 
@@ -124,7 +122,7 @@ function startSession(p: { id: string; contentPath: string; ffmpeg: string; useT
 
   try {
     const tracker = new TrackerClient({
-      infoHash: topic, peerId: session.peerId, announce: TRACKERS, port: 6881,
+      infoHash: topic, peerId: session.peerId, announce: p.trackers?.length ? p.trackers : RENDEZVOUS_TRACKERS, port: 6881,
       rtcConfig: { iceServers }, wrtc: nativeWrtc,
     });
     session.tracker = tracker;

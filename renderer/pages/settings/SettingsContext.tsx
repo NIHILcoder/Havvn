@@ -13,6 +13,7 @@ import {
   AppSettings, SchedulerConfig, ScheduleEntry, PortForwardStatus, NetworkHealth,
   DohTemplate, NetworkProfile, NetworkInfo, RunningTransport,
 } from '../../../shared/types';
+import { parseTrackers } from '../../../shared/trackers';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from '../../utils/i18nContext';
 import { getActiveTheme, applyThemeObject } from '../../utils/theme-library';
@@ -123,6 +124,8 @@ function useSettingsController() {
   const [turnUser, setTurnUser] = useState('');
   const [turnCred, setTurnCred] = useState('');
   const [turnSaving, setTurnSaving] = useState(false);
+  const [customTrackers, setCustomTrackers] = useState('');
+  const [trackersSaving, setTrackersSaving] = useState(false);
 
   // Seeding limits
   const [defaultSeedRatioLimit, setDefaultSeedRatioLimit] = useState(0);
@@ -331,6 +334,7 @@ function useSettingsController() {
       setTurnUrl(s.customTurnUrl ?? '');
       setTurnUser(s.customTurnUsername ?? '');
       setTurnCred(s.customTurnCredential ?? '');
+      setCustomTrackers(s.customTrackers ?? '');
 
       setDefaultSeedRatioLimit(s.defaultSeedRatioLimit ?? 0);
       setDefaultSeedTimeLimitMinutes(s.defaultSeedTimeLimitMinutes ?? 0);
@@ -468,6 +472,25 @@ function useSettingsController() {
     } catch {
       setMessage({ type: 'error', text: t('settings.msg.autosaveFailed') });
     } finally { setTurnSaving(false); }
+  };
+
+  // Custom rendezvous trackers — persisted on demand, like the TURN block above.
+  // The success message reports the accepted COUNT rather than just "saved":
+  // invalid entries are dropped on the way in, so "saved" alone would let a typo
+  // read as success while rooms quietly kept using the public defaults.
+  const saveCustomTrackers = async () => {
+    setTrackersSaving(true);
+    const patch = { customTrackers: customTrackers.trim() };
+    const accepted = parseTrackers(patch.customTrackers).length;
+    try {
+      await window.api.updateSettings(patch);
+      setSettings(prev => (prev ? { ...prev, ...patch } : prev));
+      setMessage(accepted
+        ? { type: 'success', text: t('settings.customTrackers.saved').replace('{n}', String(accepted)) }
+        : { type: 'success', text: t('settings.customTrackers.savedDefault') });
+    } catch {
+      setMessage({ type: 'error', text: t('settings.msg.autosaveFailed') });
+    } finally { setTrackersSaving(false); }
   };
 
   // ── DNS-over-HTTPS ────────────────────────────────────────────────────────
@@ -764,6 +787,7 @@ function useSettingsController() {
     // sharing
     shareUseTurn, setShareUseTurn,
     turnUrl, setTurnUrl, turnUser, setTurnUser, turnCred, setTurnCred, turnSaving, saveTurn,
+    customTrackers, setCustomTrackers, trackersSaving, saveCustomTrackers,
     webRemote, setWebRemote, remoteCopied, setRemoteCopied,
     // seeding
     defaultSeedRatioLimit, setDefaultSeedRatioLimit,

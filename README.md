@@ -31,8 +31,11 @@ point. Its real job is the things classic clients *can't* do, all peer-to-peer w
 
 You bring your own indexers and feeds — Havvn bundles none. Everything runs on
 your machine and directly between you and your peers: **the developer runs no servers,
-and the app costs nothing to operate.** Built with Electron, React, a bundled native
-Transmission engine and WebTorrent.
+and the app costs nothing to operate.** The one external dependency is a set of public
+WebRTC **rendezvous trackers** that broker the initial handshake — they never carry file
+bytes or plaintext, three independent operators are used so none is load-bearing, and
+you can point Havvn at **your own trackers** in Settings → Sharing. Built with Electron,
+React, a bundled native Transmission engine and WebTorrent.
 
 > **Legal use only.** Havvn does not bundle indexers for copyrighted material.
 > The only pre-seeded source is a Creative Commons / open-source RSS feed (FOSS Torrents),
@@ -139,7 +142,7 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   so clients can verify the new owner instead of trusting a claim
 - **Per-room controls** — auto-download every shared file or pull them **manually** per
   file, and set per-room **upload / download speed limits**
-- **Tamper-proof chat** — every message is **signed (Ed25519)** and bound to a member
+- **Signed chat** — every message is **signed (Ed25519)** and bound to a member
   identity, so even someone who has the invite code can't post under another member's
   name; the local chat history is **encrypted at rest**. The composer is built for
   sharing scripts: multiline input, Tab indents, and triple-backtick **code blocks**
@@ -149,6 +152,10 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   member** automatically (relayed traffic stays end-to-end encrypted). For the rare
   strict-NAT pair you can add **your own TURN relay** in settings — one side is enough.
   Each member shows whether they're connected **directly or via a relay**
+- **Bring your own rendezvous trackers** — rooms, share links and remote cast announce to
+  public WebRTC trackers to broker the first handshake (no file bytes, no plaintext). Point
+  Havvn at your own instead in Settings → Sharing; an unusable entry falls back to the
+  public set rather than leaving a room with nowhere to announce
 
 ### Voice & screen share
 - **Room voice chat with zero infrastructure** — a serverless WebRTC mesh between
@@ -204,13 +211,28 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - The local streaming server refuses cross-origin and DNS-rebinding requests, so a web
   page open in your browser can't read what you're streaming
 
+### Security status
+
+Havvn's room protocol is built on standard primitives — **AES-256-GCM** for content and
+chat, **Ed25519** signatures for member identity, config authorship and ownership
+transfer — but the protocol composing them is **my own design and has not had an
+independent security review or audit**. It is written to resist a specific, concrete
+threat: someone who holds a room's invite code but was never granted membership should
+not be able to forge a config, impersonate a member, or plant a content key.
+
+It is *not* built to withstand a well-resourced attacker, and it has not been tested
+against one. Treat the encryption as meaningful protection from casual interception and
+from other peers in the swarm — not as a guarantee for a threat model where being wrong
+carries real consequences. If you find a flaw, please open an issue; I would rather hear
+it than not.
+
 ---
 
 ## Tech Stack
 
 | Layer        | Technology                                   |
 |--------------|----------------------------------------------|
-| UI           | React 18, TypeScript, Framer Motion, Recharts |
+| UI           | React 18, TypeScript, d3-geo (swarm map)      |
 | State        | Zustand                                      |
 | Desktop      | Electron 42, Node.js                          |
 | Torrents     | Transmission (bundled native engine) with a WebTorrent fallback; WebTorrent + WebRTC for rooms & share links |

@@ -17,6 +17,8 @@
  * docs/watch/index.html) — those run in the browser and can't import this.
  */
 
+import { parseTrackers } from '../../shared/trackers';
+
 export interface IceServer {
   urls: string;
   username?: string;
@@ -70,3 +72,21 @@ export const RENDEZVOUS_TRACKERS: string[] = TRACKER_OVERRIDE
     'wss://tracker.webtorrent.dev',
     'wss://tracker.files.fm:7073/announce',
   ];
+
+/**
+ * The tracker set a P2P surface should announce to. The user's list wins when it
+ * has at least one usable entry; otherwise we fall back to the public defaults,
+ * so a typo degrades to "the normal behaviour" rather than to a room that can
+ * never find a peer. HAVVN_ROOM_TRACKERS still outranks the setting — it exists
+ * to pin a local tracker during development, and a stored setting should not
+ * quietly pull a dev instance back onto public infrastructure.
+ *
+ * Parsing itself lives in shared/trackers.ts so the settings UI can report the
+ * same verdict this function acts on. Pure — safe to import in the
+ * hidden-window engines.
+ */
+export function resolveTrackers(raw?: string): string[] {
+  if (TRACKER_OVERRIDE) return RENDEZVOUS_TRACKERS;
+  const custom = parseTrackers(raw);
+  return custom.length ? custom : RENDEZVOUS_TRACKERS;
+}

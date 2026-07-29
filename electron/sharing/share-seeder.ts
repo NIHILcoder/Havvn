@@ -28,8 +28,6 @@ const RECEIVER_BASE = 'https://nihilcoder.github.io/Havvn/share/';
 // ice-servers.ts). This preload runs with sandbox:false, so require() works.
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 
-const SHARE_TRACKERS = RENDEZVOUS_TRACKERS;
-
 const w = window as any;
 const nativeWrtc = {
   RTCPeerConnection: w.RTCPeerConnection,
@@ -66,7 +64,7 @@ function toInfo(e: ShareEntry) {
   return { downloadId: e.downloadId, name: e.name, infoHash: e.infoHash, magnetURI: e.magnetURI, link: e.link, createdAt: e.createdAt };
 }
 
-function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[] = []): Promise<ShareEntry> {
+function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[] = [], trackers: string[] = RENDEZVOUS_TRACKERS): Promise<ShareEntry> {
   const existing = shares.get(downloadId);
   if (existing) return Promise.resolve(existing);
   if (!fs.existsSync(contentPath)) {
@@ -82,7 +80,7 @@ function doShare(downloadId: string, contentPath: string, name: string, useTurn:
     };
     c.once('error', onError);
     try {
-      c.seed(contentPath, { announce: SHARE_TRACKERS, name } as any, (torrent: any) => {
+      c.seed(contentPath, { announce: trackers, name } as any, (torrent: any) => {
         if (settled) return; settled = true;
         c.removeListener('error', onError);
         torrent.on('error', (e: any) => log('torrent error: ' + (e?.message || e)));
@@ -131,7 +129,7 @@ ipcRenderer.on('share-cmd', async (_e, msg: any) => {
   const { type, reqId } = msg;
   try {
     let data: any;
-    if (type === 'share') data = toInfo(await doShare(msg.downloadId, msg.contentPath, msg.name, msg.useTurn !== false, msg.turnServers || []));
+    if (type === 'share') data = toInfo(await doShare(msg.downloadId, msg.contentPath, msg.name, msg.useTurn !== false, msg.turnServers || [], msg.trackers?.length ? msg.trackers : RENDEZVOUS_TRACKERS));
     else if (type === 'stop') { doStop(msg.downloadId); data = { ok: true }; }
     else if (type === 'get') data = getInfo(msg.downloadId);
     else if (type === 'list') data = Array.from(shares.values()).map(toInfo).sort((a, b) => b.createdAt - a.createdAt);

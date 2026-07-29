@@ -51,8 +51,6 @@ import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg
 import type { LanDiagInput } from '../../shared/lan-quality';
 import { LanPipeClient, validateGameExePath } from '../lan/pipe-bridge';
 
-const ROOM_TRACKERS = RENDEZVOUS_TRACKERS;
-
 const w = window as any;
 const nativeWrtc = {
   RTCPeerConnection: w.RTCPeerConnection,
@@ -265,6 +263,7 @@ interface Room {
   rendezvous: string;                    // public tracker rendezvous id (slow-derived from key)
   peerId: string;
   iceServers: any[];
+  trackers: string[];                    // rendezvous trackers this room announces to (settings-resolved)
   tracker: any;
   started: boolean;
   self: { memberId: string; name: string; avatarSeed: string; color: string; status: string; avatarImg: string; pub: string; priv: string };
@@ -2958,7 +2957,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
       const onErr = (e: any) => { if (!settled) { settled = true; reject(e instanceof Error ? e : new Error(String(e))); } };
       c.once('error', onErr);
       try {
-        c.seed(seedPath, { announce: ROOM_TRACKERS, name: seedName } as any, (torrent: any) => {
+        c.seed(seedPath, { announce: room.trackers, name: seedName } as any, (torrent: any) => {
           if (settled) return; settled = true;
           c.removeListener('error', onErr);
           const file: RoomFile = {
@@ -3034,14 +3033,14 @@ function ensureLocal(room: Room, file: RoomFile): void {
       // Already have the ciphertext — re-seed it and (re)derive the plaintext.
       const havePlain = fs.existsSync(plain);
       setTransfer(room, file.fileId, { status: 'seeding', progress: 1, haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath: cachedCipher });
-      try { c.seed(cachedCipher, { announce: ROOM_TRACKERS, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
+      try { c.seed(cachedCipher, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
       catch (e) { log('e2e reseed failed: ' + String(e)); }
       if (room.secret && !havePlain) void decryptOne(room, file, cachedCipher);
       return;
     }
     setTransfer(room, file.fileId, { status: 'downloading', progress: 0, cipherPath: cachedCipher });
     try {
-      c.add(file.magnetURI, { path: cipherDir, announce: ROOM_TRACKERS } as any, (torrent: any) => {
+      c.add(file.magnetURI, { path: cipherDir, announce: room.trackers } as any, (torrent: any) => {
         wireTorrentStats(room, torrent);
         torrent.on('done', () => {
           const landedCipher = path.join(cipherDir, safeBaseName(torrent.name) || cipherName);
@@ -3066,14 +3065,14 @@ function ensureLocal(room: Room, file: RoomFile): void {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: onDisk });
     persistManifest(room, file, onDisk);
     try {
-      c.seed(onDisk, { announce: ROOM_TRACKERS, name: file.name } as any, (t: any) => wireTorrentStats(room, t));
+      c.seed(onDisk, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t));
     } catch (e) { log('reseed failed: ' + String(e)); }
     return;
   }
 
   setTransfer(room, file.fileId, { status: 'downloading', progress: 0 });
   try {
-    c.add(file.magnetURI, { path: dir, announce: ROOM_TRACKERS } as any, (torrent: any) => {
+    c.add(file.magnetURI, { path: dir, announce: room.trackers } as any, (torrent: any) => {
       wireTorrentStats(room, torrent);
       torrent.on('done', () => {
         const landed = path.join(dir, file.name);
@@ -3136,7 +3135,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
       }
       const havePlain = fs.existsSync(plain);
       setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath });
-      try { c.seed(cipherPath, { announce: ROOM_TRACKERS, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
+      try { c.seed(cipherPath, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
       catch (e) { log('e2e manifest reseed failed: ' + String(e)); }
       if (room.secret && !havePlain) void decryptOne(room, file, cipherPath);
       return;
@@ -3147,7 +3146,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
 
   if (pf.localPath && fs.existsSync(pf.localPath)) {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: pf.localPath });
-    try { c.seed(pf.localPath, { announce: ROOM_TRACKERS, name: file.name } as any, (t: any) => wireTorrentStats(room, t)); }
+    try { c.seed(pf.localPath, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t)); }
     catch (e) { log('manifest reseed failed: ' + String(e)); }
     return;
   }
@@ -3186,7 +3185,7 @@ function attachTracker(room: Room): void {
     const tracker = new TrackerClient({
       infoHash: room.rendezvous,
       peerId: room.peerId,
-      announce: ROOM_TRACKERS,
+      announce: room.trackers,
       port: 6881,
       rtcConfig: { iceServers: room.iceServers },
       wrtc: nativeWrtc,
@@ -3405,7 +3404,7 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -3434,6 +3433,9 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     rendezvous: rendezvousId(key),
     peerId: randomPeerId(),
     iceServers,
+    // Resolved by the manager from settings; fall back to the public set so an
+    // older payload without the field behaves exactly as before.
+    trackers: Array.isArray(p.trackers) && p.trackers.length ? p.trackers : RENDEZVOUS_TRACKERS,
     tracker: null,
     started: false,
     self: { ...p.self, color: p.self.color || '', status: p.self.status || '', avatarImg: p.self.avatarImg || '' },

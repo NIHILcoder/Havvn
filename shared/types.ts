@@ -585,6 +585,12 @@ export interface AppSettings {
   customTurnUrl?: string;          // e.g. "turn:relay.example.com:3478" ('' = none)
   customTurnUsername?: string;
   customTurnCredential?: string;
+  // Optional user-supplied WebRTC rendezvous trackers, comma/newline-separated.
+  // REPLACES the public default set for rooms, share links and remote cast — for
+  // people running their own bittorrent-tracker, or who would rather not announce
+  // to public ones. Empty or all-invalid ⇒ the public defaults are used, so a typo
+  // can never leave a room with nothing to announce to. See resolveTrackers().
+  customTrackers?: string;         // e.g. "wss://tracker.example.com" ('' = defaults)
   // Virtual-LAN (Phase 2B): are we willing to FORWARD another pair's LAN frames
   // when they have no direct path? Absent ⇒ true. Two costs, both deliberate and
   // both user-visible in the room's LAN panel:

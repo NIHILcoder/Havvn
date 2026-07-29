@@ -16,6 +16,7 @@ import { SettingsCard, SettingRow, TextField } from '../controls';
 import { Toggle, Button, Icon, QRCode } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { NetworkProfile } from '../../../../shared/types';
+import { parseTrackers, hasOnlyInvalidTrackers, MAX_CUSTOM_TRACKERS } from '../../../../shared/trackers';
 
 export const SharingSection: React.FC = () => {
   const { t } = useTranslation();
@@ -24,6 +25,7 @@ export const SharingSection: React.FC = () => {
     webRemote, setWebRemote, remoteCopied, setRemoteCopied,
     shareUseTurn, setShareUseTurn, applyToggle,
     turnUrl, setTurnUrl, turnUser, setTurnUser, turnCred, setTurnCred, turnSaving, saveTurn,
+    customTrackers, setCustomTrackers, trackersSaving, saveCustomTrackers,
     netEnabled, setNetEnabled, netProfiles, netCurrent, netActiveId,
     netDraft, setNetDraft, saveCurrentAsProfile, saveNetDraft,
     removeNetProfile, toggleOverride, setOverrideValue,
@@ -217,6 +219,41 @@ export const SharingSection: React.FC = () => {
               {t('common.save')}
             </Button>
           </div>
+        </div>
+
+        {/* Own rendezvous trackers. Same stacked full-width shape as the TURN
+            block. The live count matters here: invalid entries are dropped on
+            save, so without it a typo would look like it took effect while
+            rooms silently kept announcing to the public defaults. */}
+        <div className="stg-sub">
+          <div className="stg-row-label">{t('settings.customTrackers.title')}</div>
+          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTrackers.note')}</p>
+          <div className="stg-fields">
+            <TextField
+              mono
+              value={customTrackers}
+              onChange={setCustomTrackers}
+              placeholder="wss://tracker.example.com, wss://tracker2.example.com"
+            />
+            <Button variant="secondary" size="sm" onClick={saveCustomTrackers} loading={trackersSaving} icon={<Icon name="check" size={14} />}>
+              {t('common.save')}
+            </Button>
+          </div>
+          {hasOnlyInvalidTrackers(customTrackers) ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>{t('settings.customTrackers.invalid')}</span>
+            </div>
+          ) : parseTrackers(customTrackers).length > 0 ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>
+                {t('settings.customTrackers.count')
+                  .replace('{n}', String(parseTrackers(customTrackers).length))
+                  .replace('{max}', String(MAX_CUSTOM_TRACKERS))}
+              </span>
+            </div>
+          ) : null}
         </div>
       </SettingsCard>
 

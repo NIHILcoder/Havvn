@@ -17,7 +17,7 @@ const log = logger.child('RemoteCast');
 
 // Post-rebrand GitHub Pages URL (repo renamed to Havvn) — see share-seeder.ts RECEIVER_BASE.
 const RECEIVER_BASE = 'https://nihilcoder.github.io/Havvn/watch/';
-import { customTurnToIce } from './ice-servers';
+import { customTurnToIce, resolveTrackers } from './ice-servers';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
@@ -105,13 +105,15 @@ export class RemoteCastManager {
     }
     let useTurn = true;
     let turnServers: ReturnType<typeof customTurnToIce> = [];
+    let trackers = resolveTrackers();
     try {
       const s = await db.getSettings();
       useTurn = s.shareUseTurn !== false;
       turnServers = customTurnToIce(s.customTurnUrl, s.customTurnUsername, s.customTurnCredential);
-    } catch { /* default on, no custom TURN */ }
+      trackers = resolveTrackers(s.customTrackers);
+    } catch { /* default on, no custom TURN, public trackers */ }
 
-    await this.call('start', { payload: { id: sessionId, contentPath: info.diskPath, ffmpeg, useTurn, turnServers } }, 15000);
+    await this.call('start', { payload: { id: sessionId, contentPath: info.diskPath, ffmpeg, useTurn, turnServers, trackers } }, 15000);
     const url = RECEIVER_BASE + '#' + sessionId + (useTurn ? '' : '|nt');
     return { url, sessionId };
   }
