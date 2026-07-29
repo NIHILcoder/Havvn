@@ -205,6 +205,8 @@
   "rooms.together.on": "In sync",
   "rooms.together.hint": "Sync play / pause / seek with everyone in the room.",
   "rooms.together.synced": "Following",
+  "rooms.theater.on": "Theater mode — hide the side columns (Esc to exit)",
+  "rooms.theater.off": "Exit theater mode",
   "rooms.watching": "Watching now",
   "rooms.react": "Send a reaction",
   "rooms.watchAlone": "You’re the only one here right now.",

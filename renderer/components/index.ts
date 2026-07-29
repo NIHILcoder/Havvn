@@ -49,7 +49,7 @@ export { ScreenSourcePicker, ScreenView } from './ScreenShare';
 export { Identicon } from './Identicon';
 export { Avatar } from './Avatar';
 export { ProfileCard } from './ProfileCard';
-export { Modal, useEscape, useModalFocus } from './Modal';
+export { Modal, useEscape, useModalFocus, isModalOpen } from './Modal';
 export type { ModalProps, ModalSize } from './Modal';
 export { ThemeEditor } from './ThemeEditor';
 export { Onboarding } from './Onboarding';

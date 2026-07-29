@@ -497,6 +497,32 @@
    that column all the width; this puts it back on screen. */
 .room-detail-grid.rail-collapsed.centre-empty.right-empty .room-col-rail { visibility: visible; }
 
+/* THEATER (the watch player's toggle): BOTH side columns go to zero so the stage
+   owns the room's full width. Deliberately a grid modifier and not an overlay —
+   the centre zone carries `container-type: inline-size`, which makes it a
+   containing block for `position: fixed`, so an overlay would have to portal out
+   to its own realm's <body> and stop being part of the room. Collapsing the tracks
+   needs none of that, and the app chrome above the grid stays put by construction.
+   Both splitters hide WITH their columns, unlike `rail-collapsed` which keeps its
+   track because double-clicking it is how the rail returns. Theater has an explicit
+   toggle and Escape, so a grab track for a column nobody can see is just a seam.
+   Uses `visibility`, never `display: none` — see the auto-placement note above.
+   No guard against hiding the last column is needed: `theater` is derived from a
+   live stage view, and the stage lives in the CENTRE track, which this rule never
+   touches. `centre-empty` cannot coexist with it either, since that class requires
+   the stage to be showing Files.
+   NARROW MODE IS NOT AUTOMATIC HERE, and assuming it was is a bug this rule already
+   shipped once: the @container block wins over the `--col-*` line above because it
+   restates the TEMPLATE, but `visibility` is not a template property and passed
+   straight through, leaving the rail and the chat as invisible rows that still took
+   up height in the stack. The counterpart lives in that block, next to the one
+   `rail-collapsed` needs for the same reason. */
+.room-detail-grid.theater { --col-left: 0; --gut-left: 0; --col-right: 0; --gut-right: 0; }
+.room-detail-grid.theater .room-col-rail,
+.room-detail-grid.theater .room-col-chat,
+.room-detail-grid.theater .room-splitter-rail,
+.room-detail-grid.theater .room-splitter-chat { visibility: hidden; }
+
 /* WHILE A DOCK DRAG IS IN FLIGHT, an emptied column grows a thin drop rail.
    Without it a column emptied by a tear-off — which is exactly the gesture that
    empties one — is zero pixels wide, so the zone-body drop target DockZone installs
@@ -747,6 +773,21 @@
      top of the room, so the sticky exception the page-scroll needed is gone too. */
   .room-detail-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
+  /* THEATER's hide needs the same counterpart, and for a sharper reason than
+     rail-collapsed's. This block only restates the TEMPLATE, which neutralises
+     theater's `--col-*: 0` — but `visibility: hidden` is not a template property,
+     so it survived into the stack. Stacked, every grid child is its own auto-sized
+     row and a hidden element KEEPS ITS BOX: the rail (first child, and this block
+     deliberately un-clips its member list two rules down) and the chat (min-height
+     160px) became invisible rows that still consumed height inside the grid, which
+     is the scroller here. The player ended up below a blank scrollable void.
+     Collapsing side columns is also simply meaningless in one column — there are
+     none — so the right behaviour is to undo it, exactly as above. Same specificity
+     (0,3,0) as the rule being overridden and later in the file, per this block's
+     restatement contract; that ordering is also what settles the narrow + theater +
+     rail-collapsed tie coherently instead of half-hiding the room. */
+  .room-detail-grid.theater .room-col-rail,
+  .room-detail-grid.theater .room-col-chat { visibility: visible; }
   .room-splitter { display: none; }
   .room-col-rail, .room-col-centre, .room-col-stage, .room-col-chat { overflow: visible; }
   .room-rail-people-list { overflow: visible; }
@@ -2186,31 +2227,58 @@
 .room-player-inline { flex: 1 1 auto; min-height: 0; display: flex; }
 .room-player-inline .room-player { width: 100%; min-height: 0; border-radius: var(--radius-lg); }
 .room-player {
-  width: min(1240px, 96vw);
+  /* No width of its own. `.room-player-inline .room-player` sets width:100% and
+     wins on specificity, so the old `min(1240px, 96vw)` here never applied — a
+     leftover from when this was a modal, same species as the dead
+     `.room-player-backdrop` rule removed above. */
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   overflow: hidden;
   display: flex; flex-direction: column;
 }
-/* Theater layout: video on the left, a sidebar with the watchers strip. */
+/* ONE COLUMN, always. This used to be a row: video on the left, a 260px fixed
+   sidebar on the right holding the watchers. That is what made the player unusable
+   inline — the stage column is roughly `room − 592px`, so the sidebar took most of
+   it and the video got the remainder.
+   The rule that would have stacked them was a VIEWPORT media query (max-width:760px)
+   while the box it needed to measure was the STAGE, so at any ordinary window size
+   it never fired and side-by-side was forced at exactly the widths where it hurt.
+   Both are gone rather than re-tuned: a strip of 26px identicons never needed a
+   column, so there is no longer a layout to switch between. */
 .room-player-body { display: flex; min-height: 0; flex: 1 1 auto; }
 .room-player-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
-.room-player-side {
-  width: 260px; flex-shrink: 0;
-  display: flex; flex-direction: column; min-height: 0;
-  border-left: 1px solid var(--color-border-default);
+/* Presence and reactions share one row: who is here, and what they are saying.
+   Carries the same background as .room-player-top, which does two jobs beyond
+   looking consistent: it keeps the strip legible when .room-player-main goes
+   FULLSCREEN (the target is main, so this strip goes with it, and an unpainted
+   strip would put theme-coloured text straight onto the black fullscreen
+   backdrop — unreadable in the light theme), and it restores the surface the
+   watcher presence-dot rings are keyed to, which used to be the sidebar's. */
+.room-player-social {
+  display: flex; align-items: center; gap: var(--space-3);
   background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
 }
-.room-player-side .room-player-watchers { border-bottom: 1px solid var(--color-border); }
-/* Stacked player. Stays a VIEWPORT query until the player can be torn off (P4).
-   Keying it to the stage column looked more correct but silently removed a layout:
-   the stage is roughly `room − 592px`, so at a 1280px window it is ~400px and this
-   rule matched unconditionally — side-by-side became unreachable. The right change
-   is a re-tuned threshold against the box being measured, made deliberately. */
-@media (max-width: 760px) {
-  .room-player-body { flex-direction: column; overflow-y: auto; }
-  .room-player-side { width: auto; border-left: none; border-top: 1px solid var(--color-border-default); }
+/* nowrap on the WATCHERS block, not just on the avatars inside it: this block is
+   the flex-wrap:wrap container that holds the label and the avatars, so leaving
+   it wrapping let the avatars drop to a line BELOW the label and the strip grew
+   downward anyway — the scroller inside was never reached. */
+.room-player-social .room-player-watchers { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+.room-player-social .room-player-reactbar { border-bottom: 0; margin-left: auto; }
+/* Scroll the avatars sideways instead of wrapping. Wrapping is right in a column
+   and wrong in a strip: a busy room would grow this row downward and take the
+   height back out of the video, which is the whole point of the change.
+   `overflow-y: hidden` is explicit because a single `overflow-x: auto` computes
+   the other axis to `auto` too, and the padding is what that axis would otherwise
+   need: each dot is absolutely positioned at right/bottom -1px and rings itself
+   with a 2px border, so it sits ~3px outside the identicon box and was being
+   clipped — and it briefly raised a vertical scrollbar in a strip one row tall. */
+.room-player-social .room-player-avatars {
+  flex-wrap: nowrap;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 3px;
 }
 .room-player-top {
   display: flex; align-items: center; gap: 10px;

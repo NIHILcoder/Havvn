@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, RoomChatMessage, LanDiagReport } from '../../shared/types';
-import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
+import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, isModalOpen, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
 import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/hostWindow';
@@ -1653,8 +1653,11 @@ interface StageProps {
    */
   homeLabel: string;
   homeIcon: React.ReactNode;
+  /** Rail + chat collapsed so the stage owns the room's full width. */
+  theater: boolean;
+  onToggleTheater: () => void;
 }
-const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, homeLabel, homeIcon }) => {
+const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, homeLabel, homeIcon, theater, onToggleTheater }) => {
   const { t } = useTranslation();
   const self = room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' };
   const shareName = stageView.kind === 'screen'
@@ -1672,7 +1675,7 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
           so each unmounts on tab switch and fires its presence-leave / watchStop
           cleanup. That is deliberate and unchanged. */}
       {stageView.kind === 'watch' ? (
-        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} />
+        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} theater={theater} onToggleTheater={onToggleTheater} />
       ) : stageView.kind === 'screen' ? (
         <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
       ) : null}
@@ -1806,11 +1809,41 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // render, not a post-commit effect) — otherwise RoomStage would render the player/
   // viewer for one frame against the NEW room but the PREVIOUS room's file/memberId
   // (a cross-room presence broadcast / bad watchFile).
+  // Theater: the rail and the chat collapse so the stage owns the room's full
+  // width. Held here rather than in the player because the class it drives lands
+  // on the GRID, and because it must not outlive the session that asked for it —
+  // which is enforced in three places, not by the flag's own good behaviour: the
+  // room-switch reset just below, the stage-close reset in onCloseStage, and the
+  // derived value further down.
+  //
+  // Declared BEFORE the room-switch adjust block, which resets it: a `const` placed
+  // after that block sits in the temporal dead zone when it runs during render.
+  // (The same ordering hazard app-instance.ts documents for MIGRATION_SENTINEL.)
+  const [theaterOn, setTheaterOn] = useState(false);
+  // Stable identity: the player's Escape effect depends on this, and a fresh
+  // closure per render would tear down and re-bind the window listener on every
+  // unrelated re-render of the room (stats ticks, chat, presence beats).
+  const toggleTheater = useCallback(() => setTheaterOn((v) => !v), []);
   const [stageRoomId, setStageRoomId] = useState(room.roomId);
   if (stageRoomId !== room.roomId) {
     setStageRoomId(room.roomId);
     setStageView({ kind: 'files' });
+    // Theater goes with it. RoomDetail is rendered UNKEYED, so this instance and
+    // its state survive a room switch — without this, a theater toggled in room A
+    // silently collapsed both columns the instant a watch started in room B. The
+    // derived value below cannot catch that: by then the stage IS a watch view.
+    setTheaterOn(false);
   }
+  // DERIVED, never a raw read of the flag — the last line of defence behind the two
+  // resets: a stale `true` would collapse both side columns with no player on the
+  // stage, a room entirely present and entirely invisible, which is the failure the
+  // rail-collapsed guard in the stylesheet already exists to prevent.
+  // Scoped to 'watch' SPECIFICALLY, not "anything non-files": both exits live in
+  // RoomPlayer (the toggle button and the Escape listener), so a theater that
+  // survived into the screen view — reachable, because a torn-off voice panel can
+  // set the stage to 'screen' while the main window's columns are collapsed —
+  // would be a theater with no way out short of closing the stage.
+  const theater = theaterOn && stageView.kind === 'watch';
   // Close the inline screen viewer when its sharer stops or we leave voice
   // (lifted from the voice panel so the Stage owns the view).
   useEffect(() => {
@@ -2787,7 +2820,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           @container rules still set the grid-template-columns PROPERTY, so they
           keep beating both the vars and these collapse classes). */}
       <div
-        className={`room-detail-grid${railCollapsed && !leftEmpty ? ' rail-collapsed' : ''}${leftEmpty ? ' left-empty' : ''}${centreEmpty ? ' centre-empty' : ''}${rightEmpty ? ' right-empty' : ''}`}
+        className={`room-detail-grid${theater ? ' theater' : ''}${railCollapsed && !leftEmpty ? ' rail-collapsed' : ''}${leftEmpty ? ' left-empty' : ''}${centreEmpty ? ' centre-empty' : ''}${rightEmpty ? ' right-empty' : ''}`}
         style={{ '--rail-w': `${layout.railW}px`, '--chat-w': `${layout.chatW}px` } as React.CSSProperties}
       >
         {renderDockZone('left', 'room-col-rail', t(DOCK_ZONE_TABS.left))}
@@ -2800,12 +2833,14 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         <RoomStage
           room={room}
           stageView={stageView}
-          onCloseStage={() => setStageView({ kind: 'files' })}
+          onCloseStage={() => { setStageView({ kind: 'files' }); setTheaterOn(false); }}
           zone={renderDockZone('centre', 'room-col-centre', t(DOCK_ZONE_TABS.centre))}
           // The "back to the column" tab names what the centre is actually showing,
           // so it cannot promise Files after the user has moved Files elsewhere.
           homeLabel={centreActive ? t(PANEL_BY_ID[centreActive].labelKey) : t('rooms.stage.files')}
           homeIcon={<Icon name={centreActive ? PANEL_BY_ID[centreActive].icon : 'folder-open'} size={13} />}
+          theater={theater}
+          onToggleTheater={toggleTheater}
         />
         <div
           className="room-splitter room-splitter-chat"
@@ -4316,7 +4351,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // queue with auto-advance, and track changes broadcast so everyone advances.
 interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
 
-const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; initialTogether?: boolean; onClose: () => void }> = ({ room, roomId, file, self, initialTogether = false, onClose }) => {
+const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; initialTogether?: boolean; onClose: () => void; theater: boolean; onToggleTheater: () => void }> = ({ room, roomId, file, self, initialTogether = false, onClose, theater, onToggleTheater }) => {
   const { t } = useTranslation();
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
@@ -4755,6 +4790,51 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     if (next) presence('beat');
   };
 
+  // Escape leaves theater — and theater is the LOWEST-priority claim on the key in
+  // this app, because it is the only one that does not close a layer. Everything
+  // else must get the Escape first, which takes three separate concessions:
+  //
+  //  - Bound on the WINDOW, not the document. DropdownMenu (and the file-view
+  //    popover) listen on the DOCUMENT and call stopPropagation to shield
+  //    window-level handlers. That shield does not reach a sibling document
+  //    listener — stopPropagation stops the next TARGET, not co-listeners on the
+  //    same one — so a document binding here fired *alongside* an open menu and
+  //    one Escape closed the menu and the layout. From the window the shield works.
+  //  - `isModalOpen()` from components/Modal. Modal listens on the window too, and
+  //    same-target listeners cannot shield each other either, so ordering cannot
+  //    settle this and the check has to be explicit. That stack is the app's only
+  //    Escape-priority registry; this is the first non-Modal caller.
+  //  - Native fullscreen owns the key outright. Leaving fullscreen must not ALSO
+  //    drop theater, or the exit ladder (fullscreen → theater → stage) collapses
+  //    into one rung.
+  //
+  // A focused text field is ceded as well: cancelling the header rename must not
+  // yank the layout out from under the user mid-edit.
+  //
+  // The window is resolved through the OWNING document, so a key typed in a
+  // torn-off chat lands on the CHILD window and correctly never reaches this — dock
+  // windows share this React tree but not their document.
+  useEffect(() => {
+    if (!theater) return;
+    const doc = mainRef.current?.ownerDocument ?? document;
+    const win = doc.defaultView;
+    if (!win) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (doc.fullscreenElement) return;
+      if (isModalOpen()) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      onToggleTheater();
+    };
+    win.addEventListener('keydown', onKey);
+    return () => win.removeEventListener('keydown', onKey);
+  }, [theater, onToggleTheater]);
+
+  // No `theater` class on the root below: the mode is expressed entirely by
+  // collapsing the grid's side tracks, so the player itself needs no variant. An
+  // unused class here would only invite a future rule that styles the player for a
+  // state the player does not actually own.
   return (
     <div className="room-player-inline">
       <div className="room-player">
@@ -4777,6 +4857,18 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
           )}
           <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
             <Icon name="users" size={14} /> {together ? t('rooms.together.on') : t('rooms.together.off')}
+          </button>
+          {/* Theater collapses the rail and the chat so the stage takes the room's
+              full width. NOT fullscreen: watch-together is the one mode where
+              fullscreen is the wrong answer, because the point is to still see the
+              room. Fullscreen stays available on the control bar for when it isn't. */}
+          <button
+            className={`room-player-sync room-player-theater${theater ? ' on' : ''}`}
+            onClick={onToggleTheater}
+            title={theater ? t('rooms.theater.off') : t('rooms.theater.on')}
+            aria-pressed={theater}
+          >
+            <Icon name={theater ? 'minimize' : 'maximize'} size={14} />
           </button>
           <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
@@ -4825,10 +4917,31 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
               </div>
             </div>
             <PlayerControls media={mediaEl} fullscreenTarget={mainRef} />
-            <div className="room-player-reactbar">
-              {['😂', '❤️', '🔥', '😮', '👏', '🎉', '😢', '💀'].map((e) => (
-                <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>
-              ))}
+            {/* Presence + reactions on ONE horizontal row. The watchers used to be
+                a 260px fixed COLUMN beside the video, which is what made the player
+                unusable in the stage: the column is roughly `room − 592px`, so the
+                sidebar ate most of it and the video got the remainder. A strip of
+                26px identicons never needed a column, and laying it out this way
+                removes the constraint instead of re-tuning the threshold that used
+                to paper over it. */}
+            <div className="room-player-social">
+              <div className="room-player-watchers">
+                <span className="room-player-watchers-label"><Icon name="users" size={13} /> {isAudio ? t('rooms.listening') : t('rooms.watching')}</span>
+                <div className="room-player-avatars">
+                  {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
+                    <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ` ${t('rooms.youParen')}` : ''} — ${w.playing ? '▶' : '❚❚'}`}>
+                      <Identicon seed={w.avatarSeed} size={26} />
+                      <span className="room-watcher-dot" />
+                    </span>
+                  ))}
+                </div>
+                {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
+              </div>
+              <div className="room-player-reactbar">
+                {['😂', '❤️', '🔥', '😮', '👏', '🎉', '😢', '💀'].map((e) => (
+                  <button key={e} className="room-react-btn" onClick={() => react(e)} title={t('rooms.react')}>{e}</button>
+                ))}
+              </div>
             </div>
             {isAudio && playlist.length > 1 && (
               <div className="room-player-queue">
@@ -4850,21 +4963,6 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
             {error && <div className="room-player-msg err">{error}</div>}
             {together && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}
           </div>
-
-          <aside className="room-player-side">
-            <div className="room-player-watchers">
-              <span className="room-player-watchers-label"><Icon name="users" size={13} /> {isAudio ? t('rooms.listening') : t('rooms.watching')}</span>
-              <div className="room-player-avatars">
-                {Object.values(watchers).sort((a, b) => a.name.localeCompare(b.name)).map((w) => (
-                  <span key={w.memberId} className={`room-watcher ${w.playing ? 'playing' : 'paused'}`} title={`${w.name}${w.memberId === self.memberId ? ` ${t('rooms.youParen')}` : ''} — ${w.playing ? '▶' : '❚❚'}`}>
-                    <Identicon seed={w.avatarSeed} size={26} />
-                    <span className="room-watcher-dot" />
-                  </span>
-                ))}
-              </div>
-              {Object.keys(watchers).length <= 1 && <span className="room-player-alone">{t('rooms.watchAlone')}</span>}
-            </div>
-          </aside>
         </div>
       </div>
     </div>

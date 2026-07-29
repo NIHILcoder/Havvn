@@ -51,6 +51,25 @@ export function useEscape(onClose: () => void, active = true): void {
 // Making the stack per-window would leave Escape ordering between two windows
 // undefined. Only the key LISTENER follows the host window.
 const modalStack: object[] = [];
+
+/**
+ * Is any modal currently open?
+ *
+ * Exported because this stack is already the app's only Escape-priority registry,
+ * and a surface that consumes Escape for something OTHER than closing a layer has
+ * no other way to yield to a dialog. Modal shields itself with `stopPropagation`
+ * on the WINDOW, which does not help a listener bound lower down: keydown bubbles
+ * document-before-window, so a document-level handler has already run by then. Such
+ * a handler must ASK instead — the room's theater mode is the first caller.
+ *
+ * Cross-window by construction, like the stack: a dialog open in a torn-off panel
+ * still outranks an Escape typed in the main window, which is the same ordering
+ * Escape-closes-the-topmost already promises.
+ */
+export function isModalOpen(): boolean {
+  return modalStack.length > 0;
+}
+
 function useModalEscape(token: object, onClose: () => void, active: boolean): void {
   const host = useHostWindow();
   useEffect(() => {

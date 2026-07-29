@@ -205,6 +205,8 @@
   "rooms.together.on": "Синхронно",
   "rooms.together.hint": "Синхронизировать воспроизведение / паузу / перемотку со всеми в комнате.",
   "rooms.together.synced": "Следуем за",
+  "rooms.theater.on": "Театральный режим — скрыть боковые колонки (Esc для выхода)",
+  "rooms.theater.off": "Выйти из театрального режима",
   "rooms.watching": "Смотрят сейчас",
   "rooms.react": "Отправить реакцию",
   "rooms.watchAlone": "Пока вы здесь один.",
