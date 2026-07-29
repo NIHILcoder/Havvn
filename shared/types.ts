@@ -724,6 +724,22 @@ export interface NetworkHealth {
   uploadBps: number;          // current aggregate upload throughput (bytes/sec)
 }
 
+/**
+ * The transport flags the RUNNING engine was actually constructed with — what a
+ * changed setting has to be compared against to know whether a restart is owed.
+ *
+ * `null` means the running engine applies these live and no restart is ever
+ * needed (transmission pushes all of them over RPC). Only the webtorrent client
+ * reports a shape here, because it fixes utp/dht in its constructor.
+ *
+ * PEX and LSD are absent on purpose: webtorrent has no PEX switch and no LSD
+ * implementation, so there is no running value to diverge from.
+ */
+export interface RunningTransport {
+  utp: boolean;
+  dht: boolean;
+}
+
 // Scheduler types
 export interface ScheduleEntry {
   id: string;
@@ -1049,6 +1065,8 @@ export interface IpcApi {
   checkVPN: () => Promise<VPNDetectionResult>;
   getIpInfo: () => Promise<IpInfo>;
   getNetworkHealth: () => Promise<NetworkHealth>;
+  /** Transport flags the running engine was built with; null = applied live. */
+  getRunningTransport: () => Promise<RunningTransport | null>;
   // DNS-over-HTTPS resolver management
   getDohTemplates: () => Promise<DohTemplate[]>;                       // built-in + custom
   addDohTemplate: (name: string, url: string) => Promise<DohTemplate>; // add a custom resolver

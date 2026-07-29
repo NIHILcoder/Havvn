@@ -42,8 +42,8 @@ import { selectVpnIPv4, resolveBindOverrides } from '../../../shared/vpn-bind';
 import { composeUploadLimits } from '../../../shared/upload-limits';
 import { AdaptiveThrottle } from '../adaptive-throttle';
 import type {
-  AppSettings, Download, DownloadStats, FilePriority, NetworkHealth, PeerInfo, SourceType,
-  SwarmGeo, TorrentFile, TorrentInfo, TrackerInfo, VpnBindStatus,
+  AppSettings, Download, DownloadStats, FilePriority, NetworkHealth, PeerInfo, RunningTransport,
+  SourceType, SwarmGeo, TorrentFile, TorrentInfo, TrackerInfo, VpnBindStatus,
 } from '../../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1118,6 +1118,15 @@ export class NativeTorrentManager {
         resolve(out);
       });
     });
+  }
+
+  /**
+   * Null: the daemon applies dht/pex/lpd/utp live over session-set, so a changed
+   * transport toggle is never owed a restart here and the renderer must not
+   * offer one. The asymmetry with webtorrent is the engine's, not the setting's.
+   */
+  getRunningTransport(): RunningTransport | null {
+    return null;
   }
 
   /** Live snapshot for the adaptive-throttle indicator in the UI. */

@@ -1256,6 +1256,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async () => torrentManager.getNetworkHealth()
   ));
 
+  // What the running engine was BUILT with, so the Connection panel can tell a
+  // changed transport toggle apart from an applied one. Deliberately not folded
+  // into network:getHealth: that one is only polled while the adaptive throttle
+  // is on, and the restart notice has to appear regardless of it.
+  ipcMain.handle('network:getRunningTransport', wrapHandler('network:getRunningTransport',
+    async () => torrentManager.getRunningTransport()
+  ));
+
   // DNS-over-HTTPS resolver templates (built-in + custom) for the Network panel.
   ipcMain.handle('doh:getTemplates', wrapHandler('doh:getTemplates',
     async () => {

@@ -12,7 +12,7 @@
 
 import React from 'react';
 import { useSettings } from '../SettingsContext';
-import { SettingsCard, SettingRow, NumberField } from '../controls';
+import { SettingsCard, SettingRow, NumberField, RestartPendingNotice } from '../controls';
 import { Icon, Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 
@@ -25,7 +25,7 @@ export const ConnectionSection: React.FC = () => {
     adaptiveUpload, setAdaptiveUpload, netHealth,
     altSpeedEnabled, setAltSpeedEnabled,
     altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
-    enableDHT, setEnableDHT, enableUtp, setEnableUtp,
+    enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
     maxConnections, setMaxConnections,
     maxConnectionsGlobal, setMaxConnectionsGlobal,
     portMin, setPortMin,
@@ -237,10 +237,18 @@ export const ConnectionSection: React.FC = () => {
         />
         {/* PEX/LSD toggles removed: WebTorrent can't switch PEX off and has
             no LSD implementation — the switches were placebo. */}
-        <div className="settings-notice-compact">
-          <Icon name="info" size={14} />
-          <span>{t('settings.protocols.note')}</span>
-        </div>
+        {/* The native engine pushes these over RPC and applies them at once, so
+            transportRestartPending is false there and this stays the plain note.
+            Only the webtorrent client, which fixes utp/dht in its constructor,
+            can owe a restart — and then it says so rather than looking applied. */}
+        {transportRestartPending ? (
+          <RestartPendingNotice text={t('settings.protocols.pending')} />
+        ) : (
+          <div className="settings-notice-compact">
+            <Icon name="info" size={14} />
+            <span>{t('settings.protocols.note')}</span>
+          </div>
+        )}
 
         <SettingRow
           label={t('settings.maxConn')}

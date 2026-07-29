@@ -269,6 +269,7 @@ class TorrentManagerProxy {
   setSequentialDownload(...a: Parameters<TM['setSequentialDownload']>): Fwd<TM['setSequentialDownload']> { return this.rpc('setSequentialDownload', a); }
   updateSettings(...a: Parameters<TM['updateSettings']>): Fwd<TM['updateSettings']> { return this.rpc('updateSettings', a); }
   getNetworkHealth(...a: Parameters<TM['getNetworkHealth']>): Fwd<TM['getNetworkHealth']> { return this.rpc('getNetworkHealth', a); }
+  getRunningTransport(...a: Parameters<TM['getRunningTransport']>): Fwd<TM['getRunningTransport']> { return this.rpc('getRunningTransport', a); }
   applyIpBlocklist(...a: Parameters<TM['applyIpBlocklist']>): Promise<void> { return this.rpc('applyIpBlocklist', a); }
 
   setAltSpeed(...a: Parameters<TM['setAltSpeed']>): Fwd<TM['setAltSpeed']> {

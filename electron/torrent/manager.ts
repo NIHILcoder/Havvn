@@ -20,6 +20,7 @@ import {
   TrackerInfo,
   PeerInfo,
   NetworkHealth,
+  RunningTransport,
   SwarmGeo,
   SwarmGeoPoint,
 } from '../../shared/types';
@@ -3114,6 +3115,20 @@ export class TorrentManager {
 
   /** Current alt-speed state (for the toolbar/tray toggle to read on load). */
   isAltSpeedEnabled(): boolean { return this.altSpeedEnabled; }
+
+  /**
+   * What the RUNNING client was built with, so the renderer can tell a changed
+   * setting apart from an applied one and show the restart notice — the same
+   * "configured vs running" split the engine picker already makes. Null before
+   * the client exists: nothing is running, so nothing is stale.
+   *
+   * This is the CONSTRUCTED value, not the setting: when utp-native is missing
+   * the client is built TCP-only however the setting reads, and the notice must
+   * follow the client.
+   */
+  getRunningTransport(): RunningTransport | null {
+    return this.constructedTransport;
+  }
 
   /** Live snapshot for the adaptive-throttle indicator in the UI. */
   getNetworkHealth(): NetworkHealth {

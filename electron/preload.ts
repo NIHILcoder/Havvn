@@ -244,6 +244,10 @@ const api: IpcApi = {
     return ipcRenderer.invoke('network:getHealth');
   },
 
+  getRunningTransport: () => {
+    return ipcRenderer.invoke('network:getRunningTransport');
+  },
+
   getDohTemplates: () => {
     return ipcRenderer.invoke('doh:getTemplates');
   },

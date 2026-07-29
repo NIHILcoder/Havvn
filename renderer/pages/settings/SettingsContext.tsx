@@ -11,7 +11,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import {
   AppSettings, SchedulerConfig, ScheduleEntry, PortForwardStatus, NetworkHealth,
-  DohTemplate, NetworkProfile, NetworkInfo,
+  DohTemplate, NetworkProfile, NetworkInfo, RunningTransport,
 } from '../../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from '../../utils/i18nContext';
@@ -48,6 +48,9 @@ function useSettingsController() {
   const [theme, setTheme] = useState<Theme>('system');
   const [engine, setEngineState] = useState<'native' | 'webtorrent'>('native');
   const [runningEngine, setRunningEngine] = useState<'native' | 'webtorrent' | null>(null);
+  // What the running engine was BUILT with. Null on the native engine, which
+  // applies every transport toggle live — so it never shows a restart notice.
+  const [runningTransport, setRunningTransport] = useState<RunningTransport | null>(null);
 
   // Notifications
   const [enableNotifications, setEnableNotifications] = useState(true);
@@ -162,6 +165,7 @@ function useSettingsController() {
     window.api.getAppVersion().then(setAppVersion).catch(console.error);
     window.api.webRemote.getInfo().then(setWebRemote).catch(console.error);
     window.api.getRunningEngine().then(setRunningEngine).catch(console.error);
+    window.api.getRunningTransport().then(setRunningTransport).catch(console.error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -440,6 +444,14 @@ function useSettingsController() {
     }
   };
   const engineRestartPending = runningEngine !== null && engine !== runningEngine;
+
+  // Same "configured vs running" split as the engine picker, for the transport
+  // toggles. Null runningTransport means the engine applies them live, so there
+  // is nothing to warn about — and toggling back to the running value retracts
+  // the notice instead of leaving it stuck.
+  const transportRestartPending =
+    runningTransport !== null &&
+    (enableUtp !== runningTransport.utp || enableDHT !== runningTransport.dht);
 
   // Custom TURN relay — persisted on demand.
   const saveTurn = async () => {
@@ -732,7 +744,7 @@ function useSettingsController() {
     adaptiveUpload, setAdaptiveUpload, netHealth,
     maxActiveDownloads, setMaxActiveDownloads,
     altSpeedEnabled, setAltSpeedEnabled, altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
-    enableDHT, setEnableDHT, enableUtp, setEnableUtp,
+    enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
     maxConnections, setMaxConnections, maxConnectionsGlobal, setMaxConnectionsGlobal,
     portMin, setPortMin, portForwarding, setPortForwarding, pfStatus,
     // DoH
