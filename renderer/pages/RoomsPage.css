@@ -2247,7 +2247,21 @@
    Both are gone rather than re-tuned: a strip of 26px identicons never needed a
    column, so there is no longer a layout to switch between. */
 .room-player-body { display: flex; min-height: 0; flex: 1 1 auto; }
-.room-player-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+.room-player-main {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0;
+  overflow-y: auto;
+  /* This scroller predates the rework but the default light OS bar across a dark
+     player was always wrong, and a busy watchers strip makes it appear more often.
+     Same thin themed treatment as .batch-list / .fp-list. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+.room-player-main::-webkit-scrollbar { width: 5px; }
+.room-player-main::-webkit-scrollbar-track { background: transparent; }
+.room-player-main::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
 /* Presence and reactions share one row: who is here, and what they are saying.
    Carries the same background as .room-player-top, which does two jobs beyond
    looking consistent: it keeps the strip legible when .room-player-main goes
@@ -2265,7 +2279,19 @@
    the flex-wrap:wrap container that holds the label and the avatars, so leaving
    it wrapping let the avatars drop to a line BELOW the label and the strip grew
    downward anyway — the scroller inside was never reached. */
-.room-player-social .room-player-watchers { flex: 1 1 auto; min-width: 0; flex-wrap: nowrap; }
+/* `flex-basis: 0`, not `auto`. Flex line-breaking is decided on the HYPOTHETICAL
+   main size — the flex base size — and only THEN do items shrink within the line
+   they landed on. With `auto` the base size is the full width of the label plus
+   every avatar (~850px at 24 watchers), which alone exceeds the stage, so the
+   reaction bar was pushed onto a second row and the strip grew downward anyway.
+   A zero basis never forces that break; the block still grows to fill the row and
+   the avatars scroller absorbs the excess. The parent keeps `flex-wrap: wrap` as
+   genuine last-resort degradation at absurd widths. */
+.room-player-social .room-player-watchers { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; }
+/* The label holds its line and its size. nowrap on the parent stops the AVATARS
+   from dropping below it, but the label is still a flex item that can be squeezed
+   until "Watching" breaks under its own icon — visible with ~20 watchers. */
+.room-player-social .room-player-watchers-label { flex-shrink: 0; white-space: nowrap; }
 .room-player-social .room-player-reactbar { border-bottom: 0; margin-left: auto; }
 /* Scroll the avatars sideways instead of wrapping. Wrapping is right in a column
    and wrong in a strip: a busy room would grow this row downward and take the
@@ -2277,8 +2303,27 @@
    clipped — and it briefly raised a vertical scrollbar in a strip one row tall. */
 .room-player-social .room-player-avatars {
   flex-wrap: nowrap;
+  /* min-width:0 is what makes the scroller actually SCROLL. Without it the flex
+     base size is the full width of every avatar, the watchers block cannot shrink
+     below that, and .room-player-social wraps the reaction bar onto a second row —
+     the strip grows downward again, which is the whole thing this rework removes.
+     The parent's min-width:0 does not reach here; each level needs its own. */
+  min-width: 0;
   overflow-x: auto; overflow-y: hidden;
   padding: 3px;
+  /* Thin themed bar, matching .batch-list / .fp-list. Left at the OS default this
+     drew a chunky light-grey scrollbar across a dark strip, and its ~15px of
+     reserved height was enough to push .room-player-main past its own height and
+     raise a SECOND (vertical) scrollbar on the player. A 5px overlay-weight bar
+     costs no layout height and the cascade of scrollbars goes with it. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+.room-player-social .room-player-avatars::-webkit-scrollbar { height: 5px; }
+.room-player-social .room-player-avatars::-webkit-scrollbar-track { background: transparent; }
+.room-player-social .room-player-avatars::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-sm);
 }
 .room-player-top {
   display: flex; align-items: center; gap: 10px;
