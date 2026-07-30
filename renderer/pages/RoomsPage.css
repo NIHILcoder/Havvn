@@ -2353,14 +2353,37 @@
   background: transparent; color: var(--color-text-secondary);
 }
 .room-player-close:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
-.room-player-stage { position: relative; }
-.room-player-video { width: 100%; max-height: 72vh; background: #000; outline: none; display: block; cursor: pointer; }
+/* The stage TAKES the height the player is not otherwise using. Without this it
+   was a plain block with flex-grow 0 inside a column flex, so its height was
+   whatever the video's aspect ratio produced at the current width — and every
+   remaining pixel of the player became a dead band under the watchers strip.
+   Theater made that worse by construction: it hands the player the room's full
+   height while the video still sizes itself from its width.
+   `position: relative` stays — .room-player-reactions is an inset:0 overlay on it. */
+.room-player-stage {
+  position: relative;
+  flex: 1 1 auto; min-height: 0;
+  display: flex;
+  background: #000;
+}
+/* Fill the box and letterbox INSIDE it rather than leaving app background around
+   the picture — the black is then part of the frame, which is what a cinema looks
+   like. `object-fit: contain` never crops and never distorts.
+   The old `max-height: 72vh` is gone: a VIEWPORT cap on a box whose height comes
+   from the stage column is the same category of mistake as the max-width:760px
+   media query this rework already removed. The flex line above bounds it now. */
+.room-player-video { width: 100%; height: 100%; min-height: 0; object-fit: contain; background: #000; outline: none; display: block; cursor: pointer; }
 /* Music mode: the element keeps playing, the visualizer stage takes the screen */
 .room-player-video-hidden { display: none; }
 
 .room-audio-stage {
   position: relative;
-  height: 300px;
+  /* Fills the stage now that the stage flexes, with the old fixed height kept as a
+     FLOOR so a short player still gives the visualiser room to read. A literal
+     `height: 300px` here would have reproduced the dead band this rework removed,
+     one level further in. */
+  flex: 1 1 auto;
+  min-height: 300px;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
