@@ -65,6 +65,9 @@ $RECYCLE.BIN/
 tmp/
 temp/
 .git-commit-msg.txt
+# vitest / dock scratch logs (local triage only)
+dock-failures.txt
+*-failures.txt
 rel-created.json
 rel-payload.json
 *.output
