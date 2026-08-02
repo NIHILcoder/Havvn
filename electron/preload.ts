@@ -29,6 +29,12 @@ import {
   ScreenSourceInfo,
   LanDiagReport,
 } from '../shared/types';
+import type {
+  ConfigField,
+  ConsoleLine,
+  GameVersionRef,
+  RoomServerState,
+} from '../shared/gameserver-types';
 
 const api: IpcApi = {
   // Downloads
@@ -760,6 +766,67 @@ const api: IpcApi = {
       setRelay: (enabled: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanSetRelay', enabled),
       allowApp: (roomId: string): Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }> =>
         ipcRenderer.invoke('rooms:lanAllowApp', roomId),
+    },
+    // Game servers hosted inside a room (Minecraft and friends).
+    servers: {
+      state: (roomId: string): Promise<RoomServerState> => ipcRenderer.invoke('rooms:srvState', roomId),
+      versions: (moduleId: string): Promise<GameVersionRef[]> => ipcRenderer.invoke('rooms:srvVersions', moduleId),
+      legalGate: (moduleId: string): Promise<{ id: string; labelKey: string; url: string; accepted: boolean } | null> =>
+        ipcRenderer.invoke('rooms:srvLegalGate', moduleId),
+      acceptLegal: (moduleId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvAcceptLegal', moduleId),
+      createForm: (roomId: string, moduleId: string): Promise<{ schema: ConfigField[]; values: Record<string, string> }> =>
+        ipcRenderer.invoke('rooms:srvCreateForm', roomId, moduleId),
+      create: (
+        roomId: string, moduleId: string, refId: string, name?: string,
+        config?: Record<string, string>,
+      ): Promise<{ instanceId: string }> =>
+        ipcRenderer.invoke('rooms:srvCreate', roomId, moduleId, refId, name, config),
+      pickImport: (moduleId: string) => ipcRenderer.invoke('rooms:srvPickImport', moduleId),
+      discardImport: (stagingId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvDiscardImport', stagingId),
+      createImported: (
+        roomId: string, moduleId: string, stagingId: string, candidateId: string,
+        name?: string, javaMajor?: number,
+      ): Promise<{ instanceId: string }> =>
+        ipcRenderer.invoke('rooms:srvCreateImported', roomId, moduleId, stagingId, candidateId, name, javaMajor),
+      remove: (instanceId: string, deleteFiles: boolean): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvDelete', instanceId, deleteFiles),
+      start: (instanceId: string): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('rooms:srvStart', instanceId),
+      stop: (instanceId: string): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('rooms:srvStop', instanceId),
+      restart: (instanceId: string): Promise<{ ok: boolean; reason?: string }> => ipcRenderer.invoke('rooms:srvRestart', instanceId),
+      reinstall: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvInstall', instanceId),
+      cancelInstall: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvCancelInstall', instanceId),
+      checkUpdate: (instanceId: string): Promise<{ current: string; available: string | null }> =>
+        ipcRenderer.invoke('rooms:srvCheckUpdate', instanceId),
+      applyUpdate: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvApplyUpdate', instanceId),
+      command: (instanceId: string, command: string): Promise<{ ok: boolean; reason?: string }> =>
+        ipcRenderer.invoke('rooms:srvCommand', instanceId, command),
+      clearFailure: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvClearFailure', instanceId),
+      setAutoRestart: (instanceId: string, enabled: boolean): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSetAutoRestart', instanceId, enabled),
+      getConfig: (instanceId: string): Promise<{ schema: ConfigField[]; values: Record<string, string> }> =>
+        ipcRenderer.invoke('rooms:srvGetConfig', instanceId),
+      saveConfig: (instanceId: string, values: Record<string, string>): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSaveConfig', instanceId, values),
+      openFolder: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvOpenFolder', instanceId),
+      /** Console lines newer than `after`; the renderer keeps the last seq it saw. */
+      console: (instanceId: string, after?: number): Promise<ConsoleLine[]> =>
+        ipcRenderer.invoke('rooms:srvConsole', instanceId, after ?? 0),
+      /** Live console tail. Main only streams while at least one listener is
+       *  attached, so a closed panel costs nothing. */
+      onConsole: (cb: (payload: { instanceId: string; lines: ConsoleLine[] }) => void): (() => void) => {
+        const listener = (_e: unknown, payload: { instanceId: string; lines: ConsoleLine[] }): void => cb(payload);
+        ipcRenderer.on('rooms:srvConsoleLines', listener);
+        return () => { ipcRenderer.removeListener('rooms:srvConsoleLines', listener); };
+      },
+      watchConsole: (instanceId: string | null): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvWatchConsole', instanceId),
+      /** Pushed whenever anything about a room's servers changed. */
+      onUpdate: (cb: (payload: { roomId: string; state: RoomServerState }) => void): (() => void) => {
+        const listener = (_e: unknown, payload: { roomId: string; state: RoomServerState }): void => cb(payload);
+        ipcRenderer.on('rooms:srvUpdate', listener);
+        return () => { ipcRenderer.removeListener('rooms:srvUpdate', listener); };
+      },
     },
     createFolder: (roomId: string, name: string, icon: string, color: string, parentId?: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:createFolder', roomId, name, icon, color, parentId),

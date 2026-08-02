@@ -22,6 +22,14 @@ export { MAX_LAN_PEERS } from './lan-types';
 import type { LanDiagReport } from './lan-quality';
 export type { LanDiagReport, LanDiagCheck, LanCheckId, LanCheckLevel, LanDiagCause } from './lan-quality';
 
+import type {
+  ConfigField, ConsoleLine, GameVersionRef, ImportScanResult, RoomServerState,
+} from './gameserver-types';
+export type {
+  ConfigField, ConsoleLine, GameCaps, GameVersionRef, ImportCandidate, ImportScanResult,
+  RoomServerInstance, RoomServerState, ServerFailReason, ServerRole, ServerStatus,
+} from './gameserver-types';
+
 export type DownloadStatus =
   | 'queued'
   | 'downloading'
@@ -1308,6 +1316,77 @@ export interface IpcApi {
        *  the cost is this install's uplink (and, honestly, the relay can read what
        *  it forwards), so this takes no roomId. Persisted as AppSettings.lanRelayEnabled. */
       setRelay: (enabled: boolean) => Promise<{ ok: boolean }>;
+    };
+    /**
+     * Game servers hosted inside a room: a dedicated server process on the
+     * host's machine, so a world stays up without anyone having to be in it.
+     * Reachability is the virtual LAN's job; this is what runs on top of it.
+     */
+    servers: {
+      state: (roomId: string) => Promise<RoomServerState>;
+      /** Versions a module offers. A preset may only ever name one of these. */
+      versions: (moduleId: string) => Promise<GameVersionRef[]>;
+      /** Licence the user must accept before a first install (Minecraft's EULA).
+       *  Never accepted implicitly — agreeing on someone's behalf is not ours.
+       *  `labelKey` is a translation key; the renderer localises it. */
+      legalGate: (moduleId: string) => Promise<{ id: string; labelKey: string; url: string; accepted: boolean } | null>;
+      acceptLegal: (moduleId: string) => Promise<{ ok: boolean }>;
+      /**
+       * Fields the create form should ask for, pre-filled by the core — most
+       * importantly a port no sibling instance and no other process holds.
+       * Asked of main because a renderer cannot bind a socket to find out, and a
+       * hard-coded default is what made every second server in a room fail to bind.
+       */
+      createForm: (roomId: string, moduleId: string) => Promise<{ schema: ConfigField[]; values: Record<string, string> }>;
+      /** `config` is checked against the module's own schema in the main process;
+       *  values it rejects fall back to the module's defaults. */
+      create: (
+        roomId: string, moduleId: string, refId: string, name?: string,
+        config?: Record<string, string>,
+      ) => Promise<{ instanceId: string }>;
+      /**
+       * Pick a jar/zip, stage it, and return what the module recognised.
+       * `cancelled` when the user dismissed the dialog; `error` is a tagged
+       * ImportFailure the UI translates.
+       */
+      pickImport: (moduleId: string) => Promise<
+        | { cancelled: true }
+        | ({ cancelled: false } & ImportScanResult)
+        | { cancelled: false; error: string; detail?: string }
+      >;
+      discardImport: (stagingId: string) => Promise<{ ok: boolean }>;
+      createImported: (
+        roomId: string, moduleId: string, stagingId: string, candidateId: string,
+        name?: string, javaMajor?: number,
+      ) => Promise<{ instanceId: string }>;
+      remove: (instanceId: string, deleteFiles: boolean) => Promise<{ ok: boolean }>;
+      start: (instanceId: string) => Promise<{ ok: boolean; reason?: string }>;
+      stop: (instanceId: string) => Promise<{ ok: boolean; reason?: string }>;
+      restart: (instanceId: string) => Promise<{ ok: boolean; reason?: string }>;
+      reinstall: (instanceId: string) => Promise<{ ok: boolean }>;
+      cancelInstall: (instanceId: string) => Promise<{ ok: boolean }>;
+      /**
+       * Re-resolve this instance's version against the live catalog. `available` is
+       * the newer build's label, or null when the pinned one is still current.
+       *
+       * Separate from applying it: checking pins the candidate, applying reinstalls
+       * onto it. One button doing both would swap the build under a world on a
+       * mis-click, and the world is the part nobody can re-download.
+       */
+      checkUpdate: (instanceId: string) => Promise<{ current: string; available: string | null }>;
+      applyUpdate: (instanceId: string) => Promise<{ ok: boolean }>;
+      command: (instanceId: string, command: string) => Promise<{ ok: boolean; reason?: string }>;
+      clearFailure: (instanceId: string) => Promise<{ ok: boolean }>;
+      setAutoRestart: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
+      getConfig: (instanceId: string) => Promise<{ schema: ConfigField[]; values: Record<string, string> }>;
+      saveConfig: (instanceId: string, values: Record<string, string>) => Promise<{ ok: boolean }>;
+      openFolder: (instanceId: string) => Promise<{ ok: boolean }>;
+      console: (instanceId: string, after?: number) => Promise<ConsoleLine[]>;
+      onConsole: (cb: (payload: { instanceId: string; lines: ConsoleLine[] }) => void) => () => void;
+      /** Subscribe main's console tail to ONE instance (null unsubscribes), so a
+       *  closed panel costs no IPC traffic. */
+      watchConsole: (instanceId: string | null) => Promise<{ ok: boolean }>;
+      onUpdate: (cb: (payload: { roomId: string; state: RoomServerState }) => void) => () => void;
     };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
     importIdentity: () => Promise<{ success: boolean; rooms?: number }>;

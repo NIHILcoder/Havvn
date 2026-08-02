@@ -672,7 +672,7 @@ async function createWindow(): Promise<void> {
   // `havvn-dock-1` always reopens where the user parked it.
   //
   // The pool being finite is what makes "beyond the pool" a real, checkable
-  // condition: a slot the allocator should never hand out (`havvn-dock-5`, or a
+  // condition: a slot the allocator should never hand out (`havvn-dock-6`, or a
   // retired name from a stale renderer) falls through to the deny branch below,
   // which reports a REASON on `win:popoutDenied` rather than denying silently.
   //
@@ -1382,6 +1382,17 @@ async function cleanup(): Promise<void> {
     logger.info('App', 'Share manager destroyed.');
   } catch (e) {
     logger.error('App', 'Error destroying share manager', { error: e });
+  }
+
+  // Game servers BEFORE the room manager: a supervised JVM that outlives us
+  // keeps the world files locked and the port bound, so the next launch fails
+  // with an "address already in use" that has no visible cause.
+  try {
+    const { serverManager } = await import('./gameserver/server-manager');
+    serverManager.dispose();
+    logger.info('App', 'Game servers stopped.');
+  } catch (e) {
+    logger.error('App', 'Error stopping game servers', { error: e });
   }
 
   try {

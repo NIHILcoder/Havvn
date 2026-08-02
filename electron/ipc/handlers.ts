@@ -14,6 +14,7 @@ import { getRSSService } from '../services/rss-service';
 import { getShareManager, downloadContentPath } from '../sharing/share-manager';
 import { customTurnToIce, resolveTrackers } from '../sharing/ice-servers';
 import { getRoomManager } from '../sharing/room-manager';
+import { serverManager } from '../gameserver/server-manager';
 import { getSearchService } from '../services/search-service';
 import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
@@ -22,6 +23,73 @@ import { t } from '../i18n';
 import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
 
 const log = logger.child('IPC');
+
+// ── Game-server console tail ─────────────────────────────────────────────────
+// One subscription per renderer, to one instance. Lines are batched on a short
+// timer instead of sent individually: a modded server's startup emits thousands
+// of lines, and one IPC message per line is how you make the UI thread the
+// bottleneck. Batching also keeps ordering trivially correct.
+
+const CONSOLE_FLUSH_MS = 120;
+const CONSOLE_BATCH_MAX = 400;
+
+interface ConsoleWatch {
+  instanceId: string;
+  unsubscribe: () => void;
+  pending: import('../../shared/gameserver-types').ConsoleLine[];
+  timer: NodeJS.Timeout | null;
+}
+
+const consoleWatches = new WeakMap<Electron.WebContents, ConsoleWatch>();
+
+function watchConsole(sender: Electron.WebContents, instanceId: string | null): void {
+  const existing = consoleWatches.get(sender);
+  if (existing) {
+    if (existing.instanceId === instanceId) return;
+    if (existing.timer) clearTimeout(existing.timer);
+    existing.unsubscribe();
+    consoleWatches.delete(sender);
+  }
+  if (!instanceId) return;
+
+  const watch: ConsoleWatch = { instanceId, unsubscribe: () => { /* replaced below */ }, pending: [], timer: null };
+
+  const flush = (): void => {
+    watch.timer = null;
+    if (watch.pending.length === 0) return;
+    const lines = watch.pending;
+    watch.pending = [];
+    if (sender.isDestroyed()) return;
+    sender.send('rooms:srvConsoleLines', { instanceId, lines });
+  };
+
+  try {
+    watch.unsubscribe = serverManager.subscribeConsole(instanceId, (line) => {
+      watch.pending.push(line);
+      // A hard cap alongside the timer: a burst must not grow this unbounded
+      // while the timer waits.
+      if (watch.pending.length >= CONSOLE_BATCH_MAX) {
+        if (watch.timer) clearTimeout(watch.timer);
+        flush();
+        return;
+      }
+      if (!watch.timer) watch.timer = setTimeout(flush, CONSOLE_FLUSH_MS);
+    });
+  } catch (err) {
+    log.warn('could not watch server console', { instanceId, err: String(err) });
+    return;
+  }
+
+  consoleWatches.set(sender, watch);
+  // A closed window must not keep a subscription (or a timer) alive.
+  sender.once('destroyed', () => {
+    const w = consoleWatches.get(sender);
+    if (!w) return;
+    if (w.timer) clearTimeout(w.timer);
+    w.unsubscribe();
+    consoleWatches.delete(sender);
+  });
+}
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,6 +137,24 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   const roomManager = getRoomManager();
   roomManager.setMainWindow(window);
+
+  // Game servers. The vIP is injected rather than imported: the LAN session
+  // lives in the room engine, and the server manager has no business reaching
+  // into it. Absent vIP simply means "no tunnel" — the server still runs, it
+  // just cannot be advertised, and the panel says so.
+  serverManager.init({
+    getRoomVip: (roomId) => roomManager.cachedLanVip(roomId),
+    getSelfId: () => db.getRoomProfile().memberId,
+    onRoomUpdate: (roomId) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('rooms:srvUpdate', { roomId, state: serverManager.stateForRoom(roomId) });
+      }
+    },
+    allowFirewallApp: async (roomId, exePath) => {
+      const res = await roomManager.lanAllowApp(roomId, exePath);
+      return { ok: res.ok === true, ...(res.error ? { message: res.error } : {}) };
+    },
+  });
 
   if (handlersRegistered) {
     log.info('IPC handlers already registered — updated window reference only');
@@ -672,6 +758,163 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       });
       if (result.canceled || result.filePaths.length === 0) return { ok: false, canceled: true };
       return roomManager.lanAllowApp(String(roomId || ''), result.filePaths[0]);
+    }
+  ));
+
+  // ── Game servers (Havvn Game Servers) ───────────────────────────────────────
+  // A dedicated server process on the host's machine, so a world stays up
+  // without anyone having to be in it. Reachability is the virtual LAN's job.
+  //
+  // Every argument is coerced and bounded here rather than trusted: the manager
+  // treats an instanceId as a path fragment (guarded again by isValidInstanceId)
+  // and a command as something that reaches a live process's stdin.
+  ipcMain.handle('rooms:srvState', wrapHandler('rooms:srvState',
+    async (_event, roomId: string) => serverManager.stateForRoom(String(roomId || ''))
+  ));
+  ipcMain.handle('rooms:srvVersions', wrapHandler('rooms:srvVersions',
+    async (_event, moduleId: string) => serverManager.listVersions(String(moduleId || ''))
+  ));
+  ipcMain.handle('rooms:srvLegalGate', wrapHandler('rooms:srvLegalGate',
+    async (_event, moduleId: string) => serverManager.legalGateFor(String(moduleId || ''))
+  ));
+  ipcMain.handle('rooms:srvAcceptLegal', wrapHandler('rooms:srvAcceptLegal',
+    async (_event, moduleId: string) => { serverManager.acceptLegalGate(String(moduleId || '')); return { ok: true }; }
+  ));
+  // The settings the create form asks for, pre-filled with a port nothing else on
+  // this machine holds. Asked of the main process because only it can bind a
+  // socket to find out.
+  ipcMain.handle('rooms:srvCreateForm', wrapHandler('rooms:srvCreateForm',
+    async (_event, roomId: string, moduleId: string) =>
+      serverManager.createForm(String(roomId || ''), String(moduleId || ''))
+  ));
+  ipcMain.handle('rooms:srvCreate', wrapHandler('rooms:srvCreate',
+    async (_event, roomId: string, moduleId: string, refId: string, name?: string, config?: unknown) => serverManager.createInstance({
+      roomId: String(roomId || ''),
+      moduleId: String(moduleId || ''),
+      refId: String(refId || ''),
+      ...(typeof name === 'string' && name.trim() ? { name } : {}),
+      // Passed through as-is: the manager validates it against the module's own
+      // schema, which is the only place that knows what a legal value is.
+      ...(config && typeof config === 'object' ? { config: config as Record<string, unknown> } : {}),
+    })
+  ));
+  // Bring-your-own server files: native dialog → stage → (confirm) → create.
+  // The dialog lives here rather than in the manager so the manager stays free
+  // of Electron UI; the manager owns staging and the trust boundary.
+  ipcMain.handle('rooms:srvPickImport', wrapHandler('rooms:srvPickImport',
+    async (_event, moduleId: string) => {
+      const { IMPORT_EXTENSIONS } = await import('../gameserver/import-store');
+      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
+        title: 'Import server files',
+        properties: ['openFile'],
+        filters: [
+          { name: 'Server files', extensions: [...IMPORT_EXTENSIONS] },
+          { name: 'All files', extensions: ['*'] },
+        ],
+      });
+      if (result.canceled || !result.filePaths[0]) return { cancelled: true as const };
+      try {
+        const scan = await serverManager.stageUserImport(String(moduleId || ''), result.filePaths[0]);
+        return { cancelled: false as const, ...scan };
+      } catch (err) {
+        const reason = err && typeof err === 'object' && 'reason' in err
+          ? String((err as { reason: string }).reason)
+          : 'extract-failed';
+        return { cancelled: false as const, error: reason, detail: err instanceof Error ? err.message : String(err) };
+      }
+    }
+  ));
+  ipcMain.handle('rooms:srvDiscardImport', wrapHandler('rooms:srvDiscardImport',
+    async (_event, stagingId: string) => {
+      serverManager.discardUserImport(String(stagingId || ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvCreateImported', wrapHandler('rooms:srvCreateImported',
+    async (_event, roomId: string, moduleId: string, stagingId: string, candidateId: string, name?: string, javaMajor?: number) =>
+      serverManager.createFromImport({
+        roomId: String(roomId || ''),
+        moduleId: String(moduleId || ''),
+        stagingId: String(stagingId || ''),
+        candidateId: String(candidateId || ''),
+        ...(typeof name === 'string' && name.trim() ? { name } : {}),
+        ...(Number.isInteger(javaMajor) ? { javaMajor: Number(javaMajor) } : {}),
+      })
+  ));
+  ipcMain.handle('rooms:srvDelete', wrapHandler('rooms:srvDelete',
+    async (_event, instanceId: string, deleteFiles: unknown) => {
+      await serverManager.deleteInstance(String(instanceId || ''), { deleteFiles: deleteFiles === true });
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvStart', wrapHandler('rooms:srvStart',
+    async (_event, instanceId: string) => serverManager.start(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvStop', wrapHandler('rooms:srvStop',
+    async (_event, instanceId: string) => serverManager.stop(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvRestart', wrapHandler('rooms:srvRestart',
+    async (_event, instanceId: string) => serverManager.restart(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvInstall', wrapHandler('rooms:srvInstall',
+    async (_event, instanceId: string) => { await serverManager.install(String(instanceId || '')); return { ok: true }; }
+  ));
+  ipcMain.handle('rooms:srvCancelInstall', wrapHandler('rooms:srvCancelInstall',
+    async (_event, instanceId: string) => { serverManager.cancelInstall(String(instanceId || '')); return { ok: true }; }
+  ));
+  // Two calls, not one: checking re-resolves the catalog and reports, applying
+  // reinstalls. A single "update" button that did both would swap the build under
+  // a running world on a mis-click.
+  ipcMain.handle('rooms:srvCheckUpdate', wrapHandler('rooms:srvCheckUpdate',
+    async (_event, instanceId: string) => serverManager.checkForUpdate(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvApplyUpdate', wrapHandler('rooms:srvApplyUpdate',
+    async (_event, instanceId: string) => { await serverManager.applyUpdate(String(instanceId || '')); return { ok: true }; }
+  ));
+  ipcMain.handle('rooms:srvCommand', wrapHandler('rooms:srvCommand',
+    async (_event, instanceId: string, command: string) => serverManager.sendCommand(String(instanceId || ''), String(command ?? ''))
+  ));
+  ipcMain.handle('rooms:srvClearFailure', wrapHandler('rooms:srvClearFailure',
+    async (_event, instanceId: string) => { serverManager.clearFailure(String(instanceId || '')); return { ok: true }; }
+  ));
+  ipcMain.handle('rooms:srvSetAutoRestart', wrapHandler('rooms:srvSetAutoRestart',
+    async (_event, instanceId: string, enabled: unknown) => {
+      serverManager.setAutoRestart(String(instanceId || ''), enabled !== false);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvGetConfig', wrapHandler('rooms:srvGetConfig',
+    async (_event, instanceId: string) => serverManager.getConfig(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvSaveConfig', wrapHandler('rooms:srvSaveConfig',
+    async (_event, instanceId: string, values: unknown) => {
+      const clean: Record<string, string> = {};
+      if (values && typeof values === 'object') {
+        for (const [k, v] of Object.entries(values as Record<string, unknown>)) clean[k] = String(v ?? '');
+      }
+      serverManager.saveConfig(String(instanceId || ''), clean);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvOpenFolder', wrapHandler('rooms:srvOpenFolder',
+    async (_event, instanceId: string) => {
+      await shell.openPath(serverManager.openInstanceFolder(String(instanceId || '')));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvConsole', wrapHandler('rooms:srvConsole',
+    async (_event, instanceId: string, after: unknown) => serverManager.consoleSnapshot(
+      String(instanceId || ''),
+      Number.isFinite(Number(after)) ? Number(after) : 0,
+    )
+  ));
+  // Console tail. Exactly ONE instance is streamed at a time, and only while a
+  // panel asked for it: a chatty modded server emits thousands of lines a minute
+  // and pushing that to a renderer nobody is looking at is pure waste.
+  ipcMain.handle('rooms:srvWatchConsole', wrapHandler('rooms:srvWatchConsole',
+    async (event, instanceId: string | null) => {
+      watchConsole(event.sender, typeof instanceId === 'string' && instanceId ? instanceId : null);
+      return { ok: true };
     }
   ));
 

@@ -680,6 +680,17 @@ export class RoomManager {
     });
   }
 
+  /**
+   * This install's virtual-LAN address in a room, or undefined when no session
+   * is up. Synchronous and cache-only on purpose: the game-server manager reads
+   * it on every state build, and reactivating a room as a side effect of drawing
+   * a panel would be a surprising thing for a getter to do.
+   */
+  cachedLanVip(roomId: string): string | undefined {
+    const lan = this.cache.get(roomId)?.lan;
+    return lan?.active && lan.selfVip ? lan.selfVip : undefined;
+  }
+
   async getRoom(roomId: string): Promise<RoomState | null> {
     const cached = this.cache.get(roomId);
     if (cached) return cached;
