@@ -154,7 +154,7 @@ export type DockDockedZoneId = (typeof DOCK_DOCKED_ZONE_IDS)[number];
  * The window pool. Opaque ids on purpose: the persisted blob never contains an
  * Electron naming convention (see `dockWindowFrameName`).
  */
-export const DOCK_WINDOW_ZONE_IDS = ['w1', 'w2', 'w3', 'w4'] as const;
+export const DOCK_WINDOW_ZONE_IDS = ['w1', 'w2', 'w3', 'w4', 'w5'] as const;
 export type DockWindowZoneId = (typeof DOCK_WINDOW_ZONE_IDS)[number];
 
 export type DockZoneId = DockDockedZoneId | DockWindowZoneId;
@@ -208,7 +208,7 @@ export { DOCK_WINDOW_POOL_SIZE };
 // ── panels ──────────────────────────────────────────────────────────────────
 
 /** Panels, in DEFAULT ORDER — this is the order a repaired/reset zone shows. */
-export const DOCK_PANEL_IDS = ['voice', 'lan', 'people', 'files', 'chat'] as const;
+export const DOCK_PANEL_IDS = ['voice', 'lan', 'people', 'files', 'server', 'chat'] as const;
 export type DockPanelId = (typeof DOCK_PANEL_IDS)[number];
 
 /**
@@ -270,6 +270,15 @@ export const PANELS: readonly DockPanelDef[] = [
   { id: 'lan', labelKey: 'rooms.lan.title', icon: 'network', defaultZone: 'left', keepAlive: true },
   { id: 'people', labelKey: 'rooms.people', icon: 'users', defaultZone: 'left' },
   { id: 'files', labelKey: 'rooms.sharedFiles', icon: 'folder-open', defaultZone: 'centre', soloHost: true },
+  // AFTER files, deliberately: registry order is the default order within a zone,
+  // and the first panel is the active one. Listing this before files would make a
+  // fresh install open every room on the Servers tab instead of on the room's
+  // actual contents.
+  //
+  // keepAlive: the console's live subscription and its scroll position live in
+  // the panel's own state, so a tab switch would drop the user out of a running
+  // server's output and lose everything printed while they were away.
+  { id: 'server', labelKey: 'rooms.server.title', icon: 'server', defaultZone: 'centre', keepAlive: true, soloHost: true },
   { id: 'chat', labelKey: 'rooms.chat', icon: 'message-square', defaultZone: 'right', keepAlive: true, soloHost: true },
 ];
 

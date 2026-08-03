@@ -30,11 +30,13 @@ const agree = (l: DockLayout): void => {
 };
 
 describe('soloHandleZone', () => {
-  it('gives the DEFAULT room a handle for files and chat, and for nothing else', () => {
+  it('gives the DEFAULT room a handle for chat, and for nothing else', () => {
     const l = defaultDockLayout();
-    expect(soloHandleZone(l, 'files')).toBe('centre');
     expect(soloHandleZone(l, 'chat')).toBe('right');
-    // The three-panel rail keeps its strip, so none of its panels host a handle.
+    // Files shares the centre with the server panel, and the three-panel rail keeps
+    // its strip, so neither column's panels host a handle.
+    expect(soloHandleZone(l, 'files')).toBeNull();
+    expect(soloHandleZone(l, 'server')).toBeNull();
     expect(soloHandleZone(l, 'people')).toBeNull();
     expect(soloHandleZone(l, 'voice')).toBeNull();
     expect(soloHandleZone(l, 'lan')).toBeNull();
@@ -42,7 +44,9 @@ describe('soloHandleZone', () => {
   });
 
   it('drops the handle the moment the zone gains a second panel (the strip is back)', () => {
-    const l = movePanel(defaultDockLayout(), 'people', 'centre').layout;
+    const solo = movePanel(defaultDockLayout(), 'server', 'left').layout;
+    expect(soloHandleZone(solo, 'files')).toBe('centre');
+    const l = movePanel(solo, 'people', 'centre').layout;
     expect(zonePanels(l, 'centre')).toHaveLength(2);
     expect(soloHandleZone(l, 'files')).toBeNull();
     agree(l);
@@ -51,10 +55,9 @@ describe('soloHandleZone', () => {
   it('never offers a handle to a panel that renders no header of its own', () => {
     // Voice alone in a docked zone: the strip is its ONLY affordance, because the
     // zone body is a drop target and never a drag source.
-    const l = movePanel(
-      movePanel(movePanel(defaultDockLayout(), 'files', 'left').layout, 'people', 'left').layout,
-      'voice', 'centre',
-    ).layout;
+    let l = defaultDockLayout();
+    for (const p of ['files', 'server', 'people'] as const) l = movePanel(l, p, 'left').layout;
+    l = movePanel(l, 'voice', 'centre').layout;
     expect(zonePanels(l, 'centre')).toEqual(['voice']);
     expect(soloHandleZone(l, 'voice')).toBeNull();
     agree(l);
@@ -70,10 +73,10 @@ describe('soloHandleZone', () => {
 
   it('follows a solo panel as it moves between docked zones', () => {
     const l = movePanel(defaultDockLayout(), 'chat', 'centre').layout;
-    // chat + files now share the centre, so neither is solo…
+    // chat now shares the centre with files and server, so none of them is solo…
     expect(soloHandleZone(l, 'chat')).toBeNull();
-    const l2 = movePanel(l, 'files', 'left').layout;
-    // …and once files leaves, chat is solo in the CENTRE, not in the right column.
+    const l2 = movePanel(movePanel(l, 'files', 'left').layout, 'server', 'left').layout;
+    // …and once they leave, chat is solo in the CENTRE, not in the right column.
     expect(soloHandleZone(l2, 'chat')).toBe('centre');
     agree(l2);
   });

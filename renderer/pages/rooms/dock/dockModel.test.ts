@@ -106,8 +106,8 @@ describe('the registry itself', () => {
 
   it('has a window pool big enough that tear-off can never be refused in a legal state', () => {
     // Invariant A keeps >=1 panel docked and a window zone holds >=1 panel, so at
-    // most PANELS.length - 1 window zones are reachable. Adding a 6th panel without
-    // a 5th slot must fail HERE rather than at a user's fifth tear-off.
+    // most PANELS.length - 1 window zones are reachable. Adding a 7th panel without
+    // a 6th slot must fail HERE rather than at a user's sixth tear-off.
     expect(DOCK_WINDOW_ZONE_IDS.length).toBeGreaterThanOrEqual(PANELS.length - 1);
     // ...and the SHARED constant is the one that has to hold, since it is what the
     // main process allowlists. shared/dock-windows.ts's header claims this
@@ -121,7 +121,7 @@ describe('the registry itself', () => {
     // default room keeps the single header row it had before the dock existed.
     // Panels with no header of their own must NOT be listed: the zone body is a
     // drop target, never a drag source, so they would become unmovable.
-    expect([...DOCK_SOLO_HOST_IDS]).toEqual(['files', 'chat']);
+    expect([...DOCK_SOLO_HOST_IDS]).toEqual(['files', 'server', 'chat']);
     expect(PANEL_BY_ID.people.soloHost).toBeUndefined();
     expect(PANEL_BY_ID.voice.soloHost).toBeUndefined();
     expect(PANEL_BY_ID.lan.soloHost).toBeUndefined();
@@ -143,8 +143,8 @@ describe('the registry itself', () => {
 
   it('maps window zones to stable Electron frame names (main.ts keeps a literal allowlist)', () => {
     expect(dockWindowFrameName('w1')).toBe('havvn-dock-1');
-    expect(dockWindowFrameName('w4')).toBe('havvn-dock-4');
-    expect(DOCK_WINDOW_FRAME_NAMES).toEqual(['havvn-dock-1', 'havvn-dock-2', 'havvn-dock-3', 'havvn-dock-4']);
+    expect(dockWindowFrameName('w5')).toBe('havvn-dock-5');
+    expect(DOCK_WINDOW_FRAME_NAMES).toEqual(['havvn-dock-1', 'havvn-dock-2', 'havvn-dock-3', 'havvn-dock-4', 'havvn-dock-5']);
     // DERIVED from shared/dock-windows.ts, not restated: zone w{n} IS pool slot n.
     // Before P4 this file hand-wrote the map while three comments claimed it was
     // imported, so the two halves could drift with nothing to catch it.
@@ -159,15 +159,20 @@ describe('the registry itself', () => {
     expect(PANEL_BY_ID.voice.labelKey).toBe('rooms.voice.title');
     expect(PANEL_BY_ID.lan.labelKey).toBe('rooms.lan.title');
     expect(PANEL_BY_ID.people.labelKey).toBe('rooms.people');
+    expect(PANEL_BY_ID.server.labelKey).toBe('rooms.server.title');
     expect(PANEL_BY_ID.files.labelKey).toBe('rooms.sharedFiles');
     expect(PANEL_BY_ID.chat.labelKey).toBe('rooms.chat');
     for (const id of DOCK_PANEL_IDS) expect(PANEL_BY_ID[id].icon).toBeTruthy();
   });
 
-  it('marks the panels that must survive a tab switch (voice PTT, LAN latch, chat draft)', () => {
+  it('marks the panels that must survive a tab switch (voice PTT, LAN latch, chat draft, server console)', () => {
     expect(PANEL_BY_ID.voice.keepAlive).toBe(true);
     expect(PANEL_BY_ID.lan.keepAlive).toBe(true);
     expect(PANEL_BY_ID.chat.keepAlive).toBe(true);
+    // The server console's live subscription and scroll position live in the
+    // panel's state, so a tab switch would drop the user out of a running
+    // server's output and lose everything printed while they were away.
+    expect(PANEL_BY_ID.server.keepAlive).toBe(true);
     expect(PANEL_BY_ID.people.keepAlive).toBeFalsy();
     expect(PANEL_BY_ID.files.keepAlive).toBeFalsy();
   });
@@ -179,7 +184,10 @@ describe('defaults', () => {
     expect(l.v).toBe(DOCK_SCHEMA_VERSION);
     expect(Object.keys(l.zones)).toEqual([...DOCK_ZONE_IDS]);
     expect(l.zones.left.panels).toEqual(['voice', 'lan', 'people']);
-    expect(l.zones.centre.panels).toEqual(['files']);
+    // Servers sits behind Files: adding a panel must not change which tab a
+    // fresh install opens on.
+    expect(l.zones.centre.panels).toEqual(['files', 'server']);
+    expect(l.zones.centre.active).toBe('files');
     expect(l.zones.right.panels).toEqual(['chat']);
     expect(l.zones.left.active).toBe('voice');
     for (const w of DOCK_WINDOW_ZONE_IDS) {
@@ -241,7 +249,8 @@ describe('parseDockLayout — garbage in, valid layout out', () => {
     expect(out.zones.left.panels).toEqual(['people', 'voice', 'lan']);
     expect(out.zones.left.active).toBe('lan');
     expect(out.zones.right.panels).toEqual(['chat', 'files']);
-    expect(out.zones.centre.panels).toEqual([]); // an empty docked column is legal in v2
+    // 'server' was absent from the blob, so repair re-adds it at its default.
+    expect(out.zones.centre.panels).toEqual(['server']);
   });
 });
 
@@ -255,7 +264,7 @@ describe('v1 migration (a P1 rail layout must not be lost)', () => {
     expect(out.zones.left.panels).toEqual(['people', 'lan', 'voice']);
     expect(out.zones.left.active).toBe('lan');
     // panels v1 never knew are re-added at their v2 defaults
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['files', 'server']);
     expect(out.zones.right.panels).toEqual(['chat']);
     expect((out.zones as Record<string, unknown>).rail).toBeUndefined();
     expect(holdsA(out)).toBe(true);
@@ -289,14 +298,14 @@ describe('repairDockLayout — validate and repair', () => {
   it('re-adds missing known panels into their DEFAULT zone, not into the survivor', () => {
     const out = repairDockLayout({ v: 2, zones: { left: { panels: ['people'] } } });
     expect(out.zones.left.panels).toEqual(['people', 'voice', 'lan']);
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['files', 'server']);
     expect(out.zones.right.panels).toEqual(['chat']);
   });
 
   it('LETS A DOCKED ZONE BE EMPTY (v1 reclaim rule deleted — a move must not bounce back)', () => {
     const out = repairDockLayout({
       v: 2,
-      zones: { left: { panels: ['voice', 'lan', 'people', 'files', 'chat'], active: 'files' }, centre: { panels: [] }, right: { panels: [] } },
+      zones: { left: { panels: ['voice', 'lan', 'people', 'files', 'server', 'chat'], active: 'files' }, centre: { panels: [] }, right: { panels: [] } },
     });
     expect(out.zones.centre.panels).toEqual([]);
     expect(out.zones.centre.active).toBe('');
@@ -402,7 +411,7 @@ describe('invariant A — the room can never be empty', () => {
       zones: {
         left: { panels: [] }, centre: { panels: [] }, right: { panels: [] },
         w1: { panels: ['voice', 'lan'], origin: 'right' },
-        w2: { panels: ['people', 'files', 'chat'] },
+        w2: { panels: ['people', 'files', 'server', 'chat'] },
       },
     });
     expect(openWindowZones(out)).toEqual([]);
@@ -410,7 +419,7 @@ describe('invariant A — the room can never be empty', () => {
     // fell back to their own defaults.
     expect(out.zones.right.panels).toEqual(['voice', 'lan', 'chat']);
     expect(out.zones.left.panels).toEqual(['people']);
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['files', 'server']);
     expect(out.zones.right.active).toBe('voice');
     expect(holdsA(out)).toBe(true);
   });
@@ -468,7 +477,7 @@ describe('invariant A — the room can never be empty', () => {
     const reloaded = loadDockLayout();
     expect(openWindowZones(reloaded)).toEqual([]);
     expect(reloaded.zones.left.panels).toEqual(['voice', 'lan', 'people']); // back where it was torn from
-    expect(reloaded.zones.centre.panels).toEqual(['files']);
+    expect(reloaded.zones.centre.panels).toEqual(['files', 'server']);
     expect(holdsA(reloaded)).toBe(true);
   });
 
@@ -501,7 +510,7 @@ describe('hidePanel', () => {
     expect(isPanelHidden(r.layout, 'lan')).toBe(true);
     expect(zoneOfPanel(r.layout, 'lan')).toBeUndefined(); // in NO zone — that is the encoding
     expect(zonePanels(r.layout, 'left')).not.toContain('lan');
-    expect(dockedPanelCount(r.layout)).toBe(4); // the count that guards A is VISIBLE-only
+    expect(dockedPanelCount(r.layout)).toBe(5); // the count that guards A is VISIBLE-only
     accountsForEveryPanel(r.layout);
     expect(holdsA(r.layout)).toBe(true);
   });
@@ -533,6 +542,7 @@ describe('hidePanel', () => {
     l = ok(hidePanel(l, 'lan'));
     l = ok(hidePanel(l, 'people'));
     l = ok(hidePanel(l, 'files'));
+    l = ok(hidePanel(l, 'server'));
     expect(nonEmptyDockedZones(l)).toEqual(['right']);
     expect(dockedPanelCount(l)).toBe(1);
     const r = hidePanel(l, 'chat');
@@ -550,9 +560,9 @@ describe('hidePanel', () => {
     // runtime and false at every storage boundary: the model would refuse on reload
     // the arrangement it had permitted a second earlier.
     let l = ok(tearOffZone(base(), 'left'));   // w1 = voice/lan/people
-    l = ok(tearOffZone(l, 'centre'));          // w2 = files
+    l = ok(tearOffZone(l, 'centre'));          // w2 = files/server
     expect(openWindowZones(l)).toEqual(['w1', 'w2']);
-    expect(visiblePanels(l).length).toBe(5);   // five panels ARE on screen...
+    expect(visiblePanels(l).length).toBe(6);   // six panels ARE on screen...
     expect(hidePanel(l, 'chat').refused).toBe('last-docked-group'); // ...and chat still cannot go
     // ...but a panel inside a window may be hidden, because the main window keeps chat
     const inWindow = ok(hidePanel(l, 'people'));
@@ -608,7 +618,7 @@ describe('hidePanel', () => {
     l = ok(hidePanel(l, 'chat'));
     expect(l.hidden.map((h) => h.id)).toEqual(['files', 'voice', 'chat']);
     expect(hiddenPanels(l)).toBe(l.hidden);
-    expect(visiblePanels(l)).toEqual(['lan', 'people']);
+    expect(visiblePanels(l)).toEqual(['lan', 'people', 'server']);
   });
 
   it('asking whether a panel can be hidden never mutates anything', () => {
@@ -652,7 +662,7 @@ describe('restorePanel / restoreAllPanels', () => {
   it('honours an explicit docked target and refuses anything that is not one', () => {
     const hid = ok(hidePanel(base(), 'files'));
     expect(ok(restorePanel(hid, 'files', 'left')).zones.left.panels).toEqual(['voice', 'lan', 'people', 'files']);
-    expect(ok(restorePanel(hid, 'files', 'left')).zones.centre.panels).toEqual([]);
+    expect(ok(restorePanel(hid, 'files', 'left')).zones.centre.panels).toEqual(['server']);
     expect(restorePanel(hid, 'files', 'w1' as never).refused).toBe('unknown-zone');
     expect(restorePanel(hid, 'files', 'nowhere' as never).refused).toBe('unknown-zone');
     expect(restorePanel(hid, 'files', 'w1' as never).layout).toBe(hid);
@@ -690,7 +700,7 @@ describe('restorePanel / restoreAllPanels', () => {
     const all = ok(restoreAllPanels(l));
     expect(all.hidden).toEqual([]);
     expect(all.zones.left.panels).toEqual(['lan', 'people', 'voice']);
-    expect(all.zones.centre.panels).toEqual(['files']);
+    expect(all.zones.centre.panels).toEqual(['server', 'files']);
     expect(all.zones.right.panels).toEqual(['chat']);
     accountsForEveryPanel(all);
     expect(holdsA(all)).toBe(true);
@@ -728,12 +738,13 @@ describe('restorePanel / restoreAllPanels', () => {
 });
 
 describe('hiding cannot launder a move past invariant A', () => {
-  it('every move guard reads the VISIBLE docked count, so hiding four does not free the fifth', () => {
+  it('every move guard reads the VISIBLE docked count, so hiding the rest does not free the last', () => {
     let l = ok(hidePanel(base(), 'voice'));
     l = ok(hidePanel(l, 'lan'));
     l = ok(hidePanel(l, 'people'));
     l = ok(hidePanel(l, 'files'));
-    expect(l.hidden.length).toBe(4);
+    l = ok(hidePanel(l, 'server'));
+    expect(l.hidden.length).toBe(5);
     expect(dockedPanelCount(l)).toBe(1);
     // ...the counter used to be "docked panels", and hidden panels are not in zones,
     // so it silently became "VISIBLE docked panels" — which is what A always meant.
@@ -755,8 +766,9 @@ describe('hiding cannot launder a move past invariant A', () => {
     step(ok(hidePanel(l, 'people')));                 // hide out of a docked zone
     step(ok(tearOffZone(l, 'left')));                 // w1 = voice/lan, origin left
     step(ok(hidePanel(l, 'lan')));                    // hide out of a window zone
-    step(ok(hidePanel(l, 'files')));                  // centre empties; only chat is docked now
-    expect(l.hidden.map((h) => h.id)).toEqual(['people', 'lan', 'files']);
+    step(ok(hidePanel(l, 'files')));
+    step(ok(hidePanel(l, 'server')));                 // centre empties; only chat is docked now
+    expect(l.hidden.map((h) => h.id)).toEqual(['people', 'lan', 'files', 'server']);
     expect(nonEmptyDockedZones(l)).toEqual(['right']);
     // chat is the last visible docked panel, so EVERY route out of the room refuses
     expect(detachPanel(l, 'chat').refused).toBe('last-docked-group');
@@ -768,23 +780,23 @@ describe('hiding cannot launder a move past invariant A', () => {
     expect(l.zones.left.panels).toEqual(['voice', 'lan']);
     step(ok(restoreAllPanels(l)));
     expect(l.hidden).toEqual([]);
-    expect(dockedPanelCount(l)).toBe(5);
+    expect(dockedPanelCount(l)).toBe(6);
   });
 });
 
 describe('repair — the hidden list', () => {
   // `files` is deliberately in NO zone here, so a blob may legitimately claim it is
   // hidden; every other panel is claimed by a zone.
-  const repairHidden = (hidden: unknown, zones: Record<string, unknown> = { left: { panels: ['voice', 'lan', 'people'] }, right: { panels: ['chat'] } }) =>
+  const repairHidden = (hidden: unknown, zones: Record<string, unknown> = { left: { panels: ['voice', 'lan', 'people'] }, centre: { panels: ['server'] }, right: { panels: ['chat'] } }) =>
     repairDockLayout({ v: 2, zones, hidden });
 
   it('reads a well-formed list and keeps a docked `from`', () => {
     const out = repairHidden(
       [{ id: 'files', from: 'centre' }, { id: 'lan' }],
-      { left: { panels: ['voice', 'people'] }, right: { panels: ['chat'] } },
+      { left: { panels: ['voice', 'people'] }, centre: { panels: ['server'] }, right: { panels: ['chat'] } },
     );
     expect(out.hidden).toEqual([{ id: 'files', from: 'centre' }, { id: 'lan' }]);
-    expect(out.zones.centre.panels).toEqual([]);       // NOT re-added by rule (3)
+    expect(out.zones.centre.panels).toEqual(['server']); // files NOT re-added by rule (3)
     expect(out.zones.left.panels).toEqual(['voice', 'people']);
     accountsForEveryPanel(out);
   });
@@ -797,7 +809,7 @@ describe('repair — the hidden list', () => {
       { id: 'files' }, { id: 'files', from: 'left' },  // the SECOND claim is dropped
     ]);
     expect(out.hidden).toEqual([{ id: 'files' }]);
-    expect(out.zones.centre.panels).toEqual([]);
+    expect(out.zones.centre.panels).toEqual(['server']);
     accountsForEveryPanel(out);
   });
 
@@ -849,13 +861,13 @@ describe('repair — the hidden list', () => {
     const out = repairDockLayout({
       v: 2,
       zones: { left: { panels: [] }, centre: { panels: [] }, right: { panels: [] } },
-      hidden: [{ id: 'voice', from: 'left' }, { id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat', from: 'right' }],
+      hidden: [{ id: 'voice', from: 'left' }, { id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'server' }, { id: 'chat', from: 'right' }],
     });
     // ONE, not all: the minimum repair that satisfies A preserves the most user
     // intent, and undoing the most recent hide is the smallest explicable undo.
     expect(out.zones.right.panels).toEqual(['chat']);
     expect(out.zones.right.active).toBe('chat');
-    expect(out.hidden.map((h) => h.id)).toEqual(['voice', 'lan', 'people', 'files']);
+    expect(out.hidden.map((h) => h.id)).toEqual(['voice', 'lan', 'people', 'files', 'server']);
     expect(holdsA(out)).toBe(true);
     accountsForEveryPanel(out);
     expect(repairDockLayout(out)).toEqual(out); // and it is stable
@@ -878,11 +890,11 @@ describe('repair — the hidden list', () => {
     const out = repairDockLayout({
       v: 2,
       zones: { left: { panels: [] }, centre: { panels: [] }, right: { panels: [] }, w1: { panels: ['voice'], origin: 'left' } },
-      hidden: [{ id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'chat' }],
+      hidden: [{ id: 'lan' }, { id: 'people' }, { id: 'files' }, { id: 'server' }, { id: 'chat' }],
     });
     expect(out.zones.left.panels).toEqual(['voice']);
     expect(openWindowZones(out)).toEqual([]);
-    expect(out.hidden.map((h) => h.id)).toEqual(['lan', 'people', 'files', 'chat']); // untouched
+    expect(out.hidden.map((h) => h.id)).toEqual(['lan', 'people', 'files', 'server', 'chat']); // untouched
     expect(holdsA(out)).toBe(true);
   });
 
@@ -930,7 +942,7 @@ describe('persistence — hidden panels', () => {
     expect(written.hidden).toEqual([{ id: 'files', from: 'centre' }, { id: 'voice', from: 'left' }]);
     const back = loadDockLayout();
     expect(back.hidden).toEqual(l.hidden);
-    expect(back.zones.centre.panels).toEqual([]);
+    expect(back.zones.centre.panels).toEqual(['server']);
     expect(back.zones.left.panels).toEqual(['lan', 'people']);
     accountsForEveryPanel(back);
   });
@@ -953,7 +965,7 @@ describe('persistence — hidden panels', () => {
     expect(hidden).toHaveLength(2);
     const out = parseDockLayout(JSON.stringify(withoutHidden));
     expect(out.hidden).toEqual([]);
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['server', 'files']);
     expect(out.zones.right.panels).toEqual(['chat']);
     expect(holdsA(out)).toBe(true);
   });
@@ -968,7 +980,7 @@ describe('persistence — hidden panels', () => {
       hidden: DOCK_PANEL_IDS.map((id) => ({ id })),
     } as unknown as DockLayout);
     const written = JSON.parse(box.value!);
-    expect(written.hidden.map((h: { id: string }) => h.id)).toEqual(['voice', 'lan', 'people', 'files']);
+    expect(written.hidden.map((h: { id: string }) => h.id)).toEqual(['voice', 'lan', 'people', 'files', 'server']);
     expect(written.zones.right.panels).toEqual(['chat']);
     const back = loadDockLayout();
     expect(holdsA(back)).toBe(true);
@@ -1001,7 +1013,7 @@ describe('persistence — hidden panels', () => {
     // v1 never had the field, so a v1 blob carrying one is a forgery — the migration
     // rebuilds `{v, zones}` and the claim is dropped rather than honoured.
     expect(out.hidden).toEqual([]);
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['files', 'server']);
   });
 });
 
@@ -1027,10 +1039,10 @@ describe('queries', () => {
 
   it('counts docked panels and finds the lowest free window slot', () => {
     const b = base();
-    expect(dockedPanelCount(b)).toBe(5);
+    expect(dockedPanelCount(b)).toBe(6);
     expect(firstFreeWindowZone(b)).toBe('w1');
     const torn = ok(tearOffZone(b, 'left'));
-    expect(dockedPanelCount(torn)).toBe(2);
+    expect(dockedPanelCount(torn)).toBe(3);
     expect(firstFreeWindowZone(torn)).toBe('w2');
     expect(nonEmptyDockedZones(torn)).toEqual(['centre', 'right']);
     expect(firstFreeWindowZone(b, { ...DOCK_REGISTRY, windowZoneIds: [] })).toBeNull();
@@ -1247,7 +1259,7 @@ describe('detachPanel / tearOffZone / dockBackZone', () => {
     let alone = ok(movePanel(base(), 'files', 'left'));
     alone = ok(movePanel(alone, 'chat', 'left'));
     expect(detachPanel(alone, 'voice', noSlots).refused).toBe('window-pool-exhausted');
-    const onlyOne = repairDockLayout({ v: 2, zones: { left: { panels: ['voice'] }, w1: { panels: ['lan', 'people', 'files', 'chat'] } } });
+    const onlyOne = repairDockLayout({ v: 2, zones: { left: { panels: ['voice'] }, w1: { panels: ['lan', 'people', 'files', 'server', 'chat'] } } });
     expect(detachPanel(onlyOne, 'voice').refused).toBe('last-docked-group');
   });
 
@@ -1271,19 +1283,19 @@ describe('detachPanel / tearOffZone / dockBackZone', () => {
     const r = dockBackZone(filled, 'w1');
     expect(r.layout.zones.right.panels).toEqual(['files', 'chat']);
     expect(r.layout.zones.right.active).toBe('chat');
-    expect(dockBackZone(filled, 'w1', 'centre').layout.zones.centre.panels).toEqual(['chat']);
+    expect(dockBackZone(filled, 'w1', 'centre').layout.zones.centre.panels).toEqual(['server', 'chat']);
     expect(dockBackZone(filled, 'w1', 'w2' as never).refused).toBe('unknown-zone');
   });
 
   it('falls back to the first non-empty docked zone when the group has no origin', () => {
     const l = repairDockLayout({
       v: 2,
-      zones: { left: { panels: [] }, centre: { panels: ['voice', 'lan', 'people', 'files'] }, w1: { panels: ['chat'] } },
+      zones: { left: { panels: [] }, centre: { panels: ['voice', 'lan', 'people', 'files', 'server'] }, w1: { panels: ['chat'] } },
     });
     expect(l.zones.w1.origin).toBeUndefined();
     const r = dockBackZone(l, 'w1');
     expect(r.zone).toBe('centre');
-    expect(r.layout.zones.centre.panels).toEqual(['voice', 'lan', 'people', 'files', 'chat']);
+    expect(r.layout.zones.centre.panels).toEqual(['voice', 'lan', 'people', 'files', 'server', 'chat']);
   });
 
   it('refuses to dock back a slot that holds nothing', () => {
@@ -1327,7 +1339,7 @@ describe('window death is repaired one frame at a time, idempotently', () => {
     const out = ok(dockBackZone(ok(dockBackZone(l, 'w1')), 'w2'));
     expect(openWindowZones(out)).toEqual([]);
     expect(out.zones.left.panels).toEqual(['voice', 'lan', 'people']);
-    expect(out.zones.centre.panels).toEqual(['files']);
+    expect(out.zones.centre.panels).toEqual(['files', 'server']);
     expect(holdsA(out)).toBe(true);
   });
 
@@ -1336,7 +1348,7 @@ describe('window death is repaired one frame at a time, idempotently', () => {
     l = ok(tearOffZone(l, 'centre'));
     const one = ok(dockBackZone(l, 'w2'));
     expect(openWindowZones(one)).toEqual(['w1']);
-    expect(one.zones.centre.panels).toEqual(['files']);
+    expect(one.zones.centre.panels).toEqual(['files', 'server']);
   });
 });
 
@@ -1373,7 +1385,7 @@ describe('persistence', () => {
     expect(JSON.parse(box.value!).v).toBe(DOCK_SCHEMA_VERSION);
     const back = loadDockLayout();
     expect(back.zones.left.active).toBe('people');
-    expect(back.zones.centre.panels).toEqual(['files', 'chat']);
+    expect(back.zones.centre.panels).toEqual(['files', 'server', 'chat']);
     expect(back.zones.right.panels).toEqual([]);
   });
 
@@ -1384,7 +1396,7 @@ describe('persistence', () => {
     expect(written.v).toBe(DOCK_SCHEMA_VERSION);
     expect(written.zones.left.panels).toEqual(['people', 'voice', 'lan']);
     expect(written.zones.left.active).toBe('people');
-    expect(written.zones.centre.panels).toEqual(['files']);
+    expect(written.zones.centre.panels).toEqual(['files', 'server']);
   });
 
   it('swallows a storage write failure (private mode / quota)', () => {

@@ -14,19 +14,21 @@
  */
 
 /**
- * Pool size, DERIVED rather than picked: the dock has five detachable panels
- * and the room-can-never-be-empty invariant pins at least one of them in the
- * main window, so at most `panels - 1 = 4` torn-off groups can ever exist —
- * even in the pathological one-panel-per-window case. The pool is therefore
- * never the binding constraint (the invariant refuses first, with a clearer
- * message), and a request for a slot beyond it means the renderer's allocator
- * is wrong, not that the user did something unusual.
+ * Pool size, DERIVED rather than picked: the dock has six detachable panels
+ * (voice, lan, server, people, files, chat) and the room-can-never-be-empty
+ * invariant pins at least one of them in the main window, so at most
+ * `panels - 1 = 5` torn-off groups can ever exist — even in the pathological
+ * one-panel-per-window case. The pool is therefore never the binding constraint
+ * (the invariant refuses first, with a clearer message), and a request for a
+ * slot beyond it means the renderer's allocator is wrong, not that the user did
+ * something unusual.
  *
  * The renderer's dock registry asserts `DOCK_WINDOW_POOL_SIZE >= PANELS.length - 1`
- * so adding a sixth panel fails the suite instead of silently making tear-off
- * refusable in a legal state.
+ * so adding a seventh panel fails the suite instead of silently making tear-off
+ * refusable in a legal state. The main-process allowlist is generated from
+ * DOCK_WINDOW_FRAME_NAMES below, so it follows this number automatically.
  */
-export const DOCK_WINDOW_POOL_SIZE = 4;
+export const DOCK_WINDOW_POOL_SIZE = 5;
 
 /**
  * Every frame name this app is willing to open as a pop-out shares this prefix.
@@ -54,7 +56,7 @@ export function dockWindowFrameName(slot: number): string | null {
 export const DOCK_WINDOW_FRAME_NAMES: readonly string[] =
   Array.from({ length: DOCK_WINDOW_POOL_SIZE }, (_, i) => `${DOCK_WINDOW_PREFIX}${i + 1}`);
 
-/** True for a name that is an actual pool slot — `havvn-dock-5` is false, not "slot 5". */
+/** True for a name that is an actual pool slot — `havvn-dock-6` is false, not "slot 6". */
 export function isDockWindowFrame(name: string): boolean {
   return DOCK_WINDOW_FRAME_NAMES.includes(name);
 }
@@ -80,7 +82,7 @@ export const LEGACY_CHAT_FRAME_NAME = 'havvn-room-chat';
  *
  *  - `not-allowed`  the frame name is not in the allowlist. Reachable when a
  *                   stale renderer asks for a retired pop-out, or when a dock
- *                   allocator hands out a slot beyond the pool (`havvn-dock-5`).
+ *                   allocator hands out a slot beyond the pool (`havvn-dock-6`).
  *  - `blocked-url`  the frame name IS allowlisted but the request carried a
  *                   real URL instead of `about:blank`. Our own code never does
  *                   this; it means something is trying to load content into a

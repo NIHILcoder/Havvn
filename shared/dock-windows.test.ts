@@ -9,7 +9,7 @@ import {
 
 describe('dock window pool', () => {
   it('exposes exactly POOL_SIZE names, in allocation order, 1-based', () => {
-    expect(DOCK_WINDOW_FRAME_NAMES).toEqual(['havvn-dock-1', 'havvn-dock-2', 'havvn-dock-3', 'havvn-dock-4']);
+    expect(DOCK_WINDOW_FRAME_NAMES).toEqual(['havvn-dock-1', 'havvn-dock-2', 'havvn-dock-3', 'havvn-dock-4', 'havvn-dock-5']);
     expect(DOCK_WINDOW_FRAME_NAMES).toHaveLength(DOCK_WINDOW_POOL_SIZE);
   });
 

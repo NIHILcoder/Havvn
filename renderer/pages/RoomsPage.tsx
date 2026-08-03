@@ -25,6 +25,7 @@ import { LiveAnnouncer, announcerHub } from '../utils/liveAnnouncer';
 import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, saveRoomSort, loadRoomSortDir, saveRoomSortDir, SORT_NATURAL_DIR, RoomFilesSortDir, loadCollapsedFolders, saveCollapsedFolders, clearRoomFilesPrefs } from '../utils/roomFilesPrefs';
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
+import { RoomServerPanel } from './rooms/RoomServerPanel';
 import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
 import type { DockStripInteractions, DockTabAction } from './rooms/dock/DockTabStrip';
 import { DockWindowHost } from './rooms/dock/DockWindowHost';
@@ -2282,6 +2283,8 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
           />
         );
+      case 'server':
+        return <RoomServerPanel roomId={room.roomId} soloHandle={soloHandleFor('server')} />;
       case 'people':
         return (
           <div className="room-rail-people">
