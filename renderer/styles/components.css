@@ -661,6 +661,20 @@ input[type="range"]::-moz-range-thumb {
   border-left: 3px solid var(--color-info);
 }
 
+/* react-hot-toast default surface. Long paths and IPC-wrapped messages must wrap
+   inside the window; the same caps live on TOAST_OPTIONS.style, and this covers
+   anything goober leaves unbounded. Scoped to the toaster id so it cannot reach
+   unrelated goober-styled nodes. */
+#_rht_toaster > div {
+  max-width: min(360px, calc(100vw - 32px));
+}
+
+#_rht_toaster > div > div {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 /* === Dropdown Menu === */
 .dropdown-menu {
   position: absolute;

@@ -91,9 +91,20 @@ export const TOAST_POSITION: ToastPosition = 'bottom-right';
 export const TOAST_OPTIONS: DefaultToastOptions = {
   duration: 4000,
   style: {
+    // Cap the toast so a long path or stack never blows past the window edge —
+    // the previous unbounded width is exactly what made ENOTEMPTY paths unreadable.
+    maxWidth: 'min(360px, calc(100vw - 32px))',
+    wordBreak: 'break-word',
+    overflowWrap: 'anywhere',
+    whiteSpace: 'pre-wrap',
+    lineHeight: '1.4',
     background: 'var(--color-bg-secondary)',
     color: 'var(--color-text-primary)',
     border: '1px solid var(--color-border)',
+  },
+  error: {
+    // Errors carry more text and are the ones people actually need to read.
+    duration: 7000,
   },
 };
 
