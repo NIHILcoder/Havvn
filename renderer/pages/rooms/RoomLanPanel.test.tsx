@@ -20,8 +20,9 @@
  *    only thing that can hold the line, and it is exactly the "test asserting no
  *    detachable component imports the singleton" the P3 review asked for.
  *
- *    Scope is deliberately this directory: it is the unit these files belong to.
- *    Widen the glob once the RoomsPage/components halves have adopted the hook.
+ *    Scope is deliberately this directory: it is the unit these files belong to,
+ *    and every panel in it is detachable. Widen the glob once the
+ *    RoomsPage/components halves have adopted the hook.
  */
 import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
@@ -157,21 +158,26 @@ describe('RoomLanPanel markup', () => {
 });
 
 // ── Realm guards (source-level; see the header for why) ─────────────────────
-describe('the LAN panels stay in their own realm', () => {
+describe('the dock panels in this directory stay in their own realm', () => {
   const dir = __dirname;
-  const files = readdirSync(dir).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx'));
+  const files = readdirSync(dir).filter((f) => f.endsWith('.tsx') && !f.endsWith('.test.tsx')).sort();
   const read = (f: string) => readFileSync(join(dir, f), 'utf8');
   /** Source with comments stripped — these headers TALK about the globals they
    *  deliberately avoid, and a prose mention must not read as a call site. */
   const code = (f: string) => read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
 
   it('covers every component in this directory', () => {
-    // If a new panel file lands here it is covered automatically — that is the
-    // point of globbing rather than listing.
-    expect(files.sort()).toEqual(['LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx']);
+    // Listed as well as globbed: the guards below run over the glob, so a new
+    // panel is covered the moment it lands, and this assertion is what makes
+    // that arrival visible in review rather than silent.
+    expect(files).toEqual([
+      'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx',
+      'RoomServerPanel.tsx', 'ServerConfigField.tsx', 'ServerConfigForm.tsx',
+      'ServerConsole.tsx',
+    ]);
   });
 
-  it.each(['LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx'])(
+  it.each(files)(
     '%s never imports the react-hot-toast module singleton',
     (f) => {
       // The singleton dispatches into the default store, which only the MAIN
@@ -181,7 +187,7 @@ describe('the LAN panels stay in their own realm', () => {
     },
   );
 
-  it.each(['LanDiagnosticsModal.tsx', 'RoomLanPanel.tsx'])(
+  it.each(['LanDiagnosticsModal.tsx', 'RoomLanPanel.tsx', 'RoomServerPanel.tsx'])(
     '%s binds the toast API to its host realm',
     (f) => {
       const src = read(f);
@@ -206,14 +212,20 @@ describe('the LAN panels stay in their own realm', () => {
     },
   );
 
-  it.each(['LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx'])(
+  it.each(files)(
     '%s holds no module-scope document/window reference',
     (f) => {
       // A top-level `const x = document…` would break the no-jsdom render above,
       // but this catches it at the point it is written rather than three panels
       // later, and it also catches the module-scope capture that renders fine
       // once and then points at a dead window forever.
-      expect(code(f)).not.toMatch(/^\s*(const|let|var)\s+\w+\s*(:[^=]+)?=\s*(document|window)\b/m);
+      //
+      // Anchored at column 0, which is what module scope LOOKS like here: an
+      // indented `const api = window.api…` is a per-render alias inside a
+      // component, and those are fine — the React tree always runs in the main
+      // renderer's JS realm, so the preload bridge is reached absolutely on
+      // purpose (see the RoomLanPanel header).
+      expect(code(f)).not.toMatch(/^(const|let|var)\s+\w+\s*(:[^=]+)?=\s*(document|window)\b/m);
     },
   );
 });
