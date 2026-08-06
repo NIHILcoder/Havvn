@@ -392,6 +392,8 @@
   "rooms.server.err.delete-failed": "Не удалось удалить папку сервера.",
   "rooms.server.err.unknown-instance": "Этого сервера уже нет.",
   "rooms.server.err.no-update-source": "У этого сервера нет издателя, у которого можно проверить обновление.",
+  "rooms.server.err.no-content-bindings": "Привяжите хотя бы одну папку комнаты перед синхронизацией.",
+  "rooms.server.err.viewer-only": "Консоль доступна только для просмотра.",
   "rooms.server.import.pick": "Выбрать jar или zip…",
   "rooms.server.import.scanning": "Читаем файлы…",
   "rooms.server.import.replace": "Выбрать другие файлы",

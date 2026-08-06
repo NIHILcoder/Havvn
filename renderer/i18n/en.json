@@ -392,6 +392,8 @@
   "rooms.server.err.delete-failed": "Could not delete the server folder.",
   "rooms.server.err.unknown-instance": "That server is no longer here.",
   "rooms.server.err.no-update-source": "This server has no publisher to check for updates.",
+  "rooms.server.err.no-content-bindings": "Link at least one room folder before syncing.",
+  "rooms.server.err.viewer-only": "You can view the console but not send commands.",
   "rooms.server.import.pick": "Choose jar or zip…",
   "rooms.server.import.scanning": "Reading files…",
   "rooms.server.import.replace": "Choose other files",

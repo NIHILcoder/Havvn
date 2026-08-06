@@ -59,7 +59,9 @@ export type ServerErrorCode =
   | 'delete-failed'          // instance folder could not be removed
   | 'unknown-instance'       // id is not one we supervise
   // Update check
-  | 'no-update-source';      // an imported instance has no upstream to check
+  | 'no-update-source'      // an imported instance has no upstream to check
+  | 'no-content-bindings'   // sync with no folder bound to any slot
+  | 'viewer-only';          // console is read-only for this role
 
 /** Prefix that makes a code findable in a message Electron has rewrapped. Chosen
  *  to be something no upstream error text would ever contain by accident. */
@@ -71,6 +73,7 @@ const CODES = new Set<string>([
   'unknown-module', 'unknown-version', 'no-import-support', 'import-expired',
   'nothing-recognised', 'disk-space', 'port-exhausted', 'files-busy',
   'files-locked', 'delete-failed', 'unknown-instance', 'no-update-source',
+  'no-content-bindings', 'viewer-only',
 ]);
 
 /**

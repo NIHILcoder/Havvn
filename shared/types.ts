@@ -24,10 +24,15 @@ export type { LanDiagReport, LanDiagCheck, LanCheckId, LanCheckLevel, LanDiagCau
 
 import type {
   ConfigField, ConsoleLine, GameVersionRef, ImportScanResult, RoomServerState,
+  ServerContentState, ServerScheduleState, ServerScheduleRule, ServerAccessState,
+  WorldBackupEntry, ServerPlayersState, ServerAlert,
 } from './gameserver-types';
 export type {
   ConfigField, ConsoleLine, GameCaps, GameVersionRef, ImportCandidate, ImportScanResult,
-  RoomServerInstance, RoomServerState, ServerFailReason, ServerRole, ServerStatus,
+  RoomServerInstance, RoomServerState, ServerContentState, ServerContentSlotView,
+  ServerFailReason, ServerRole, ServerStatus, PendingContentConsent, ContentSyncState,
+  ServerScheduleState, ServerScheduleRule, ServerAccessState, ServerScheduleAction,
+  WorldBackupEntry, ServerPlayersState, ServerAlert,
 } from './gameserver-types';
 
 export type DownloadStatus =
@@ -281,6 +286,10 @@ export interface RoomState {
   memberProg?: Record<string, Record<string, number>>;   // memberId → fileId → coarse download % (0-100; a member's 'have' implies 100)
   voice: RoomVoiceState; // serverless mesh voice channel state (who's in the call, who's talking)
   lan: RoomLanState; // serverless virtual-LAN session state (who's admitted, their vIPs) — mirrors `voice`
+  /** Gossiped game-server state, one entry per member currently hosting
+   *  instances in this room (never our own). Several members may host at once,
+   *  so this is a list keyed by `hostId` — not a single slot they overwrite. */
+  srvMirrors?: import('./gameserver-types').ServerMirrorState[];
   /** Per-folder auto-fetch overrides (local pref): folderId → forced on/off;
    *  a folder with no entry inherits `autoFetch`. */
   folderFetch?: Record<string, boolean>;

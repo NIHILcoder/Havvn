@@ -492,9 +492,130 @@ export type ServerFailReason =
  *  fact about whose machine runs the process, operator is a host-signed grant. */
 export type ServerRole = 'host' | 'operator' | 'viewer';
 
+/** Scheduled start/stop/restart for one server instance. */
+export type ServerScheduleAction = 'start' | 'stop' | 'restart';
+
+export interface ServerScheduleRule {
+  id: string;
+  /** 0 = Sunday … 6 = Saturday */
+  days: number[];
+  /** Local time `HH:MM` (24h). */
+  time: string;
+  action: ServerScheduleAction;
+  enabled: boolean;
+}
+
+export interface ServerScheduleState {
+  enabled: boolean;
+  rules: ServerScheduleRule[];
+}
+
+/** Operator grants for one instance (memberIds). */
+export interface ServerAccessState {
+  operators: string[];
+}
+
+/** One world backup on disk beside an instance. */
+export interface WorldBackupEntry {
+  id: string;
+  createdAt: number;
+  label: string;
+  bytes: number;
+  /** Created automatically before an update. */
+  auto?: boolean;
+}
+
+export interface MinecraftPlayerEntry {
+  uuid: string;
+  name: string;
+}
+
+/** Whitelist + ban list for a Minecraft instance. */
+export interface ServerPlayersState {
+  whitelistEnabled: boolean;
+  whitelist: MinecraftPlayerEntry[];
+  banned: MinecraftPlayerEntry[];
+  /** Server is running — file edits require a stop first. */
+  locked: boolean;
+}
+
+export type ServerAlertKind = 'crash' | 'oom' | 'disk';
+
+export interface ServerAlert {
+  kind: ServerAlertKind;
+  instanceId: string;
+  name: string;
+  detail?: string;
+}
+
+/** Compact instance state gossiped by the host for remote viewers/operators. */
+export interface MirroredServerInstance {
+  instanceId: string;
+  moduleId: string;
+  name: string;
+  version: string;
+  status: ServerStatus;
+  since: number;
+  address?: string;
+  port?: number;
+  players?: { online: number; max: number };
+  operators: string[];
+  autoRestart: boolean;
+  scheduleEnabled?: boolean;
+  failReason?: ServerFailReason;
+  failDetail?: string;
+  consoleTail?: string[];
+  /**
+   * Host-side sequence of the LAST line in `consoleTail`. Earlier lines count
+   * back from it, which is what lets a remote viewer resume from a cursor and
+   * APPEND instead of replacing its buffer — without it the tail restarted at
+   * seq 1 on every poll, so every line looked new and the console flickered
+   * between eight-line snapshots.
+   */
+  consoleTailSeq?: number;
+}
+
+export interface ServerMirrorState {
+  hostId: string;
+  at: number;
+  instances: MirroredServerInstance[];
+}
+
 /** How this install's copy of an instance's required content compares to the
  *  host's. */
 export type ContentSyncState = 'ok' | 'syncing' | 'missing' | 'conflict';
+
+/** One content slot as the server panel renders it (mods/plugins/datapacks). */
+export interface ServerContentSlotView {
+  slotId: string;
+  labelKey: string;
+  extensions: string[];
+  executable: boolean;
+  compat?: string;
+  /** Bound room folder id; empty string = uncategorized room files. */
+  folderId: string;
+  /** Whether this slot is linked to a room folder. */
+  bound: boolean;
+  /** Files in the bound folder matching this slot's extensions. */
+  fileCount: number;
+  /** How many of those files are already on disk locally. */
+  readyCount: number;
+}
+
+/** Executable room file waiting for a one-per-hash consent before sync. */
+export interface PendingContentConsent {
+  sha256: string;
+  name: string;
+  slotId: string;
+}
+
+/** Content bindings for one instance — fetched separately from RoomServerState. */
+export interface ServerContentState {
+  slots: ServerContentSlotView[];
+  sync: ContentSyncState;
+  pending: PendingContentConsent[];
+  lastSyncAt?: number;
+}
 
 /** One instance as the renderer sees it. */
 export interface RoomServerInstance {
@@ -544,6 +665,23 @@ export interface RoomServerInstance {
    * the renderer sees only a version LABEL and would have to guess from its text.
    */
   updatable: boolean;
+  /** Whether a schedule is armed for this instance. */
+  scheduleEnabled?: boolean;
+  /** Count of enabled schedule rules (for overview). */
+  scheduleRules?: number;
+  /** memberIds granted operator console access (host view only). */
+  operators?: string[];
+  /** True when this row comes from a remote host mirror, not a local process. */
+  remote?: boolean;
+  /** Use the system Java on PATH instead of a managed runtime. */
+  useSystemJava?: boolean;
+  /** Sync bound room content automatically when files change. */
+  contentAutoSync?: boolean;
+  /** Last lines of console output (remote mirror only). */
+  consoleTail?: string[];
+  /** Host-side seq of the last `consoleTail` line — the cursor a remote viewer
+   *  appends against. Absent when the tail is. */
+  consoleTailSeq?: number;
 }
 
 /**
