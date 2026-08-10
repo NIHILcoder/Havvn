@@ -33,6 +33,8 @@ import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizePr
 import { safeBaseName, safeDirSegment } from '../../shared/path-safety';
 import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import crypto from 'crypto';
+import type { ServerMirrorState } from '../../shared/gameserver-types';
+import { parseMirrorBody } from '../gameserver/server-mirror';
 
 import TrackerClient from 'bittorrent-tracker';
 
@@ -81,7 +83,16 @@ const MAX_REACT_FILES = 200;      // reaction map ceiling per room (kept + hello
 // just another member. Targeted/keyed messages (rekey, kicked) are NOT flooded.
 const RELAY_TTL = 4;                 // max hops a gossip message travels
 const SEEN_GID_CAP = 4096;           // dedup memory per room (FIFO)
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach']);
+// Per-member srv-cmd replay floors. A hostile keyholder minting identities must
+// not grow this map unbounded, but evicting a floor REOPENS that member's replay
+// window — so strangers (ids not in the roster) go first, and their commands are
+// refused by the host's operator check regardless of any floor.
+const SRV_CMD_FLOOR_CAP = 512;
+// Distinct members whose server mirrors we hold. A room where this many people
+// are each running game servers does not exist; the cap is only there so a
+// keyholder minting identities cannot grow the map.
+const SRV_MIRROR_HOST_CAP = 32;
+const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach', 'srv-mirror', 'srv-cmd']);
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
@@ -228,7 +239,11 @@ type Msg =
   // — it grants nothing, so it needs no rekey-stable anchor; it carries sessionId
   // INSIDE the canonical and has its OWN monotonic floor (inside LanReachTable),
   // never shared with lan-state's.
-  | LanReachMsg;
+  | LanReachMsg
+  // Game-server mirror: host-signed compact instance state for remote viewers.
+  | { t: 'srv-mirror'; hostId: string; at: number; body: string; pub: string; sig: string }
+  // Operator console command relayed to the host.
+  | { t: 'srv-cmd'; by: string; instanceId: string; command: string; at: number; pub: string; sig: string };
 
 interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean; }
 
@@ -314,6 +329,12 @@ interface Room {
   profileSentTo: Set<string>;            // memberIds whose hello we've already answered with our profile broadcast
   profileAnnounce: any;                  // pending coalesced profile broadcast timer (join waves = one flood)
   profileAt: number;                     // our own last announced profile `at` (monotonic vs clock steps)
+  /** hostId → that member's last verified game-server mirror (session-only,
+   *  capped). Keyed by publisher: any member may host, and the entry's own `at`
+   *  IS that host's replay floor — a shared floor let the host with the faster
+   *  clock silently bury everyone else's servers. */
+  srvMirrors: Map<string, ServerMirrorState>;
+  srvCmdAt: Map<string, number>;         // memberId → last srv-cmd `at` accepted from them (our OWN id: last we SENT, so two commands in one millisecond still advance); the anti-replay floor for operator commands (session-only, capped)
   seenGids: Set<string>;                 // relay dedup — gossip ids already processed
   seenGidOrder: string[];                // FIFO order for capping seenGids
   kicked: boolean;                       // the owner removed us (session-only)
@@ -734,6 +755,19 @@ function buildState(room: Room): RoomState {
     }
     if (Object.keys(rec).length) memberProg[mid] = rec;
   }
+  // Server mirrors from members who are still here. Presence is the expiry
+  // rather than a TTL: an idle host publishes only when something changes, so a
+  // clock-based cutoff would quietly hide a perfectly good stopped server, while
+  // a member who has gone offline cannot be reached anyway. Our own mirror is
+  // never among these — local instances come from the ServerManager direct.
+  const srvMirrors: ServerMirrorState[] = [];
+  for (const [hostId, mirror] of room.srvMirrors) {
+    if (hostId === room.self.memberId) continue;
+    if (!mirror.instances.length) continue;   // "I have none" — kept in memory as
+    const m = room.members.get(hostId);       // that host's replay floor, but it
+    if (!m || now - m.lastSeen >= OFFLINE_AFTER) continue;  // is nothing to show.
+    srvMirrors.push(mirror);
+  }
   return {
     roomId: room.roomId,
     name: room.name,
@@ -772,6 +806,7 @@ function buildState(room: Room): RoomState {
     memberProg,
     voice: room.voice.getState(),
     lan: room.lan ? room.lan.getState() : idleLanState(),
+    ...(srvMirrors.length ? { srvMirrors } : {}),
   };
 }
 
@@ -1342,6 +1377,12 @@ function voiceShareCanonical(topic: string, m: { memberId: string; sharing: bool
  *  it here means nobody can graft their status onto someone else's face. */
 function profileCanonical(topic: string, m: { memberId: string; at: number; name: string; avatarSeed: string; color: string; status: string; img: string }): Buffer {
   return Buffer.from(JSON.stringify(['profile', topic, m.memberId, m.at, m.name, m.avatarSeed, m.color, m.status, m.img]), 'utf8');
+}
+function srvMirrorCanonical(topic: string, m: { hostId: string; at: number; body: string }): Buffer {
+  return Buffer.from(JSON.stringify(['srv-mirror', topic, m.hostId, m.at, m.body]), 'utf8');
+}
+function srvCmdCanonical(topic: string, m: { by: string; instanceId: string; command: string; at: number }): Buffer {
+  return Buffer.from(JSON.stringify(['srv-cmd', topic, m.by, m.instanceId, m.command, m.at]), 'utf8');
 }
 
 /** Our signed rich-profile announcement. An EMPTY profile still announces —
@@ -2588,6 +2629,59 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       pushState(room);
       break;
     }
+    case 'srv-mirror': {
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      // PER-HOST floor, taken from that host's own stored entry. Sharing one
+      // floor across publishers meant the first mirror to arrive with a fast
+      // clock rejected every other member's forever.
+      const prev = room.srvMirrors.get(msg.hostId);
+      if (prev && prev.at >= at) break;
+      const body = String(msg.body || '').slice(0, 200_000);
+      if (!verifySignedBy(room, msg.hostId, msg.pub, msg.sig, srvMirrorCanonical(room.topic, { hostId: msg.hostId, at, body }))) break;
+      const parsed = parseMirrorBody(body);
+      if (!parsed || parsed.hostId !== msg.hostId) break;
+      if (!prev && room.srvMirrors.size >= SRV_MIRROR_HOST_CAP) {
+        let evict: string | undefined;
+        for (const id of room.srvMirrors.keys()) { if (!room.members.has(id)) { evict = id; break; } }
+        evict = evict ?? room.srvMirrors.keys().next().value;
+        if (evict !== undefined) room.srvMirrors.delete(evict);
+      }
+      // An empty instance list is a real update, not a no-op: it is how a host
+      // says "my last server is gone". Storing it replaces the stale entry that
+      // used to linger as a ghost server on every peer.
+      room.srvMirrors.set(msg.hostId, { ...parsed, at });
+      pushState(room);
+      break;
+    }
+    case 'srv-cmd': {
+      // An operator's console command. The signature proves WHO typed it, and
+      // nothing more: the gid dedup is session-only and keyed on a sender-chosen
+      // id, so without a floor here any keyholder could re-flood a captured
+      // `stop` / `op <them>` / `ban <victim>` forever and it would still verify.
+      // Hence the OWN per-member monotonic floor — never shared with another
+      // message type's (the voice-share lesson), same discipline as 'profile'.
+      const at = Number(msg.at);
+      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+      const prevAt = room.srvCmdAt.get(msg.by);
+      if (prevAt !== undefined && prevAt >= at) break;
+      const instanceId = String(msg.instanceId || '').slice(0, 128);
+      const command = String(msg.command || '').slice(0, 512);
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, srvCmdCanonical(room.topic, { by: msg.by, instanceId, command, at }))) break;
+      // Raised only AFTER the signature holds, or an unsigned far-future `at`
+      // would poison the floor and lock the real operator out.
+      if (prevAt === undefined && room.srvCmdAt.size >= SRV_CMD_FLOOR_CAP) {
+        let evict: string | undefined;
+        for (const id of room.srvCmdAt.keys()) { if (!room.members.has(id)) { evict = id; break; } }
+        evict = evict ?? room.srvCmdAt.keys().next().value;
+        if (evict !== undefined) room.srvCmdAt.delete(evict);
+      }
+      room.srvCmdAt.set(msg.by, at);
+      try {
+        ipcRenderer.send('srv-remote-cmd', { roomId: room.roomId, by: msg.by, instanceId, command });
+      } catch { /* ignore */ }
+      break;
+    }
     case 'sync': {
       // Relay watch-together control + presence to the main process → renderer.
       try {
@@ -3493,6 +3587,8 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     profileSentTo: new Set(),
     profileAnnounce: null,
     profileAt: 0,
+    srvMirrors: new Map(),
+    srvCmdAt: new Map(),
     seenGids: new Set(),
     seenGidOrder: [],
     kicked: false,
@@ -4132,6 +4228,40 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         memberId: r.self.memberId, name: r.self.name || 'You',
         avatarSeed: r.self.avatarSeed, playing: !!p.playing, together: !!p.together, emoji: String(p.emoji || '').slice(0, 16),
       });
+      data = { ok: true };
+    }
+    else if (type === 'srvMirror') {
+      const r = rooms.get(msg.roomId);
+      if (r) {
+        const at = Number(msg.at) || Date.now();
+        const body = String(msg.body || '').slice(0, 200_000);
+        const sig = signBytes(r, srvMirrorCanonical(r.topic, { hostId: r.self.memberId, at, body }));
+        broadcast(r, { t: 'srv-mirror', hostId: r.self.memberId, at, body, pub: r.self.pub, sig });
+        // We do NOT store our own mirror: buildState omits it anyway (a member's
+        // own instances come from the local ServerManager, not from gossip), and
+        // keeping it only risked our copy being mistaken for a peer's.
+        //
+        // Throttled, not immediate. This fires on every probe tick of every
+        // running instance, and forcing a full RoomState snapshot through at
+        // that cadence re-rendered the whole room list every 15 seconds for a
+        // payload the renderer already had.
+        pushState(r);
+      }
+      data = { ok: true };
+    }
+    else if (type === 'srvCmd') {
+      const r = rooms.get(msg.roomId);
+      if (r) {
+        // Strictly newer than our last command, never in the past: receivers hold
+        // a per-member `at` floor against replay, and two commands typed inside
+        // one millisecond would otherwise look like a replay of the first.
+        const at = Math.max(Date.now(), (r.srvCmdAt.get(r.self.memberId) ?? 0) + 1);
+        r.srvCmdAt.set(r.self.memberId, at);
+        const instanceId = String(msg.instanceId || '').slice(0, 128);
+        const command = String(msg.command || '').slice(0, 512);
+        const sig = signBytes(r, srvCmdCanonical(r.topic, { by: r.self.memberId, instanceId, command, at }));
+        broadcast(r, { t: 'srv-cmd', by: r.self.memberId, instanceId, command, at, pub: r.self.pub, sig });
+      }
       data = { ok: true };
     }
     else if (type === 'chat') { sendChat(msg.roomId, String((msg.payload || {}).text || ''), (msg.payload || {}).replyTo ? String((msg.payload || {}).replyTo) : undefined); data = { ok: true }; }

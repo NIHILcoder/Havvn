@@ -23,6 +23,7 @@ import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torrent/subtitle-probe';
 import { generateRoomSecret } from './room-e2e';
+import { serializeMirrorBody } from '../gameserver/server-mirror';
 import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
 import { getLanManager } from '../lan/lan-manager';
 import { evaluateLanDiagnostics } from '../../shared/lan-quality';
@@ -73,6 +74,8 @@ export class RoomManager {
   // Per-room OS-notification throttle so a hostile member can't detonate a toast
   // storm — at most one toast per room per NOTIFY_COOLDOWN_MS.
   private lastNotify = new Map<string, number>();
+  /** Hooks fired after every live RoomState push (prev may be undefined). */
+  private roomUpdateHooks = new Set<(state: RoomState, prev: RoomState | undefined) => void>();
 
   constructor() {
     // Renderer-facing liveness channels live HERE (not ipc/handlers.ts): they
@@ -102,6 +105,12 @@ export class RoomManager {
 
   setMainWindow(win: BrowserWindow): void { this.mainWindow = win; }
 
+  /** Subscribe to room state pushes. Returns an unsubscribe function. */
+  onRoomUpdate(hook: (state: RoomState, prev: RoomState | undefined) => void): () => void {
+    this.roomUpdateHooks.add(hook);
+    return () => { this.roomUpdateHooks.delete(hook); };
+  }
+
   private wireIpc(): void {
     if (this.ipcWired) return;
     this.ipcWired = true;
@@ -117,10 +126,14 @@ export class RoomManager {
       waiters.forEach((f) => f());
     });
     ipcMain.on('room-update', (_e, state: RoomState) => {
+      const prev = state?.roomId ? this.cache.get(state.roomId) : undefined;
       if (state?.roomId) this.cache.set(state.roomId, state);
       this.reevalGlobalPtt(); // voice/inputMode may have changed — retune the OS key hook
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:update', state);
+      }
+      for (const hook of this.roomUpdateHooks) {
+        try { hook(state, prev); } catch (e) { log.warn('room update hook failed', { err: String(e) }); }
       }
     });
     ipcMain.on('room-log', (_e, m: any) => log.info('Engine', { msg: String(m) }));
@@ -689,6 +702,46 @@ export class RoomManager {
   cachedLanVip(roomId: string): string | undefined {
     const lan = this.cache.get(roomId)?.lan;
     return lan?.active && lan.selfVip ? lan.selfVip : undefined;
+  }
+
+  /** Room folders for binding server content slots. */
+  listRoomFolders(roomId: string): { id: string; name: string }[] {
+    const folders = this.cache.get(roomId)?.folders ?? [];
+    return folders.map((f) => ({ id: f.id, name: f.name }));
+  }
+
+  /**
+   * Room files with best-effort local paths for content sync. Files still
+   * downloading have no `localPath`.
+   */
+  listRoomContentFiles(roomId: string): Array<{
+    fileId: string;
+    name: string;
+    folderId: string;
+    infoHash: string;
+    size: number;
+    localPath?: string;
+  }> {
+    const state = this.cache.get(roomId);
+    const folder = this.folderOf(roomId);
+    if (!state || !folder) return [];
+    return state.files.map((f) => {
+      const tr = state.transfers?.[f.fileId];
+      let localPath: string | undefined;
+      if (tr?.localPath && fs.existsSync(tr.localPath)) localPath = tr.localPath;
+      else {
+        const flat = path.join(folder, f.name);
+        if (fs.existsSync(flat)) localPath = flat;
+      }
+      return {
+        fileId: f.fileId,
+        name: f.name,
+        folderId: f.folderId ?? '',
+        infoHash: f.infoHash,
+        size: f.size,
+        ...(localPath ? { localPath } : {}),
+      };
+    });
   }
 
   async getRoom(roomId: string): Promise<RoomState | null> {
@@ -1288,6 +1341,28 @@ export class RoomManager {
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'sync', reqId: ++this.reqSeq, roomId, payload });
     }
+  }
+
+  /** Host: gossip game-server mirror state to peers. */
+  broadcastServerMirror(roomId: string, payload: import('../../shared/gameserver-types').ServerMirrorState): void {
+    if (!roomId || !payload) return;
+    const body = serializeMirrorBody(payload);
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'srvMirror', reqId: ++this.reqSeq, roomId, at: payload.at, body });
+    }
+  }
+
+  /** Operator: relay a console command to the host over gossip. */
+  publishRemoteCommand(roomId: string, instanceId: string, command: string): void {
+    if (!roomId || !instanceId || !command) return;
+    if (this.win && !this.win.isDestroyed() && this.ready) {
+      this.win.webContents.send('room-cmd', { type: 'srvCmd', reqId: ++this.reqSeq, roomId, instanceId, command });
+    }
+  }
+
+  /** Every peer mirror in this room — one per member currently hosting. */
+  getServerMirrors(roomId: string): import('../../shared/gameserver-types').ServerMirrorState[] {
+    return this.cache.get(roomId)?.srvMirrors ?? [];
   }
 
   /** Send a chat message to a room (broadcast to peers + recorded locally). */
