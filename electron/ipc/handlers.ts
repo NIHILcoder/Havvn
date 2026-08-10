@@ -1,7 +1,7 @@
 import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
 import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent';
 import * as db from '../db/store';
-import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority } from '../../shared/types';
+import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority, RoomState } from '../../shared/types';
 import { safeBaseName } from '../../shared/path-safety';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
@@ -145,6 +145,15 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   serverManager.init({
     getRoomVip: (roomId) => roomManager.cachedLanVip(roomId),
     getSelfId: () => db.getRoomProfile().memberId,
+    getRoomContentFiles: (roomId) => roomManager.listRoomContentFiles(roomId),
+    getServerMirrors: (roomId) => roomManager.getServerMirrors(roomId),
+    publishServerMirror: (roomId, payload) => roomManager.broadcastServerMirror(roomId, payload),
+    publishRemoteCommand: (roomId, instanceId, command) => roomManager.publishRemoteCommand(roomId, instanceId, command),
+    onServerAlert: (roomId, alert) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('rooms:srvAlert', { roomId, ...alert });
+      }
+    },
     onRoomUpdate: (roomId) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('rooms:srvUpdate', { roomId, state: serverManager.stateForRoom(roomId) });
@@ -155,6 +164,70 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       return { ok: res.ok === true, ...(res.error ? { message: res.error } : {}) };
     },
   });
+
+  /**
+   * Whether two room manifests list the same files with the same content.
+   *
+   * This runs on EVERY room state push — the hottest path the room has, several
+   * times a second across every open room. Building two joined strings over the
+   * whole manifest there was allocating a pair of multi-kilobyte strings per
+   * push in a room with a few thousand files, to answer a question that almost
+   * always comes back "no change". Comparing in place bails on the first
+   * difference and allocates nothing.
+   */
+  const sameFileSet = (a: RoomState['files'] | undefined, b: RoomState['files'] | undefined): boolean => {
+    if (a === b) return true;
+    const left = a ?? [];
+    const right = b ?? [];
+    if (left.length !== right.length) return false;
+    for (let i = 0; i < left.length; i++) {
+      if (left[i].fileId !== right[i].fileId || left[i].infoHash !== right[i].infoHash) return false;
+    }
+    return true;
+  };
+
+  if (!handlersRegistered) {
+    roomManager.onRoomUpdate((state, prev) => {
+      const prevVip = prev?.lan?.active && prev.lan.selfVip;
+      const newVip = state.lan?.active && state.lan.selfVip;
+      if (prevVip !== newVip || prev?.lan?.active !== state.lan?.active) {
+        serverManager.onRoomVipChanged(state.roomId);
+      }
+      if (!sameFileSet(prev?.files, state.files)) {
+        serverManager.onRoomContentChanged(state.roomId);
+      }
+      // One stamp per hosting member, so a second host publishing does not look
+      // like "no change" just because the first host's `at` is unmoved. Bounded
+      // by the engine's per-room host cap, hence cheap to join.
+      const mirrorStamp = (s: RoomState | undefined): string =>
+        (s?.srvMirrors ?? []).map((m) => `${m.hostId}:${m.at}`).sort().join(',');
+      if (mirrorStamp(prev) !== mirrorStamp(state)) {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('rooms:srvUpdate', {
+            roomId: state.roomId,
+            state: serverManager.stateForRoom(state.roomId),
+          });
+        }
+      }
+    });
+  }
+
+  if (!handlersRegistered) {
+    ipcMain.on('srv-remote-cmd', (_e, payload: { roomId?: string; by?: string; instanceId?: string; command?: string }) => {
+      const by = String(payload?.by || '');
+      const roomId = String(payload?.roomId || '');
+      const instanceId = String(payload?.instanceId || '');
+      const command = String(payload?.command || '');
+      if (!by || !roomId || !instanceId || !command) return;
+      serverManager.handleRemoteCommand(by, roomId, instanceId, command);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('rooms:srvUpdate', {
+          roomId,
+          state: serverManager.stateForRoom(roomId),
+        });
+      }
+    });
+  }
 
   if (handlersRegistered) {
     log.info('IPC handlers already registered — updated window reference only');
@@ -872,7 +945,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, instanceId: string) => { await serverManager.applyUpdate(String(instanceId || '')); return { ok: true }; }
   ));
   ipcMain.handle('rooms:srvCommand', wrapHandler('rooms:srvCommand',
-    async (_event, instanceId: string, command: string) => serverManager.sendCommand(String(instanceId || ''), String(command ?? ''))
+    async (_event, instanceId: string, command: string, roomId?: string) =>
+      serverManager.sendCommand(
+        String(instanceId || ''),
+        String(command ?? ''),
+        typeof roomId === 'string' ? roomId : undefined,
+      )
   ));
   ipcMain.handle('rooms:srvClearFailure', wrapHandler('rooms:srvClearFailure',
     async (_event, instanceId: string) => { serverManager.clearFailure(String(instanceId || '')); return { ok: true }; }
@@ -903,9 +981,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
   ipcMain.handle('rooms:srvConsole', wrapHandler('rooms:srvConsole',
-    async (_event, instanceId: string, after: unknown) => serverManager.consoleSnapshot(
+    async (_event, instanceId: string, after: unknown, roomId?: string) => serverManager.consoleSnapshot(
       String(instanceId || ''),
       Number.isFinite(Number(after)) ? Number(after) : 0,
+      typeof roomId === 'string' ? roomId : undefined,
     )
   ));
   // Console tail. Exactly ONE instance is streamed at a time, and only while a
@@ -916,6 +995,121 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       watchConsole(event.sender, typeof instanceId === 'string' && instanceId ? instanceId : null);
       return { ok: true };
     }
+  ));
+
+  ipcMain.handle('rooms:srvContent', wrapHandler('rooms:srvContent',
+    async (_event, instanceId: string) => serverManager.contentState(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvSetContentFolder', wrapHandler('rooms:srvSetContentFolder',
+    async (_event, instanceId: string, slotId: string, folderId: string) => {
+      serverManager.setContentFolder(String(instanceId || ''), String(slotId || ''), String(folderId ?? ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvClearContentFolder', wrapHandler('rooms:srvClearContentFolder',
+    async (_event, instanceId: string, slotId: string) => {
+      serverManager.clearContentFolder(String(instanceId || ''), String(slotId || ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvSyncContent', wrapHandler('rooms:srvSyncContent',
+    async (_event, instanceId: string) => serverManager.syncContent(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvConsentContent', wrapHandler('rooms:srvConsentContent',
+    async (_event, hashes: unknown) => {
+      const list = Array.isArray(hashes) ? hashes.filter((h): h is string => typeof h === 'string') : [];
+      serverManager.consentContent(list);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvRoomFolders', wrapHandler('rooms:srvRoomFolders',
+    async (_event, roomId: string) => roomManager.listRoomFolders(String(roomId || ''))
+  ));
+
+  ipcMain.handle('rooms:srvSchedule', wrapHandler('rooms:srvSchedule',
+    async (_event, instanceId: string) => serverManager.scheduleState(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvSetScheduleEnabled', wrapHandler('rooms:srvSetScheduleEnabled',
+    async (_event, instanceId: string, enabled: boolean) => {
+      serverManager.setScheduleEnabled(String(instanceId || ''), enabled === true);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvSaveSchedule', wrapHandler('rooms:srvSaveSchedule',
+    async (_event, instanceId: string, rules: unknown) => {
+      serverManager.saveSchedule(String(instanceId || ''), rules);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvAccess', wrapHandler('rooms:srvAccess',
+    async (_event, instanceId: string) => serverManager.accessState(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvGrantOperator', wrapHandler('rooms:srvGrantOperator',
+    async (_event, instanceId: string, memberId: string) => {
+      serverManager.grantOperatorAccess(String(instanceId || ''), String(memberId || ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvRevokeOperator', wrapHandler('rooms:srvRevokeOperator',
+    async (_event, instanceId: string, memberId: string) => {
+      serverManager.revokeOperatorAccess(String(instanceId || ''), String(memberId || ''));
+      return { ok: true };
+    }
+  ));
+
+  ipcMain.handle('rooms:srvBackups', wrapHandler('rooms:srvBackups',
+    async (_event, instanceId: string) => serverManager.backupState(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvCreateBackup', wrapHandler('rooms:srvCreateBackup',
+    async (_event, instanceId: string, label: unknown) =>
+      serverManager.createBackup(String(instanceId || ''), typeof label === 'string' ? label : undefined)
+  ));
+  ipcMain.handle('rooms:srvRestoreBackup', wrapHandler('rooms:srvRestoreBackup',
+    async (_event, instanceId: string, backupId: string) => {
+      await serverManager.restoreBackup(String(instanceId || ''), String(backupId || ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvDeleteBackup', wrapHandler('rooms:srvDeleteBackup',
+    async (_event, instanceId: string, backupId: string) => {
+      await serverManager.removeBackup(String(instanceId || ''), String(backupId || ''));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvOpenBackups', wrapHandler('rooms:srvOpenBackups',
+    async (_event, instanceId: string) => {
+      await shell.openPath(serverManager.openBackupsFolder(String(instanceId || '')));
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvPlayers', wrapHandler('rooms:srvPlayers',
+    async (_event, instanceId: string) => serverManager.playersState(String(instanceId || ''))
+  ));
+  ipcMain.handle('rooms:srvSavePlayers', wrapHandler('rooms:srvSavePlayers',
+    async (_event, instanceId: string, patch: unknown) => {
+      const p = (patch && typeof patch === 'object') ? patch as Record<string, unknown> : {};
+      serverManager.savePlayers(String(instanceId || ''), {
+        ...(Array.isArray(p.whitelist) ? { whitelist: p.whitelist as { uuid: string; name: string }[] } : {}),
+        ...(Array.isArray(p.banned) ? { banned: p.banned as { uuid: string; name: string }[] } : {}),
+        ...(p.whitelistEnabled === true || p.whitelistEnabled === false ? { whitelistEnabled: p.whitelistEnabled } : {}),
+      });
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvSetUseSystemJava', wrapHandler('rooms:srvSetUseSystemJava',
+    async (_event, instanceId: string, enabled: boolean) => {
+      serverManager.setUseSystemJava(String(instanceId || ''), enabled === true);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvSetContentAutoSync', wrapHandler('rooms:srvSetContentAutoSync',
+    async (_event, instanceId: string, enabled: boolean) => {
+      serverManager.setContentAutoSync(String(instanceId || ''), enabled === true);
+      return { ok: true };
+    }
+  ));
+  ipcMain.handle('rooms:srvSystemJava', wrapHandler('rooms:srvSystemJava',
+    async () => serverManager.systemJavaInfo()
   ));
 
   ipcMain.handle('rooms:setActiveRoom', wrapHandler('rooms:setActiveRoom',

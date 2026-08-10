@@ -20,7 +20,7 @@ import { logger } from '../utils';
 import { Supervisor } from './supervisor';
 import { Announcer } from './announcer';
 import { runInstallPlan, InstallCancelled } from './installer';
-import { resolveRuntime, ensureRuntime } from './runtime-store';
+import { resolveRuntime, ensureRuntime, detectSystemJava, forgetSystemJava } from './runtime-store';
 import { fetchJsonCached, fetchTextCached } from './fetcher';
 import { getModule, moduleSummaries } from './modules';
 import { pingMinecraft } from './modules/minecraft/slp';
@@ -33,20 +33,38 @@ import {
 import { estimateInstallBytes, findFreePort, freeBytes } from './host-resources';
 import {
   getInstance, getInstances, listInstancesForRoom, upsertInstance, removeInstance,
-  isLegalAccepted, acceptLegal, type PersistedInstance,
+  isLegalAccepted, acceptLegal, hasContentConsent, recordContentConsent,
+  listOperators, grantOperator, revokeOperator, roleFor,
+  type PersistedInstance,
 } from '../db/servers-store';
 import type {
-  CatalogCtx, ConfigField, ConsoleLine, GameEvent, GameModule, GameVersionRef, ImportScanResult,
-  InstanceView, RoomServerInstance, RoomServerState, ServerRole, ServerStatus,
+  CatalogCtx, ConfigField, ConsoleLine, ContentSyncState, GameEvent, GameModule, GameVersionRef,
+  ImportScanResult, InstanceView, PendingContentConsent, RoomServerInstance, RoomServerState,
+  ServerAccessState, ServerContentSlotView, ServerContentState, ServerRole, ServerScheduleRule,
+  ServerScheduleState, ServerStatus, ServerPlayersState, ServerAlert,
+  MirroredServerInstance, ServerMirrorState, WorldBackupEntry,
 } from '../../shared/gameserver-types';
 import { IMPORT_JAVA_MAJORS } from '../../shared/gameserver-types';
 import { validateConfigValues } from '../../shared/gameserver-core';
 import { ServerActionError } from '../../shared/gameserver-errors';
+import {
+  computeContentManifest, filesInFolder, syncContentSlots, type RoomContentFile,
+} from './content-sync';
+import { backupTagNow, backupWorldDir, listWorldBackups, createWorldBackup, restoreWorldBackup, deleteWorldBackup, backupsFolder } from './world-backup';
+import { findDueScheduleActions, minutesToEvaluate, sanitizeScheduleRule } from './server-scheduler';
+import { readWhitelist, writeWhitelist, readBannedPlayers, writeBannedPlayers } from './minecraft-access';
+import { buildMirrorPayload, mirrorFingerprint, mirroredRole, type ConsoleTailSample } from './server-mirror';
+import { alertOnStatusChange, alertOnLowDisk, AlertThrottle } from './server-alerts';
 
 const log = logger.child('ServerManager');
 
 /** How often a running instance is probed for its real population. */
 const PROBE_INTERVAL_MS = 15_000;
+/** How often scheduled start/stop rules are evaluated. Rules match an exact
+ *  minute, so this ticks well inside one and the catch-up covers the rest. */
+const SCHEDULE_TICK_MS = 15_000;
+/** Console lines carried in a gossiped mirror — enough to see what just happened. */
+const MIRROR_TAIL_LINES = 8;
 
 interface Entry {
   persisted: PersistedInstance;
@@ -66,6 +84,11 @@ interface Entry {
    *  memory only: an offer the user did not accept should not survive a restart
    *  and become an update applied without a fresh look at the catalog. */
   pendingUpdate: GameVersionRef | undefined;
+  /** How bound room content compares to the last sync. */
+  contentSync: ContentSyncState;
+  contentPending: PendingContentConsent[];
+  /** Previous supervisor status — drives crash/OOM alerts. */
+  lastStatus?: ServerStatus;
 }
 
 export interface ServerManagerDeps {
@@ -75,14 +98,34 @@ export interface ServerManagerDeps {
   getSelfId(): string;
   /** Push updated state for a room to the renderer. */
   onRoomUpdate(roomId: string): void;
+  /** Room files for content sync (best-effort local paths). */
+  getRoomContentFiles(roomId: string): RoomContentFile[];
   /** Ask the elevated LAN helper to scope a firewall rule to an executable. */
   allowFirewallApp?(roomId: string, exePath: string): Promise<{ ok: boolean; message?: string }>;
+  /** Gossiped mirrors from OTHER members hosting in this room — several members
+   *  may host at once, so this is a list, never a single slot. */
+  getServerMirrors?(roomId: string): ServerMirrorState[];
+  /** Host publishes instance state to peers. */
+  publishServerMirror?(roomId: string, payload: ServerMirrorState): void;
+  /** Operator sends a console command to the host. */
+  publishRemoteCommand?(roomId: string, instanceId: string, command: string): void;
+  /** Surface crash/OOM/disk alerts in the renderer. */
+  onServerAlert?(roomId: string, alert: ServerAlert): void;
 }
 
 export class ServerManager extends EventEmitter {
   private readonly entries = new Map<string, Entry>();
   private deps: ServerManagerDeps | null = null;
   private disposed = false;
+  private scheduleTimer: NodeJS.Timeout | null = null;
+  private readonly lastScheduleFire = new Map<string, string>();
+  /** When the schedule was last evaluated, so a tick can catch up the minutes a
+   *  drifting timer or a blocked event loop skipped over. */
+  private lastScheduleCheck: Date | null = null;
+  private readonly alertThrottle = new AlertThrottle();
+  /** roomId → fingerprint of the mirror we last gossiped, so an unchanged
+   *  payload is not re-flooded on every probe tick. */
+  private readonly lastMirrorSent = new Map<string, string>();
 
   init(deps: ServerManagerDeps): void {
     this.deps = deps;
@@ -90,6 +133,7 @@ export class ServerManager extends EventEmitter {
     // dialog that no longer exists, and it can be gigabytes.
     purgeStaging();
     this.restoreAll();
+    this.startScheduleTicker();
   }
 
   private get selfId(): string {
@@ -118,10 +162,14 @@ export class ServerManager extends EventEmitter {
     const paths = instancePaths(persisted.instanceId);
 
     const supervisor = new Supervisor(module, this.viewOf(persisted, module), {
-      resolveRuntime: (ref) => resolveRuntime(ref),
+      resolveRuntime: (ref) => this.resolveRuntimeFor(persisted, ref),
       instanceRoot: paths.root,
       logsDir: paths.logs,
-      onChange: () => this.pushUpdate(persisted.roomId),
+      onChange: () => {
+        const live = this.entries.get(persisted.instanceId);
+        if (live) this.onEntryStatusChange(live);
+        this.pushUpdate(persisted.roomId);
+      },
       onEvent: (e) => this.onGameEvent(persisted.instanceId, e),
     });
     supervisor.autoRestart = persisted.autoRestart;
@@ -138,8 +186,11 @@ export class ServerManager extends EventEmitter {
       installing: false,
       installFailure: undefined,
       pendingUpdate: undefined,
+      contentSync: 'ok',
+      contentPending: [],
     };
     this.entries.set(persisted.instanceId, entry);
+    this.refreshContentStatus(entry);
     return entry;
   }
 
@@ -147,6 +198,155 @@ export class ServerManager extends EventEmitter {
     const e = this.entries.get(instanceId);
     if (!e) throw new ServerActionError('unknown-instance', instanceId);
     return e;
+  }
+
+  /**
+   * The executable to launch: a managed runtime, or the system Java the user
+   * explicitly opted into.
+   *
+   * The system path is gated on the MAJOR. `resolveRuntime` installs exactly the
+   * version a module asked for; PATH offers whatever happens to be there, and a
+   * Java 8 running a server that needs 21 dies with an UnsupportedClassVersion
+   * stack the user cannot act on. Refusing here, with the reason on their own
+   * console, is the difference between a fixable message and a mystery.
+   */
+  private resolveRuntimeFor(persisted: PersistedInstance, ref: { id: string; major: number }): string | null {
+    if (!persisted.useSystemJava) return resolveRuntime(ref);
+
+    const say = (msg: string): void => {
+      this.entries.get(persisted.instanceId)?.supervisor.console.system(msg);
+      log.warn('system java refused', { instanceId: persisted.instanceId, msg });
+    };
+    const sys = detectSystemJava();
+    if (!sys) {
+      say('system Java is selected but none was found on PATH — turn it off to use the managed runtime');
+      return null;
+    }
+    if (sys.major < ref.major) {
+      say(`system Java is ${sys.major}, this server needs ${ref.major} — turn it off to use the managed runtime`);
+      return null;
+    }
+    return sys.exe;
+  }
+
+  private onEntryStatusChange(entry: Entry): void {
+    const snap = entry.supervisor.snapshot();
+    const status: ServerStatus = entry.installing ? 'installing' : snap.status;
+    const alert = alertOnStatusChange(
+      entry.persisted.instanceId,
+      entry.persisted.name,
+      entry.lastStatus,
+      status,
+      snap.failDetail,
+    );
+    entry.lastStatus = status;
+    if (alert) this.raiseAlert(entry.persisted.roomId, alert);
+  }
+
+  /** Surface an alert unless an identical one was just shown (crash loops). */
+  private raiseAlert(roomId: string, alert: ServerAlert): void {
+    if (!this.alertThrottle.allow(alert)) return;
+    this.deps?.onServerAlert?.(roomId, alert);
+  }
+
+  /** Our role for a REMOTE instance — from the host's gossiped operator list,
+   *  never from our own store (see `mirroredRole`). */
+  private remoteRole(hostId: string, m: MirroredServerInstance): ServerRole {
+    return mirroredRole(hostId, m, this.selfId);
+  }
+
+  private findRemoteInRoom(roomId: string, instanceId: string): { hostId: string; row: MirroredServerInstance } | null {
+    for (const mirror of this.deps?.getServerMirrors?.(roomId) ?? []) {
+      if (mirror.hostId === this.selfId) continue;
+      const row = mirror.instances.find((i) => i.instanceId === instanceId);
+      if (row) return { hostId: mirror.hostId, row };
+    }
+    return null;
+  }
+
+  private describeMirrored(hostId: string, m: MirroredServerInstance): RoomServerInstance {
+    return {
+      instanceId: m.instanceId,
+      moduleId: m.moduleId,
+      name: m.name,
+      version: m.version,
+      hostId,
+      isHost: false,
+      role: this.remoteRole(hostId, m),
+      status: m.status,
+      since: m.since,
+      ...(m.address ? { address: m.address } : {}),
+      ...(m.port !== undefined ? { port: m.port } : {}),
+      ...(m.players ? { players: m.players } : {}),
+      autoRestart: m.autoRestart,
+      updatable: false,
+      remote: true,
+      ...(m.scheduleEnabled ? { scheduleEnabled: true } : {}),
+      operators: m.operators,
+      ...(m.consoleTail?.length && m.consoleTailSeq
+        ? { consoleTail: m.consoleTail, consoleTailSeq: m.consoleTailSeq }
+        : {}),
+      ...(m.failReason ? { failReason: m.failReason, ...(m.failDetail ? { failDetail: m.failDetail } : {}) } : {}),
+    };
+  }
+
+  /**
+   * Gossip our instances in this room to the other members.
+   *
+   * Published on CHANGE, not on tick. This runs from every `pushUpdate`, which
+   * a running instance triggers on each 15s probe — an unconditional broadcast
+   * there re-flooded a signed payload across the mesh every fifteen seconds
+   * whether or not anything about it had moved.
+   *
+   * An empty list is still published, once, if we had instances here before:
+   * that is how "I deleted my last server" reaches peers. A room where we never
+   * hosted anything publishes nothing at all.
+   */
+  private publishMirror(roomId: string): void {
+    const publish = this.deps?.publishServerMirror;
+    if (!publish) return;
+    const local: RoomServerInstance[] = [];
+    const tails: Record<string, ConsoleTailSample> = {};
+    for (const entry of this.entries.values()) {
+      if (entry.persisted.roomId !== roomId) continue;
+      local.push(this.describe(entry));
+      const lines = entry.supervisor.console.snapshot(0).slice(-MIRROR_TAIL_LINES);
+      if (lines.length) {
+        tails[entry.persisted.instanceId] = {
+          lines: lines.map((l) => l.text),
+          lastSeq: lines[lines.length - 1].seq,
+        };
+      }
+    }
+    const previous = this.lastMirrorSent.get(roomId);
+    if (previous === undefined && !local.length) return;
+
+    const payload = buildMirrorPayload(this.selfId, local, tails);
+    const fingerprint = mirrorFingerprint(payload);
+    if (previous === fingerprint) return;
+    this.lastMirrorSent.set(roomId, fingerprint);
+    publish(roomId, payload);
+  }
+
+  /**
+   * Host-side handler for operator console commands received over gossip.
+   *
+   * `roomId` is the room the signature was verified against, and it is checked —
+   * not decoration. An operator grant is per-instance, but a command is only
+   * authenticated inside ONE room's topic; without this an operator of an
+   * instance in room A could drive it from room B, where the host never offered
+   * them anything. Refusing is free and keeps the grant where it was made.
+   */
+  handleRemoteCommand(by: string, roomId: string, instanceId: string, command: string): { ok: true; command: string } | { ok: false; reason: string } {
+    const entry = this.entries.get(instanceId);
+    if (!entry) return { ok: false, reason: 'unknown-instance' };
+    if (entry.persisted.roomId !== roomId) return { ok: false, reason: 'unknown-instance' };
+    if (!listOperators(instanceId).includes(by)) return { ok: false, reason: 'viewer-only' };
+    // The audit trail operator write access was always meant to ship with: the
+    // host's own console records WHO typed it, before the server sees it, so a
+    // grant that turns out to be a mistake is legible after the fact.
+    entry.supervisor.console.system(`remote command from ${by}: ${command}`);
+    return entry.supervisor.sendCommand(command);
   }
 
   /** Build the read-only facts a module plans against. */
@@ -655,6 +855,12 @@ export class ServerManager extends EventEmitter {
       throw new ServerActionError('stop-first');
     }
 
+    const backup = await backupWorldDir(instanceId, `pre-update-${backupTagNow()}`);
+    if (backup) {
+      log.info('world backed up before update', { instanceId, backup });
+      entry.supervisor.console.system(`world backed up to ${path.basename(path.dirname(backup))}`);
+    }
+
     entry.persisted.ref = pending;
     entry.persisted.installed = false;
     upsertInstance(entry.persisted);
@@ -674,7 +880,7 @@ export class ServerManager extends EventEmitter {
   private async requestFirewallRule(entry: Entry): Promise<void> {
     const allow = this.deps?.allowFirewallApp;
     if (!allow) return;
-    const exe = resolveRuntime((entry.persisted.ref as GameVersionRef).runtime);
+    const exe = this.resolveRuntimeFor(entry.persisted, (entry.persisted.ref as GameVersionRef).runtime);
     if (!exe) return;
     try {
       const res = await allow(entry.persisted.roomId, exe);
@@ -694,6 +900,10 @@ export class ServerManager extends EventEmitter {
     const entry = this.entry(instanceId);
     if (!entry.persisted.installed) return { ok: false, reason: 'not-installed' };
     if (entry.installing) return { ok: false, reason: 'install-running' };
+
+    const paths = instancePaths(instanceId);
+    const diskAlert = alertOnLowDisk(instanceId, entry.persisted.name, freeBytes(paths.base));
+    if (diskAlert) this.raiseAlert(entry.persisted.roomId, diskAlert);
 
     this.refreshView(entry);
     const res = entry.supervisor.start();
@@ -724,15 +934,19 @@ export class ServerManager extends EventEmitter {
     return { ok: true };
   }
 
-  sendCommand(instanceId: string, command: string): { ok: true; command: string } | { ok: false; reason: string } {
-    const entry = this.entry(instanceId);
-    // Only the host may type into the console today. Operator write access is a
-    // later slice and needs a host-signed grant plus an audit trail; until it
-    // exists, refusing is the honest behaviour.
-    if (entry.persisted.roomId && this.roleOf(entry) !== 'host') {
-      return { ok: false, reason: 'host-only' };
+  sendCommand(instanceId: string, command: string, roomId?: string): { ok: true; command: string } | { ok: false; reason: string } {
+    const local = this.entries.get(instanceId);
+    if (local) {
+      const role = this.roleOf(local);
+      if (role === 'viewer') return { ok: false, reason: 'viewer-only' };
+      return local.supervisor.sendCommand(command);
     }
-    return entry.supervisor.sendCommand(command);
+    const rid = roomId || '';
+    const remote = rid ? this.findRemoteInRoom(rid, instanceId) : null;
+    if (!remote) return { ok: false, reason: 'unknown-instance' };
+    if (this.remoteRole(remote.hostId, remote.row) === 'viewer') return { ok: false, reason: 'viewer-only' };
+    this.deps?.publishRemoteCommand?.(rid, instanceId, command);
+    return { ok: true, command };
   }
 
   clearFailure(instanceId: string): void {
@@ -775,6 +989,7 @@ export class ServerManager extends EventEmitter {
     }
 
     this.entries.delete(instanceId);
+    this.alertThrottle.forget(instanceId);
     removeInstance(instanceId);
     this.pushUpdate(roomId);
     log.info('instance deleted', { instanceId, deletedFiles: opts.deleteFiles });
@@ -834,8 +1049,22 @@ export class ServerManager extends EventEmitter {
 
   // ── console ────────────────────────────────────────────────────────────────
 
-  consoleSnapshot(instanceId: string, after = 0): ConsoleLine[] {
-    return this.entry(instanceId).supervisor.console.snapshot(after);
+  consoleSnapshot(instanceId: string, after = 0, roomId?: string): ConsoleLine[] {
+    const local = this.entries.get(instanceId);
+    if (local) return local.supervisor.console.snapshot(after);
+    const remote = roomId ? this.findRemoteInRoom(roomId, instanceId) : null;
+    const tail = remote?.row.consoleTail;
+    const lastSeq = remote?.row.consoleTailSeq;
+    if (!tail?.length || !lastSeq) return [];
+    // The tail carries the HOST's sequence for its last line; the rest count
+    // back from it. That is what makes `after` mean the same thing remotely as
+    // it does locally — renumbering from 1 on every poll made every line look
+    // new, so the viewer's console re-appended the same eight lines forever.
+    const at = Date.now();
+    const firstSeq = lastSeq - (tail.length - 1);
+    return tail
+      .map((text, i) => ({ seq: firstSeq + i, at, stream: 'out' as const, text }))
+      .filter((l) => l.seq > after);
   }
 
   subscribeConsole(instanceId: string, fn: (line: ConsoleLine) => void): () => void {
@@ -899,18 +1128,396 @@ export class ServerManager extends EventEmitter {
     this.pushUpdate(roomId);
   }
 
+  /** Re-evaluate content fingerprints when the room manifest changes. */
+  onRoomContentChanged(roomId: string): void {
+    for (const entry of this.entries.values()) {
+      if (entry.persisted.roomId !== roomId) continue;
+      this.refreshContentStatus(entry);
+      if (entry.persisted.contentAutoSync && entry.contentSync === 'missing') {
+        const st = entry.supervisor.status;
+        if (st !== 'running' && st !== 'starting' && !entry.installing) {
+          void this.syncContent(entry.persisted.instanceId).catch((err) => {
+            log.warn('auto content sync failed', { instanceId: entry.persisted.instanceId, err: String(err) });
+          });
+        }
+      }
+    }
+    this.pushUpdate(roomId);
+  }
+
+  // ── room content sync ─────────────────────────────────────────────────────
+
+  private roomFilesFor(entry: Entry): RoomContentFile[] {
+    return this.deps?.getRoomContentFiles(entry.persisted.roomId) ?? [];
+  }
+
+  private contentSlotsOf(entry: Entry) {
+    const view = this.viewOf(entry.persisted, entry.module);
+    return entry.module.contentSlots?.(view) ?? [];
+  }
+
+  private bindingsOf(entry: Entry): Record<string, string> {
+    return { ...(entry.persisted.contentBindings ?? {}) };
+  }
+
+  private refreshContentStatus(entry: Entry): void {
+    const slots = this.contentSlotsOf(entry);
+    if (!slots.length || !entry.module.caps.content) {
+      entry.contentSync = 'ok';
+      entry.contentPending = [];
+      return;
+    }
+    const bindings = this.bindingsOf(entry);
+    const bound = slots.some((s) => Object.prototype.hasOwnProperty.call(bindings, s.id));
+    if (!bound) {
+      entry.contentSync = 'ok';
+      entry.contentPending = [];
+      return;
+    }
+    const roomFiles = this.roomFilesFor(entry);
+    const manifest = computeContentManifest(slots, bindings, roomFiles);
+    if (entry.persisted.contentManifest && manifest !== entry.persisted.contentManifest) {
+      entry.contentSync = 'missing';
+      entry.contentPending = [];
+      return;
+    }
+    entry.contentSync = entry.contentPending.length ? 'conflict' : 'ok';
+  }
+
+  contentState(instanceId: string): ServerContentState {
+    const entry = this.entry(instanceId);
+    const slots = this.contentSlotsOf(entry);
+    const bindings = this.bindingsOf(entry);
+    const roomFiles = this.roomFilesFor(entry);
+    const views: ServerContentSlotView[] = slots.map((slot) => {
+      const folderId = bindings[slot.id] ?? '';
+      const bound = Object.prototype.hasOwnProperty.call(bindings, slot.id);
+      const inFolder = bound ? filesInFolder(roomFiles, folderId) : [];
+      const matched = inFolder.filter((f) => slot.extensions.some((e) => f.name.toLowerCase().endsWith(e.toLowerCase())));
+      return {
+        slotId: slot.id,
+        labelKey: slot.labelKey,
+        extensions: [...slot.extensions],
+        executable: slot.executable,
+        ...(slot.compat ? { compat: slot.compat } : {}),
+        folderId: bound ? folderId : '',
+        bound,
+        fileCount: matched.length,
+        readyCount: matched.filter((f) => Boolean(f.localPath)).length,
+      };
+    });
+    return {
+      slots: views,
+      sync: entry.contentSync,
+      pending: [...entry.contentPending],
+      ...(entry.persisted.lastContentSyncAt ? { lastSyncAt: entry.persisted.lastContentSyncAt } : {}),
+    };
+  }
+
+  setContentFolder(instanceId: string, slotId: string, folderId: string): void {
+    const entry = this.entry(instanceId);
+    const slots = this.contentSlotsOf(entry);
+    if (!slots.some((s) => s.id === slotId)) throw new ServerActionError('unknown-instance', slotId);
+    const bindings = this.bindingsOf(entry);
+    bindings[slotId] = folderId ?? '';
+    entry.persisted.contentBindings = bindings;
+    upsertInstance(entry.persisted);
+    this.refreshContentStatus(entry);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  clearContentFolder(instanceId: string, slotId: string): void {
+    const entry = this.entry(instanceId);
+    const bindings = this.bindingsOf(entry);
+    delete bindings[slotId];
+    entry.persisted.contentBindings = Object.keys(bindings).length ? bindings : undefined;
+    upsertInstance(entry.persisted);
+    entry.contentSync = 'ok';
+    entry.contentPending = [];
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  consentContent(hashes: string[]): void {
+    const self = this.selfId;
+    for (const sha of hashes) {
+      if (/^[0-9a-f]{64}$/i.test(sha)) recordContentConsent(sha.toLowerCase(), self);
+    }
+  }
+
+  async syncContent(instanceId: string): Promise<ServerContentState> {
+    const entry = this.entry(instanceId);
+    if (!entry.module.caps.content) throw new ServerActionError('unknown-module', entry.persisted.moduleId);
+    const slots = this.contentSlotsOf(entry);
+    const bindings = this.bindingsOf(entry);
+    if (!slots.some((s) => Object.prototype.hasOwnProperty.call(bindings, s.id))) {
+      throw new ServerActionError('no-content-bindings');
+    }
+    if (entry.supervisor.status === 'running' || entry.supervisor.status === 'starting') {
+      throw new ServerActionError('stop-first');
+    }
+
+    entry.contentSync = 'syncing';
+    this.pushUpdate(entry.persisted.roomId);
+
+    const paths = instancePaths(instanceId);
+    const roomFiles = this.roomFilesFor(entry);
+    let result;
+    try {
+      result = await syncContentSlots({
+        instanceRoot: paths.root,
+        slots,
+        bindings,
+        roomFiles,
+        hasConsent: hasContentConsent,
+        isRunning: false,
+      });
+    } catch (err) {
+      entry.contentSync = 'missing';
+      if (String(err).includes('stop-first')) throw new ServerActionError('stop-first');
+      throw err;
+    }
+
+    entry.contentPending = result.pending;
+    entry.contentSync = result.state;
+    if (result.pending.length === 0 && result.state !== 'missing') {
+      const prevManifest = entry.persisted.contentManifest;
+      entry.persisted.contentManifest = result.manifest;
+      entry.persisted.lastContentSyncAt = Date.now();
+      if (prevManifest !== result.manifest) {
+        entry.persisted.contentRev = (entry.persisted.contentRev ?? 0) + 1;
+      }
+      upsertInstance(entry.persisted);
+      entry.supervisor.console.system(
+        `content synced (${result.copied} copied, ${result.removed} removed)`,
+      );
+    } else {
+      upsertInstance(entry.persisted);
+    }
+    this.pushUpdate(entry.persisted.roomId);
+    return this.contentState(instanceId);
+  }
+
+  // ── world backups ─────────────────────────────────────────────────────────
+
+  backupState(instanceId: string): Promise<WorldBackupEntry[]> {
+    return listWorldBackups(instanceId);
+  }
+
+  async createBackup(instanceId: string, label?: string): Promise<WorldBackupEntry> {
+    const entry = this.entry(instanceId);
+    const st = entry.supervisor.status;
+    if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
+    return createWorldBackup(instanceId, label);
+  }
+
+  async restoreBackup(instanceId: string, backupId: string): Promise<void> {
+    const entry = this.entry(instanceId);
+    const st = entry.supervisor.status;
+    if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
+    await restoreWorldBackup(instanceId, backupId);
+    entry.supervisor.console.system(`world restored from backup ${backupId}`);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  async removeBackup(instanceId: string, backupId: string): Promise<void> {
+    // Resolved BEFORE the delete: an unknown instance must fail without having
+    // already removed the directory.
+    const roomId = this.entry(instanceId).persisted.roomId;
+    await deleteWorldBackup(instanceId, backupId);
+    this.pushUpdate(roomId);
+  }
+
+  openBackupsFolder(instanceId: string): string {
+    return backupsFolder(instanceId);
+  }
+
+  // ── player lists (Minecraft) ───────────────────────────────────────────────
+
+  playersState(instanceId: string): ServerPlayersState {
+    const entry = this.entry(instanceId);
+    if (entry.persisted.moduleId !== 'minecraft') {
+      throw new ServerActionError('unknown-module', entry.persisted.moduleId);
+    }
+    const root = instancePaths(instanceId).root;
+    const locked = entry.supervisor.status === 'running' || entry.supervisor.status === 'starting';
+    const whitelistEnabled = entry.persisted.config['white-list'] === 'true';
+    return {
+      whitelistEnabled,
+      whitelist: readWhitelist(root),
+      banned: readBannedPlayers(root),
+      locked,
+    };
+  }
+
+  savePlayers(instanceId: string, patch: { whitelist?: { uuid: string; name: string }[]; banned?: { uuid: string; name: string }[]; whitelistEnabled?: boolean }): void {
+    const entry = this.entry(instanceId);
+    if (entry.persisted.moduleId !== 'minecraft') throw new ServerActionError('unknown-module', entry.persisted.moduleId);
+    const st = entry.supervisor.status;
+    if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
+    const root = instancePaths(instanceId).root;
+    if (patch.whitelist) writeWhitelist(root, patch.whitelist);
+    if (patch.banned) writeBannedPlayers(root, patch.banned);
+    if (patch.whitelistEnabled !== undefined) {
+      entry.persisted.config = { ...entry.persisted.config, 'white-list': patch.whitelistEnabled ? 'true' : 'false' };
+      upsertInstance(entry.persisted);
+      const rel = entry.module.configPath(this.viewOf(entry.persisted, entry.module));
+      if (rel) {
+        const abs = resolveUnder(root, rel);
+        let previous: string | undefined;
+        try { previous = fs.readFileSync(abs, 'utf8'); } catch { previous = undefined; }
+        const game = entry.module.parseConfig(previous ?? '');
+        game['white-list'] = patch.whitelistEnabled ? 'true' : 'false';
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, entry.module.serializeConfig(game, previous), 'utf8');
+      }
+    }
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  setUseSystemJava(instanceId: string, enabled: boolean): void {
+    const entry = this.entry(instanceId);
+    entry.persisted.useSystemJava = enabled === true;
+    upsertInstance(entry.persisted);
+    // Turning this on is exactly when someone has just installed Java, so drop
+    // the cached probe rather than letting a five-minute-old "not found" decide.
+    if (entry.persisted.useSystemJava) forgetSystemJava();
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  setContentAutoSync(instanceId: string, enabled: boolean): void {
+    const entry = this.entry(instanceId);
+    entry.persisted.contentAutoSync = enabled === true;
+    upsertInstance(entry.persisted);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  systemJavaInfo(): { available: boolean; version?: string; major?: number } {
+    const detected = detectSystemJava();
+    return detected
+      ? { available: true, version: detected.version, major: detected.major }
+      : { available: false };
+  }
+
   // ── state for the renderer ────────────────────────────────────────────────
 
   /**
-   * Our role for an instance. Every instance this manager supervises is one WE
-   * created, so it is always 'host'. Remote members' instances arrive as
-   * mirrored state and are never supervised here — which is why there is no
-   * operator branch yet: granting one is meaningless until the gossip that
-   * carries a remote instance exists.
+   * Our role for an instance WE supervise, which is always `host` — the process
+   * is on this machine. Operator grants are the other direction entirely: they
+   * are what this host hands to remote members, and a remote member reads their
+   * own role off the gossiped mirror (`mirroredRole`), never from this store.
    */
-  private roleOf(_entry: Entry): ServerRole {
-    return 'host';
+  private roleOf(entry: Entry): ServerRole {
+    return roleFor(entry.persisted.instanceId, this.selfId, this.selfId);
   }
+
+  // ── schedule ───────────────────────────────────────────────────────────────
+
+  private startScheduleTicker(): void {
+    if (this.scheduleTimer) return;
+    void this.scheduleTick();
+    this.scheduleTimer = setInterval(() => void this.scheduleTick(), SCHEDULE_TICK_MS);
+  }
+
+  private stopScheduleTicker(): void {
+    if (this.scheduleTimer) {
+      clearInterval(this.scheduleTimer);
+      this.scheduleTimer = null;
+    }
+  }
+
+  private async scheduleTick(): Promise<void> {
+    if (this.disposed) return;
+    const now = new Date();
+    const minutes = minutesToEvaluate(now, this.lastScheduleCheck);
+    this.lastScheduleCheck = now;
+    if (!minutes.length) return;
+
+    for (const entry of this.entries.values()) {
+      if (!entry.persisted.scheduleEnabled) continue;
+      const rules = entry.persisted.schedules ?? [];
+      if (!rules.length) continue;
+      // One instance's bad rule must not stop the others from being evaluated.
+      try {
+        for (const minute of minutes) {
+          const due = findDueScheduleActions(minute, rules, this.lastScheduleFire, entry.persisted.instanceId);
+          for (const { rule, fireKey, dedupKey } of due) {
+            this.lastScheduleFire.set(dedupKey, fireKey);
+            this.applyScheduledAction(entry, rule.action);
+          }
+        }
+      } catch (err) {
+        log.warn('schedule tick failed', { instanceId: entry.persisted.instanceId, err: String(err) });
+      }
+    }
+  }
+
+  private applyScheduledAction(entry: Entry, action: ServerScheduleRule['action']): void {
+    const id = entry.persisted.instanceId;
+    entry.supervisor.console.system(`schedule: ${action}`);
+    // A schedule that silently does nothing is worse than one that fails loudly:
+    // "start" on a server whose install never finished used to leave only the
+    // line above, with no hint why the world never came up.
+    const res = action === 'start' ? this.start(id)
+      : action === 'stop' ? this.stop(id)
+        : this.restart(id);
+    if (!res.ok) {
+      entry.supervisor.console.system(`schedule: ${action} refused — ${res.reason}`);
+      log.warn('scheduled action refused', { instanceId: id, action, reason: res.reason });
+    }
+  }
+
+  scheduleState(instanceId: string): ServerScheduleState {
+    const entry = this.entry(instanceId);
+    return {
+      enabled: entry.persisted.scheduleEnabled === true,
+      rules: [...(entry.persisted.schedules ?? [])],
+    };
+  }
+
+  setScheduleEnabled(instanceId: string, enabled: boolean): void {
+    const entry = this.entry(instanceId);
+    entry.persisted.scheduleEnabled = enabled;
+    upsertInstance(entry.persisted);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  saveSchedule(instanceId: string, rules: unknown): void {
+    const entry = this.entry(instanceId);
+    if (!Array.isArray(rules)) throw new ServerActionError('unknown-instance', 'rules');
+    const clean: ServerScheduleRule[] = [];
+    for (const raw of rules.slice(0, 16)) {
+      const rule = sanitizeScheduleRule(raw);
+      if (rule) clean.push(rule);
+    }
+    entry.persisted.schedules = clean;
+    upsertInstance(entry.persisted);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  // ── operator access ────────────────────────────────────────────────────────
+
+  accessState(instanceId: string): ServerAccessState {
+    return { operators: listOperators(instanceId) };
+  }
+
+  grantOperatorAccess(instanceId: string, memberId: string): void {
+    const entry = this.entry(instanceId);
+    if (this.roleOf(entry) !== 'host') throw new ServerActionError('host-only');
+    const id = String(memberId || '').trim();
+    if (!id || id === this.selfId) return;
+    grantOperator(instanceId, id);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
+  revokeOperatorAccess(instanceId: string, memberId: string): void {
+    const entry = this.entry(instanceId);
+    if (this.roleOf(entry) !== 'host') throw new ServerActionError('host-only');
+    const id = String(memberId || '').trim();
+    if (!id) return;
+    revokeOperator(instanceId, id);
+    this.pushUpdate(entry.persisted.roomId);
+  }
+
 
   private describe(entry: Entry): RoomServerInstance {
     const snap = entry.supervisor.snapshot();
@@ -936,8 +1543,16 @@ export class ServerManager extends EventEmitter {
         ? { players: { online: entry.players.online, max: entry.players.max, names: entry.players.names } }
         : {}),
       contentRev: entry.persisted.contentRev,
+      ...(entry.module.caps.content && entry.contentSync !== 'ok' ? { contentSync: entry.contentSync } : {}),
       autoRestart: entry.persisted.autoRestart,
       updatable: (entry.persisted.ref as GameVersionRef).flavour !== 'imported' && Boolean(entry.module.resolve),
+      ...(entry.persisted.scheduleEnabled ? { scheduleEnabled: true } : {}),
+      ...(entry.persisted.schedules?.length
+        ? { scheduleRules: entry.persisted.schedules.filter((r) => r.enabled).length }
+        : {}),
+      operators: listOperators(entry.persisted.instanceId),
+      ...(entry.persisted.useSystemJava ? { useSystemJava: true } : {}),
+      ...(entry.persisted.contentAutoSync ? { contentAutoSync: true } : {}),
       ...(entry.installFailure
         ? { failReason: 'install-failed' as const, failDetail: entry.installFailure }
         : snap.failReason
@@ -952,6 +1567,17 @@ export class ServerManager extends EventEmitter {
     const instances: RoomServerInstance[] = [];
     for (const entry of this.entries.values()) {
       if (entry.persisted.roomId === roomId) instances.push(this.describe(entry));
+    }
+    // Every peer hosting here contributes, not just one: a room can have two
+    // members each running a server and both must be listed.
+    const seen = new Set(instances.map((i) => i.instanceId));
+    for (const mirror of this.deps?.getServerMirrors?.(roomId) ?? []) {
+      if (mirror.hostId === this.selfId) continue;
+      for (const row of mirror.instances) {
+        if (seen.has(row.instanceId)) continue;
+        seen.add(row.instanceId);
+        instances.push(this.describeMirrored(mirror.hostId, row));
+      }
     }
     instances.sort((a, b) => a.name.localeCompare(b.name));
     return {
@@ -975,6 +1601,7 @@ export class ServerManager extends EventEmitter {
 
   private pushUpdate(roomId: string): void {
     if (this.disposed) return;
+    this.publishMirror(roomId);
     this.deps?.onRoomUpdate(roomId);
     this.emit('update', roomId);
   }
@@ -985,6 +1612,7 @@ export class ServerManager extends EventEmitter {
    *  holding the world files and the port. */
   dispose(): void {
     this.disposed = true;
+    this.stopScheduleTicker();
     for (const entry of this.entries.values()) {
       entry.installAbort?.abort();
       this.stopProbing(entry);

@@ -34,6 +34,10 @@ import type {
   ConsoleLine,
   GameVersionRef,
   RoomServerState,
+  ServerContentState,
+  ServerScheduleState,
+  ServerScheduleRule,
+  ServerAccessState,
 } from '../shared/gameserver-types';
 
 const api: IpcApi = {
@@ -799,8 +803,8 @@ const api: IpcApi = {
       checkUpdate: (instanceId: string): Promise<{ current: string; available: string | null }> =>
         ipcRenderer.invoke('rooms:srvCheckUpdate', instanceId),
       applyUpdate: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvApplyUpdate', instanceId),
-      command: (instanceId: string, command: string): Promise<{ ok: boolean; reason?: string }> =>
-        ipcRenderer.invoke('rooms:srvCommand', instanceId, command),
+      command: (instanceId: string, command: string, roomId?: string): Promise<{ ok: boolean; reason?: string }> =>
+        ipcRenderer.invoke('rooms:srvCommand', instanceId, command, roomId),
       clearFailure: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvClearFailure', instanceId),
       setAutoRestart: (instanceId: string, enabled: boolean): Promise<{ ok: boolean }> =>
         ipcRenderer.invoke('rooms:srvSetAutoRestart', instanceId, enabled),
@@ -810,8 +814,8 @@ const api: IpcApi = {
         ipcRenderer.invoke('rooms:srvSaveConfig', instanceId, values),
       openFolder: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvOpenFolder', instanceId),
       /** Console lines newer than `after`; the renderer keeps the last seq it saw. */
-      console: (instanceId: string, after?: number): Promise<ConsoleLine[]> =>
-        ipcRenderer.invoke('rooms:srvConsole', instanceId, after ?? 0),
+      console: (instanceId: string, after?: number, roomId?: string): Promise<ConsoleLine[]> =>
+        ipcRenderer.invoke('rooms:srvConsole', instanceId, after ?? 0, roomId),
       /** Live console tail. Main only streams while at least one listener is
        *  attached, so a closed panel costs nothing. */
       onConsole: (cb: (payload: { instanceId: string; lines: ConsoleLine[] }) => void): (() => void) => {
@@ -821,6 +825,48 @@ const api: IpcApi = {
       },
       watchConsole: (instanceId: string | null): Promise<{ ok: boolean }> =>
         ipcRenderer.invoke('rooms:srvWatchConsole', instanceId),
+      content: (instanceId: string): Promise<ServerContentState> =>
+        ipcRenderer.invoke('rooms:srvContent', instanceId),
+      setContentFolder: (instanceId: string, slotId: string, folderId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSetContentFolder', instanceId, slotId, folderId),
+      clearContentFolder: (instanceId: string, slotId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvClearContentFolder', instanceId, slotId),
+      syncContent: (instanceId: string): Promise<ServerContentState> =>
+        ipcRenderer.invoke('rooms:srvSyncContent', instanceId),
+      consentContent: (hashes: string[]): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvConsentContent', hashes),
+      roomFolders: (roomId: string): Promise<Array<{ id: string; name: string }>> =>
+        ipcRenderer.invoke('rooms:srvRoomFolders', roomId),
+      schedule: (instanceId: string): Promise<ServerScheduleState> =>
+        ipcRenderer.invoke('rooms:srvSchedule', instanceId),
+      setScheduleEnabled: (instanceId: string, enabled: boolean): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSetScheduleEnabled', instanceId, enabled),
+      saveSchedule: (instanceId: string, rules: ServerScheduleRule[]): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSaveSchedule', instanceId, rules),
+      access: (instanceId: string): Promise<ServerAccessState> =>
+        ipcRenderer.invoke('rooms:srvAccess', instanceId),
+      grantOperator: (instanceId: string, memberId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvGrantOperator', instanceId, memberId),
+      revokeOperator: (instanceId: string, memberId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvRevokeOperator', instanceId, memberId),
+      backups: (instanceId: string) => ipcRenderer.invoke('rooms:srvBackups', instanceId),
+      createBackup: (instanceId: string, label?: string) =>
+        ipcRenderer.invoke('rooms:srvCreateBackup', instanceId, label),
+      restoreBackup: (instanceId: string, backupId: string) =>
+        ipcRenderer.invoke('rooms:srvRestoreBackup', instanceId, backupId),
+      deleteBackup: (instanceId: string, backupId: string) =>
+        ipcRenderer.invoke('rooms:srvDeleteBackup', instanceId, backupId),
+      openBackupsFolder: (instanceId: string): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvOpenBackups', instanceId),
+      players: (instanceId: string) => ipcRenderer.invoke('rooms:srvPlayers', instanceId),
+      savePlayers: (instanceId: string, patch: object): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSavePlayers', instanceId, patch),
+      setUseSystemJava: (instanceId: string, enabled: boolean): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSetUseSystemJava', instanceId, enabled),
+      setContentAutoSync: (instanceId: string, enabled: boolean): Promise<{ ok: boolean }> =>
+        ipcRenderer.invoke('rooms:srvSetContentAutoSync', instanceId, enabled),
+      systemJava: (): Promise<{ available: boolean; version?: string; major?: number }> =>
+        ipcRenderer.invoke('rooms:srvSystemJava'),
       /** Pushed whenever anything about a room's servers changed. */
       onUpdate: (cb: (payload: { roomId: string; state: RoomServerState }) => void): (() => void) => {
         const listener = (_e: unknown, payload: { roomId: string; state: RoomServerState }): void => cb(payload);
@@ -926,6 +972,12 @@ const api: IpcApi = {
     const handler = (_event: IpcRendererEvent, msg: string) => callback(msg);
     ipcRenderer.on('rooms:lanWarn', handler);
     return () => { ipcRenderer.removeListener('rooms:lanWarn', handler); };
+  },
+
+  onServerAlert: (callback: (payload: { roomId: string } & import('../shared/gameserver-types').ServerAlert) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { roomId: string } & import('../shared/gameserver-types').ServerAlert) => callback(payload);
+    ipcRenderer.on('rooms:srvAlert', handler);
+    return () => { ipcRenderer.removeListener('rooms:srvAlert', handler); };
   },
 
   // Screen-watch loopback signaling from the engine forwarder (offer/ice/end).

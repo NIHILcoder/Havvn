@@ -11,7 +11,7 @@
  * derived from the supervisor and never survives a restart by design.
  */
 import Store from 'electron-store';
-import type { ServerRole } from '../../shared/gameserver-types';
+import type { ServerRole, ServerScheduleRule } from '../../shared/gameserver-types';
 
 /** One instance as it survives a restart. */
 export interface PersistedInstance {
@@ -32,6 +32,18 @@ export interface PersistedInstance {
   autoRestart: boolean;
   /** Bumped whenever the required content set changes. */
   contentRev: number;
+  /** slotId → room folder id ('' = uncategorized). Absent slot = unbound. */
+  contentBindings?: Record<string, string>;
+  /** Fingerprint of the last successful content sync manifest. */
+  contentManifest?: string;
+  lastContentSyncAt?: number;
+  /** Automatic start/stop/restart rules. */
+  scheduleEnabled?: boolean;
+  schedules?: ServerScheduleRule[];
+  /** Prefer system Java over a managed runtime. */
+  useSystemJava?: boolean;
+  /** Sync room content when bound files change (server must be stopped). */
+  contentAutoSync?: boolean;
 }
 
 interface ServersSchema {

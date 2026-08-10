@@ -1384,17 +1384,39 @@ export interface IpcApi {
        */
       checkUpdate: (instanceId: string) => Promise<{ current: string; available: string | null }>;
       applyUpdate: (instanceId: string) => Promise<{ ok: boolean }>;
-      command: (instanceId: string, command: string) => Promise<{ ok: boolean; reason?: string }>;
+      command: (instanceId: string, command: string, roomId?: string) => Promise<{ ok: boolean; reason?: string }>;
       clearFailure: (instanceId: string) => Promise<{ ok: boolean }>;
       setAutoRestart: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
       getConfig: (instanceId: string) => Promise<{ schema: ConfigField[]; values: Record<string, string> }>;
       saveConfig: (instanceId: string, values: Record<string, string>) => Promise<{ ok: boolean }>;
       openFolder: (instanceId: string) => Promise<{ ok: boolean }>;
-      console: (instanceId: string, after?: number) => Promise<ConsoleLine[]>;
+      console: (instanceId: string, after?: number, roomId?: string) => Promise<ConsoleLine[]>;
       onConsole: (cb: (payload: { instanceId: string; lines: ConsoleLine[] }) => void) => () => void;
       /** Subscribe main's console tail to ONE instance (null unsubscribes), so a
        *  closed panel costs no IPC traffic. */
       watchConsole: (instanceId: string | null) => Promise<{ ok: boolean }>;
+      content: (instanceId: string) => Promise<ServerContentState>;
+      setContentFolder: (instanceId: string, slotId: string, folderId: string) => Promise<{ ok: boolean }>;
+      clearContentFolder: (instanceId: string, slotId: string) => Promise<{ ok: boolean }>;
+      syncContent: (instanceId: string) => Promise<ServerContentState>;
+      consentContent: (hashes: string[]) => Promise<{ ok: boolean }>;
+      roomFolders: (roomId: string) => Promise<Array<{ id: string; name: string }>>;
+      schedule: (instanceId: string) => Promise<ServerScheduleState>;
+      setScheduleEnabled: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
+      saveSchedule: (instanceId: string, rules: ServerScheduleRule[]) => Promise<{ ok: boolean }>;
+      access: (instanceId: string) => Promise<ServerAccessState>;
+      grantOperator: (instanceId: string, memberId: string) => Promise<{ ok: boolean }>;
+      revokeOperator: (instanceId: string, memberId: string) => Promise<{ ok: boolean }>;
+      backups: (instanceId: string) => Promise<WorldBackupEntry[]>;
+      createBackup: (instanceId: string, label?: string) => Promise<WorldBackupEntry>;
+      restoreBackup: (instanceId: string, backupId: string) => Promise<{ ok: boolean }>;
+      deleteBackup: (instanceId: string, backupId: string) => Promise<{ ok: boolean }>;
+      openBackupsFolder: (instanceId: string) => Promise<{ ok: boolean }>;
+      players: (instanceId: string) => Promise<ServerPlayersState>;
+      savePlayers: (instanceId: string, patch: { whitelist?: { uuid: string; name: string }[]; banned?: { uuid: string; name: string }[]; whitelistEnabled?: boolean }) => Promise<{ ok: boolean }>;
+      setUseSystemJava: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
+      setContentAutoSync: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
+      systemJava: () => Promise<{ available: boolean; version?: string; major?: number }>;
       onUpdate: (cb: (payload: { roomId: string; state: RoomServerState }) => void) => () => void;
     };
     exportIdentity: () => Promise<{ success: boolean; path?: string }>;
@@ -1419,6 +1441,8 @@ export interface IpcApi {
   /** A transient LAN notice to toast (UAC cancelled, helper crashed, driver missing,
    *  direct-connect failed). LAN state itself rides onRoomUpdate — no separate channel. */
   onLanWarning: (callback: (msg: string) => void) => () => void;
+  /** Game-server alert (crash, OOM, low disk). */
+  onServerAlert: (callback: (payload: { roomId: string } & ServerAlert) => void) => () => void;
   /** Screen-watch loopback signaling from the engine (offer/ice/end). The overlay
    *  answers via rooms.screen.signal; 'end' means the stream is gone — close. */
   onRoomScreenSignal: (callback: (msg: { roomId: string; memberId: string; kind: 'offer' | 'ice' | 'end'; data?: unknown }) => void) => () => void;
