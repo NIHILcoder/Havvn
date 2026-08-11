@@ -61,6 +61,7 @@ const lan = (over: Partial<LanStateView> = {}): LanStateView => ({
 const render = (over: Partial<LanStateView> = {}, props: Partial<React.ComponentProps<typeof RoomLanPanel>> = {}) =>
   renderToStaticMarkup(
     <RoomLanPanel
+      roomId="room-1"
       lan={lan(over)}
       members={MEMBERS}
       selfId="me"
@@ -172,8 +173,10 @@ describe('the dock panels in this directory stay in their own realm', () => {
     // that arrival visible in review rather than silent.
     expect(files).toEqual([
       'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx',
-      'RoomServerPanel.tsx', 'ServerConfigField.tsx', 'ServerConfigForm.tsx',
-      'ServerConsole.tsx',
+      'RoomLanServerWidget.tsx', 'RoomServerPanel.tsx', 'ServerAccessPanel.tsx',
+      'ServerBackupPanel.tsx', 'ServerConfigField.tsx', 'ServerConfigForm.tsx',
+      'ServerConsole.tsx', 'ServerContentPanel.tsx', 'ServerPlayersPanel.tsx',
+      'ServerSchedulePanel.tsx',
     ]);
   });
 

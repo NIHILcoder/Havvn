@@ -2270,6 +2270,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       case 'lan':
         return (
           <RoomLanPanel
+            roomId={room.roomId}
             lan={room.lan}
             members={room.members}
             selfId={room.members.find((m) => m.isSelf)?.memberId}

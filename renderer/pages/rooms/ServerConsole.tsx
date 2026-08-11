@@ -35,10 +35,12 @@ const FOLLOW_SLACK_PX = 48;
 
 interface ServerConsoleProps {
   instanceId: string;
+  roomId: string;
   canSend: boolean;
+  remote?: boolean;
 }
 
-export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, canSend }) => {
+export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId, canSend, remote }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const host = useHostWindow();
@@ -63,27 +65,52 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, canSen
     setLines([]);
     const api = window.api.rooms.servers;
 
-    void api.watchConsole(instanceId).catch(() => { /* instance vanished */ });
-    void api.console(instanceId).then((snapshot) => { if (alive) setLines(snapshot); }).catch(() => { /* ignore */ });
-
-    const off = api.onConsole((payload) => {
-      if (!alive || payload.instanceId !== instanceId) return;
+    // Append what is newer than the last seq we hold, capped to the view. Shared
+    // by both paths: a mirrored tail carries the HOST's sequence numbers, so it
+    // merges by exactly the same rule as a locally streamed line.
+    const append = (incoming: ConsoleLine[]): void => {
+      if (!alive || incoming.length === 0) return;
       setLines((prev) => {
         const lastSeq = prev.length ? prev[prev.length - 1].seq : 0;
-        const fresh = payload.lines.filter((l) => l.seq > lastSeq);
+        const fresh = incoming.filter((l) => l.seq > lastSeq);
         if (fresh.length === 0) return prev;
         const next = prev.concat(fresh);
         return next.length > VIEW_LINES ? next.slice(next.length - VIEW_LINES) : next;
       });
+    };
+
+    if (remote) {
+      // The mirror only ever carries the last few lines, so this console shows
+      // a moving window rather than full history — but it no longer REPLACES
+      // what it has, which is what made the same lines flicker in and out.
+      void api.console(instanceId, 0, roomId).then(append).catch(() => { /* ignore */ });
+      const offUp = api.onUpdate((payload) => {
+        if (payload.roomId !== roomId) return;
+        const inst = payload.state.instances.find((i) => i.instanceId === instanceId);
+        const tail = inst?.consoleTail;
+        const lastSeq = inst?.consoleTailSeq;
+        if (!tail?.length || !lastSeq) return;
+        const at = Date.now();
+        const firstSeq = lastSeq - (tail.length - 1);
+        append(tail.map((text, i) => ({ seq: firstSeq + i, at, stream: 'out' as const, text })));
+      });
+      return () => { alive = false; offUp(); };
+    }
+
+    void api.watchConsole(instanceId).catch(() => { /* instance vanished */ });
+    void api.console(instanceId).then(append).catch(() => { /* ignore */ });
+
+    const off = api.onConsole((payload) => {
+      if (payload.instanceId !== instanceId) return;
+      append(payload.lines);
     });
 
     return () => {
       alive = false;
       off();
-      // Unsubscribe in main too, or a closed panel keeps paying for the stream.
       void api.watchConsole(null).catch(() => { /* window closing */ });
     };
-  }, [instanceId]);
+  }, [instanceId, remote, roomId]);
 
   // Scroll AFTER paint, and only when the user was already at the bottom.
   useLayoutEffect(() => {
@@ -108,12 +135,12 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, canSen
     // Sending scrolls back to the bottom: you want to see the answer.
     setFollowing(true);
     try {
-      const res = await window.api.rooms.servers.command(instanceId, text);
+      const res = await window.api.rooms.servers.command(instanceId, text, roomId);
       if (!res.ok && res.reason) toast.error(res.reason);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     }
-  }, [command, instanceId, toast]);
+  }, [command, instanceId, roomId, toast]);
 
   const copyLog = useCallback(() => {
     // The clipboard of the window this console is REALLY in. A detached panel

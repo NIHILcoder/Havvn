@@ -29,6 +29,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, Select, Toggle } from '../../components';
+import type { IconName } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
 import { useHostToast } from '../../utils/hostToast';
@@ -40,6 +41,11 @@ import { IMPORT_JAVA_MAJORS } from '../../../shared/gameserver-types';
 import { ServerConsole } from './ServerConsole';
 import { ServerConfigForm } from './ServerConfigForm';
 import { ServerConfigField } from './ServerConfigField';
+import { ServerContentPanel } from './ServerContentPanel';
+import { ServerSchedulePanel } from './ServerSchedulePanel';
+import { ServerAccessPanel } from './ServerAccessPanel';
+import { ServerBackupPanel } from './ServerBackupPanel';
+import { ServerPlayersPanel } from './ServerPlayersPanel';
 import { useServerError, useServerErrorParts } from './serverErrors';
 import './RoomServerPanel.css';
 
@@ -59,9 +65,35 @@ interface RoomServerPanelProps {
   soloHandle?: React.ReactNode;
 }
 
-type Tab = 'overview' | 'console' | 'settings';
+export type Tab = 'overview' | 'console' | 'content' | 'schedule' | 'access' | 'backup' | 'players' | 'settings';
 
 const EMPTY_STATE: RoomServerState = { available: true, modules: [], instances: [] };
+
+/**
+ * Which tabs an instance actually has.
+ *
+ * A remote instance is a mirror: there is no local directory to configure, no
+ * schedule to arm, nobody here to grant. Only Minecraft has player lists.
+ */
+export function visibleTabsFor(instance: Pick<RoomServerInstance, 'remote' | 'moduleId'>): Tab[] {
+  if (instance.remote === true) return ['overview', 'console'];
+  const tabs: Tab[] = ['overview', 'console', 'content', 'schedule', 'access', 'backup'];
+  if (instance.moduleId === 'minecraft') tabs.push('players');
+  tabs.push('settings');
+  return tabs;
+}
+
+/**
+ * The tab to show, given the one the user last picked.
+ *
+ * Selection lives above `tab`, so switching instances keeps it — and a tab the
+ * new instance does not have left the strip with nothing active and the body
+ * blank, because every panel is gated on the same conditions that built the
+ * list. Overview is the one tab that always exists.
+ */
+export function resolveTab(tab: Tab, tabs: Tab[]): Tab {
+  return tabs.includes(tab) ? tab : 'overview';
+}
 
 /** Status → the dot's modifier class. Installing and starting share the "busy"
  *  treatment because both are "wait, something is happening". */
@@ -102,8 +134,14 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
     const off = window.api.rooms.servers.onUpdate((payload) => {
       if (payload.roomId === roomId) setState(payload.state);
     });
-    return () => { alive = false; off(); };
-  }, [roomId]);
+    const offAlert = window.api.onServerAlert?.((payload) => {
+      if (payload.roomId !== roomId) return;
+      const key = `rooms.server.alert.${payload.kind}` as const;
+      const msg = t(key as never).replace('{name}', payload.name);
+      toast.error(payload.detail ? `${msg}: ${payload.detail}` : msg);
+    });
+    return () => { alive = false; off(); offAlert?.(); };
+  }, [roomId, t, toast]);
 
   const instances = state.instances;
   const selected = useMemo(
@@ -229,6 +267,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
 
           {selected && (
             <ServerDetail
+              roomId={roomId}
               instance={selected}
               tab={tab}
               onTab={setTab}
@@ -246,6 +285,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface ServerDetailProps {
+  roomId: string;
   instance: RoomServerInstance;
   tab: Tab;
   onTab: (t: Tab) => void;
@@ -256,13 +296,18 @@ interface ServerDetailProps {
   moduleName?: string;
 }
 
-const TAB_ICONS: Record<Tab, 'list' | 'monitor' | 'sliders'> = {
+const TAB_ICONS: Record<Tab, IconName> = {
   overview: 'list',
   console: 'monitor',
+  content: 'package',
+  schedule: 'clock',
+  access: 'users',
+  backup: 'archive',
+  players: 'users',
   settings: 'sliders',
 };
 
-const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun, onCopyAddress, moduleName }) => {
+const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTab, onRun, onCopyAddress, moduleName }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const errorParts = useServerErrorParts();
@@ -301,7 +346,30 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
 
   // Offered only where it can succeed: an imported tree has no publisher to ask,
   // and a button whose only outcome is an error message is worse than no button.
-  const canUpdate = instance.updatable && !busy && !live && instance.failReason !== 'install-failed';
+  const isRemote = instance.remote === true;
+  const canUpdate = !isRemote && instance.updatable && !busy && !live && instance.failReason !== 'install-failed';
+  const canConsole = instance.role === 'host' || instance.role === 'operator';
+  const [sysJava, setSysJava] = useState<{ available: boolean; version?: string; major?: number } | null>(null);
+  useEffect(() => {
+    if (isRemote) return;
+    void api.systemJava().then(setSysJava).catch(() => { /* ignore */ });
+  }, [api, isRemote, instanceId]);
+  // Shown while it is ON even if Java has since gone: hiding the row on
+  // availability alone left the setting stuck on with no control to undo it, and
+  // a server that would not start.
+  const usingSystemJava = instance.useSystemJava === true;
+  const showSystemJava = !isRemote && (sysJava?.available === true || usingSystemJava);
+  const systemJavaMissing = usingSystemJava && sysJava !== null && !sysJava.available;
+
+  const visibleTabs = useMemo(
+    () => visibleTabsFor({ remote: instance.remote, moduleId: instance.moduleId }),
+    [instance.remote, instance.moduleId],
+  );
+
+  useEffect(() => {
+    const next = resolveTab(tab, visibleTabs);
+    if (next !== tab) onTab(next);
+  }, [visibleTabs, tab, onTab]);
 
   /**
    * The line under the failure sentence.
@@ -444,7 +512,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
         <button
           type="button"
           className="room-server-primary is-stop"
-          disabled={status === 'stopping'}
+          disabled={status === 'stopping' || isRemote}
           onClick={() => void onRun(() => api.stop(instanceId))}
         >
           <Icon name="pause" size={13} />
@@ -454,7 +522,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
         <button
           type="button"
           className="room-server-primary"
-          disabled={busy}
+          disabled={busy || isRemote}
           onClick={() => void onRun(() => api.start(instanceId))}
         >
           <Icon name="play" size={13} />
@@ -506,11 +574,11 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
       )}
 
       <div className="room-server-tools">
-        <button type="button" className="room-server-tool" disabled={busy} onClick={() => void onRun(() => api.restart(instanceId))}>
+        <button type="button" className="room-server-tool" disabled={busy || isRemote} onClick={() => void onRun(() => api.restart(instanceId))}>
           <Icon name="refresh-cw" size={12} />
           {t('rooms.server.restart')}
         </button>
-        <button type="button" className="room-server-tool" onClick={() => void api.openFolder(instanceId)}>
+        <button type="button" className="room-server-tool" disabled={isRemote} onClick={() => void api.openFolder(instanceId)}>
           <Icon name="folder-open" size={12} />
           {t('rooms.server.openFolder')}
         </button>
@@ -520,7 +588,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
         <button
           type="button"
           className="room-server-tool is-danger"
-          disabled={busy || live || confirmDelete}
+          disabled={busy || live || confirmDelete || isRemote}
           title={live ? t('rooms.server.stopFirst') : t('rooms.server.delete')}
           onClick={() => setConfirmDelete(true)}
         >
@@ -559,7 +627,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
       )}
 
       <div className="room-server-viewtabs" role="tablist">
-        {(['overview', 'console', 'settings'] as Tab[]).map((id) => (
+        {visibleTabs.map((id) => (
           <button
             key={id}
             type="button"
@@ -578,6 +646,12 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
         {tab === 'overview' && (
           <div className="room-server-overview">
             <div className="room-server-facts">
+              {isRemote && (
+                <div className="room-server-fact">
+                  <span className="room-server-fact-key">{t('rooms.server.host')}</span>
+                  <span className="room-server-fact-val">{t('rooms.server.remoteHosted')}</span>
+                </div>
+              )}
               {moduleName && (
                 <div className="room-server-fact">
                   <span className="room-server-fact-key">{t('rooms.server.game')}</span>
@@ -609,24 +683,88 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ instance, tab, onTab, onRun
                   <span className="room-server-fact-val is-mono">{formatUptime(instance.since)}</span>
                 </div>
               )}
+              {instance.scheduleEnabled && (instance.scheduleRules ?? 0) > 0 && (
+                <div className="room-server-fact">
+                  <span className="room-server-fact-key">{t('rooms.server.schedule')}</span>
+                  <span className="room-server-fact-val">
+                    {t('rooms.server.schedule.overview').replace('{n}', String(instance.scheduleRules))}
+                  </span>
+                </div>
+              )}
+              {(instance.operators?.length ?? 0) > 0 && (
+                <div className="room-server-fact">
+                  <span className="room-server-fact-key">{t('rooms.server.access')}</span>
+                  <span className="room-server-fact-val">
+                    {t('rooms.server.access.overview').replace('{n}', String(instance.operators!.length))}
+                  </span>
+                </div>
+              )}
             </div>
 
-            <div className="room-server-setting">
-              <span className="room-server-setting-text">
-                <span className="room-server-setting-title">{t('rooms.server.autoRestart')}</span>
-                <span className="room-server-setting-hint">{t('rooms.server.autoRestartHint')}</span>
-              </span>
-              <Toggle
-                checked={instance.autoRestart}
-                ariaLabel={t('rooms.server.autoRestart')}
-                onChange={(checked) => void api.setAutoRestart(instanceId, checked)}
-              />
-            </div>
+            {!isRemote && (
+              <div className="room-server-setting">
+                <span className="room-server-setting-text">
+                  <span className="room-server-setting-title">{t('rooms.server.autoRestart')}</span>
+                  <span className="room-server-setting-hint">{t('rooms.server.autoRestartHint')}</span>
+                </span>
+                <Toggle
+                  checked={instance.autoRestart}
+                  ariaLabel={t('rooms.server.autoRestart')}
+                  onChange={(checked) => void api.setAutoRestart(instanceId, checked)}
+                />
+              </div>
+            )}
+            {showSystemJava && (
+              <div className="room-server-setting">
+                <span className="room-server-setting-text">
+                  <span className="room-server-setting-title">{t('rooms.server.systemJava')}</span>
+                  <span className={`room-server-setting-hint${systemJavaMissing ? ' is-warn' : ''}`}>
+                    {systemJavaMissing
+                      ? t('rooms.server.systemJavaMissing')
+                      : t('rooms.server.systemJavaHint').replace('{v}', sysJava?.version ?? '')}
+                  </span>
+                </span>
+                <Toggle
+                  checked={usingSystemJava}
+                  ariaLabel={t('rooms.server.systemJava')}
+                  onChange={(checked) => void api.setUseSystemJava(instanceId, checked)}
+                />
+              </div>
+            )}
+            {!isRemote && (
+              <div className="room-server-setting">
+                <span className="room-server-setting-text">
+                  <span className="room-server-setting-title">{t('rooms.server.contentAutoSync')}</span>
+                  <span className="room-server-setting-hint">{t('rooms.server.contentAutoSyncHint')}</span>
+                </span>
+                <Toggle
+                  checked={instance.contentAutoSync === true}
+                  ariaLabel={t('rooms.server.contentAutoSync')}
+                  onChange={(checked) => void api.setContentAutoSync(instanceId, checked)}
+                />
+              </div>
+            )}
           </div>
         )}
 
-        {tab === 'console' && <ServerConsole instanceId={instanceId} canSend={status === 'running'} />}
-        {tab === 'settings' && <ServerConfigForm instanceId={instanceId} locked={live} />}
+        {tab === 'console' && (
+          <ServerConsole
+            instanceId={instanceId}
+            roomId={roomId}
+            canSend={status === 'running' && canConsole}
+            remote={isRemote}
+          />
+        )}
+        {tab === 'content' && !isRemote && (
+          <ServerContentPanel roomId={roomId} instanceId={instanceId} locked={live} />
+        )}
+        {tab === 'schedule' && !isRemote && <ServerSchedulePanel instanceId={instanceId} />}
+        {tab === 'access' && !isRemote && <ServerAccessPanel roomId={roomId} instanceId={instanceId} />}
+        {tab === 'backup' && !isRemote && <ServerBackupPanel instanceId={instanceId} locked={live} />}
+        {tab === 'players' && !isRemote && instance.moduleId === 'minecraft' && (
+          <ServerPlayersPanel instanceId={instanceId} />
+        )}
+        {tab === 'settings' && !isRemote && <ServerConfigForm instanceId={instanceId} locked={live} />}
       </div>
     </div>
   );

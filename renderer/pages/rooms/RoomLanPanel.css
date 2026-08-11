@@ -685,3 +685,54 @@
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
 .room-lan-chip:hover { color: var(--color-text-primary); border-color: var(--color-border-hover); }
+
+.room-lan-servers {
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.room-lan-servers-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-2);
+}
+
+.room-lan-servers-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.room-lan-servers-item {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+}
+
+.room-lan-servers-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-lan-servers-addr {
+  font-family: var(--font-mono);
+  color: var(--color-accent-primary);
+}
+
+.room-lan-servers-players {
+  color: var(--color-text-tertiary);
+}

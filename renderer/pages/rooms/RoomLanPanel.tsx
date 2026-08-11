@@ -72,6 +72,7 @@ import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
 import { LanPeerPicker } from './LanPeerPicker';
 import { LanDiagnosticsModal } from './LanDiagnosticsModal';
+import { RoomLanServerWidget } from './RoomLanServerWidget';
 import type { LanDiagReportView } from './LanDiagnosticsModal';
 import './RoomLanPanel.css';
 
@@ -161,6 +162,7 @@ export interface LanAllowAppResult {
 }
 
 export interface RoomLanPanelProps {
+  roomId: string;
   /** The room's LAN session as this install sees it (RoomState.lan). */
   lan: LanStateView;
   /** Full room roster — the picker selects admit targets from here. */
@@ -241,7 +243,7 @@ const pct = (v: number) => (v < 10 ? Math.round(v * 10) / 10 : Math.round(v)).to
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
-  lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
+  roomId, lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
   onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled,
 }) => {
   const { t } = useTranslation();
@@ -462,6 +464,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               <Icon name="copy" size={12} />
             </button>
           </div>
+          <RoomLanServerWidget roomId={roomId} lanActive={lan.active} />
           <div className="room-lan-ctl">
             {lan.isHost && onInvite && (
               <button
