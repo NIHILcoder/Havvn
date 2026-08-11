@@ -50,6 +50,7 @@ coverage/
 /.idea/
 .vscode/*
 !.vscode/extensions.json
+.cursor/
 *.swp
 *.swo
 *~
