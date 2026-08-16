@@ -15,6 +15,7 @@ import { getShareManager, downloadContentPath } from '../sharing/share-manager';
 import { customTurnToIce, resolveTrackers } from '../sharing/ice-servers';
 import { getRoomManager } from '../sharing/room-manager';
 import { serverManager } from '../gameserver/server-manager';
+import type { MinecraftPlayerEntry } from '../../shared/gameserver-types';
 import { getSearchService } from '../services/search-service';
 import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
@@ -1094,8 +1095,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, instanceId: string, patch: unknown) => {
       const p = (patch && typeof patch === 'object') ? patch as Record<string, unknown> : {};
       serverManager.savePlayers(String(instanceId || ''), {
-        ...(Array.isArray(p.whitelist) ? { whitelist: p.whitelist as { uuid: string; name: string }[] } : {}),
-        ...(Array.isArray(p.banned) ? { banned: p.banned as { uuid: string; name: string }[] } : {}),
+        // Passed through whole, not narrowed to uuid+name: a ban entry carries
+        // the server's own `expires`/`reason`, and this write replaces the file.
+        ...(Array.isArray(p.whitelist) ? { whitelist: p.whitelist as MinecraftPlayerEntry[] } : {}),
+        ...(Array.isArray(p.banned) ? { banned: p.banned as MinecraftPlayerEntry[] } : {}),
         ...(p.whitelistEnabled === true || p.whitelistEnabled === false ? { whitelistEnabled: p.whitelistEnabled } : {}),
       });
       return { ok: true };

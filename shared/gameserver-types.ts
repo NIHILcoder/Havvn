@@ -528,6 +528,16 @@ export interface WorldBackupEntry {
 export interface MinecraftPlayerEntry {
   uuid: string;
   name: string;
+  /**
+   * Everything else the server wrote about this player, carried through
+   * untouched.
+   *
+   * A ban is not just a name: `banned-players.json` also holds `created`,
+   * `source`, `expires` and `reason`, and editing the list means rewriting the
+   * whole file. Dropping these on read turned every unban into a quiet edit of
+   * every OTHER ban — temporary ones became permanent, reasons disappeared.
+   */
+  extra?: Record<string, unknown>;
 }
 
 /** Whitelist + ban list for a Minecraft instance. */

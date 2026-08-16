@@ -41,7 +41,7 @@ import type {
   CatalogCtx, ConfigField, ConsoleLine, ContentSyncState, GameEvent, GameModule, GameVersionRef,
   ImportScanResult, InstanceView, PendingContentConsent, RoomServerInstance, RoomServerState,
   ServerAccessState, ServerContentSlotView, ServerContentState, ServerRole, ServerScheduleRule,
-  ServerScheduleState, ServerStatus, ServerPlayersState, ServerAlert,
+  ServerScheduleState, ServerStatus, ServerPlayersState, ServerAlert, MinecraftPlayerEntry,
   MirroredServerInstance, ServerMirrorState, WorldBackupEntry,
 } from '../../shared/gameserver-types';
 import { IMPORT_JAVA_MAJORS } from '../../shared/gameserver-types';
@@ -1349,7 +1349,7 @@ export class ServerManager extends EventEmitter {
     };
   }
 
-  savePlayers(instanceId: string, patch: { whitelist?: { uuid: string; name: string }[]; banned?: { uuid: string; name: string }[]; whitelistEnabled?: boolean }): void {
+  savePlayers(instanceId: string, patch: { whitelist?: MinecraftPlayerEntry[]; banned?: MinecraftPlayerEntry[]; whitelistEnabled?: boolean }): void {
     const entry = this.entry(instanceId);
     if (entry.persisted.moduleId !== 'minecraft') throw new ServerActionError('unknown-module', entry.persisted.moduleId);
     const st = entry.supervisor.status;

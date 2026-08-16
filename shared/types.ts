@@ -28,14 +28,14 @@ export type { LanRoomPrefs } from './lan-prefs';
 import type {
   ConfigField, ConsoleLine, GameVersionRef, ImportScanResult, RoomServerState,
   ServerContentState, ServerScheduleState, ServerScheduleRule, ServerAccessState,
-  WorldBackupEntry, ServerPlayersState, ServerAlert,
+  WorldBackupEntry, ServerPlayersState, ServerAlert, MinecraftPlayerEntry,
 } from './gameserver-types';
 export type {
   ConfigField, ConsoleLine, GameCaps, GameVersionRef, ImportCandidate, ImportScanResult,
   RoomServerInstance, RoomServerState, ServerContentState, ServerContentSlotView,
   ServerFailReason, ServerRole, ServerStatus, PendingContentConsent, ContentSyncState,
   ServerScheduleState, ServerScheduleRule, ServerAccessState, ServerScheduleAction,
-  WorldBackupEntry, ServerPlayersState, ServerAlert,
+  WorldBackupEntry, ServerPlayersState, ServerAlert, MinecraftPlayerEntry,
 } from './gameserver-types';
 
 export type DownloadStatus =
@@ -1425,7 +1425,7 @@ export interface IpcApi {
       deleteBackup: (instanceId: string, backupId: string) => Promise<{ ok: boolean }>;
       openBackupsFolder: (instanceId: string) => Promise<{ ok: boolean }>;
       players: (instanceId: string) => Promise<ServerPlayersState>;
-      savePlayers: (instanceId: string, patch: { whitelist?: { uuid: string; name: string }[]; banned?: { uuid: string; name: string }[]; whitelistEnabled?: boolean }) => Promise<{ ok: boolean }>;
+      savePlayers: (instanceId: string, patch: { whitelist?: MinecraftPlayerEntry[]; banned?: MinecraftPlayerEntry[]; whitelistEnabled?: boolean }) => Promise<{ ok: boolean }>;
       setUseSystemJava: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
       setContentAutoSync: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
       systemJava: () => Promise<{ available: boolean; version?: string; major?: number }>;
