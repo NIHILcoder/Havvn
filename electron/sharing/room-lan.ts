@@ -177,6 +177,21 @@ export interface LanAdapter {
    * gain a method in the SAME commit or they silently drift.
    */
   reach(peers: string[], relay: boolean, at: number): void;
+  /**
+   * The session's anti-replay watermark advanced — persist it (main writes it to
+   * the room's LAN prefs, keyed by sessionId).
+   *
+   * This is what makes REUSING a sessionId across restarts safe, and reusing it is
+   * what keeps every member's vIP stable. A grant issued under this id in an
+   * earlier run must not be replayable into the next one, and a fresh core has no
+   * floors — so the floor arrives from disk instead. Called only when the value
+   * actually grows, which in practice is a handful of times per session (admits at
+   * start, an invite, an evict, a rekey re-mint).
+   *
+   * ⚠ MIRROR of LanAdapter in shared/lan-types.ts (~398). The two copies must
+   * gain a method in the SAME commit or they silently drift.
+   */
+  persistFloor(at: number): void;
   /** Inject an inbound (peer→us) IP frame into the local TUN via the helper pipe. */
   sendPacket(frame: Buffer): void;
   /** Register the TUN-egress router: the pipe-read loop calls handler per raw frame. */
@@ -507,8 +522,22 @@ export class LanSession {
    *  buffer per session is safe and keeps the relayed path allocation-free. */
   private relayScratch: Buffer | null = null;
 
-  constructor(private a: LanAdapter, private now: () => number = Date.now) {
-    this.core = new LanSessionCore(a.sessionId, a.selfId, now);
+  /** Highest watermark we have handed to the adapter — so persistFloor fires on
+   *  growth only, never once per applied grant. */
+  private persistedFloor: number;
+
+  /**
+   * @param floorSeed the persisted anti-replay watermark for THIS sessionId (0 for
+   * a session this install has never run). It does two things, and both are needed
+   * for a reused id to be safe: it seeds the core's admit/evict floors, so grants
+   * from an earlier run of the same session cannot replay in; and it seeds our own
+   * emission clock below, so the grants we issue TONIGHT clear that floor at every
+   * peer even if this machine's wall clock has moved backwards since.
+   */
+  constructor(private a: LanAdapter, private now: () => number = Date.now, floorSeed = 0) {
+    this.core = new LanSessionCore(a.sessionId, a.selfId, now, floorSeed);
+    this.persistedFloor = this.core.authorityFloor();
+    this.lastAt = this.persistedFloor; // nextAt() ⇒ max(now, floor+1)
     // Hand the table the live admission oracle so an over-cap prune evicts
     // synthetic (non-admitted) adverts before real members' — see pruneStore.
     this.reach = new LanReachTable(now, undefined, undefined, (id) => this.core.isAdmitted(id));
@@ -524,11 +553,25 @@ export class LanSession {
   sessionId(): string { return this.a.sessionId; }
 
   /** Strictly-increasing per-sender clock so every emitted lan-* `at` clears the
-   *  receiver's per-type monotonic floor even when several are sent in one tick. */
+   *  receiver's per-type monotonic floor even when several are sent in one tick.
+   *  Seeded from the persisted watermark (see the constructor), so the first grant
+   *  of a REUSED session also clears the floor every peer seeded from disk. */
   private nextAt(): number {
     const t = Math.max(this.now(), this.lastAt + 1);
     this.lastAt = t;
     return t;
+  }
+
+  /**
+   * Push the session's watermark out to be persisted, if it grew. Called after
+   * every applied admit/evict — ours and the host's alike, since a joiner needs
+   * the same floor next time to refuse the same replays.
+   */
+  private maybePersistFloor(): void {
+    const v = this.core.authorityFloor();
+    if (v <= this.persistedFloor) return;
+    this.persistedFloor = v;
+    this.a.persistFloor(v);
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -834,6 +877,7 @@ export class LanSession {
     const at = this.nextAt();
     if (!this.core.applyAdmit(this.a.selfId, memberId, at, this.a.sessionId)) return;
     this.a.admit(memberId, at);
+    this.maybePersistFloor();
     if (this.active && memberId !== this.a.selfId) this.ensurePeer(memberId);
     this.a.onChange();
   }
@@ -842,6 +886,7 @@ export class LanSession {
     const at = this.nextAt();
     if (!this.core.applyEvict(this.a.selfId, memberId, at, this.a.sessionId)) return;
     this.a.evict(memberId, at);
+    this.maybePersistFloor();
     this.dropPeer(memberId);
     this.forgetFailure(memberId);
     this.forgetRelay(memberId); // same as onEvict: stop relaying for/through them now
@@ -863,6 +908,7 @@ export class LanSession {
    *  A non-self admit opens a leg only if we're already participating. */
   onAdmit(by: string, target: string, at: number, sessionId: string): void {
     if (!this.core.applyAdmit(by, target, at, sessionId)) return;
+    this.maybePersistFloor(); // a joiner needs the same floor next time we re-enter
     if (target !== this.a.selfId && this.active) this.ensurePeer(target);
     this.invalidateRelay(); // a newly admitted member may be a candidate (or a target)
     this.a.onChange();
@@ -872,6 +918,7 @@ export class LanSession {
    *  names US, tear down; otherwise drop that leg. */
   onEvict(by: string, target: string, at: number, sessionId: string): void {
     if (!this.core.applyEvict(by, target, at, sessionId)) return;
+    this.maybePersistFloor();
     if (target === this.a.selfId) this.stop();
     else { this.dropPeer(target); this.forgetFailure(target); this.forgetRelay(target); }
     this.a.onChange();
@@ -981,7 +1028,17 @@ export class LanSession {
    *  for a non-host / inactive session. */
   remintAdmits(): void {
     if (!this.active || !this.a.isHost) return;
-    for (const id of this.core.admittedIds()) this.a.admit(id, this.nextAt());
+    for (const id of this.core.admittedIds()) {
+      const at = this.nextAt();
+      // Apply to our OWN core first, even though the member is already admitted
+      // (applyAdmit's "floor advanced, no table change" arm). Emitting without
+      // applying would leave a signed grant sitting ABOVE the persisted watermark
+      // — replayable into the next run of this session, which is exactly what the
+      // watermark exists to prevent.
+      if (!this.core.applyAdmit(this.a.selfId, id, at, this.a.sessionId)) continue;
+      this.a.admit(id, at);
+    }
+    this.maybePersistFloor();
   }
 
   // ── The routing brain ───────────────────────────────────────────────────────

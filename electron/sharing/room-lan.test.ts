@@ -88,10 +88,12 @@ interface AdapterCalls {
   changes: number;
   /** Phase 2B signed lan-reach adverts we emitted. */
   reach: Array<{ peers: string[]; relay: boolean; at: number }>;
+  /** Anti-replay watermarks handed out for persistence (stable-vIP support). */
+  floors: number[];
 }
 
 function makeAdapter(selfId: string, sessionId: string, isHost: boolean) {
-  const calls: AdapterCalls = { announce: [], admit: [], evict: [], signal: [], reip: [], packets: [], genesis: 0, changes: 0, reach: [] };
+  const calls: AdapterCalls = { announce: [], admit: [], evict: [], signal: [], reip: [], packets: [], genesis: 0, changes: 0, reach: [], floors: [] };
   let onPkt: ((f: Buffer) => void) | null = null;
   const adapter = {
     selfId, sessionId, isHost,
@@ -103,6 +105,7 @@ function makeAdapter(selfId: string, sessionId: string, isHost: boolean) {
     genesis: () => { calls.genesis++; },
     reach: (peers: string[], relay: boolean, at: number) => calls.reach.push({ peers, relay, at }),
     reip: (vip: number, gen: number) => calls.reip.push({ vip, gen }),
+    persistFloor: (at: number) => calls.floors.push(at),
     sendPacket: (f: Buffer) => calls.packets.push(f),
     onPacket: (h: (f: Buffer) => void) => { onPkt = h; },
     onChange: () => { calls.changes++; },
@@ -192,6 +195,60 @@ describe('LanSession — evict tears the leg down and is terminal', () => {
     s.control('invite', A);
     expect(FakePC.count).toBe(legs); // no new leg
     expect(s.buildState().participants.some((p) => p.memberId === A)).toBe(false);
+  });
+});
+
+describe('LanSession — the watermark that makes a REUSED session id safe', () => {
+  // Re-entering the same session id is what keeps the subnet and every vIP stable
+  // across restarts. It is safe only because the next run seeds its floors from a
+  // persisted watermark; these three tests are the two halves of that contract
+  // (report it, honour it) plus the clock case that would otherwise brick a reuse.
+
+  it('reports a watermark that covers every grant it issued', () => {
+    const { adapter, calls } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    expect(calls.floors.length).toBeGreaterThan(0);
+    const reported = calls.floors[calls.floors.length - 1];
+    // Every admit that went out on the wire must sit at or below it, or the grant
+    // would be replayable into the next run of this session.
+    for (const a of calls.admit) expect(a.at).toBeLessThanOrEqual(reported);
+    // Monotonic, and it keeps covering later grants.
+    expect([...calls.floors].sort((x, y) => x - y)).toEqual(calls.floors);
+    s.control('invite', B);
+    const after = calls.floors[calls.floors.length - 1];
+    expect(after).toBeGreaterThanOrEqual(reported);
+    for (const a of calls.admit) expect(a.at).toBeLessThanOrEqual(after);
+  });
+
+  it('a rekey re-mint is covered too, not just the first admits', () => {
+    // remintAdmits emits under a rotated topic. Emitting WITHOUT applying locally
+    // would leave those grants above the watermark — signed, and replayable.
+    const { adapter, calls } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never);
+    s.startAsHost([A]);
+    s.remintAdmits();
+    const reported = calls.floors[calls.floors.length - 1];
+    expect(calls.admit.length).toBeGreaterThan(2); // initial admits + the re-mint
+    for (const a of calls.admit) expect(a.at).toBeLessThanOrEqual(reported);
+  });
+
+  it('a seeded session issues grants ABOVE the seed even if the clock went backwards', () => {
+    // The failure this prevents: the host's wall clock moves back (NTP, a manual
+    // change), its new admits land under the floor every peer seeded from disk,
+    // and the session silently admits nobody. nextAt() is seeded from the same
+    // watermark, so the first grant clears it regardless of the clock.
+    const seed = Date.now() + 5 * 60_000; // as if the last run ran 5 min "ahead"
+    const { adapter, calls } = makeAdapter(HOST, SID, true);
+    const s = new LanSession(adapter as never, Date.now, seed);
+    s.startAsHost([A]);
+    expect(calls.admit.length).toBeGreaterThan(0);
+    for (const a of calls.admit) expect(a.at).toBeGreaterThan(seed);
+    // And a grant from the seeded past is refused rather than re-admitting.
+    const s2 = new LanSession(makeAdapter(A, SID, false).adapter as never, Date.now, seed);
+    s2.onGenesis(HOST, SID, 1);
+    s2.onAdmit(HOST, B, seed - 1000, SID);
+    expect(s2.buildState().participants.some((p) => p.memberId === B)).toBe(false);
   });
 });
 

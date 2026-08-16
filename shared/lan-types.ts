@@ -415,6 +415,13 @@ export interface LanAdapter {
   evict(memberId: string, at: number): void;
   /** Host-only ONCE at session create: signed 'lan-genesis' over sessionId. */
   genesis(): void;
+  /** The session's admit/evict anti-replay watermark advanced — persist it against
+   *  this sessionId. Reusing a session id across restarts (which is what keeps
+   *  vIPs stable) is safe only because the next run seeds its floors from this
+   *  number; see LanSessionCore.floorSeed and shared/lan-prefs.ts.
+   *
+   *  ⚠ MIRROR of LanAdapter in electron/sharing/room-lan.ts (~147). */
+  persistFloor(at: number): void;
   /** Signed 'lan-reach' broadcast (Phase 2B): our currently-connected legs +
    *  relay willingness. `peers` MUST be pre-normalised (normalizeReachList) or
    *  the receiver's normalising clamp will not reproduce our signed bytes. `at`

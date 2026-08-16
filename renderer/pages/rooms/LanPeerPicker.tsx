@@ -36,6 +36,7 @@ import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow } from '../../utils/hostWindow';
 import type { RoomMember } from '../../../shared/types';
 import { MAX_LAN_PEERS } from '../../../shared/lan-types';
+import { preselectPicks } from '../../../shared/lan-prefs';
 import './RoomLanPanel.css';
 
 export interface LanPeerPickerProps {
@@ -45,6 +46,16 @@ export interface LanPeerPickerProps {
   selfId?: string;
   /** Members already in the session (hidden when inviting into a live session). */
   excludeIds?: string[];
+  /**
+   * Players this room remembers from the last session, in remembered order — the
+   * tiles open already ticked so a regular group is one click, not a re-pick.
+   *
+   * A CONVENIENCE, never an authority: the intersection with the tiles actually on
+   * screen is what gets ticked (preselectPicks), because a selection the host
+   * cannot see or untick would still travel into a signed admit. Everything here
+   * is confirmed by the same elevation dialog as a hand-made selection.
+   */
+  preselectIds?: string[];
   /** Header title (Start vs Invite wording is chosen by the opener). */
   title?: string;
   onClose: () => void;
@@ -53,18 +64,26 @@ export interface LanPeerPickerProps {
 }
 
 export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
-  members, selfId, excludeIds = [], title, onClose, onPick,
+  members, selfId, excludeIds = [], preselectIds, title, onClose, onPick,
 }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const host = useHostWindow();
-  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const excluded = useMemo(() => new Set([selfId, ...excludeIds].filter(Boolean) as string[]), [selfId, excludeIds]);
   const candidates = useMemo(() => members.filter((m) => !excluded.has(m.memberId)), [members, excluded]);
 
   // Self occupies one mesh slot, so at most MAX_LAN_PEERS-1 admits.
   const cap = Math.max(0, MAX_LAN_PEERS - 1);
+
+  // Seeded ONCE, at mount: the picker is mounted fresh each time it opens, and the
+  // remembered list is resolved by the opener before that. Recomputing it as a
+  // prop-derived value would fight the user — a member they untick would come
+  // straight back on the next render.
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(preselectPicks(preselectIds ?? [], candidates.map((m) => m.memberId), cap)),
+  );
+
   const atCap = selected.size >= cap;
 
   const toggle = (id: string) => {

@@ -205,6 +205,17 @@ export interface RoomLanPanelProps {
    * rendered (the live "Relaying for N" readout still is, if it is happening).
    */
   onSetRelayEnabled?: (enabled: boolean) => void | Promise<void>;
+  /**
+   * Read this room's remembered LAN setup (main-process store). Used for ONE
+   * thing here: opening the peer picker with the last session's players already
+   * ticked, so a regular group costs a click instead of a re-pick.
+   *
+   * Read at the moment the picker OPENS rather than held in an effect, because the
+   * remembered list changes underneath us — a Start rewrites it, an invite appends
+   * to it and an evict removes from it — and a stale copy would re-offer a player
+   * the host just evicted. Absent → the picker opens empty, exactly as before.
+   */
+  onLoadPrefs?: () => Promise<{ picks: string[] }>;
 }
 
 /**
@@ -244,7 +255,7 @@ const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   roomId, lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
-  onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled,
+  onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled, onLoadPrefs,
 }) => {
   const { t } = useTranslation();
   const host = useHostWindow();
@@ -257,6 +268,9 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   const rootRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [pickerMode, setPickerMode] = useState<null | 'start' | 'invite'>(null);
+  /** Remembered players for the picker that is about to open — resolved BEFORE the
+   *  picker mounts, since the picker seeds its selection once at mount. */
+  const [remembered, setRemembered] = useState<string[]>([]);
   const [diagOpen, setDiagOpen] = useState(false);
   /**
    * memberId → latched failure reason.
@@ -276,6 +290,22 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   const wrap = (fn: () => void | Promise<unknown>) => async () => {
     setBusy(true);
     try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); }
+  };
+
+  /**
+   * Open the peer picker with this room's remembered players resolved first.
+   *
+   * Awaited BEFORE the picker mounts, because the picker seeds its selection once
+   * at mount — setting the list afterwards would arrive too late. Re-read on every
+   * open rather than cached: Start rewrites the list, an invite appends to it and
+   * an evict removes from it, and a stale copy would re-offer somebody the host
+   * just removed. A failed read is not worth a toast; the picker opens empty.
+   */
+  const openPicker = async (mode: 'start' | 'invite') => {
+    let picks: string[] = [];
+    try { picks = (await onLoadPrefs?.())?.picks ?? []; } catch { /* opens empty */ }
+    setRemembered(Array.isArray(picks) ? picks : []);
+    setPickerMode(mode);
   };
 
   const copyIp = (vip: string) => {
@@ -469,7 +499,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             {lan.isHost && onInvite && (
               <button
                 className="room-lan-btn"
-                onClick={() => setPickerMode('invite')}
+                onClick={() => { void openPicker('invite'); }}
                 disabled={busy}
                 title={t('rooms.lan.pickPeers')}
                 type="button"
@@ -614,7 +644,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             // → onStart → lanStart, which broadcasts genesis + admits).
             <button
               className="room-lan-join"
-              onClick={() => setPickerMode('start')}
+              onClick={() => { void openPicker('start'); }}
               disabled={!canStart}
               title={startBlockedReason || undefined}
               type="button"
@@ -705,6 +735,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
           members={members}
           selfId={selfId}
           excludeIds={pickerMode === 'invite' ? admittedIds : []}
+          preselectIds={remembered}
           title={pickerMode === 'invite' ? t('rooms.lan.pickPeers') : t('rooms.lan.confirm')}
           onClose={() => setPickerMode(null)}
           onPick={(ids) => {

@@ -21,6 +21,9 @@ export { MAX_LAN_PEERS } from './lan-types';
 // The evaluated connectivity report (pure layer) — the shape rooms.lan.diagnose returns.
 import type { LanDiagReport } from './lan-quality';
 export type { LanDiagReport, LanDiagCheck, LanCheckId, LanCheckLevel, LanDiagCause } from './lan-quality';
+// The room's remembered LAN setup (picked players / game firewall rules).
+import type { LanRoomPrefs } from './lan-prefs';
+export type { LanRoomPrefs } from './lan-prefs';
 
 import type {
   ConfigField, ConsoleLine, GameVersionRef, ImportScanResult, RoomServerState,
@@ -1317,6 +1320,15 @@ export interface IpcApi {
       accept: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;
       /** Host removes a member (host-signed lan-evict). */
       evict: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+      /**
+       * What this room remembers about its LAN setup: the players the host last
+       * admitted (pre-ticks the picker) and the game executables that hold a
+       * firewall rule (re-applied automatically when a session comes up). A LOCAL
+       * convenience — a remembered pick admits nobody by itself; the host still
+       * signs the admit. The cryptographic session id is deliberately NOT
+       * remembered (see shared/lan-prefs.ts).
+       */
+      prefs: (roomId: string) => Promise<LanRoomPrefs>;
       /** Connectivity report: main + engine + helper facts, judged by the pure evaluator. */
       diagnose: (roomId: string) => Promise<LanDiagReport>;
       /** Firewall troubleshooter: MAIN opens the .exe picker, the elevated helper adds a scoped rule (no new UAC). */

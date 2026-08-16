@@ -325,6 +325,10 @@ interface Room {
   lanEgress?: (frame: Buffer) => void;    // TUN-egress router the LanSession adapter registered via onPacket
   lanReq?: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: any }>; // in-flight correlated helper requests (diag / allow-app), cleared by teardownLan
   lanReqSeq?: number;                     // uint32 correlation counter for lanReq
+  lanSession?: string;                    // the virtual-LAN session this room re-enters (persisted by main; its id is what keeps vIPs stable)
+  lanFloor?: number;                       // persisted admit/evict anti-replay watermark for lanSession — seeds every core we build for it
+  lanReady?: boolean;                     // the helper sent {t:'ready'} — its adapter/IP/routes/firewall are up
+  lanReadyWaiters?: Array<(ok: boolean) => void>; // settled true by 'ready', false by teardown/timeout (see lanHelperReady)
   profiles: Map<string, { name: string; avatarSeed: string; color: string; status: string; img: string; at: number }>; // VERIFIED rich profiles; entry.at doubles as the anti-replay floor (session-only, FIFO-capped)
   profileSentTo: Set<string>;            // memberIds whose hello we've already answered with our profile broadcast
   profileAnnounce: any;                  // pending coalesced profile broadcast timer (join waves = one flood)
@@ -1459,6 +1463,10 @@ function createVoiceSession(room: Room): VoiceSession {
  *  reannounce) — the same split as voice. The LanSession is the routing brain; the
  *  helper stays a dumb ring↔pipe shovel. */
 function createLanSession(room: Room, sessionId: string, isHost: boolean): LanSession {
+  // Seed the anti-replay watermark ONLY for the exact session this room remembers.
+  // A different id (a rotated session, or another host's) has no grants of ours to
+  // replay, so it correctly starts from a clean floor.
+  const floorSeed = room.lanSession === sessionId ? (room.lanFloor ?? 0) : 0;
   const adapter: LanAdapter = {
     selfId: room.self.memberId,
     iceServers: room.iceServers as RTCIceServer[],
@@ -1503,13 +1511,24 @@ function createLanSession(room: Room, sessionId: string, isHost: boolean): LanSe
       // the loser's tunnel black-holes.
       try { room.lanPipe?.sendControl({ t: 'reip', vip: vip >>> 0, gen: gen & 0xffff }); } catch { /* ignore */ }
     },
+    persistFloor(at: number): void {
+      // Keep the in-process copy in step FIRST: a session re-created later in this
+      // same run (Stop → Start, or a passive session superseded by a real one)
+      // reads room.lanFloor, and main's write is asynchronous. Same adopt-or-raise
+      // rule main applies (shared/lan-prefs noteSessionFloor), so the two copies
+      // cannot disagree: adopt when this room tracks no session, raise when it is
+      // ours, ignore another session entirely.
+      if (!room.lanSession) { room.lanSession = sessionId; room.lanFloor = at; }
+      else if (room.lanSession === sessionId && at > (room.lanFloor ?? 0)) room.lanFloor = at;
+      try { ipcRenderer.send('room-lan-floor', { roomId: room.roomId, sessionId, at }); } catch { /* ignore */ }
+    },
     sendPacket(frame: Buffer): void { room.lanPipe?.send(frame); },   // inbound peer→us → helper → Wintun ring
     onPacket(handler: (frame: Buffer) => void): void { room.lanEgress = handler; }, // TUN-egress router
     onChange(): void { pushState(room, true); },
     warn(msg: string): void { try { ipcRenderer.send('room-lan-warn', { msg }); } catch { /* ignore */ } },
     log,
   };
-  return new LanSession(adapter);
+  return new LanSession(adapter, Date.now, floorSeed);
 }
 
 /** Return room.lan, lazily creating a PASSIVE joiner session (no helper/pipe, not
@@ -1544,6 +1563,60 @@ function teardownLan(room: Room): void {
     room.lanPipe = undefined;
   }
   room.lanEgress = undefined;
+  settleLanReady(room, false); // nobody may wait on a helper that is going away
+  room.lanReady = undefined;
+}
+
+/**
+ * Settle everyone waiting on helper readiness. Called with `true` from the 'ready'
+ * control frame and with `false` from teardown, so a waiter can never outlive the
+ * session it is waiting for (a hung await here would hold an IPC reply open until
+ * RoomManager's own timeout fired, which reads to the user as a frozen action).
+ */
+function settleLanReady(room: Room, ok: boolean): void {
+  if (ok) room.lanReady = true;
+  const waiters = room.lanReadyWaiters;
+  if (!waiters || waiters.length === 0) return;
+  room.lanReadyWaiters = [];
+  for (const w of waiters) { try { w(ok); } catch { /* ignore */ } }
+}
+
+/**
+ * How long a helper request may wait for the elevated setup to finish. Sized
+ * against the helper's own PowerShell setup pass (adapter + IP + MTU + routes +
+ * firewall), not against the UAC prompt — the prompt is already over by the time
+ * a pipe exists to wait on. A setup that FAILS does not burn this budget: the
+ * helper's {t:'error'} tears down, and teardown settles every waiter at once.
+ *
+ * It is deliberately small enough that this wait PLUS the 20 s helper request
+ * stays inside RoomManager's own call timeouts — otherwise a caller would give up
+ * on a request that then succeeds, and the user would see an error for a rule
+ * that in fact exists.
+ */
+const LAN_READY_WAIT_MS = 10_000;
+
+/**
+ * Resolve once the elevated helper has actually finished its setup — NOT merely
+ * once the pipe is connected.
+ *
+ * LanPipeClient.connect() resolves as soon as the socket is up and hello is
+ * written, which is BEFORE the helper has created the adapter, assigned the IP and
+ * installed the routes/firewall. Anything that asks the helper to mutate the
+ * network in that window is answered 'session not ready' — which is exactly the
+ * window in which the remembered per-game firewall rules are re-applied right
+ * after a Start. Returns false on timeout / teardown rather than throwing: the
+ * caller turns that into an honest ok:false, never into a helper error (that arm
+ * tears the tunnel down).
+ */
+function lanHelperReady(room: Room, timeoutMs: number): Promise<boolean> {
+  if (room.lanReady) return Promise.resolve(true);
+  if (!room.lanPipe) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    const settle = (ok: boolean) => { if (!done) { done = true; resolve(ok); } };
+    (room.lanReadyWaiters ??= []).push(settle);
+    setTimeout(() => settle(false), timeoutMs);
+  });
 }
 
 /** Control-plane frames from the helper (ready / error / ping + the Phase-2A
@@ -1555,6 +1628,7 @@ function onLanControl(room: Room, m: LanControlMsg): void {
     pushState(room, true);
   } else if (m.t === 'ready') {
     log('lan helper ready: adapter=' + m.adapter + ' vip=' + m.vip);
+    settleLanReady(room, true);
   } else if (m.t === 'ping') {
     try { room.lanPipe?.sendControl({ t: 'pong' }); } catch { /* ignore */ }
   } else if (m.t === 'diag-result') {
@@ -1634,34 +1708,55 @@ async function lanDiagnose(roomId: string): Promise<Partial<LanDiagInput>> {
 }
 
 /** Engine half of the firewall troubleshooter (Phase 2A item D). The path was
- *  chosen by a MAIN-process picker; re-validating it here is defence in depth —
- *  the elevated helper validates it again before it reaches PowerShell. A refusal
+ *  chosen by a MAIN-process picker — or replayed from this room's remembered game
+ *  list right after a Start — and re-validating it here is defence in depth: the
+ *  elevated helper validates it again before it reaches PowerShell. A refusal
  *  comes back as ok:false, NEVER as a helper {t:'error'} (that arm tears the
- *  tunnel down). */
-async function lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boolean; exe?: string; rule?: string; error?: string }> {
+ *  tunnel down).
+ *
+ *  The helper's error CODE is passed through untouched because main uses it to
+ *  decide whether a remembered game should be FORGOTTEN: 'bad-app-path' means the
+ *  .exe is gone or was rejected and will fail identically forever, while every
+ *  other code ('firewall', a not-ready session, a PowerShell hiccup) is transient
+ *  and must not cost the user their saved rule. */
+async function lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boolean; exe?: string; rule?: string; code?: string; error?: string }> {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
   if (!room.lanPipe) throw new Error('The LAN session is not running');
   const v = validateGameExePath(exePath);
-  if (!v.ok) return { ok: false, error: 'Rejected executable path (' + v.reason + ')' };
-  const r = await lanRequest<{ ok: boolean; rule?: string; message?: string }>(
+  if (!v.ok) return { ok: false, exe: exePath, code: 'bad-app-path', error: 'Rejected executable path (' + v.reason + ')' };
+  // A rule asked for in the window between "pipe connected" and "helper finished
+  // its elevated setup" is answered 'session not ready'; wait that window out.
+  if (!(await lanHelperReady(room, LAN_READY_WAIT_MS))) {
+    return { ok: false, exe: v.path, error: 'The LAN helper is not ready yet' };
+  }
+  if (!room.lanPipe) throw new Error('The LAN session is not running'); // torn down while waiting
+  const r = await lanRequest<{ ok: boolean; rule?: string; code?: string; message?: string }>(
     room, (id) => ({ t: 'allow-app', id, exe: v.path }), 20000,
   );
   return r.ok
     ? { ok: true, exe: v.path, rule: r.rule }
-    : { ok: false, exe: v.path, error: r.message || 'The firewall rule was refused' };
+    : { ok: false, exe: v.path, ...(r.code ? { code: r.code } : {}), error: r.message || 'The firewall rule was refused' };
 }
 
 /** Handle a 'lanStart' room-cmd: build the LanSession, dial the helper pipe, then
  *  (host) pin genesis + admit picks or (joiner) begin participating. Re-checks the
  *  VPN kill-switch after the connect await — the UAC prompt is an unbounded window
  *  (mirrors voiceJoin's re-check-and-undo). */
-async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean; relayEnabled?: boolean }): Promise<{ ok: boolean; sessionId: string }> {
+async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean; relayEnabled?: boolean; floor?: number }): Promise<{ ok: boolean; sessionId: string }> {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
   if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
   const isHost = opts.isHost === true;
   const sid = String(opts.sessionId || '');
+  // Main is authoritative about which session this room re-enters and what its
+  // watermark is — it read both from disk moments ago, and either may have moved
+  // since the join payload was built (a Start reuses an id, an evict rotates it).
+  // Adopt them BEFORE any session is created, since createLanSession seeds from
+  // these fields. Never LOWER a floor the running engine already advanced past.
+  const floor = Number(opts.floor);
+  if (room.lanSession !== sid) { room.lanSession = sid; room.lanFloor = 0; }
+  if (Number.isSafeInteger(floor) && floor > (room.lanFloor ?? 0)) room.lanFloor = floor;
   // Phase 2B willingness travels ON the start payload (main reads the persisted
   // AppSetting) rather than relying on a separate push, so a session can never
   // come up relaying when the user has switched it off — including on the reused
@@ -1678,6 +1773,11 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
     session = createLanSession(room, sid, isHost);
     room.lan = session;
   }
+  // Arm the readiness latch BEFORE the pipe exists, and after any teardown above
+  // (which clears it) — the joiner-reuse branch does not tear down, so a stale
+  // `true` from an earlier start would otherwise let a request through early.
+  room.lanReady = false;
+  room.lanReadyWaiters = [];
   const client = new LanPipeClient({
     pipeName: String(opts.pipeName || ''),
     token: String(opts.token || ''),
@@ -3498,7 +3598,7 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -3566,6 +3666,12 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     revives: new Map(Object.entries(p.revives || {}).map(([k, v]) => [k, Math.min(Number(v) || 0, Date.now() + 60_000)])),
     autoFetch: p.autoFetch !== false, // absent = true (historical behavior)
     folderFetch: (p.folderFetch && typeof p.folderFetch === 'object') ? { ...p.folderFetch } : {},
+    // The LAN session this room re-enters + its anti-replay watermark. Needed AT
+    // JOIN, not at lanStart: a joiner builds a PASSIVE session straight from the
+    // host's gossip (ensureLanSession), long before it accepts — and that core
+    // must already refuse grants replayed from an earlier run of the same session.
+    lanSession: p.lanSession ? String(p.lanSession) : undefined,
+    lanFloor: Number.isSafeInteger(p.lanFloor) && (p.lanFloor as number) > 0 ? Number(p.lanFloor) : 0,
     upKbps: Math.max(0, Number(p.upKbps) || 0),
     downKbps: Math.max(0, Number(p.downKbps) || 0),
     mutes: new Set(p.mutes || []),
@@ -4399,6 +4505,9 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         // Phase 2B relay willingness rides the start payload (main reads the
         // persisted setting) — omitted by an older caller ⇒ keep the current value.
         relayEnabled: typeof msg.relayEnabled === 'boolean' ? msg.relayEnabled : undefined,
+        // Persisted anti-replay watermark for this sessionId (0 / absent for a
+        // session this install has never run).
+        floor: typeof msg.floor === 'number' ? msg.floor : 0,
       });
     }
     else if (type === 'lanStop') { const r = rooms.get(msg.roomId); if (r) teardownLan(r); data = { ok: true }; }

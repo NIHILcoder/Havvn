@@ -811,6 +811,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:lanEvict', wrapHandler('rooms:lanEvict',
     async (_event, roomId: string, memberId: string) => roomManager.lanEvict(roomId, String(memberId || ''))
   ));
+  // Read-only: the room's remembered LAN setup (picked players / game rules), so
+  // the peer picker can open pre-ticked. Writes happen on the actions themselves.
+  ipcMain.handle('rooms:lanPrefs', wrapHandler('rooms:lanPrefs',
+    async (_event, roomId: string) => roomManager.lanPrefs(String(roomId || ''))
+  ));
   ipcMain.handle('rooms:lanDiagnose', wrapHandler('rooms:lanDiagnose',
     async (_event, roomId: string) => roomManager.lanDiagnose(String(roomId || ''))
   ));

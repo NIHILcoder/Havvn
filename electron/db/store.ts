@@ -24,6 +24,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
+import { normalizeLanPrefs, EMPTY_LAN_PREFS, type LanRoomPrefs } from '../../shared/lan-prefs';
 import { encryptSecret, decryptSecret } from './secrets';
 import { deriveMemberId } from '../sharing/room-crypto';
 import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
@@ -78,6 +79,7 @@ interface RoomsSchema {
   roomFolderTombstones: Record<string, Record<string, number>>; // roomId → (deleted folderId → deletedAt ms)
   roomHistory: Record<string, RoomEvent[]>;  // roomId → activity log (capped)
   roomMutes: Record<string, string[]>;       // roomId → locally-muted memberIds
+  roomLan: Record<string, LanRoomPrefs>;     // roomId → remembered virtual-LAN setup (picked players, game .exes granted a firewall rule); local convenience, never an authority — see shared/lan-prefs.ts
   roomFolderFetch: Record<string, Record<string, boolean>>; // roomId → (folderId → auto-fetch override; absent = inherit room autoFetch)
   roomChats: Record<string, RoomChatMessage[]>; // roomId → chat log (capped, text encrypted at rest)
   roomReacts: Record<string, Record<string, Record<string, string[]>>>; // roomId → fileId → emoji → memberIds (capped)
@@ -274,7 +276,7 @@ const searchStore = new Store<SearchSchema>({
 
 const roomsStore = new Store<RoomsSchema>({
   name: 'rooms',
-  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomFolderFetch: {}, roomChats: {}, roomReacts: {}, roomChatReacts: {}, roomChatEdits: {}, roomIdentity: null, roomIdentities: {} },
+  defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomLan: {}, roomFolderFetch: {}, roomChats: {}, roomReacts: {}, roomChatReacts: {}, roomChatEdits: {}, roomIdentity: null, roomIdentities: {} },
 });
 
 const reputationStore = new Store<ReputationSchema>({
@@ -885,6 +887,33 @@ export function clearRoomMutes(roomId: string): void {
   const all = roomsStore.get('roomMutes') ?? {};
   delete all[roomId];
   roomsStore.set('roomMutes', all);
+}
+
+// === Remembered virtual-LAN setup (per install, never broadcast) ===
+// roomId → the players the host last admitted + the game .exes that were granted
+// a scoped firewall rule. Read on every LAN start, so it is normalised on the way
+// OUT: this file is user-editable and a previous version may have written another
+// shape. It is a convenience, not an authority — see shared/lan-prefs.ts.
+
+export function getRoomLanPrefs(roomId: string): LanRoomPrefs {
+  return normalizeLanPrefs((roomsStore.get('roomLan') ?? {})[roomId]);
+}
+
+/** Persist a value the caller derived from getRoomLanPrefs via the pure helpers.
+ *  Normalised again on the way IN so a bug upstream cannot grow the entry past
+ *  its caps. An empty value deletes the key rather than storing `{[],[]}`. */
+export function setRoomLanPrefs(roomId: string, prefs: LanRoomPrefs): void {
+  const all = roomsStore.get('roomLan') ?? {};
+  const next = normalizeLanPrefs(prefs);
+  if (next === EMPTY_LAN_PREFS) delete all[roomId];
+  else all[roomId] = next;
+  roomsStore.set('roomLan', all);
+}
+
+export function clearRoomLanPrefs(roomId: string): void {
+  const all = roomsStore.get('roomLan') ?? {};
+  delete all[roomId];
+  roomsStore.set('roomLan', all);
 }
 
 // === Per-folder auto-fetch overrides (per install, never broadcast) ===

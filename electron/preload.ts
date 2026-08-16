@@ -28,6 +28,7 @@ import {
   VoiceDeviceInfo,
   ScreenSourceInfo,
   LanDiagReport,
+  LanRoomPrefs,
 } from '../shared/types';
 import type {
   ConfigField,
@@ -765,6 +766,7 @@ const api: IpcApi = {
       invite: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanInvite', roomId, memberId),
       accept: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:lanAccept', roomId),
       evict: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanEvict', roomId, memberId),
+      prefs: (roomId: string): Promise<LanRoomPrefs> => ipcRenderer.invoke('rooms:lanPrefs', roomId),
       diagnose: (roomId: string): Promise<LanDiagReport> => ipcRenderer.invoke('rooms:lanDiagnose', roomId),
       // Relay willingness is GLOBAL (one uplink, not one room) — no roomId.
       setRelay: (enabled: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanSetRelay', enabled),

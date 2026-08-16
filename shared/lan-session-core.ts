@@ -153,12 +153,49 @@ export class LanSessionCore {
   private selfGen = 0;
   private readonly buckets = new Map<string, Bucket>();
 
+  /**
+   * Seed for the admit/evict floors — the persisted watermark of a session this
+   * install has run BEFORE (0 for a brand-new session). A member with no floor of
+   * its own is compared against this instead of being treated as never-seen.
+   *
+   * WHY THIS IS SOUND, AND WHY IT IS LIMITED TO TWO TYPES. `lan-admit` and
+   * `lan-evict` are only ever applied when `by === hostId`, and their floor is
+   * keyed by the TARGET — so every value in those two maps comes from ONE clock,
+   * the host's. A single scalar can therefore stand in for the whole map without
+   * mixing clock domains. `lan-state` (and `lan-reach`) carry each announcer's OWN
+   * clock, so seeding their floors from this number would reject a legitimate
+   * member whose clock trails the host's. They are deliberately left un-seeded:
+   * both are transient, topic-bound and grant nothing (a replayed presence claim
+   * still has to re-derive its vIP and still routes only if the member is
+   * admitted), so the durable authority is the half worth protecting.
+   *
+   * Kept SEPARATE from the running `_authorityFloor` below: this one never moves.
+   * Using the running maximum as the per-member fallback would let member A's
+   * admit raise the bar for member B and reject B's older-but-legitimate admit
+   * arriving out of order in the same session.
+   */
+  private readonly floorSeed: number;
+
+  /** The highest admit/evict `at` this core has ever applied (never below the
+   *  seed). This is what gets persisted, so the NEXT run of this session starts
+   *  with every already-issued grant below its floor. */
+  private _authorityFloor: number;
+
   constructor(
     private readonly sessionId: string,
     private readonly selfId: string,
     private readonly now: () => number = Date.now,
+    authorityFloor = 0,
     private readonly bucketCfg: TokenBucketCfg = DEFAULT_LAN_BUCKET,
-  ) {}
+  ) {
+    this.floorSeed = Number.isFinite(authorityFloor) && authorityFloor > 0 ? Math.floor(authorityFloor) : 0;
+    this._authorityFloor = this.floorSeed;
+  }
+
+  /** The watermark to persist for this session (see `_authorityFloor`). */
+  authorityFloor(): number {
+    return this._authorityFloor;
+  }
 
   // ── Genesis pinning (must-fix #7) — first-writer-wins per sessionId ─────────
 
@@ -199,10 +236,13 @@ export class LanSessionCore {
     if (sessionId !== this.sessionId) return false;
     if (this._hostId === null || by !== this._hostId) return false;
     if (this.evicted.has(target)) return false; // terminal — sticky evict wins
-    const floor = this.lastAdmitAt.get(target);
-    if (floor !== undefined && at <= floor) return false; // replay
+    // A member with no floor of its own falls back to the persisted seed, so a
+    // grant issued in a PREVIOUS run of this same session cannot replay in here.
+    const floor = this.lastAdmitAt.get(target) ?? this.floorSeed;
+    if (at <= floor) return false; // replay
     this.lastAdmitAt.set(target, at);
     this.capMap(this.lastAdmitAt);
+    if (at > this._authorityFloor) this._authorityFloor = at;
     if (this.admitted.has(target)) return true; // floor advanced, no table change
     this.admitted.add(target);
     this.recomputeOwners(); // a stored claim from `target` may now route
@@ -216,10 +256,11 @@ export class LanSessionCore {
   applyEvict(by: string, target: string, at: number, sessionId: string): boolean {
     if (sessionId !== this.sessionId) return false;
     if (this._hostId === null || by !== this._hostId) return false;
-    const floor = this.lastEvictAt.get(target);
-    if (floor !== undefined && at <= floor) return false; // replay
+    const floor = this.lastEvictAt.get(target) ?? this.floorSeed;
+    if (at <= floor) return false; // replay (same seeded-floor rule as applyAdmit)
     this.lastEvictAt.set(target, at);
     this.capMap(this.lastEvictAt);
+    if (at > this._authorityFloor) this._authorityFloor = at;
     this.evicted.add(target);
     const wasAdmitted = this.admitted.delete(target);
     const hadClaim = this.claims.delete(target);

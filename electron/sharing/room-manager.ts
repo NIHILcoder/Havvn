@@ -28,6 +28,11 @@ import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlob
 import { getLanManager } from '../lan/lan-manager';
 import { evaluateLanDiagnostics } from '../../shared/lan-quality';
 import type { LanDiagInput, LanDiagReport } from '../../shared/lan-quality';
+import {
+  withPicks, addPick, removePick, addApp, removeApp, sameLanPrefs,
+  reusableSessionId, sessionFloor, withSession, noteSessionFloor, rotateSession,
+} from '../../shared/lan-prefs';
+import type { LanRoomPrefs } from '../../shared/lan-prefs';
 
 const log = logger.child('RoomManager');
 
@@ -177,6 +182,19 @@ export class RoomManager {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:lanWarn', String(payload?.msg || ''));
       }
+    });
+    // The LAN session's admit/evict anti-replay watermark advanced. Persisting it
+    // is what lets the NEXT run re-enter the same session id — and therefore keep
+    // the same subnet and vIPs — without re-opening the cross-session replay the
+    // id gate normally closes. Rare (a handful per session: admits at start, an
+    // invite, an evict, a rekey re-mint); noteSessionFloor ignores anything for
+    // another session and never moves the number backwards.
+    ipcMain.on('room-lan-floor', (_e, payload: { roomId: string; sessionId: string; at: number }) => {
+      const roomId = String(payload?.roomId || '');
+      const sessionId = String(payload?.sessionId || '');
+      const at = Number(payload?.at);
+      if (!roomId || !sessionId || !Number.isSafeInteger(at)) return;
+      this.updateLanPrefs(roomId, (p) => noteSessionFloor(p, sessionId, at));
     });
     // A file was deleted — persist the tombstone so it stays gone after restart,
     // plus its author/owner signature (when present) so the deletion re-verifies
@@ -503,6 +521,7 @@ export class RoomManager {
       turnServers = customTurnToIce(s.customTurnUrl, s.customTurnUsername, s.customTurnCredential);
       trackers = resolveTrackers(s.customTrackers);
     } catch { /* default on, no custom TURN, public trackers */ }
+    const lanSession = db.getRoomLanPrefs(roomId).session;
     return {
       type: 'join',
       payload: {
@@ -527,6 +546,13 @@ export class RoomManager {
           ? { text: persisted.topic ?? '', at: persisted.topicAt ?? 0, by: persisted.topicBy ?? '', pub: persisted.topicPub ?? '', sig: persisted.topicSig }
           : null,
         mutes: db.getRoomMutes(roomId),
+        // The LAN session this room re-enters + its watermark. Carried at JOIN
+        // because a joiner's PASSIVE session is built from the host's gossip
+        // before any lanStart — that core needs the floor from the very first
+        // admit it sees. lanStart re-asserts both from disk when a session is
+        // actually brought up.
+        lanSession: lanSession?.id ?? '',
+        lanFloor: lanSession?.floor ?? 0,
         history: db.getRoomHistory(roomId),
         chat: db.getRoomChats(roomId),
         reacts: db.getRoomReacts(roomId),
@@ -649,6 +675,7 @@ export class RoomManager {
     db.clearRoomFolders(roomId);
     db.clearRoomHistory(roomId);
     db.clearRoomMutes(roomId);
+    db.clearRoomLanPrefs(roomId);
     db.clearRoomFolderFetch(roomId);
     db.clearRoomChats(roomId);
     db.clearRoomLastRead(roomId);
@@ -1022,21 +1049,35 @@ export class RoomManager {
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
     const selfMemberId = db.getRoomProfile().memberId;
-    // Self-describing session id (must-fix #7 hardening): `${host}.${16hexRandom}`,
-    // so the pinned host is structurally derivable AND first-writer-wins per id.
-    const sessionId = `${selfMemberId}.${crypto.randomBytes(8).toString('hex')}`;
+    const prefs = db.getRoomLanPrefs(roomId);
+    // RE-ENTER the room's own session when we have one, so the subnet and every
+    // member's vIP are the same as last night (both derive from the id). Only a
+    // session WE created qualifies — the id commits to its creator, and pinGenesis
+    // binds `by` to that prefix. Otherwise mint a self-describing id
+    // (`${host}.${16hexRandom}`, must-fix #7) so the pinned host stays derivable.
+    //
+    // Reuse is safe only WITH the watermark below: a fresh core has empty floors,
+    // so without it every host-signed admit ever issued under this id could be
+    // replayed back in (LanSessionCore.applyAdmit / floorSeed).
+    const sessionId = reusableSessionId(prefs, selfMemberId)
+      ?? `${selfMemberId}.${crypto.randomBytes(8).toString('hex')}`;
+    const floor = sessionFloor(prefs, sessionId);
+    const admit = Array.isArray(memberIds) ? memberIds.map(String) : [];
     const relayEnabled = await this.lanRelayPref();
     const handle = await getLanManager().start({ roomId, sessionId, hostId: selfMemberId, selfMemberId });
     try {
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
-        subnet: handle.subnet, admit: Array.isArray(memberIds) ? memberIds.map(String) : [], isHost: true,
-        relayEnabled,
+        subnet: handle.subnet, admit, isHost: true,
+        relayEnabled, floor,
       }, 30000);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
       throw e;
     }
+    // Remember only what actually took: the admit list rode a start that succeeded.
+    this.updateLanPrefs(roomId, (p) => withPicks(withSession(p, sessionId), admit, selfMemberId));
+    this.reapplyLanApps(roomId);
     return { ok: true, sessionId: handle.sessionId };
   }
 
@@ -1049,14 +1090,92 @@ export class RoomManager {
     return { ok: true };
   }
 
-  /** Host admits one more member into an already-live session. */
-  lanInvite(roomId: string, memberId: string): Promise<{ ok: boolean }> {
-    return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'invite', memberId });
+  /** Host admits one more member into an already-live session. Remembered too, so
+   *  the next Start offers the group that actually played rather than the group
+   *  that was picked before the last two people showed up. The engine's reply is an
+   *  acknowledgement, not proof an admit was signed (LanSession.control no-ops for
+   *  a non-host) — remembering it anyway is harmless, since a pick only ever
+   *  pre-ticks THIS install's own picker. */
+  async lanInvite(roomId: string, memberId: string): Promise<{ ok: boolean }> {
+    const res = await this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'invite', memberId });
+    const selfMemberId = db.getRoomProfile().memberId;
+    this.updateLanPrefs(roomId, (p) => addPick(p, memberId, selfMemberId));
+    return res;
   }
 
-  /** Host removes a member (host-signed lan-evict). */
-  lanEvict(roomId: string, memberId: string): Promise<{ ok: boolean }> {
-    return this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'evict', memberId });
+  /** Host removes a member (host-signed lan-evict). Forgetting the pick is part of
+   *  the eviction: a pre-ticked tile at the next Start would quietly undo it, and
+   *  that admit WOULD go through (the sticky `evicted` set is session-only). */
+  async lanEvict(roomId: string, memberId: string): Promise<{ ok: boolean }> {
+    const res = await this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'evict', memberId });
+    // Rotate the session as well as forgetting the pick. `evicted` is a sticky
+    // in-memory set, so re-entering the SAME id after a restart would downgrade
+    // "terminal for this session" to "terminal until the app closes". A new id
+    // makes every grant ever issued under the old one inert at the sessionId gate
+    // — stronger than the watermark, at the price of new addresses after a
+    // removal, which is the right trade for a removal.
+    this.updateLanPrefs(roomId, (p) => rotateSession(removePick(p, memberId)));
+    return res;
+  }
+
+  /** This room's remembered LAN setup — the renderer reads it to pre-tick the peer
+   *  picker. Never an authority: see the header of shared/lan-prefs.ts. */
+  lanPrefs(roomId: string): LanRoomPrefs {
+    return db.getRoomLanPrefs(roomId);
+  }
+
+  /** Read-modify-write the room's remembered LAN setup through the pure helpers.
+   *  Skips the disk write when nothing changed (electron-store rewrites the whole
+   *  file on every set), and never lets a store failure break a LAN action. */
+  private updateLanPrefs(roomId: string, fn: (prefs: LanRoomPrefs) => LanRoomPrefs): void {
+    try {
+      const before = db.getRoomLanPrefs(roomId);
+      const after = fn(before);
+      if (!sameLanPrefs(before, after)) db.setRoomLanPrefs(roomId, after);
+    } catch (e) {
+      log.warn('could not persist LAN prefs', { roomId, err: String(e) });
+    }
+  }
+
+  /**
+   * Re-create the scoped firewall allow-rules this room has collected, once a
+   * session is up. Fire-and-forget on purpose: the rules matter when a game
+   * actually connects (seconds later), and the panel must not sit spinning behind
+   * a PowerShell round-trip per remembered game.
+   *
+   * Teardown deletes every rule the session made — that "leaves nothing behind"
+   * guarantee is worth keeping — so remembering the PATHS and re-making the rules
+   * is the honest way to spare the user the same trip through the .exe picker
+   * every session.
+   *
+   * A path the helper rejects as bad ('bad-app-path': uninstalled, moved, refused
+   * by the validator) is FORGOTTEN, because it will fail identically forever and
+   * would otherwise cost a round-trip at every start. Every other failure is
+   * treated as transient and the entry is kept.
+   */
+  private reapplyLanApps(roomId: string): void {
+    const apps = db.getRoomLanPrefs(roomId).apps;
+    if (apps.length === 0) return;
+    void (async () => {
+      for (const exe of apps) {
+        try {
+          const r = await this.call<{ ok: boolean; code?: string; error?: string }>(
+            'lanAllowApp', { roomId, exePath: exe }, 35000,
+          );
+          if (r?.ok) continue;
+          if (r?.code === 'bad-app-path') {
+            log.info('forgetting a LAN game rule whose executable is gone', { roomId, exe });
+            this.updateLanPrefs(roomId, (p) => removeApp(p, exe));
+          } else {
+            log.warn('could not re-apply a LAN game rule', { roomId, exe, err: r?.error });
+          }
+        } catch (e) {
+          // The engine or the session went away — stop, keep every entry.
+          log.warn('LAN rule re-apply stopped', { roomId, err: String(e) });
+          return;
+        }
+      }
+    })();
   }
 
   /** Persisted relay willingness (AppSettings.lanRelayEnabled, absent ⇒ true).
@@ -1144,7 +1263,17 @@ export class RoomManager {
   async lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boolean; canceled?: boolean; exe?: string; rule?: string; error?: string }> {
     const p = String(exePath || '');
     if (!p) return { ok: false, canceled: true };
-    return this.call<{ ok: boolean; exe?: string; rule?: string; error?: string }>('lanAllowApp', { roomId, exePath: p }, 25000);
+    // Budget = the engine's readiness wait (10 s) + its helper request (20 s), with
+    // headroom: giving up on a rule that then lands would show an error for an
+    // exception the user actually has.
+    const res = await this.call<{ ok: boolean; exe?: string; rule?: string; code?: string; error?: string }>(
+      'lanAllowApp', { roomId, exePath: p }, 35000,
+    );
+    // Remember the game so the next session re-creates the rule by itself. Only on
+    // success: a path the helper refused must not come back every start.
+    const exe = res?.exe;
+    if (res?.ok && exe) this.updateLanPrefs(roomId, (pr) => addApp(pr, exe));
+    return res;
   }
 
   /** Joiner: acquire our own elevated helper leg for the session the host
@@ -1159,18 +1288,27 @@ export class RoomManager {
     if (!lan.selfAdmitted) throw new Error('The host has not invited you to this LAN session yet.');
     const selfMemberId = db.getRoomProfile().memberId;
     const relayEnabled = await this.lanRelayPref();
+    // A joiner keeps its own watermark for the host's session: the grants it must
+    // refuse a second time are the same ones, and its core is just as fresh.
+    const floor = sessionFloor(db.getRoomLanPrefs(roomId), lan.sessionId);
     const handle = await getLanManager().start({ roomId, sessionId: lan.sessionId, hostId: lan.hostId, selfMemberId });
     try {
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit: [], isHost: false,
-        relayEnabled,
+        relayEnabled, floor,
       }, 30000);
       await this.call('lanSignal', { roomId, kind: 'accept' }, 8000);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
       throw e;
     }
+    // Record the session we joined, so our next visit seeds the same watermark
+    // (and so a host that rotates leaves us starting cleanly on the new id).
+    this.updateLanPrefs(roomId, (p) => withSession(p, lan.sessionId as string));
+    // A joiner collects game rules of its own (its games need the same inbound
+    // exception), so the re-apply is not host-only.
+    this.reapplyLanApps(roomId);
     return { ok: true };
   }
 

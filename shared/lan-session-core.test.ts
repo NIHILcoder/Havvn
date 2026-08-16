@@ -125,6 +125,59 @@ describe('LanSessionCore — admission gate (must-fix #1)', () => {
     expect(c.isAdmitted(A)).toBe(true);
   });
 
+  it('rejects a grant from a PREVIOUS RUN of the same session (persisted watermark)', () => {
+    // The whole point of reusing a sessionId across restarts (stable vIPs) is that
+    // it re-opens the door the sessionId gate closes above: a host-signed admit
+    // issued last night carries THIS session's id, and a fresh core has no floor
+    // for its target. The persisted watermark is what keeps that door shut.
+    const c = new LanSessionCore(SID, SELF, Date.now, 1000);
+    c.pinGenesis(HOST, SID, 1);
+    expect(c.applyAdmit(HOST, A, 900, SID)).toBe(false);  // last night's grant
+    expect(c.applyAdmit(HOST, A, 1000, SID)).toBe(false); // exactly the watermark
+    expect(c.isAdmitted(A)).toBe(false);
+    expect(c.applyAdmit(HOST, A, 1001, SID)).toBe(true);  // tonight's grant
+    expect(c.isAdmitted(A)).toBe(true);
+    // Same rule for evict, so a stale ban cannot replay in either.
+    expect(c.applyEvict(HOST, B, 900, SID)).toBe(false);
+    expect(c.applyEvict(HOST, B, 1001, SID)).toBe(true);
+  });
+
+  it('the seed is a floor for EVERY member, not a running maximum', () => {
+    // A running maximum would let one member's admit raise the bar for another and
+    // reject an older-but-legitimate grant that arrived out of order — gossip is an
+    // unordered flood, so that reordering is normal, not exotic.
+    const c = new LanSessionCore(SID, SELF, Date.now, 100);
+    c.pinGenesis(HOST, SID, 1);
+    expect(c.applyAdmit(HOST, A, 900, SID)).toBe(true);
+    expect(c.applyAdmit(HOST, B, 200, SID)).toBe(true); // older than A's, still above the seed
+    expect(c.isAdmitted(B)).toBe(true);
+  });
+
+  it('reports a watermark that covers every grant it applied', () => {
+    const c = new LanSessionCore(SID, SELF, Date.now, 50);
+    expect(c.authorityFloor()).toBe(50); // the seed, before anything is applied
+    c.pinGenesis(HOST, SID, 1);
+    c.applyAdmit(HOST, A, 300, SID);
+    c.applyEvict(HOST, B, 700, SID);
+    c.applyAdmit(HOST, A, 500, SID); // rejected replay — must not lower it
+    expect(c.authorityFloor()).toBe(700);
+    // Persisting THIS and seeding a fresh core with it makes every grant above
+    // un-replayable, which is the invariant the next run depends on.
+    const next = new LanSessionCore(SID, SELF, Date.now, c.authorityFloor());
+    next.pinGenesis(HOST, SID, 1);
+    expect(next.applyAdmit(HOST, A, 300, SID)).toBe(false);
+    expect(next.applyEvict(HOST, B, 700, SID)).toBe(false);
+  });
+
+  it('treats a junk watermark as no watermark rather than bricking the session', () => {
+    for (const bad of [NaN, -5, Infinity]) {
+      const c = new LanSessionCore(SID, SELF, Date.now, bad);
+      c.pinGenesis(HOST, SID, 1);
+      expect(c.authorityFloor()).toBe(0);
+      expect(c.applyAdmit(HOST, A, 5, SID)).toBe(true);
+    }
+  });
+
   it('never treats self as an admittable peer even if self is somehow admitted', () => {
     const c = new LanSessionCore(SID, SELF);
     c.pinGenesis(HOST, SID, 1);
@@ -294,7 +347,7 @@ describe('LanSessionCore — collision arbitration', () => {
 describe('LanSessionCore — per-peer token bucket', () => {
   it('admits up to the burst then drops, and refills over wall-clock', () => {
     let clock = 1000;
-    const c = new LanSessionCore(SID, SELF, () => clock, {
+    const c = new LanSessionCore(SID, SELF, () => clock, 0, {
       pps: 3, bytesPerSec: 100_000, burstPackets: 3, burstBytes: 100_000,
     });
     expect(c.allowPacket(A, 100)).toBe(true);
@@ -307,7 +360,7 @@ describe('LanSessionCore — per-peer token bucket', () => {
 
   it('drops when the byte budget is exhausted even if packets remain', () => {
     let clock = 0;
-    const c = new LanSessionCore(SID, SELF, () => clock, {
+    const c = new LanSessionCore(SID, SELF, () => clock, 0, {
       pps: 1000, bytesPerSec: 1000, burstPackets: 1000, burstBytes: 150,
     });
     expect(c.allowPacket(A, 100)).toBe(true);  // 50 bytes left
@@ -316,7 +369,7 @@ describe('LanSessionCore — per-peer token bucket', () => {
 
   it('meters peers independently', () => {
     let clock = 0;
-    const c = new LanSessionCore(SID, SELF, () => clock, {
+    const c = new LanSessionCore(SID, SELF, () => clock, 0, {
       pps: 1, bytesPerSec: 1000, burstPackets: 1, burstBytes: 1000,
     });
     expect(c.allowPacket(A, 10)).toBe(true);

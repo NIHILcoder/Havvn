@@ -215,6 +215,18 @@ describe('the dock panels in this directory stay in their own realm', () => {
     },
   );
 
+  it('LanPeerPicker.tsx pre-ticks only members that are actually on screen', () => {
+    // The remembered picks are a convenience, but they end up in a SIGNED admit,
+    // so a pre-ticked member who is not among the rendered tiles would be a
+    // selection the host can neither see nor untick. preselectPicks is the
+    // intersection (+ cap) that prevents that, and seeding the state straight from
+    // the prop — `new Set(preselectIds)` — is the refactor that would undo it.
+    // Its own behaviour is pinned in shared/lan-prefs.test.ts; this holds the wiring.
+    const src = code('LanPeerPicker.tsx');
+    expect(src).toMatch(/useState<Set<string>>\(\s*\(\)\s*=>\s*new Set\(preselectPicks\(/);
+    expect(src).not.toMatch(/new Set\(\s*preselectIds/);
+  });
+
   it.each(files)(
     '%s holds no module-scope document/window reference',
     (f) => {

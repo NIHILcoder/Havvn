@@ -2279,6 +2279,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             onAccept={async () => { await window.api.rooms.lan.accept(room.roomId); }}
             onInvite={async (ids) => { await Promise.all(ids.map((id2) => window.api.rooms.lan.invite(room.roomId, id2))); }}
             onEvict={async (id2) => { await window.api.rooms.lan.evict(room.roomId, id2); }}
+            onLoadPrefs={() => window.api.rooms.lan.prefs(room.roomId)}
             onDiagnostics={async () => toLanDiagView(await window.api.rooms.lan.diagnose(room.roomId))}
             onAllowApp={async () => window.api.rooms.lan.allowApp(room.roomId)}
             onSetRelayEnabled={async (enabled) => { await window.api.rooms.lan.setRelay(enabled); }}
