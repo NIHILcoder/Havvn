@@ -57,8 +57,13 @@ export const LAN_NAME_PREFIX = 'Havvn LAN-';
 
 /** The on-link groups we forward (per-destination /32 routes, NORMAL metric —
  *  never a blanket InterfaceMetric 1, which would hijack our own transmission
- *  LSD, plan §5 should-fix). Overridable via the handshake for future groups. */
-const DEFAULT_FORWARD_ROUTES = ['255.255.255.255/32', '224.0.0.251/32', '239.255.255.250/32'];
+ *  LSD, plan §5 should-fix). Overridable via the handshake for future groups.
+ *
+ *  MUST mirror lan-manager.ts FORWARD_ROUTES (which is what a real session
+ *  actually passes; this list only covers a handshake that omits them). The last
+ *  entry is Minecraft's LAN-discovery group — see the note there for why an
+ *  unpinned game socket needs the route while our own announcer does not. */
+const DEFAULT_FORWARD_ROUTES = ['255.255.255.255/32', '224.0.0.251/32', '239.255.255.250/32', '224.0.2.60/32'];
 
 /** VPN-ish tokens forbidden in the adapter name so the VPN-detector never trips
  *  on our own adapter by name (§5/§7); the real exclusion is by ADDRESS RANGE. */

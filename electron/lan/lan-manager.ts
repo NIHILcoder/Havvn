@@ -50,8 +50,23 @@ const HANDSHAKE_PROTO = 1;
 const LAN_MTU = 1280;
 
 /** Per-destination on-link routes the helper installs (NOT a blanket
- *  InterfaceMetric 1, which would hijack transmission's own LSD; plan §5). */
-const FORWARD_ROUTES = ['255.255.255.255/32', '224.0.0.251/32', '239.255.255.250/32'];
+ *  InterfaceMetric 1, which would hijack transmission's own LSD; plan §5).
+ *
+ *  MUST mirror helper-main.ts DEFAULT_FORWARD_ROUTES.
+ *
+ *  224.0.2.60 is Minecraft's LAN-discovery group. Unlike the announcer we send
+ *  ourselves for a dedicated server (which pins the interface with
+ *  setMulticastInterface and therefore needs no route), a vanilla client that
+ *  "opens a world to LAN" sends to that group from a socket it never pins — so
+ *  the datagram follows the ROUTE TABLE, and without an entry here it leaves via
+ *  the physical adapter and never enters the tunnel. The router already
+ *  replicates the whole of 224.0.0.0/4 (shared/lan-packet.ts classifyDest), so
+ *  the receive half needs nothing; this is purely the egress half.
+ *
+ *  Kept as a literal rather than imported from the Minecraft module: the LAN
+ *  transport must not depend on a game module (the dependency runs the other
+ *  way — a module plans an announce, the tunnel carries it). */
+const FORWARD_ROUTES = ['255.255.255.255/32', '224.0.0.251/32', '239.255.255.250/32', '224.0.2.60/32'];
 
 /** Firewall RemoteAddress scope — only virtual traffic is opened (plan §5). */
 const FIREWALL_REMOTE = '100.64.0.0/10';
