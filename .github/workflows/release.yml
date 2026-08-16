@@ -50,11 +50,38 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The two vendored binaries are gitignored, so a clean checkout has neither
+      # — and build.extraResources points straight at them. Both scripts verify a
+      # pinned SHA-256 and exit non-zero on any mismatch.
+      - name: Vendor pinned binaries (Wintun driver + transmission engine)
+        run: |
+          node scripts/fetch-wintun.mjs
+          node scripts/fetch-transmission.mjs
+
       - name: Package (electron-builder)
         run: npx electron-builder --win --publish never
         env:
           # Runners have no signing certificate — don't try to discover one
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      # electron-builder does NOT fail when an extraResources source is missing:
+      # it logs "file source doesn't exist" and exits 0. Without this gate the
+      # whole pipeline stays green while producing an installer whose LAN reports
+      # "unavailable on this build" and whose torrent engine is absent — a defect
+      # nothing else here can catch, because CI never packages.
+      - name: Verify the package carries its native resources
+        shell: bash
+        run: |
+          missing=0
+          for f in \
+            "release/win-unpacked/resources/wintun/wintun.dll" \
+            "release/win-unpacked/resources/wintun/prebuilt-binaries-license.txt" \
+            "release/win-unpacked/resources/engine/transmission-daemon.exe"
+          do
+            if [ ! -f "$f" ]; then echo "MISSING from the package: $f" >&2; missing=1; fi
+          done
+          [ "$missing" = 0 ] || { echo "Refusing to publish a package with missing native resources." >&2; exit 1; }
+          echo "native resources present."
 
       - name: Extract release notes from CHANGELOG.md
         shell: bash
