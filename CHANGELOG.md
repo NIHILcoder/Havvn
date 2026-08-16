@@ -4,6 +4,113 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-08-16
+
+Rooms stopped being a place to share files and became a place to play. This
+release adds a serverless virtual LAN, dedicated game servers you can run inside
+a room, and a dock that turns any panel into its own window — on top of a full
+visual redesign of the app.
+
+### Virtual LAN — LAN games, over the internet
+
+- **A private network inside a room.** The host starts a session and picks who
+  joins; everyone admitted gets a virtual address and a direct encrypted link to
+  every other player. No accounts, no servers, no relay in the middle — the
+  session lives entirely between the people in the room.
+- **Games find each other by themselves.** The tunnel replicates the broadcast
+  and multicast traffic games use to advertise themselves, which a plain L3
+  tunnel does not carry. A server hosted in the room is announced out of the
+  tunnel too, so it simply appears in the game's own local-network list —
+  nobody types an address.
+- **Honest connection status.** Each player's tile carries a measured quality dot
+  (round-trip time, loss, and whether the path is direct), and a link that truly
+  has no path says so and points at the fix instead of spinning forever. A
+  copy-pasteable diagnostics report collects what the adapter, the driver and
+  every peer actually reported.
+- **"The game won't connect?"** — one click adds a firewall exception for that
+  game, scoped to the tunnel and to this session only.
+- **A relay for pairs that cannot punch a path.** When two players are both
+  behind a NAT that defeats direct connection, their traffic can travel through
+  a third player who can reach both. It is opt-in and visible: relayed links
+  never show as green, the panel names who is carrying them, and the setting says
+  plainly that a relaying install can read what it forwards.
+- **Addresses stay put between sessions.** A room re-enters its own session, so
+  the subnet and every player's address survive a restart. Removing a player
+  rotates them.
+- **Setup is remembered.** The player picker opens with last session's group
+  already ticked, and the firewall exceptions a room has collected are re-created
+  when a session comes up.
+- **Nothing is left behind.** Stopping — or quitting, or crashing — removes the
+  adapter, the routes and the firewall rules; a leftover from an earlier crash is
+  swept before a new session starts.
+
+### Game servers inside a room
+
+- **Run a dedicated server from the room.** Create one from a version catalog or
+  import an existing folder; install, start, stop and restart are supervised,
+  with a live console and a config form generated from the server's own settings.
+- **Content that follows the room.** Mods and plugins shared in the room can be
+  mirrored into the server folder, with explicit consent before anything lands.
+- **World backups.** Snapshot before a risky change, restore when it goes wrong.
+- **Schedules, players and health.** Timed restarts and stops, whitelist and ban
+  management, and alerts when the server stops answering.
+- **Everyone sees it.** Members see a live mirror of the server's state, and the
+  host can hand operator commands to it from the room.
+- **Bring your own Java.** Opt in to a system JDK instead of the managed runtime.
+
+### The dock — every panel can be its own window
+
+Chat, voice, files, the LAN panel and the server panel are tabs you can move
+between the three regions of the room, tear off onto a second monitor, hide and
+restore. A panel keeps running while it moves: a call stays connected, a
+download keeps going, a torn-off window gets the app's own title bar.
+
+### A new look
+
+A tactical-HUD redesign across Downloads, Search, RSS, Settings and Rooms, with a
+new W-wings brand mark and wordmark, themeable corner roundness, and a theme
+inspector for building your own.
+
+### Rooms
+
+- Join from a `havvn://join/<invite>` link, or straight from a copied invite.
+- Chat gained replies, editing, emoji reactions, search highlighting and an
+  activity tab.
+- Owner-set room topic, and ownership can be transferred over a signed chain.
+- Removing someone rotates the room's encryption secret and adds them to a ban
+  list, so a rotated-out member cannot read what comes after.
+- Screen sharing can carry system audio (opt-in, echo-cancelled).
+- Watch a video while it is still downloading; image thumbnails; long file lists
+  stay smooth.
+
+### Downloads and engine
+
+- Bufferbloat protection now applies to the native engine as well.
+- Bring your own rendezvous trackers.
+- Several settings that were saved but never reached the engine now do — and the
+  ones that only apply to a restart say so instead of pretending.
+
+### Fixed
+
+- A confirm dialog no longer opens behind the modal that asked for it.
+- Long error toasts wrap instead of overflowing the window.
+- The video player fills its pane; the watchers strip is a single tidy row.
+- Composite form fields show one focus ring, not two.
+
+### Known limits
+
+Worth saying out loud rather than leaving to be discovered:
+
+- The virtual LAN is **Windows only** — members on macOS or Linux can share files
+  and talk, but cannot join a LAN session.
+- One LAN session at a time per install, up to 8 players in it.
+- Games that discover each other below IP (IPX, DirectPlay) are out of scope; the
+  tunnel is IPv4 only.
+- Minecraft is the only game-server module so far, and a server lives on its
+  host's machine — if the host leaves, the server goes with them.
+- Builds are not code-signed yet, so Windows will show an unknown publisher when
+  the LAN session asks for administrator rights.
+
 ## [2.24.1] - 2026-07-19
 
 Everything since 2.20, in one release. Rooms grew a real layout, detachable
