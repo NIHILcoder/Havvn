@@ -38,6 +38,7 @@ import type {
   RoomServerInstance, RoomServerState,
 } from '../../../shared/types';
 import { IMPORT_JAVA_MAJORS } from '../../../shared/gameserver-types';
+import { GamePicker } from './GamePicker';
 import { ServerConsole } from './ServerConsole';
 import { ServerConfigForm } from './ServerConfigForm';
 import { ServerConfigField } from './ServerConfigField';
@@ -124,7 +125,12 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
   const [state, setState] = useState<RoomServerState>(EMPTY_STATE);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
-  const [creating, setCreating] = useState(false);
+  /** Creating is now two steps: the picker names the game, then the form fills
+   *  it in. `creatingModule` IS the second step — holding the chosen module here
+   *  rather than inside the form keeps "which game" out of the form's state, so
+   *  it cannot silently fall back to modules[0] when the picker is bypassed. */
+  const [gamePickerOpen, setGamePickerOpen] = useState(false);
+  const [creatingModule, setCreatingModule] = useState<string | null>(null);
 
   // ── state sync ─────────────────────────────────────────────────────────────
 
@@ -197,14 +203,15 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
 
   // ── render ─────────────────────────────────────────────────────────────────
 
-  if (creating) {
+  if (creatingModule) {
     return (
       <div className="room-server-panel" ref={rootRef}>
         <CreateServerForm
           roomId={roomId}
+          moduleId={creatingModule}
           modules={state.modules}
           soloHandle={soloHandle}
-          onDone={(id) => { setCreating(false); if (id) { setSelectedId(id); setTab('console'); } }}
+          onDone={(id) => { setCreatingModule(null); if (id) { setSelectedId(id); setTab('console'); } }}
         />
       </div>
     );
@@ -224,7 +231,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
             type="button"
             className="room-server-new"
             title={t('rooms.server.create')}
-            onClick={() => setCreating(true)}
+            onClick={() => setGamePickerOpen(true)}
           >
             <Icon name="plus" size={13} />
             {t('rooms.server.create')}
@@ -239,7 +246,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
           <p className="room-server-empty-hint">{t('rooms.server.emptyHint')}</p>
           {/* The CTA belongs here too: the header pill is easy to miss on a panel
               whose whole body says "there is nothing yet". */}
-          <button type="button" className="room-server-primary" onClick={() => setCreating(true)}>
+          <button type="button" className="room-server-primary" onClick={() => setGamePickerOpen(true)}>
             <Icon name="plus" size={14} />
             {t('rooms.server.create')}
           </button>
@@ -277,6 +284,14 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
             />
           )}
         </>
+      )}
+
+      {gamePickerOpen && (
+        <GamePicker
+          modules={state.modules}
+          onClose={() => setGamePickerOpen(false)}
+          onPick={(id) => { setGamePickerOpen(false); setCreatingModule(id); }}
+        />
       )}
     </div>
   );
@@ -773,6 +788,9 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface CreateServerFormProps {
+  /** The game, already chosen in GamePicker. Passed in rather than picked here:
+   *  the form has no game field any more, so a default would be a silent one. */
+  moduleId: string;
   roomId: string;
   modules: RoomServerState['modules'];
   onDone: (instanceId: string | null) => void;
@@ -782,13 +800,15 @@ interface CreateServerFormProps {
 
 type CreateMode = 'catalog' | 'import';
 
-const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, modules, onDone, soloHandle }) => {
+const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, modules, onDone, soloHandle }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const errorText = useServerError();
   const api = window.api.rooms.servers;
 
-  const [moduleId, setModuleId] = useState(modules[0]?.id ?? '');
+  /** The chosen game's display name for the header — absent only if the module
+   *  disappeared between the picker and here. */
+  const gameName = useMemo(() => modules.find((m) => m.id === moduleId)?.displayName, [modules, moduleId]);
   const [mode, setMode] = useState<CreateMode>('catalog');
   const [versions, setVersions] = useState<GameVersionRef[] | null>(null);
   const [flavour, setFlavour] = useState<string>('paper');
@@ -987,6 +1007,9 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, modules, on
       <div className="room-server-head">
         <span className="room-server-head-title">
           <span className="room-section-title">{t('rooms.server.create')}</span>
+          {/* Which game, now that the form no longer asks: the answer was given a
+              window ago, and without it this screen is unlabelled. */}
+          {gameName && <span className="room-server-count">{gameName}</span>}
         </span>
         <span className="room-server-head-actions">
           {soloHandle}
@@ -1004,17 +1027,6 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, modules, on
 
       {/* Fields scroll; the submit button does not — see the footer below. */}
       <div className="room-server-create-scroll">
-        {modules.length > 1 && (
-          <label className="room-server-field">
-            <span className="room-server-label">{t('rooms.server.game')}</span>
-            <Select
-              value={moduleId}
-              options={modules.map((m) => ({ value: m.id, label: m.displayName }))}
-              onChange={(v) => { clearScan(); setModuleId(v); }}
-            />
-          </label>
-        )}
-
         {canImport && (
           <div className="room-server-mode" role="tablist">
             <button

@@ -1000,6 +1000,79 @@
   background: var(--color-bg-elevated);
 }
 
+/* ── GamePicker (the window that asks which game) ───────────────────────────
+   Rows under two headings, not a grid of equals: one section can actually run a
+   server and the other is a promise, and a heading is what keeps the second
+   from reading as a peer of the first. */
+.gp-body { display: flex; flex-direction: column; gap: 8px; }
+
+.gp-section-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+
+.gp-section-soon { margin-top: 8px; }
+
+.gp-list { display: flex; flex-direction: column; gap: 6px; }
+
+.gp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.gp-row:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  border-color: var(--color-accent);
+}
+
+.gp-row-text { flex: 1 1 auto; min-width: 0; }
+
+.gp-row-name {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+.gp-row-desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+/* Dimmed, not hidden: a locked row is information ("this is coming"), and its
+   cursor says there is nothing to click rather than implying a dead click. */
+.gp-row.is-locked {
+  background: transparent;
+  border-style: dashed;
+  cursor: default;
+}
+
+.gp-row.is-locked .gp-row-name { color: var(--color-text-tertiary); }
+
+.gp-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+}
+
 .room-server-hint {
   margin: 0;
   font-size: 11px;
