@@ -78,6 +78,32 @@ const ADAPTER_PREFIX = 'Havvn LAN-';
 /** UAC cancel surfaces as this Win32 code (ERROR_CANCELLED). */
 const ERROR_CANCELLED = 1223;
 
+/**
+ * Absolute path to a Windows system tool.
+ *
+ * NEVER invoke these by bare name. The PATH is inherited from whoever launched
+ * the app, and a Git Bash / MSYS / Cygwin environment puts its own POSIX
+ * `whoami.exe` ahead of System32. That one treats `/user` as an operand and
+ * exits 1, so the SID lookup silently returns '', the helper is spawned with
+ * `--sid=`, refuses to start, and the ONLY thing the user is shown is the
+ * engine's pipe connect timing out twenty seconds later — a symptom three layers
+ * away from the cause. (Found exactly that way; the helper's own log named it.)
+ */
+export function systemToolPath(exe: string): string {
+  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  return path.join(root, 'System32', exe);
+}
+
+/**
+ * Pull the account SID out of `whoami /user /fo csv /nh`, whose one line reads
+ * `"hostname\user","S-1-5-21-…"`. Returns '' for anything else — including a
+ * POSIX whoami's bare username, which is the failure this exists to survive.
+ */
+export function parseUserSid(out: string): string {
+  const m = /S-1-[0-9-]+/.exec(String(out || ''));
+  return m ? m[0] : '';
+}
+
 /** How long stop() waits for the (elevated) helper to actually exit before it
  *  gives up and leaves the PID-watchdog / orphan-sweep as the backstop. */
 const HELPER_EXIT_GRACE_MS = 4000;
@@ -222,6 +248,8 @@ export class LanManager {
    *   'busy'              another room holds the single session
    *   'unavailable'       koffi/wintun.dll missing (with reason)
    *   'net-suspended'     VPN kill-switch active (checked before AND after UAC)
+   *   'no-user-sid'       the account SID lookup failed (checked BEFORE the UAC
+   *                       prompt — the helper cannot DACL its pipe without it)
    *   'elevation-denied'  UAC cancelled (exit 1223 / "canceled by the user")
    *   'spawn-failed'      Start-Process error
    */
@@ -251,6 +279,11 @@ export class LanManager {
     const subnetStr = `${vipToString(subnet.base)}/${SESSION_PREFIX}`;
 
     const interactiveSid = this.getInteractiveUserSid();
+    // FAIL FAST, and BEFORE the UAC prompt. The helper DACLs its pipe to this SID
+    // and exits immediately without one, so continuing would burn an elevation
+    // prompt on a process doomed to die and then report the engine's 20 s pipe
+    // timeout — a message that sends the reader looking at the network.
+    if (!interactiveSid) throw new Error('no-user-sid: could not determine this Windows account\'s SID, so the LAN helper cannot secure its pipe');
 
     const handshake: LanHandshakeFile = {
       proto: HANDSHAKE_PROTO,
@@ -383,19 +416,23 @@ export class LanManager {
   }
 
   // ── private: interactive SID ──────────────────────────────────────────────
+  //
+  // (systemToolPath / parseUserSid are module-level + exported so the two rules
+  // that matter here are pinned by tests without shelling out at all.)
 
-  /** The interactive user's SID (= main's own; main runs as that user). Parsed
-   *  from `whoami /user /fo csv /nh`. Returns '' on any failure (helper then falls
-   *  back to a self-SID DACL, degrading over-the-shoulder UAC only). */
+  /**
+   * The interactive user's SID (= main's own; main runs as that user), parsed
+   * from `whoami /user /fo csv /nh`. Returns '' on any failure — and the caller
+   * must treat that as FATAL, not as a soft degrade: the helper DACLs its pipe to
+   * this SID and refuses to start without one.
+   */
   getInteractiveUserSid(): string {
     if (process.platform !== 'win32') return '';
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-      const out = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
-      // "hostname\\user","S-1-5-21-..."
-      const m = out.match(/S-1-[0-9-]+/);
-      return m ? m[0] : '';
+      const out = execFileSync(systemToolPath('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+      return parseUserSid(out);
     } catch (e) {
       this.cfg.log?.('warn', 'getInteractiveUserSid failed', e);
       return '';
