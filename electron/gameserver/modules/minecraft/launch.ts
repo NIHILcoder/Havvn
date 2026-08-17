@@ -33,6 +33,32 @@ import { javaMajorFor, neoforgeMinecraftVersion } from './versions';
 export const SERVER_JAR: RelPath = 'server.jar';
 
 /**
+ * Point a Forge/NeoForge argfile at the variant this platform can actually use.
+ *
+ * The two files are NOT interchangeable. They are the same LENGTH — which is
+ * what made "byte-identical" look true — but the classpath inside is joined with
+ * `:` in unix_args.txt and `;` in win_args.txt, and the JVM does not translate
+ * separators for an @argfile: it takes the string as given. Hand Windows the unix
+ * file and the whole classpath collapses into one nonexistent path, so the loader
+ * starts and dies with
+ *
+ *     Error: Could not find or load main class net.neoforged.fml.startup.Server
+ *
+ * which reads like a broken download and is not one — reinstalling reproduces it
+ * exactly.
+ *
+ * Corrected HERE, at launch, rather than where the path is chosen. The ref's meta
+ * is persisted with the instance and travels inside a shared preset, so a path
+ * fixed at install time would keep every already-created server broken and would
+ * hand a Linux-made preset to a Windows host. Normalising at use makes the stored
+ * value platform-agnostic and repairs existing instances with no reinstall.
+ */
+export function platformArgfile(rel: string, platform: string = process.platform): string {
+  const want = platform === 'win32' ? 'win_args.txt' : 'unix_args.txt';
+  return rel.replace(/(unix|win)_args\.txt$/, want);
+}
+
+/**
  * Read the launch shape off a resolved ref's meta.
  *
  * `meta` is the channel the catalog (or the import scan) uses to hand launch
@@ -48,7 +74,7 @@ export function launchArgsFor(inst: InstanceView, heapMb: number): string[] {
   if (argfile) {
     // Forge's modern argfile ends in the main class and its own program args, so
     // `nogui` must follow it — exactly where run.sh puts "$@".
-    return [...heap, `@${argfile}`, 'nogui'];
+    return [...heap, `@${platformArgfile(argfile)}`, 'nogui'];
   }
 
   const jar = typeof meta.launchJar === 'string' ? meta.launchJar : SERVER_JAR;
@@ -140,8 +166,9 @@ export function scanMinecraftTree(files: readonly RelPath[]): ImportCandidate[] 
       version: mc,
       label: `${neo ? 'NeoForge' : 'Forge'} ${coord}`,
       javaMajor: mc ? javaMajorFor(mc) : undefined,
-      // unix_args and win_args are byte-identical for both projects, so the
-      // listing may contain either; store the one we actually saw.
+      // The listing may contain either variant (installers write both), and they
+      // are NOT interchangeable — see platformArgfile, which picks the runnable
+      // one at launch. Storing whichever we saw is therefore fine.
       meta: { argfile: file },
       rank: 100,
     });

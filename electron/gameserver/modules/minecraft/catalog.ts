@@ -299,9 +299,12 @@ async function forgeCatalog(ctx: CatalogCtx): Promise<GameVersionRef[]> {
  * installer is contractually going to write to.
  */
 function argfileFor(group: 'net/minecraftforge/forge' | 'net/neoforged/neoforge', coord: string): string {
-  // unix_args.txt and win_args.txt are byte-identical for both projects; the
-  // split exists for path separators in classpaths, which @argfile handles. We
-  // take the unix one on every platform so the plan is platform-independent.
+  // The unix name is stored as the CANONICAL one, not as the one to run: the two
+  // files differ in the classpath separator (`:` vs `;`) and the JVM does not
+  // translate it, so platformArgfile() swaps this to win_args.txt at launch. It
+  // is normalised there and not here because this value is persisted with the
+  // instance and travels inside a shared preset — baking the authoring host's
+  // platform into it is what would break the other one.
   return `libraries/${group}/${coord}/unix_args.txt`;
 }
 

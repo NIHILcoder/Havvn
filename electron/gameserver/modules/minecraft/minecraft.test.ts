@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseProperties, serializeProperties, propInt, propBool } from './properties';
 import { parseMinecraftLine, stripPrefix } from './log-parser';
 import { buildAnnouncePayload, MC_ANNOUNCE_HOST, MC_ANNOUNCE_PORT } from './announce';
+import { launchArgsFor, platformArgfile } from './launch';
 import { minecraftModule } from './index';
 import { coerceConfigValue } from '../../../../shared/gameserver-core';
 import type { ConfigField } from '../../../../shared/gameserver-types';
@@ -204,6 +205,62 @@ describe('parseMinecraftLine', () => {
     expect(parseMinecraftLine(line('Loading properties'))).toEqual([]);
     expect(parseMinecraftLine('')).toEqual([]);
     expect(parseMinecraftLine('random unprefixed chatter')).toEqual([]);
+  });
+});
+
+describe('the Forge/NeoForge argfile a platform can actually run', () => {
+  /**
+   * A NeoForge server installed from the catalog would not start on Windows:
+   *
+   *   java -Xmx8192M @libraries/net/neoforged/neoforge/26.2.0.59/unix_args.txt nogui
+   *   Error: Could not find or load main class net.neoforged.fml.startup.Server
+   *
+   * The two argfiles are the same LENGTH but differ in the classpath separator
+   * (`:` vs `;`), and the JVM does not translate it for an @argfile — so the whole
+   * classpath became one path that does not exist. Verified against a real
+   * install: `cmp` says the files differ, `wc -c` says 5241 bytes each.
+   */
+  const neoRef = (argfile: string) => ({
+    instanceId: 'i', moduleId: 'minecraft',
+    ref: { id: 'neoforge:26.2', label: 'NeoForge', flavour: 'neoforge', version: '26.2', runtime: { id: 'java', major: 25 }, stable: true, meta: { argfile } },
+    config: {}, memoryMb: 8192,
+  });
+  const NEO = 'libraries/net/neoforged/neoforge/26.2.0.59/unix_args.txt';
+
+  it('runs win_args.txt on Windows and unix_args.txt elsewhere', () => {
+    expect(platformArgfile(NEO, 'win32')).toBe('libraries/net/neoforged/neoforge/26.2.0.59/win_args.txt');
+    expect(platformArgfile(NEO, 'linux')).toBe(NEO);
+    expect(platformArgfile(NEO, 'darwin')).toBe(NEO);
+  });
+
+  it('normalises whichever variant was stored, in both directions', () => {
+    // An imported tree stores the file the listing happened to show, and a shared
+    // preset carries whatever its author's host wrote.
+    const win = 'libraries/net/minecraftforge/forge/1.20.1-47.2.0/win_args.txt';
+    expect(platformArgfile(win, 'linux')).toBe('libraries/net/minecraftforge/forge/1.20.1-47.2.0/unix_args.txt');
+    expect(platformArgfile(win, 'win32')).toBe(win);
+    expect(platformArgfile(platformArgfile(NEO, 'win32'), 'win32')).toBe(platformArgfile(NEO, 'win32'));
+  });
+
+  it('leaves a path that is not an argfile alone', () => {
+    for (const p of ['server.jar', 'libraries/x/y/other.txt', 'unix_args.txt.bak']) {
+      expect(platformArgfile(p, 'win32')).toBe(p);
+    }
+  });
+
+  it('puts the platform argfile into the launch args, with nogui after it', () => {
+    const args = launchArgsFor(neoRef(NEO) as never, 8192);
+    const expected = platformArgfile(NEO);
+    expect(args).toEqual(['-Xms8192M', '-Xmx8192M', `@${expected}`, 'nogui']);
+    // The heap flags must precede the argfile, and nogui must follow it — the
+    // argfile ends in the main class, so anything after it is a program arg.
+    expect(args.indexOf(`@${expected}`)).toBe(2);
+    expect(args[args.length - 1]).toBe('nogui');
+  });
+
+  it('does not touch the flavours that launch a jar', () => {
+    const paper = { instanceId: 'i', moduleId: 'minecraft', ref: { id: 'paper:26.2', label: 'Paper', flavour: 'paper', version: '26.2', runtime: { id: 'java', major: 25 }, stable: true, meta: {} }, config: {}, memoryMb: 2048 };
+    expect(launchArgsFor(paper as never, 2048)).toEqual(['-Xms2048M', '-Xmx2048M', '-jar', 'server.jar', 'nogui']);
   });
 });
 
