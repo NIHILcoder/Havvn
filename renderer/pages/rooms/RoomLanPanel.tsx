@@ -215,6 +215,9 @@ export interface RoomLanPanelProps {
    * to it and an evict removes from it — and a stale copy would re-offer a player
    * the host just evicted. Absent → the picker opens empty, exactly as before.
    */
+  /** False when a dock tab strip above already names this panel: the header then
+   *  carries only actions, so every column starts with the same shape. */
+  showTitle?: boolean;
   onLoadPrefs?: () => Promise<{ picks: string[] }>;
 }
 
@@ -255,7 +258,7 @@ const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   roomId, lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
-  onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled, onLoadPrefs,
+  onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled, onLoadPrefs, showTitle = true,
 }) => {
   const { t } = useTranslation();
   const host = useHostWindow();
@@ -467,11 +470,18 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
 
   return (
     <div className="room-lan" ref={rootRef}>
+      {/* Always rendered, even when it holds nothing: it is the action row every
+          other panel has, and a panel that skips it starts its body a row higher
+          than its neighbours. */}
       <div className="room-lan-head">
-        <span className="room-lan-title">
-          <Icon name="network" size={13} /> {t('rooms.lan.title')}
-          <span className="stg-pill stg-pill-accent room-lan-beta">{t('rooms.lan.beta')}</span>
-        </span>
+        {/* The BETA pill rides with the title: it qualifies the NAME, and the name
+            is on the tab above whenever this is dropped. */}
+        {showTitle && (
+          <span className="room-lan-title">
+            <Icon name="network" size={13} /> {t('rooms.lan.title')}
+            <span className="stg-pill stg-pill-accent room-lan-beta">{t('rooms.lan.beta')}</span>
+          </span>
+        )}
         {onOpenSettings && (
           <button className="room-lan-gear" onClick={onOpenSettings} title={t('rooms.lan.settings')} type="button">
             <Icon name="settings" size={14} />

@@ -30,8 +30,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--color-border-subtle); /* hairline splits LAN from voice within the framed rail */
+  /* See .room-voice: the stacked-rail separator and its padding are gone — each
+     panel is a tab now, and they only made this column start lower than the rest. */
+  padding: 0;
   background: transparent;
 }
 
@@ -41,7 +42,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 24px;
+  min-height: var(--room-panel-head-h);
 }
 .room-lan-title {
   display: inline-flex;
@@ -58,7 +59,9 @@
   text-transform: none;
   letter-spacing: 0;
 }
+/* See .room-voice-gear: stays right even when the title is not rendered. */
 .room-lan-gear {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;

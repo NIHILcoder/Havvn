@@ -113,6 +113,7 @@ import {
   resolveDockDrop,
   setDockDragOver,
 } from './dockDrag';
+import { zoneShowsStrip } from './dockModel';
 import './DockZone.css';
 
 /**
@@ -338,7 +339,10 @@ export function DockZone<P extends string = string>({
   const slotIds = mounts ? ids.filter((id) => mounts.mounted.includes(id)) : resolved.mounted;
 
   const soloHost = panels.length === 1 && (soloHostIds?.includes(ids[0]) ?? false);
-  const showStrip = panels.length > 0 && (panels.length > 1 || !(hideSingleTab || soloHost));
+  // The rule lives in dockModel because the PANELS need the same answer — one that
+  // knows the strip already carries its name drops its own title row. See
+  // zoneShowsStrip.
+  const showStrip = zoneShowsStrip({ panelCount: panels.length, soloHost, hideSingleTab });
   const rootClass = ['dock-zone', `dock-zone-${zoneId}`, className].filter(Boolean).join(' ');
 
   // ── native listeners: the zone-body drop target and the cycle key ──────────

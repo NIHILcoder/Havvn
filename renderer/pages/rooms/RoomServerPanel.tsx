@@ -57,6 +57,9 @@ const MC_FLAVOURS = ['paper', 'fabric', 'neoforge', 'forge', 'vanilla'] as const
 
 interface RoomServerPanelProps {
   roomId: string;
+  /** False when a dock tab strip above already names this panel: the header then
+   *  carries only actions, so every column starts with the same shape. */
+  showTitle?: boolean;
   /**
    * The dock's move affordance. This panel is a `soloHost`, so a docked zone
    * holding only it hides the tab strip and the header below hosts the handle
@@ -115,7 +118,7 @@ function formatUptime(since: number): string {
   return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
-export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHandle }) => {
+export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTitle = true, soloHandle }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const host = useHostWindow();
@@ -221,8 +224,10 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, soloHa
     <div className="room-server-panel" ref={rootRef}>
       <div className="room-server-head">
         <span className="room-server-head-title">
-          <span className="room-section-title">{t('rooms.server.title')}</span>
-          <span className="room-server-beta">{t('rooms.server.beta')}</span>
+          {/* The BETA pill qualifies the NAME, so it goes with it: on its own above
+              a tab that already says SERVERS it reads as a label for the room. */}
+          {showTitle && <span className="room-section-title">{t('rooms.server.title')}</span>}
+          {showTitle && <span className="room-server-beta">{t('rooms.server.beta')}</span>}
           {instances.length > 1 && <span className="room-server-count">{instances.length}</span>}
         </span>
         <span className="room-server-head-actions">

@@ -296,6 +296,32 @@ export const PANEL_BY_ID: Readonly<Record<DockPanelId, DockPanelDef>> = PANELS.r
   {} as Record<DockPanelId, DockPanelDef>,
 );
 
+/**
+ * Does this zone draw a tab strip?
+ *
+ * The rule DockZone applies, extracted because a second caller now needs the same
+ * answer: a panel must know whether the strip above it has already said its name,
+ * so it can drop its own title row and leave only its actions. Two columns used to
+ * announce themselves twice — "GOLOS" on the tab and "GOLOS" again underneath —
+ * and each panel's second row was built differently, so no two columns lined up.
+ *
+ * It cannot be a context: panels are portalled out of DockPanelMounts, so their
+ * React parent is the page, not the zone. It cannot be re-derived at the call site
+ * either without becoming two rules that drift. So: one function, both callers.
+ */
+export function zoneShowsStrip(opts: {
+  panelCount: number;
+  /** True when the zone's ONLY panel is one that hosts its own header + handle. */
+  soloHost?: boolean;
+  /** The zone's caller-level "one panel needs no tabs" habit. */
+  hideSingleTab?: boolean;
+}): boolean {
+  const { panelCount, soloHost = false, hideSingleTab = false } = opts;
+  if (panelCount <= 0) return false;
+  if (panelCount > 1) return true;
+  return !(hideSingleTab || soloHost);
+}
+
 /** What the repair pass needs to know. Generic so tests (and later phases) can vary it. */
 export interface DockRegistry<
   P extends string = DockPanelId,

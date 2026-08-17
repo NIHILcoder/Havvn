@@ -39,7 +39,7 @@ import { withHidePanelAction } from './rooms/dock/dockHidden';
 import {
   PANEL_BY_ID, DockPanelId, DockZoneId, DockDockedZoneId, DockWindowZoneId, DockLayout, DockOpResult, DockRefusal,
   isDockedZone, isWindowZone, dockWindowFrameName, openWindowZones, DOCK_WINDOW_ZONE_IDS,
-  DOCK_ZONE_IDS, DOCK_PANEL_IDS, DOCK_SOLO_HOST_IDS,
+  DOCK_ZONE_IDS, DOCK_PANEL_IDS, DOCK_SOLO_HOST_IDS, zoneShowsStrip,
   loadDockLayout, saveDockLayout, resetDockLayout, setActivePanel, zonePanels, activePanel, zoneOfPanel,
   movePanel, detachPanel, tearOffZone, dockBackZone, moveTargets, detachTarget, tearOffTarget,
   hidePanel, hideTarget, restorePanel, restoreAllPanels, restoreTargets, hiddenPanels, isPanelHidden,
@@ -927,10 +927,13 @@ interface FilesPanelProps {
    * a one-tab strip would duplicate. Null in every other arrangement — the strip is
    * showing and owns the gesture.
    */
+  /** False when a dock tab strip above already names this panel: the title row
+   *  then carries only actions, so every column starts with the same shape. */
+  showTitle?: boolean;
   soloHandle?: React.ReactNode;
 }
 
-const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy, soloHandle }) => {
+const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy, showTitle = true, soloHandle }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   // Realm-routed toasts: this panel can be torn onto another monitor, and the
@@ -1257,7 +1260,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     <div className={`room-section${viewPrefs.density === 'compact' ? ' room-files-compact' : ''}`}>
       <div className="room-section-title-row">
         <div className="room-section-title">
-          {t('rooms.sharedFiles')} · {room.files.length}
+          {showTitle && <>{t('rooms.sharedFiles')} · </>}{room.files.length}
           {room.files.length > 0 && (
             <span className="room-files-total"> · {formatBytes(room.files.reduce((s, f) => s + (f.size || 0), 0))}</span>
           )}
@@ -2263,14 +2266,36 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       : null;
   };
 
+  /**
+   * Does a tab strip sit above this panel, already saying its name?
+   *
+   * Panels are portalled out of DockPanelMounts, so their React parent is this page
+   * rather than the zone — the fact cannot arrive through context and has to be
+   * computed here. `zoneShowsStrip` is the SAME function DockZone applies, so the
+   * two answers cannot drift; the arguments mirror the props at the DockZone call
+   * site (soloHostIds for docked zones only, hideSingleTab never passed).
+   */
+  const panelHasStrip = (id: DockPanelId): boolean => {
+    const zone = zoneOfPanel(dock, id);
+    if (!zone) return false; // hidden: it is in no zone, so no strip names it
+    const panels = zonePanels(dock, zone);
+    const soloHost = isDockedZone(zone) && panels.length === 1 && DOCK_SOLO_HOST_IDS.includes(panels[0]);
+    return zoneShowsStrip({ panelCount: panels.length, soloHost });
+  };
+
   const renderDockPanel = (id: DockPanelId): React.ReactNode => {
+    // A panel whose name is on the tab above drops its own title row and keeps
+    // only its actions — otherwise every column announces itself twice, and each
+    // second row is built differently, so no two columns line up.
+    const showTitle = !panelHasStrip(id);
     switch (id) {
       case 'voice':
-        return <RoomVoicePanel room={room} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} pttWindows={pttWindows} />;
+        return <RoomVoicePanel room={room} showTitle={showTitle} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} pttWindows={pttWindows} />;
       case 'lan':
         return (
           <RoomLanPanel
             roomId={room.roomId}
+            showTitle={showTitle}
             lan={room.lan}
             members={room.members}
             selfId={room.members.find((m) => m.isSelf)?.memberId}
@@ -2286,10 +2311,14 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
           />
         );
       case 'server':
-        return <RoomServerPanel roomId={room.roomId} soloHandle={soloHandleFor('server')} />;
+        return <RoomServerPanel roomId={room.roomId} showTitle={showTitle} soloHandle={soloHandleFor('server')} />;
       case 'people':
         return (
           <div className="room-rail-people">
+            {/* People has no actions of its own, but it still reserves the row every
+                other panel puts them in — without it this column starts a row higher
+                than its neighbours, which is the whole complaint this fixes. */}
+            <div className="room-panel-head-spacer" aria-hidden="true" />
             {/* The scroller stays HERE, not on .dock-panel: overflow-y:auto computes
                 overflow-x to auto, which would make the panel body a clip box and cut
                 off the full-rail-width voice popover. */}
@@ -2308,11 +2337,12 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
             onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
             onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
             onShared={onShared} onToggleAutoFetch={onToggleAutoFetch} busy={busy}
+            showTitle={showTitle}
             soloHandle={soloHandleFor('files')}
           />
         );
       case 'chat':
-        return <RoomChat room={room} onAttachRequest={() => onAddFiles()} soloHandle={soloHandleFor('chat')} />;
+        return <RoomChat room={room} showTitle={showTitle} onAttachRequest={() => onAddFiles()} soloHandle={soloHandleFor('chat')} />;
       default:
         return null;
     }
@@ -2961,7 +2991,10 @@ const RoomVoicePanel: React.FC<{
    * really changes.
    */
   pttWindows: readonly Window[];
-}> = ({ room, onWatchShare, pttWindows }) => {
+  /** False when a dock tab strip above already names this panel: the title row
+   *  then carries only actions, so every column starts with the same shape. */
+  showTitle?: boolean;
+}> = ({ room, onWatchShare, pttWindows, showTitle = true }) => {
   const { t } = useTranslation();
   // Fallback host window (see utils/hostWindow); an element ref outranks it.
   const host = useHostWindow();
@@ -3148,10 +3181,12 @@ const RoomVoicePanel: React.FC<{
       {/* Header: title left, ghost settings gear right. Actions live on their own
           full-width row below — a 200-360px rail can't fit title + buttons inline. */}
       <div className="room-voice-head">
-        <span className="room-voice-title">
-          <Icon name="headphones" size={13} /> {t('rooms.voice.title')}
-          {v.inVoice && v.transmitting && !v.muted && <span className="room-voice-live" title={t('rooms.voice.live')} />}
-        </span>
+        {showTitle && (
+          <span className="room-voice-title">
+            <Icon name="headphones" size={13} /> {t('rooms.voice.title')}
+            {v.inVoice && v.transmitting && !v.muted && <span className="room-voice-live" title={t('rooms.voice.live')} />}
+          </span>
+        )}
         <button className={`room-voice-gear${settingsOpen ? ' active' : ''}`} onClick={() => setSettingsOpen((o) => !o)} title={t('rooms.voice.settings')}>
           <Icon name="settings" size={14} />
         </button>
@@ -3453,6 +3488,8 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
  */
 const RoomChat: React.FC<{
   room: RoomState;
+  /** False when the dock strip above already names this panel. */
+  showTitle?: boolean;
   onAttachRequest?: () => void;
   /**
    * The dock's move affordance when chat is ALONE in a docked zone. It lands in the
@@ -3460,7 +3497,7 @@ const RoomChat: React.FC<{
    * duplicate — so the strip hides and this takes over the gesture.
    */
   soloHandle?: React.ReactNode;
-}> = ({ room, onAttachRequest, soloHandle }) => {
+}> = ({ room, showTitle = true, onAttachRequest, soloHandle }) => {
   const { t } = useTranslation();
   // Realm-routed toasts — chat is the panel most likely to be on another monitor.
   const toast = useHostToast();
@@ -3696,16 +3733,20 @@ const RoomChat: React.FC<{
   const zone = (
     <div className="room-section room-chat-section">
       <div className="room-chat-zone-tabs">
-        {(['chat', 'history'] as const).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            className={`room-zone-tab${zoneTab === tab ? ' active' : ''}`}
-            onClick={() => setZoneTab(tab)}
-          >
-            {tab === 'chat' ? t('rooms.chat') : t('rooms.history')}
-          </button>
-        ))}
+        {showTitle && <span className="room-zone-name">{t('rooms.chat')}</span>}
+        {/* A VIEW SWITCH, not an action — so it sits at the START of the row, where
+            the eye looks for "what am I looking at", and the actions keep the end.
+            Labelled rather than a bare glyph: it was indistinguishable from search
+            sitting next to it, and the two do entirely different things. */}
+        <button
+          type="button"
+          className={`room-zone-switch${zoneTab === 'history' ? ' active' : ''}`}
+          aria-pressed={zoneTab === 'history'}
+          onClick={() => setZoneTab((v) => (v === 'history' ? 'chat' : 'history'))}
+        >
+          <Icon name="list" size={12} />
+          {t('rooms.history')}
+        </button>
         <button
           type="button"
           className={`room-zone-action room-zone-search${searchOpen ? ' active' : ''}`}

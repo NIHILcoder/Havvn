@@ -1,3 +1,12 @@
+/* One height for every panel's first row — the tab strip already made the
+ * columns start at the same Y, and the row under it has to as well or each
+ * body begins on its own line. Panels differ in WHAT they put there; they must
+ * not differ in how tall it is. */
+:root { --room-panel-head-h: 26px; }
+
+/* The reservation itself, for a panel that has no actions to put in the row. */
+.room-panel-head-spacer { flex: 0 0 auto; min-height: var(--room-panel-head-h); }
+
 /* Rooms — Ember concept: the rail owns the room list; the page IS the room.
    Two-column detail (shared files + activity | who's here + chat), flat cards,
    hairline separators. */
@@ -406,25 +415,16 @@
    which supplies the strip/panel flex plumbing and nothing visual (see
    pages/rooms/dock/DockZone.css). The corner brackets sit at 5px inset, inside the
    var(--space-4) padding, so the tab strip never collides with them. */
+/* The rail zone draws NO frame of its own. It used to: back when voice, LAN and
+   people were stacked inside one framed rail, this WAS the module. As dock zones
+   they are separate tabs and .dock-panel frames each panel, so this border became
+   an outer box around the strip as well — the left column ended up inside two
+   rectangles while the centre and right had one, which is exactly the mismatch
+   this removes. `position: relative` stays: the voice popover anchors to it. */
 .room-col-rail {
   overflow: hidden;   /* strip pinned; the active panel scrolls internally */
   position: relative;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);  /* rounds with the theme, like .room-section */
-  background: var(--color-bg-secondary);
-  padding: var(--space-4);
 }
-.room-col-rail::before,
-.room-col-rail::after {
-  content: "";
-  position: absolute;
-  width: 10px; height: 10px;
-  border-color: color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
-  pointer-events: none;
-  z-index: 2;
-}
-.room-col-rail::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
-.room-col-rail::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
 /* STILL not a query container ITSELF, and the second of the two reasons it was
    reverted stands unchanged: the stage box is far narrower than the viewport
    (roughly room − 592px), so re-pointing the viewport-based player rules at it made
@@ -581,23 +581,6 @@
    including RoomLanPanel.css's, regardless of stylesheet order. */
 .room-col-rail .room-voice { padding: 0; border-radius: 0; border-bottom: none; }
 .room-col-rail .room-lan { padding: 0; border-top: none; }
-/* The left column is the one FRAMED zone (border + brackets + padding). Any panel
-   that carries its own card frame — Files and Chat both render `.room-section` —
-   would draw a second box inside it once the user moves it here, so the card
-   chrome is dropped for whatever lands in the rail. Generic on purpose: this is
-   about the COLUMN, not about which panel happens to be in it. */
-/* `> .dock-mount >` is load-bearing, not noise: the hoisted mount inserts a stable
-   container between the slot and the panel root. It is `display: contents`, which
-   removes its BOX but not the element, so a child combinator still has to step
-   through it. Kept as a child chain rather than widened to a descendant selector
-   because Files nests `.room-section` per folder, and a descendant match would
-   strip the chrome off those too. */
-.room-col-rail .dock-panel > .dock-mount > .room-section {
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  background: transparent;
-}
 /* The member "have" count reads cryptic — give it a helper cursor (title attr). */
 .room-member-have { cursor: help; }
 
@@ -630,24 +613,25 @@
 /* Chat-zone tabs (Chat / History) — compact, matching the room's 11px chrome. */
 .room-chat-zone-tabs {
   display: flex;
+  align-items: center;
+  min-height: var(--room-panel-head-h);
   gap: 2px;
   margin-bottom: var(--space-2);
   border-bottom: 1px solid var(--color-border-subtle);
 }
-.room-zone-tab {
-  padding: 4px 10px 6px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
+/* The panel name, shown ONLY when no dock strip above is already saying it (a solo
+   chat column hides its strip). Same HUD eyebrow the retired .room-zone-tab wore,
+   minus the tab affordances — it is a label now, not a control. */
+.room-zone-name {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 2px 6px;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
+  color: var(--color-text-primary);
 }
-.room-zone-tab:hover { color: var(--color-text-secondary); }
-.room-zone-tab.active { color: var(--color-text-primary); border-bottom-color: var(--color-accent-primary); }
 /* The history list shares the .room-chat class (border/bg), whose overflow:hidden
    would otherwise beat this at equal specificity — scope it up so it scrolls. */
 .room-chat-section .room-zone-history { overflow-y: auto; }
@@ -672,6 +656,36 @@
 .room-zone-action:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
 /* The solo-zone move handle rides in the same row when the strip is hidden, at the
    same 24px rhythm, immediately after the search toggle. */
+
+/* The chat/activity view switch. A LABEL, not a glyph, and at the start of the row:
+   as a bare icon beside search it was two identical buttons doing unrelated things.
+   `margin-right: auto` is what keeps the actions at the far end without needing a
+   spacer element between them. */
+.room-zone-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+.room-zone-switch:hover { color: var(--color-text-primary); background: var(--color-bg-tertiary); }
+/* Pressed = you are LOOKING at the activity log, so it reads as a state, not a hover. */
+.room-zone-switch.active {
+  color: var(--color-accent-primary);
+  background: var(--color-accent-bg);
+  border-color: color-mix(in srgb, var(--color-accent-primary) 35%, transparent);
+}
+/* With the switch holding the slack, the actions no longer need their own. */
+.room-chat-zone-tabs .room-zone-action { margin-left: 0; }
 .room-chat-zone-tabs .dock-solo-handle { margin-left: 2px; }
 /* A panel rendered INSIDE a pop-out window fills it edge to edge. The height comes
    from `.popout-root` (height:100% + flex column, injected by utils/popout.ts, so
@@ -679,6 +693,7 @@
    left to undo. Generic on purpose — it serves any torn-off panel, which is what
    let the chat's bespoke `.room-chat-popped` special case be retired. */
 .popout-root > .room-section,
+.popout-root .dock-panel,
 /* …and the same once the panel is a dock panel inside a torn-off GROUP: the
    window's own body supplies the frame, so a card border inside it is a box in a
    box. Both selectors, because a group window nests one level deeper than the
@@ -817,42 +832,7 @@
   flex: 1;          /* fill the left column so the list scrolls, not the card */
   min-height: 0;
   gap: var(--space-3);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);  /* squared HUD module (no clip-path — sticky headers live inside) */
-  padding: var(--space-4);
-}
-/* Corner brackets frame each zone as a console module. Pointer-through so they
-   never intercept clicks; drawn inside the padding so scroll content clears them. */
-.room-section::before,
-.room-section::after {
-  content: "";
-  position: absolute;
-  width: 10px; height: 10px;
-  border-color: color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
-  pointer-events: none;
-  z-index: 2;
-}
-.room-section::before { top: 5px; left: 5px; border-top: 1.5px solid; border-left: 1.5px solid; border-top-left-radius: var(--radius-md); }
-.room-section::after { bottom: 5px; right: 5px; border-bottom: 1.5px solid; border-right: 1.5px solid; border-bottom-right-radius: var(--radius-md); }
-
-/* Pinned header pieces (never scroll away). */
-.room-section-title-row,
-.room-file-search,
-.room-folder-editor { flex-shrink: 0; }
-
-/* The only scrolling region: the folder/file list between header and footer. */
-.room-files-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  /* Pull the scrollbar to the card edge and give the list a little breathing
-     room from it. */
-  margin: 0 calc(-1 * var(--space-2)) 0 0;
-  padding-right: var(--space-2);
+  /* No frame here any more: .dock-panel draws it for every panel at once. */
 }
 .room-files-scroll::-webkit-scrollbar { width: 5px; }
 .room-files-scroll::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
@@ -2624,9 +2604,12 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 0 0 var(--space-3);
+  /* No padding or separator of its own: in the dock each panel IS a tab, so the
+     hairline that used to divide voice from people in one stacked rail now divides
+     nothing and only pushes this column's content to a different height than its
+     neighbours. */
+  padding: 0;
   border: none;
-  border-bottom: 1px solid var(--color-border-subtle); /* hairline splits voice from people within the framed rail */
   background: transparent;
 }
 .room-voice-head {
@@ -2634,7 +2617,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 24px;
+  min-height: var(--room-panel-head-h);
 }
 .room-voice-title {
   display: inline-flex;
@@ -2647,7 +2630,10 @@
   color: var(--color-text-tertiary);
 }
 /* Ghost gear in the header (accent only while the settings window is open). */
+/* margin-left:auto, not space-between: the title is dropped when a tab above
+   already carries it, and the gear must not slide left into its place. */
 .room-voice-gear {
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;

@@ -12,10 +12,9 @@
  * colour here ever looks like it "just isn't applying", check the token name
  * against renderer/styles/variables.css first.
  *
- * FRAME. The centre dock zone is unpadded and each panel frames itself — Files
- * does it via `.room-section`. This panel draws the same module: bg-secondary,
- * hairline border, --radius-md and the accent corner brackets, so a Servers
- * column reads as a sibling of the Files column rather than as loose content.
+ * FRAME. Not here any more. `.dock-panel` draws the module — background, hairline,
+ * radius and the accent corner brackets — for every panel at once, so a new panel
+ * cannot be born unframed and no two columns can disagree about their padding.
  *
  * NO BESPOKE FOCUS RINGS. base.css gives every `:focus-visible` a
  * --shadow-focus box-shadow; adding an outline here would draw the double ring
@@ -39,41 +38,10 @@
   flex: 1 1 auto;
   min-height: 0;
   height: 100%;
-  padding: var(--space-4);
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  /* No frame here any more: .dock-panel draws it for every panel at once. */
   overflow: hidden;
 }
 
-/* Corner brackets, matching `.room-section`. Pointer-through, drawn inside the
-   padding so scrolling content clears them. */
-.room-server-panel::before,
-.room-server-panel::after {
-  content: "";
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  border-color: color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
-  pointer-events: none;
-  z-index: 2;
-}
-
-.room-server-panel::before {
-  top: 5px;
-  left: 5px;
-  border-top: 1.5px solid;
-  border-left: 1.5px solid;
-  border-top-left-radius: var(--radius-md);
-}
-
-.room-server-panel::after {
-  bottom: 5px;
-  right: 5px;
-  border-bottom: 1.5px solid;
-  border-right: 1.5px solid;
-  border-bottom-right-radius: var(--radius-md);
-}
 
 /* ── header ───────────────────────────────────────────────────────────────── */
 
@@ -82,7 +50,7 @@
   align-items: center;
   gap: var(--space-2);
   flex: 0 0 auto;
-  min-height: 26px;
+  min-height: var(--room-panel-head-h);
 }
 
 .room-server-head-title {

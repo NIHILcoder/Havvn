@@ -47,7 +47,20 @@
    already is, inside the panel (`.room-rail-people-list`).
    No horizontal padding either — the frame already pads, and a second inset would
    narrow that popover twice. */
+/* THE FRAME LIVES HERE, once, for every panel.
+   It used to be drawn per panel — .room-section for files and chat, a hand-copied
+   twin in .room-server-panel, nothing at all for voice, LAN and people. So the
+   centre column was a framed card and the rails were bare, three columns began at
+   three different heights, and a new panel was born unframed unless someone
+   remembered. Framing the SLOT makes it structural: the zone owns the module, the
+   panel owns its content. */
 .dock-panel {
+  position: relative;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  gap: var(--space-3);
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -58,6 +71,29 @@
 /* `display: flex` above outranks the UA sheet's `[hidden] { display: none }`, so a
    keep-alive panel would otherwise stay visible behind the active one. */
 .dock-panel[hidden] { display: none; }
+
+/* Corner brackets — the console-module cue, pointer-through and drawn inside the
+   padding so scrolling content clears them. */
+.dock-panel::before,
+.dock-panel::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: color-mix(in srgb, var(--color-accent-primary) 55%, transparent);
+  pointer-events: none;
+  z-index: 2;
+}
+.dock-panel::before {
+  top: 5px; left: 5px;
+  border-top: 1.5px solid; border-left: 1.5px solid;
+  border-top-left-radius: var(--radius-md);
+}
+.dock-panel::after {
+  bottom: 5px; right: 5px;
+  border-bottom: 1.5px solid; border-right: 1.5px solid;
+  border-bottom-right-radius: var(--radius-md);
+}
 
 /* P4 — the hoisted mount container.
    Every live panel owns ONE of these for its whole lifetime; the zone slot adopts
