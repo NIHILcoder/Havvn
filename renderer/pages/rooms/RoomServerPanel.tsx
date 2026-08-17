@@ -642,19 +642,27 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
       )}
 
       <div className="room-server-viewtabs" role="tablist">
-        {visibleTabs.map((id) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            className={`room-server-viewtab${tab === id ? ' is-active' : ''}`}
-            onClick={() => onTab(id)}
-          >
-            <Icon name={TAB_ICONS[id]} size={11} />
-            {t(`rooms.server.${id}` as never)}
-          </button>
-        ))}
+        {visibleTabs.map((id) => {
+          const label = t(`rooms.server.${id}` as never);
+          return (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              className={`room-server-viewtab${tab === id ? ' is-active' : ''}`}
+              // A tooltip because the labels are uppercase with HUD tracking, which
+              // is the kind of styling people re-read. No aria-label: the visible
+              // text already names the button, and a duplicate one is only another
+              // string to let drift.
+              title={label}
+              onClick={() => onTab(id)}
+            >
+              <Icon name={TAB_ICONS[id]} size={11} />
+              <span className="room-server-viewtab-label">{label}</span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="room-server-view">

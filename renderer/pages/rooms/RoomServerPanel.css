@@ -92,11 +92,23 @@
   min-width: 0;
 }
 
+/* `margin-left: auto` pushes these right, which in a narrow dock column means the
+   title decides whether they still fit. `flex: 0 0 auto` is what keeps them whole:
+   allowed to shrink, the New-server pill loses its label to an ellipsis or slides
+   under the panel edge instead of the title giving way first. */
 .room-server-head-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* The title is the part that yields, since it can say the same thing shorter. */
+.room-server-head-title .room-section-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .room-server-head-actions .dock-solo-handle { height: 26px; }
@@ -193,7 +205,12 @@
   flex: 0 0 auto;
   overflow-x: auto;
   padding-bottom: 2px;
+  /* Both properties, and the standard one carries the colour: once
+     `scrollbar-width` is present Chromium ignores the ::-webkit-scrollbar rules
+     below, so the themed thumb never applied and the OS drew a pale bar across a
+     dark strip. The webkit rules stay for older engines. */
   scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
 }
 
 .room-server-rail::-webkit-scrollbar { height: 4px; }
@@ -772,17 +789,52 @@
 
 /* ── view tabs ────────────────────────────────────────────────────────────── */
 
+/* Eight tabs in a column whose width the user drags. Two earlier attempts here
+   were both wrong, and for the same reason — each kept the strip on ONE line by
+   taking something away from the reader:
+
+   Sideways scrolling put tabs behind a gesture nobody looks for, and once
+   `scrollbar-width` is set Chromium ignores the themed ::-webkit-scrollbar rules
+   and drew a pale OS bar across the dark strip, over the active tab's underline.
+   Dropping the labels left eight 11px glyphs that nobody can identify — a toolbar
+   of riddles.
+
+   So the strip WRAPS. It is the boring answer and the only one where every tab
+   stays legible and reachable: a second row costs ~26px once, and .room-server-view
+   below is `flex: 1 1 auto; min-height: 0` with its own scrolling, so it absorbs
+   that instead of overflowing. Nothing is hidden, nothing is a riddle, no gesture
+   is required — and no overflow declarations, because wrapping cannot clip. */
 .room-server-viewtabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   flex: 0 0 auto;
+  min-width: 0;
   border-bottom: 1px solid var(--color-border-subtle);
+}
+
+/* Delay the wrap instead of forcing it: at narrow widths the HUD tracking is what
+   the labels cannot afford. Dropping 0.1em to 0.02em and trimming the padding buys
+   roughly a quarter of the strip's width, which keeps all eight on one line down to
+   ~620px — below that they wrap, still fully labelled.
+   The threshold is content-tuned, not a device size: Russian is the longest
+   dictionary here (РАСПИСАНИЕ, НАСТРОЙКИ), and `dock` is the zone's container name
+   in BOTH realms, so this fires in a torn-off window too. */
+@container dock (max-width: 820px) {
+  .room-server-viewtab {
+    padding: 6px 6px;
+    letter-spacing: 0.02em;
+  }
 }
 
 .room-server-viewtab {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  /* Never squash: a shrunk tab drops its label to an ellipsis and the strip stops
+     being readable long before it stops fitting. Overflow is the scroller's job. */
+  flex: 0 0 auto;
+  white-space: nowrap;
   padding: 6px 9px;
   font-family: var(--font-display);
   font-size: 10px;
@@ -937,7 +989,12 @@
   color: var(--color-text-tertiary);
 }
 
-.room-server-field input {
+/* `.room-server-input` is the same control standing on its own — the backup label
+   and the player name. It carried the class with no rule behind it, so those two
+   fields were drawn by the browser as native Windows inputs. Listed here rather
+   than copied into its own block so the two can never drift apart. */
+.room-server-field input,
+.room-server-input {
   width: 100%;
   min-width: 0;
   height: 30px;
@@ -951,15 +1008,27 @@
   outline: none;
 }
 
-.room-server-field input::placeholder { color: var(--color-text-disabled); }
-.room-server-field input:hover { border-color: var(--color-border-strong); }
+.room-server-field input::placeholder,
+.room-server-input::placeholder { color: var(--color-text-disabled); }
+.room-server-field input:hover,
+.room-server-input:hover:not(:disabled) { border-color: var(--color-border-strong); }
+.room-server-input:disabled { opacity: 0.55; cursor: default; }
 
 /* Match Select focus — global :focus-visible uses a 3px ring + radius-md that
    reads as the input "shifting" left in a narrow dock column. */
-.room-server-field input:focus-visible {
+.room-server-field input:focus-visible,
+.room-server-input:focus-visible {
   border-color: var(--color-accent-primary);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent-primary) 22%, transparent);
   border-radius: var(--radius-sm);
+}
+
+/* In its wrapping rows it takes the free space and lets the button keep its own
+   width; `width: 100%` above would otherwise force it onto a line of its own. */
+.room-server-backup-create .room-server-input,
+.room-server-players-add .room-server-input {
+  flex: 1 1 140px;
+  width: auto;
 }
 
 .room-server-field .custom-select-container,
@@ -1268,11 +1337,18 @@
   background: var(--color-bg-primary);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-sm);
-  /* The tail is the interesting end, so a short log sits at the bottom. */
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
 }
+
+/* The tail is the interesting end, so a SHORT log sits at the bottom — done with
+   an auto margin on the first line, NOT `justify-content: flex-end`.
+   flex-end looks equivalent and silently breaks scrolling: once the content is
+   taller than the box, the overflow goes out the START edge, and a scroll
+   container cannot reach anything above its origin. A 398-line log therefore lost
+   its head with no way to scroll up to it. An auto margin collapses to zero as
+   soon as the content fills the box, so the long case is ordinary flow. */
+.server-console-out > :first-child { margin-top: auto; }
 
 .server-console-out::-webkit-scrollbar { width: 5px; }
 .server-console-out::-webkit-scrollbar-thumb { background: var(--color-border-strong); }

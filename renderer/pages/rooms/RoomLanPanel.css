@@ -736,3 +736,29 @@
 .room-lan-servers-players {
   color: var(--color-text-tertiary);
 }
+
+/* The copy-address button. It had a class and no rule, so the browser drew its own
+   native Windows button in the middle of the panel — grey, chunky, and the only
+   thing on screen that did not belong to the app. Sized to the row it sits in
+   rather than to .room-lan-ip, which is a standalone readout. */
+.room-lan-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  color: var(--color-text-tertiary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.room-lan-copy:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.room-lan-copy:disabled { opacity: 0.45; cursor: default; }
