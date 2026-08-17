@@ -4,6 +4,39 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.1] - 2026-08-17
+
+Fixes from the first hours of running 3.0.0, plus a clearer way to create a
+server.
+
+### Fixed
+- **Forge and NeoForge servers start again.** On Windows they died the moment
+  they launched, with `Could not find or load main class
+  net.neoforged.fml.startup.Server` and advice to reinstall that could not
+  possibly help: the launcher was handing the JVM the Linux argument file, whose
+  classpath Windows reads as a single path that does not exist. Servers you
+  already created need no reinstall.
+- **The server console scrolls.** A log taller than the box lost its top with no
+  gesture that could reach it — 398 lines of it, in the case that found this.
+- **The server tab strip no longer clips.** In a narrow column the last tab slid
+  under the panel edge; the strip now wraps and every tab keeps its label.
+- **Three controls look like Havvn again.** Copy-address in the LAN panel and the
+  backup-label and player-name fields were being drawn by Windows in its own
+  style.
+- **The panel header keeps its buttons.** A long server name could push New
+  server under the edge instead of shortening itself.
+
+### Changed
+- **Choosing a game is its own window.** New server asks which game first, and
+  names the ones that are coming — Terraria, Valheim, Factorio — behind a padlock,
+  instead of opening a Minecraft screen and leaving the rest unsaid.
+- **One row of server actions instead of three.** Restart appears only while the
+  server runs (on a stopped one it duplicated Start); check for an update, open
+  folder and delete server moved into a ⋯ menu, so deleting a server is no longer
+  a neighbour of opening its folder.
+- **The build credits its own author.** Windows file properties reported
+  "GitHub, Inc." on every copy.
+
 ## [3.0.0] - 2026-08-16
 
 Rooms stopped being a place to share files and became a place to play. This
