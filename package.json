@@ -192,6 +192,8 @@
       "multiLanguageInstaller": true
     }
   },
-  "author": "",
+  "author": {
+    "name": "NIHILcoder"
+  },
   "license": "MIT"
 }
