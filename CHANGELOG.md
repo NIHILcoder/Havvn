@@ -25,6 +25,12 @@ server.
   style.
 - **The panel header keeps its buttons.** A long server name could push New
   server under the edge instead of shortening itself.
+- **The three room columns look like three of the same thing.** Each announced
+  its name twice — once on its tab, once again underneath — and the row below the
+  tabs was a different height in every column, or missing entirely. Voice and LAN
+  still carried the dividers from back when they were stacked in one rail, and the
+  frame was drawn three different ways plus a fourth around the whole left column,
+  so it sat inside two rectangles while the others sat inside one.
 
 ### Changed
 - **Choosing a game is its own window.** New server asks which game first, and
@@ -34,6 +40,9 @@ server.
   server runs (on a stopped one it duplicated Start); check for an update, open
   folder and delete server moved into a ⋯ menu, so deleting a server is no longer
   a neighbour of opening its folder.
+- **Activity is a switch, not a second row of tabs.** The chat column carried a
+  switcher nested under the dock's own, which is what made it the only column with
+  two header rows. It is a labelled toggle at the start of the row now.
 - **The build credits its own author.** Windows file properties reported
   "GitHub, Inc." on every copy.
 
