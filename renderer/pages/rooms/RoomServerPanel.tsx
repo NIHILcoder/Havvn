@@ -28,8 +28,8 @@
  * way.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Icon, Select, Toggle } from '../../components';
-import type { IconName } from '../../components';
+import { DropdownMenu, Icon, Select, Toggle } from '../../components';
+import type { DropdownMenuItem, IconName } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
 import { useHostToast } from '../../utils/hostToast';
@@ -376,6 +376,51 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
   const showSystemJava = !isRemote && (sysJava?.available === true || usingSystemJava);
   const systemJavaMissing = usingSystemJava && sysJava !== null && !sysJava.available;
 
+  /** Restart is a RUNNING-server action. On a stopped one it duplicated the
+   *  full-width Start above it — and was not even disabled. A mirror is somebody
+   *  else's process, so it is not ours to bounce either. */
+  const showRestart = live && !isRemote;
+
+  /**
+   * The ⋯ menu: everything that is neither the primary action nor the one people
+   * press between edits. Built as a list so the trigger can be dropped entirely
+   * when nothing qualifies — a remote mirror has no folder to open, no publisher
+   * to ask and no files to delete, and an empty menu is worse than no menu.
+   */
+  const moreItems = useMemo<DropdownMenuItem[]>(() => {
+    const items: DropdownMenuItem[] = [];
+    if (canUpdate && update === 'idle') {
+      items.push({
+        key: 'update',
+        icon: <Icon name="download" size={14} />,
+        label: t('rooms.server.checkUpdate'),
+        onSelect: () => void checkUpdate(),
+      });
+    }
+    if (!isRemote) {
+      items.push({
+        key: 'folder',
+        icon: <Icon name="folder-open" size={14} />,
+        label: t('rooms.server.openFolder'),
+        onSelect: () => void api.openFolder(instanceId),
+      });
+      items.push({
+        key: 'delete',
+        danger: true,
+        icon: <Icon name="trash" size={14} />,
+        label: t('rooms.server.delete'),
+        // Kept in the list while the server runs, and answered instead of being
+        // silently absent: the reason it cannot happen yet is the useful part, and
+        // it is the same sentence the old disabled button carried in its tooltip.
+        onSelect: () => {
+          if (live || busy) { toast.error(t('rooms.server.deleteStopFirst')); return; }
+          setConfirmDelete(true);
+        },
+      });
+    }
+    return items;
+  }, [api, busy, canUpdate, checkUpdate, instanceId, isRemote, live, t, toast, update]);
+
   const visibleTabs = useMemo(
     () => visibleTabsFor({ remote: instance.remote, moduleId: instance.moduleId }),
     [instance.remote, instance.moduleId],
@@ -552,14 +597,12 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         check is manual on purpose: swapping the jar under a world is not something
         to do on a timer, and the world is the part nobody can re-download.
       */}
-      {canUpdate && (
+      {/* The RESULT only. The trigger moved into the ⋯ menu below, because checking
+          for a build is the rarest thing on this panel and it was taking a whole
+          row at the same visual weight as Restart. What is left here is transient
+          status, which belongs in the layout rather than behind a menu. */}
+      {canUpdate && update !== 'idle' && (
         <div className="room-server-update">
-          {update === 'idle' && (
-            <button type="button" className="room-server-tool" onClick={() => void checkUpdate()}>
-              <Icon name="download" size={12} />
-              {t('rooms.server.checkUpdate')}
-            </button>
-          )}
           {update === 'checking' && <span className="room-server-update-note">{t('rooms.server.checkingUpdate')}</span>}
           {update === 'current' && (
             <span className="room-server-update-note is-good">
@@ -588,29 +631,49 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         </div>
       )}
 
-      <div className="room-server-tools">
-        <button type="button" className="room-server-tool" disabled={busy || isRemote} onClick={() => void onRun(() => api.restart(instanceId))}>
-          <Icon name="refresh-cw" size={12} />
-          {t('rooms.server.restart')}
-        </button>
-        <button type="button" className="room-server-tool" disabled={isRemote} onClick={() => void api.openFolder(instanceId)}>
-          <Icon name="folder-open" size={12} />
-          {t('rooms.server.openFolder')}
-        </button>
-        {/* Always in this row, never buried under a tab — hiding it behind
-            Overview made the feature look missing whenever the console was open.
-            It sits at the FAR END so it is nowhere near Start. */}
-        <button
-          type="button"
-          className="room-server-tool is-danger"
-          disabled={busy || live || confirmDelete || isRemote}
-          title={live ? t('rooms.server.stopFirst') : t('rooms.server.delete')}
-          onClick={() => setConfirmDelete(true)}
-        >
-          <Icon name="trash" size={12} />
-          {t('rooms.server.delete')}
-        </button>
-      </div>
+      {/*
+        ONE row under the primary: the action people press between edits, and a ⋯ for
+        the rest. Before this there were three rows of identically-weighted ghost
+        buttons — Check for update alone on one, then Restart / Open folder / Delete
+        on another — so five controls arrived with no hierarchy, and Delete was a
+        sibling of Open folder with nothing but whitespace between them.
+
+        Restart appears only while the server RUNS. On a stopped one it did the same
+        thing as the full-width Start directly above it, and it was not even disabled.
+      */}
+      {(showRestart || moreItems.length > 0) && (
+        <div className="room-server-tools">
+          {showRestart && (
+            <button type="button" className="room-server-tool" disabled={busy} onClick={() => void onRun(() => api.restart(instanceId))}>
+              <Icon name="refresh-cw" size={12} />
+              {t('rooms.server.restart')}
+            </button>
+          )}
+          {moreItems.length > 0 && (
+            <DropdownMenu
+              // The dock zone sets container-type, which makes it the containing
+              // block for fixed descendants — an in-place menu would be trapped in
+              // the panel's box. Portalling is load-bearing here, not cosmetic.
+              portal
+              menuClassName="dropdown-menu dropdown-menu-right"
+              items={moreItems}
+              renderTrigger={({ open, toggle }) => (
+                <button
+                  type="button"
+                  className={`room-server-tool is-more${open ? ' is-open' : ''}`}
+                  aria-haspopup="menu"
+                  aria-expanded={open}
+                  title={t('rooms.server.more')}
+                  aria-label={t('rooms.server.more')}
+                  onClick={toggle}
+                >
+                  <Icon name="more-horizontal" size={14} />
+                </button>
+              )}
+            />
+          )}
+        </div>
+      )}
 
       {confirmDelete && (
         <div className="room-server-danger" role="alertdialog" aria-label={t('rooms.server.delete')}>

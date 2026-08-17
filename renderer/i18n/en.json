@@ -421,6 +421,8 @@
   "rooms.server.revert": "Revert",
   "rooms.server.settingsSaved": "Settings saved",
   "rooms.server.stopFirst": "Stop the server before changing its settings.",
+  "rooms.server.deleteStopFirst": "Stop the server before deleting it.",
+  "rooms.server.more": "More",
   "rooms.server.advanced": "Advanced",
   "rooms.server.installing": "Installing",
   "rooms.server.cancelInstall": "Cancel",

@@ -622,6 +622,23 @@
   flex: 0 0 auto;
 }
 
+/* The ⋯ trigger sits at the far end, alone. Square rather than icon-plus-label so
+   it reads as "more of the same kind" instead of competing with Restart beside it. */
+.room-server-tool.is-more {
+  margin-left: auto;
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* Held in the hover treatment while the menu is open, or the button appears to
+   deactivate the moment the thing it opened becomes visible. */
+.room-server-tool.is-more.is-open {
+  color: var(--color-text-primary);
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border-strong);
+}
+
 .room-server-tool {
   display: inline-flex;
   align-items: center;
