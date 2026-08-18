@@ -383,8 +383,14 @@
    different column), and the narrow rules restate it too, exactly as before, which
    is what keeps them winning over all of this. */
 .room-detail-grid {
-  --col-left: var(--rail-w, 240px);
-  --col-right: var(--chat-w, 340px);
+  /* CAPPED, and the cap is the room's own width. The dragged widths are absolute
+     px, so every pixel the window loses came out of the CENTRE: at 1400px with both
+     rails dragged to their maximum the stage was 288px wide — the column where the
+     player, the file list and the servers live, squeezed by two side rails that kept
+     every pixel of theirs. The caps only bite once the room is narrow enough for the
+     drag to be unreasonable, so a wide room still honours it exactly. */
+  --col-left: min(var(--rail-w, 240px), 30cqw);
+  --col-right: min(var(--chat-w, 340px), 34cqw);
   --gut-left: 6px;
   --gut-right: 6px;
   display: grid;
@@ -754,7 +760,7 @@
    of declarations re-sizes every state, and the collapse rules above still
    override it because they set the same internal vars later in the cascade. */
 @container room (max-width: 1040px) {
-  .room-detail-grid { --col-left: 200px; --col-right: 300px; }
+  .room-detail-grid { --col-left: min(200px, 30cqw); --col-right: min(300px, 34cqw); }
 }
 
 /* NARROW: single-column stack left → centre → right. The grid-template-columns
@@ -787,6 +793,18 @@
      One level down is equivalent, and it keeps .room-drop-overlay anchored to the
      top of the room, so the sticky exception the page-scroll needed is gone too. */
   .room-detail-grid { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  /* …and the rows have to SIZE TO THEIR CONTENT for that scroller to mean
+     anything. This grid's height is definite (it is a flex item filling the room),
+     so implicit `auto` rows do not overflow into the scroll — they share the height
+     out between them, three regions at roughly a third each. The panels then get a
+     box far shorter than what is in them, and since this block also un-clips the
+     columns two rules down, the overflow paints straight over the next region: the
+     LAN panel's button landing on the Files tab strip. Content-sized rows put the
+     height back where the caps in this block already assume it is (.room-chat-log,
+     .room-files-scroll), and the leftover goes to the scroller instead of being
+     shared out. `align-content: start` keeps a SHORT stack packed at the top rather
+     than spread down the column. */
+  .room-detail-grid { grid-auto-rows: max-content; align-content: start; }
   .room-detail-grid.rail-collapsed .room-col-rail { visibility: visible; }
   /* THEATER's hide needs the same counterpart, and for a sharper reason than
      rail-collapsed's. This block only restates the TEMPLATE, which neutralises
@@ -808,6 +826,15 @@
   .room-rail-people-list { overflow: visible; }
   /* Cards stop stretching so the stack flows; the chat log takes a fixed cap
      instead of filling a column it no longer has. */
+  /* The dock layer's counterpart to the line below, and the reason it was missing:
+     this block was written when a column held `.room-section` directly. Dock zones
+     now sit in between, and `.dock-panel` is `flex: 1 1 auto; min-height: 0` — in a
+     row that is even slightly short, that pair says "shrink to nothing and let the
+     content hang out". Stacked, a panel is not competing for a column's height with
+     anything; it takes what it needs, exactly like the sections. */
+  .room-col-rail .dock-panel,
+  .room-col-centre .dock-panel,
+  .room-col-chat .dock-panel { flex: initial; min-height: 0; }
   .room-section, .room-chat-section, .room-chat-section .room-chat { flex: initial; }
   .room-chat-section .room-chat-log { flex: initial; max-height: 360px; min-height: 160px; }
   /* Deliberately NOT `overflow: visible` here (the old block's version of this
@@ -833,6 +860,27 @@
   min-height: 0;
   gap: var(--space-3);
   /* No frame here any more: .dock-panel draws it for every panel at once. */
+}
+/* Pinned header pieces (never scroll away). */
+.room-section-title-row,
+.room-file-search,
+.room-folder-editor { flex-shrink: 0; }
+
+/* The only scrolling region: the folder/file list between header and footer.
+   RESTORED: the commit that took the frame off .room-section ran past the frame
+   and deleted this too, so the list simply grew to its content height (1037px in a
+   433px panel) and was clipped by the column with no scrollbar anywhere. */
+.room-files-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  /* Pull the scrollbar to the card edge and give the list a little breathing
+     room from it. */
+  margin: 0 calc(-1 * var(--space-2)) 0 0;
+  padding-right: var(--space-2);
 }
 .room-files-scroll::-webkit-scrollbar { width: 5px; }
 .room-files-scroll::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 3px; }
@@ -2207,6 +2255,17 @@
 .room-player-inline { flex: 1 1 auto; min-height: 0; display: flex; }
 .room-player-inline .room-player { width: 100%; min-height: 0; border-radius: var(--radius-lg); }
 .room-player {
+  /* A named query container, because the player's own width stopped being the
+     room's the moment it could be torn into a window: 520px there, ~1200px in a
+     wide room, ~280px in a narrow one, all with the same stylesheet. Named
+     `player` so the rules can live next to the bar they size (PlayerControls.css)
+     and serve the downloads player from the same block.
+     inline-size, NOT size: in the stacked room the player's HEIGHT comes from its
+     content, and size containment would tell it to ignore exactly that and collapse
+     to zero. Height adapts through plain @media instead — in a pop-out the window
+     IS the viewport, and in the main window a short app window wants the same
+     treatment anyway. */
+  container: player / inline-size;
   /* No width of its own. `.room-player-inline .room-player` sets width:100% and
      wins on specificity, so the old `min(1240px, 96vw)` here never applied — a
      leftover from when this was a modal, same species as the dead
@@ -2281,6 +2340,9 @@
    need: each dot is absolutely positioned at right/bottom -1px and rings itself
    with a 2px border, so it sits ~3px outside the identicon box and was being
    clipped — and it briefly raised a vertical scrollbar in a strip one row tall. */
+/* Each identicon holds its size. In a strip that scrolls, a shrinkable avatar is
+   squeezed into a 4px sliver long before the scroller ever engages. */
+.room-player-social .room-watcher { flex-shrink: 0; }
 .room-player-social .room-player-avatars {
   flex-wrap: nowrap;
   /* min-width:0 is what makes the scroller actually SCROLL. Without it the flex
@@ -2299,6 +2361,33 @@
   scrollbar-width: thin;
   scrollbar-color: var(--color-border-strong) transparent;
 }
+/* Narrow: ONE row, and the reactions scroll like the avatars already do. The strip
+   wraps by design at absurd widths, but in a ~290px stage that design cost three
+   rows — 159px of a 338px player, taken out of the picture. */
+/* The lone-listener line is a SENTENCE in a strip: with the reaction bar taking
+   its share, it wrapped to four lines at the pop-out window's own minimum size and
+   pushed everything below it down. One line, clipped. */
+.room-player-social .room-player-alone { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+@container player (max-width: 560px) {
+  .room-player-social { flex-wrap: nowrap; }
+  .room-player-social .room-player-reactbar {
+    flex: 0 1 auto;
+    /* nowrap is the half that matters: the bar wraps INSIDE itself, so scrolling
+       it sideways without this just gave a two-row strip a scrollbar (measured:
+       343x84 in a 379px stage, with the watchers crushed to 24px beside it). */
+    flex-wrap: nowrap;
+    min-width: 0;
+    /* …and a ceiling, so the emoji do not simply take the strip. Eight buttons are
+       343px of natural width: unbounded, they left the watchers 24px, which is the
+       label icon and nothing else. Reactions scroll; who is listening does not.  */
+    max-width: 55%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .room-player-social .room-player-reactbar::-webkit-scrollbar { display: none; }
+  .room-player-social .room-player-alone { display: none; }
+}
 .room-player-social .room-player-avatars::-webkit-scrollbar { height: 5px; }
 .room-player-social .room-player-avatars::-webkit-scrollbar-track { background: transparent; }
 .room-player-social .room-player-avatars::-webkit-scrollbar-thumb {
@@ -2310,6 +2399,13 @@
   padding: 10px 12px;
   background: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border-default);
+}
+/* Narrow: the header keeps its buttons and drops their words. Every one of them
+   carries a title + aria-label already, and a 34px icon that still works beats a
+   labelled button that has pushed the close × off the edge. */
+@container player (max-width: 620px) {
+  .room-player-sync-label { display: none; }
+  .room-player-top { gap: 6px; padding: 8px; }
 }
 .room-player-name {
   flex: 1; min-width: 0;
@@ -2356,14 +2452,38 @@
 /* Music mode: the element keeps playing, the visualizer stage takes the screen */
 .room-player-video-hidden { display: none; }
 
+/* ── Short windows ────────────────────────────────────────────────────────
+   The floors below are what a stage needs to READ, not what it needs to work: at
+   660px of window they cost nothing, and at 340 (the pop-out's own minimum) the
+   visualiser's 300px alone outlasts the window and pushes the transport, the
+   watchers and the queue into an inner scrollbar. Height is the one axis a
+   container query cannot carry here — see `container: player / inline-size` above —
+   so these are viewport rules, which is exactly right for a torn-off window. */
+@media (max-height: 560px) {
+  .room-audio-stage { flex-basis: 150px; }
+  .room-player-queue { max-height: 108px; }
+}
+@media (max-height: 420px) {
+  .room-audio-stage { flex-basis: 92px; }
+  /* The queue is the first thing to go: it is a list you consult, and the room's
+     file panel still has it. The transport is the thing you cannot lose. */
+  .room-player-queue { display: none; }
+  .room-player-social { padding-top: 2px; padding-bottom: 2px; }
+  .room-player-social .room-player-watchers-label { display: none; }
+  .room-audio-meta { padding: var(--space-2) var(--space-3); }
+}
+
 .room-audio-stage {
   position: relative;
-  /* Fills the stage now that the stage flexes, with the old fixed height kept as a
-     FLOOR so a short player still gives the visualiser room to read. A literal
-     `height: 300px` here would have reproduced the dead band this rework removed,
-     one level further in. */
-  flex: 1 1 auto;
-  min-height: 300px;
+  /* 300px is what the visualiser needs to READ, so it is the flex BASIS — a size to
+     start from and shrink out of — and no longer a `min-height` floor. The floor was
+     measurably wrong: with both side columns dragged wide the stage box is ~74px
+     tall, an unshrinkable 300px child overflowed it by 226px, and since nothing
+     between here and the scroller clips, the visualiser and the track meta were
+     painted straight over the transport, the watchers strip and the queue. Shrinking
+     costs a shorter spectrum; not shrinking cost the controls. */
+  flex: 1 1 300px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
@@ -2441,7 +2561,11 @@
 .room-player-queue {
   border-top: 1px solid var(--color-border-subtle);
   padding: var(--space-2) var(--space-3);
-  max-height: 180px;
+  /* A share of the player, not a flat 180px. Flat, a five-track queue took 153px
+     of a 338px player and left the picture 57 — the list you consult outranking
+     the thing you are watching. The percentage resolves against the player, so it
+     yields first when the box is short and still reaches 180px when there is room. */
+  max-height: min(180px, 28%);
   overflow-y: auto;
 }
 
@@ -2881,3 +3005,193 @@
   cursor: pointer;
 }
 .room-voice-share-badge:hover { background: var(--color-error); color: #fff; }
+
+/* ── The stage, torn off ──────────────────────────────────────────────────
+   In its own window the WINDOW is the frame: the border and the rounded
+   corners belonged to a card sitting inside the room, and a rounded rectangle
+   floating in a window with a hairline around it just looks unfinished. */
+.popout-root .room-player-inline { flex: 1; min-height: 0; }
+.popout-root .room-player-inline .room-player { border: 0; border-radius: 0; }
+
+/* …and what the room shows in its place. Not an empty tab: a tab that renders
+   nothing reads as broken, and the window it went to can be behind anything. */
+.room-player-away { align-items: center; justify-content: center; }
+.room-player-away-card {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 28px 32px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-muted);
+  max-width: 360px; text-align: center;
+}
+.room-player-away-name {
+  max-width: 100%;
+  font-size: 13px; font-weight: 600; color: var(--color-text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.room-player-away-hint { font-size: 12px; }
+.room-player-away-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+/* The running stage while the user is looking at the column instead. Hidden, not
+   unmounted: the track keeps playing, the sync session stays joined, and coming
+   back is the same element rather than a fresh load from zero. `[hidden]` alone
+   would lose to the flex display below, so it is spelled out. */
+.room-stage-live { flex: 1 1 auto; min-height: 0; display: flex; }
+.room-stage-live[hidden] { display: none; }
+
+/* ── The music player's settings panel ────────────────────────────────────
+   Same species as .room-sub-pop (anchored to its button in .room-sub-wrap, same
+   surface and border), but a real panel rather than a menu: it holds sliders, and
+   a slider in a 170px menu is a decoration. Kept inside the player so it travels
+   with it into a pop-out window and reads the theme from whichever document it
+   lands in. */
+.room-audio-settings {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 31;
+  width: 290px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  box-shadow: var(--shadow-lg, 0 18px 40px rgba(0, 0, 0, 0.45));
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+.ras-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.ras-title {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--color-text-tertiary);
+}
+.ras-close {
+  display: grid; place-items: center;
+  width: 22px; height: 22px;
+  border: none; border-radius: var(--radius-sm);
+  background: transparent; color: var(--color-text-tertiary); cursor: pointer;
+}
+.ras-close:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+.ras-section { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+.ras-section + .ras-section { border-top: 1px solid var(--color-border-subtle); }
+
+.ras-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ras-label { font-size: 12px; color: var(--color-text-secondary); min-width: 0; }
+.ras-note { font-size: 11px; line-height: 1.35; color: var(--color-text-tertiary); }
+.ras-val {
+  font-family: var(--font-family-mono); font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--color-text-tertiary);
+  min-width: 46px; text-align: right;
+}
+.ras-slider-row input[type="range"] { flex: 1; min-width: 0; accent-color: var(--color-accent-primary); }
+
+/* Switches and segments reuse the room's 22px pill so the panel looks like the
+   toolbar it hangs off, not like a settings page that wandered in. */
+.ras-switch, .ras-seg-btn, .ras-preset {
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ras-switch:hover:not(:disabled), .ras-seg-btn:hover, .ras-preset:hover:not(:disabled) {
+  border-color: var(--color-accent-primary); color: var(--color-text-primary);
+}
+.ras-switch.on, .ras-seg-btn.on, .ras-preset.on {
+  border-color: var(--color-accent-primary);
+  background: var(--color-accent-bg);
+  color: var(--color-accent-primary);
+}
+.ras-switch:disabled, .ras-preset:disabled { opacity: 0.4; cursor: not-allowed; }
+.ras-seg { display: inline-flex; gap: 4px; }
+
+/* The bands. Vertical range inputs: `appearance: slider-vertical` is gone from
+   Chromium, so the supported spelling is writing-mode + direction. */
+.ras-eq {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 2px 0;
+}
+.ras-eq.muted { opacity: 0.45; }
+.ras-band { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.ras-band input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 18px;
+  height: 84px;
+  accent-color: var(--color-accent-primary);
+  cursor: pointer;
+}
+.ras-band-hz {
+  font-family: var(--font-family-mono); font-size: 10px;
+  color: var(--color-text-tertiary); font-variant-numeric: tabular-nums;
+}
+
+.ras-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.ras-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-size: 11px;
+}
+
+/* ── The files panel in a narrow column ───────────────────────────────────
+   Measured at a 1040px window (the app's new floor): the toolbar wrapped its
+   filter chips onto five lines and took 154px, the footer 73px, and the LIST —
+   the thing the panel exists for — was left with exactly 0. Wrapping is the wrong
+   degradation for a row of chips in a column this narrow: they become one
+   scrolling row, which costs a swipe and gives the list back its height.
+   `dock` is the zone container, so this fires for a narrow column AND for a panel
+   torn into a small window, which is the same problem twice. */
+@container dock (max-width: 420px) {
+  .room-file-toolbar,
+  .room-files-actions,
+  .room-file-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .room-file-toolbar::-webkit-scrollbar,
+  .room-files-actions::-webkit-scrollbar,
+  .room-file-chips::-webkit-scrollbar { display: none; }
+  .room-file-toolbar > *,
+  .room-files-actions > *,
+  .room-file-chips > * { flex-shrink: 0; }
+  /* …and a floor under the list, so a header that still does not fit takes its
+     space from the scroller's SCROLL rather than from its existence. */
+  .room-files-scroll { min-height: 140px; }
+}
+
+/* ── The player header AS a title bar ─────────────────────────────────────
+   The pop-out is frameless (main.ts PLAYER_CHROME), so this header is what the
+   OS caption used to be: it has to be draggable, and everything you can click in
+   it has to opt back out. Only inside `.popout-root` — docked, the room window's
+   own title bar is above it and a drag region here would swallow clicks. */
+.popout-root .room-player-top { -webkit-app-region: drag; }
+.popout-root .room-player-top button,
+.popout-root .room-player-top input,
+.popout-root .room-player-top select,
+.popout-root .room-player-top .room-sub-wrap,
+.popout-root .room-player-top .room-sub-pop,
+.popout-root .room-player-top .room-audio-settings { -webkit-app-region: no-drag; }
+/* The window controls sit flush with the header's right edge, the way a caption's
+   do — the header's own padding would otherwise leave them floating. */
+.popout-root .room-player-top { padding-right: 0; }
+.popout-root .room-player-top .tb-ctrl { height: 34px; }

@@ -52,6 +52,15 @@ import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '.
 import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
 import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import { classifyMediaKind, isDirectlyPlayable, isImage } from '../../shared/media';
+import { PLAYER_ROOM_FRAME } from '../../shared/player-windows';
+import { AudioSettings, AudioOutputDevice } from './rooms/AudioSettings';
+import { WindowControls } from '../layout/WindowControls';
+import { useDockWindowMaximized, minimizeDockWindow, toggleMaximizeDockWindow } from './rooms/dock/dockWindowChrome';
+import {
+  AudioPrefs, loadAudioPrefs, saveAudioPrefs, normalizeAudioPrefs,
+  EQ_FREQS, gainFromDb, nextIndex,
+} from '../utils/audioPrefs';
+import { usePopout } from '../utils/popout';
 import { formatBytes, formatSpeed, cleanError } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
 import './RoomsPage.css';
@@ -1660,8 +1669,18 @@ interface StageProps {
   /** Rail + chat collapsed so the stage owns the room's full width. */
   theater: boolean;
   onToggleTheater: () => void;
+  /**
+   * The session is running but the user is looking at the column instead. Only
+   * WATCH survives this way (see the render body); the flag is meaningless for a
+   * screen share, which is closed on the way out.
+   */
+  background: boolean;
+  onBackground: () => void;
+  onForeground: () => void;
+  /** The player moved between the room and its own window. */
+  onPlayerDetached: (detached: boolean) => void;
 }
-const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, homeLabel, homeIcon, theater, onToggleTheater }) => {
+const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, homeLabel, homeIcon, theater, onToggleTheater, background, onBackground, onForeground, onPlayerDetached }) => {
   const { t } = useTranslation();
   const self = room.members.find((m) => m.isSelf) || { memberId: 'self', name: t('rooms.you'), avatarSeed: 'self' };
   const shareName = stageView.kind === 'screen'
@@ -1670,16 +1689,33 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
   const tabs = [{ id: 'files', label: homeLabel, icon: homeIcon }];
   if (stageView.kind === 'watch') tabs.push({ id: 'watch', label: stageView.file.name, icon: <Icon name="film" size={13} /> });
   if (stageView.kind === 'screen') tabs.push({ id: 'screen', label: shareName, icon: <Icon name="screen-share" size={13} /> });
+  // Leaving the tab means leaving the tab. For WATCH that no longer ends the
+  // session: a strip that looks like tabs but stops the music when you click the
+  // other one is not a tab strip, and browsing the file list while a track plays is
+  // the whole point of having music in a room. The player stays MOUNTED and merely
+  // hidden, so the element, its position, its HLS pipe and the watch-together
+  // session all survive the round trip; the × on the player still ends it.
+  //
+  // SCREEN is deliberately the exception and still tears down on the way out: it is
+  // a live WebRTC stream that costs the sharer upstream for as long as it is open,
+  // and nobody is looking at it. The LIVE badge puts it back in one click.
+  const stageTab = background ? 'files' : stageView.kind;
   return (
     <div className="room-col-stage">
       {tabs.length > 1 && (
-        <Tabs tabs={tabs} activeTab={stageView.kind} onTabChange={(id) => { if (id === 'files') onCloseStage(); }} />
+        <Tabs
+          tabs={tabs}
+          activeTab={stageTab}
+          onTabChange={(id) => {
+            if (id === 'files') { if (stageView.kind === 'watch') onBackground(); else onCloseStage(); }
+            else onForeground();
+          }}
+        />
       )}
-      {/* The PLAYER and the VIEWER stay conditionally rendered (never display:none)
-          so each unmounts on tab switch and fires its presence-leave / watchStop
-          cleanup. That is deliberate and unchanged. */}
       {stageView.kind === 'watch' ? (
-        <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} theater={theater} onToggleTheater={onToggleTheater} />
+        <div className="room-stage-live" hidden={background}>
+            <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} theater={theater} onToggleTheater={onToggleTheater} onDetachedChange={onPlayerDetached} />
+        </div>
       ) : stageView.kind === 'screen' ? (
         <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
       ) : null}
@@ -1809,6 +1845,10 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // screen viewer. Single-slot: opening one supersedes the other. Both the file-row
   // Watch and the voice LIVE-badge feed this.
   const [stageView, setStageView] = useState<StageView>({ kind: 'files' });
+  // A running watch session the user has stepped away from: still playing, still in
+  // the room's sync, just not the thing on screen. Every entry into the stage clears
+  // it, so a newly opened file is never born hidden.
+  const [stageBg, setStageBg] = useState(false);
   // Reset to Files SYNCHRONOUSLY when the open room changes (adjust-state-during-
   // render, not a post-commit effect) — otherwise RoomStage would render the player/
   // viewer for one frame against the NEW room but the PREVIOUS room's file/memberId
@@ -1832,6 +1872,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   if (stageRoomId !== room.roomId) {
     setStageRoomId(room.roomId);
     setStageView({ kind: 'files' });
+    setStageBg(false);
     // Theater goes with it. RoomDetail is rendered UNKEYED, so this instance and
     // its state survive a room switch — without this, a theater toggled in room A
     // silently collapsed both columns the instant a watch started in room B. The
@@ -1847,7 +1888,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
   // survived into the screen view — reachable, because a torn-off voice panel can
   // set the stage to 'screen' while the main window's columns are collapsed —
   // would be a theater with no way out short of closing the stage.
-  const theater = theaterOn && stageView.kind === 'watch';
+  const theater = theaterOn && stageView.kind === 'watch' && !stageBg;
   // Close the inline screen viewer when its sharer stops or we leave voice
   // (lifted from the voice panel so the Stage owns the view).
   useEffect(() => {
@@ -2290,7 +2331,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
     const showTitle = !panelHasStrip(id);
     switch (id) {
       case 'voice':
-        return <RoomVoicePanel room={room} showTitle={showTitle} onWatchShare={(memberId) => setStageView({ kind: 'screen', memberId })} pttWindows={pttWindows} />;
+        return <RoomVoicePanel room={room} showTitle={showTitle} onWatchShare={(memberId) => { setStageView({ kind: 'screen', memberId }); setStageBg(false); }} pttWindows={pttWindows} />;
       case 'lan':
         return (
           <RoomLanPanel
@@ -2331,8 +2372,8 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         return (
           <RoomFilesPanel
             room={room}
-            onWatch={(file) => setStageView({ kind: 'watch', file })}
-            onWatchJoin={(file) => setStageView({ kind: 'watch', file, together: true })}
+            onWatch={(file) => { setStageView({ kind: 'watch', file }); setStageBg(false); }}
+            onWatchJoin={(file) => { setStageView({ kind: 'watch', file, together: true }); setStageBg(false); }}
             watchCounts={watchCounts} onInvite={onInvite}
             onAddFiles={onAddFiles} onDropFiles={onDropFiles} onCreateFolder={onCreateFolder}
             onUpdateFolder={onUpdateFolder} onDeleteFolder={onDeleteFolder} onAssignFile={onAssignFile}
@@ -2566,7 +2607,7 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
       soloHostIds={isDockedZone(zone) ? DOCK_SOLO_HOST_IDS : undefined}
       // The stage overlay takes the centre column by HIDING the zone, never by
       // unmounting it — see RoomStage.
-      hidden={zone === 'centre' && stageView.kind !== 'files'}
+      hidden={zone === 'centre' && stageView.kind !== 'files' && !stageBg}
       dock={dockInteractions(zone, windowKey)}
     />
   );
@@ -2868,7 +2909,13 @@ const RoomDetail: React.FC<DetailProps> = ({ room, suspended, notifyMuted, onTog
         <RoomStage
           room={room}
           stageView={stageView}
-          onCloseStage={() => { setStageView({ kind: 'files' }); setTheaterOn(false); }}
+          onCloseStage={() => { setStageView({ kind: 'files' }); setTheaterOn(false); setStageBg(false); }}
+          background={stageBg}
+          onBackground={() => setStageBg(true)}
+          onForeground={() => setStageBg(false)}
+          // A player in its own window means the column goes back to Files, and
+          // bringing it home puts the stage back on screen — one flag, both ways.
+          onPlayerDetached={setStageBg}
           zone={renderDockZone('centre', 'room-col-centre', t(DOCK_ZONE_TABS.centre))}
           // The "back to the column" tab names what the centre is actually showing,
           // so it cannot promise Files after the user has moved Files elsewhere.
@@ -4397,27 +4444,33 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
 // queue with auto-advance, and track changes broadcast so everyone advances.
 interface Watcher { memberId: string; name: string; avatarSeed: string; playing: boolean; lastSeen: number; }
 
-const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; initialTogether?: boolean; onClose: () => void; theater: boolean; onToggleTheater: () => void }> = ({ room, roomId, file, self, initialTogether = false, onClose, theater, onToggleTheater }) => {
+const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; self: { memberId: string; name: string; avatarSeed: string }; initialTogether?: boolean; onClose: () => void; theater: boolean; onToggleTheater: () => void; onDetachedChange?: (detached: boolean) => void }> = ({ room, roomId, file, self, initialTogether = false, onClose, theater, onToggleTheater, onDetachedChange }) => {
   const { t } = useTranslation();
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   // The Ember control bar drives the same element; main wraps stage + bar for fullscreen.
   const mainRef = useRef<HTMLDivElement>(null);
   const [mediaEl, setMediaEl] = useState<HTMLVideoElement | null>(null);
-  useEffect(() => {
-    const v = videoRef.current;
-    if (v) {
-      // Start at a comfortable middle volume instead of full blast; remember
-      // the last level the user set so it sticks across tracks and sessions.
-      const saved = Number(localStorage.getItem('havvn.roomVolume'));
-      v.volume = Number.isFinite(saved) && saved > 0 && saved <= 1 ? saved : 0.6;
-      const onVol = () => { try { if (v.volume > 0) localStorage.setItem('havvn.roomVolume', String(v.volume)); } catch { /* ignore */ } };
-      v.addEventListener('volumechange', onVol);
-      setMediaEl(v);
-      return () => v.removeEventListener('volumechange', onVol);
-    }
-    setMediaEl(null);
+  /** A CALLBACK ref, not a plain one: detaching the stage into its own window moves
+   *  the subtree to another document, where React builds a fresh <video>. Every
+   *  effect that touches the element therefore keys on mediaEl — a mount-only effect
+   *  would leave its listeners, its HLS pipe and the control bar wired to a node
+   *  that is no longer in any document. */
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    setMediaEl(el);
   }, []);
+  // Start at a comfortable middle volume instead of full blast; remember the last
+  // level the user set so it sticks across tracks, windows and sessions.
+  useEffect(() => {
+    const v = mediaEl;
+    if (!v) return;
+    const saved = Number(localStorage.getItem('havvn.roomVolume'));
+    v.volume = Number.isFinite(saved) && saved > 0 && saved <= 1 ? saved : 0.6;
+    const onVol = () => { try { if (v.volume > 0) localStorage.setItem('havvn.roomVolume', String(v.volume)); } catch { /* ignore */ } };
+    v.addEventListener('volumechange', onVol);
+    return () => v.removeEventListener('volumechange', onVol);
+  }, [mediaEl]);
   const applyingRemote = useRef(false); // suppress echo while applying a remote action
   // `initialTogether` = joining an ongoing session from a row badge — sync
   // starts ON, so the first presence('join') already carries it and incoming
@@ -4445,6 +4498,39 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   const roomRef = useRef(room);
   roomRef.current = room;
   const isAudio = classifyMediaKind(current.name) === 'audio';
+
+  // ── The stage, detached ───────────────────────────────────────────────────
+  // ONE frame for both kinds, unlike the downloads player: the room stage is the
+  // same shape whether it is a film or a track — the visualiser, the watchers
+  // strip and the reaction bar are all still there for music.
+  const { popout, portal, openPopout, closePopout } = usePopout(PLAYER_ROOM_FRAME, current.name);
+  const detached = popout !== null;
+  // Where playback was when the move started. Moving documents makes the browser
+  // re-run resource selection on a BRAND NEW element, so without this the film
+  // restarts from zero every time it changes windows.
+  const resumeRef = useRef<{ time: number; paused: boolean; muted: boolean; volume: number } | null>(null);
+  const captureResume = useCallback(() => {
+    const v = videoRef.current;
+    // Sound state travels with the position: a fresh element in another document
+    // starts at the defaults, and Chromium may mute it outright to let it autoplay.
+    if (v) resumeRef.current = { time: v.currentTime, paused: v.paused, muted: v.muted, volume: v.volume };
+  }, []);
+  const toggleDetach = useCallback(() => {
+    captureResume();
+    if (detached) closePopout();
+    else if (!openPopout()) resumeRef.current = null; // denied — nothing moved
+  }, [captureResume, detached, closePopout, openPopout]);
+  // The window's own X never touches the button, and the stage lands back in the
+  // room a moment later — capture there too, or closing it rewinds the film.
+  useEffect(() => {
+    if (!popout) return;
+    popout.addEventListener('beforeunload', captureResume);
+    return () => popout.removeEventListener('beforeunload', captureResume);
+  }, [popout, captureResume]);
+  // The window is named after what is on it, and the queue moves on without us.
+  useEffect(() => {
+    if (popout && !popout.closed) popout.document.title = current.name;
+  }, [popout, current.name]);
 
   // Subtitles: embedded text tracks + sidecar files (listed per track); the
   // chosen one arrives as VTT text and attaches as a same-origin blob <track>
@@ -4527,17 +4613,26 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
 
   // Music queue: when a track ends, move on (and take the room along in sync).
   useEffect(() => {
-    const v = videoRef.current;
+    const v = mediaEl;
     if (!v) return;
     const onEnded = () => {
       if (classifyMediaKind(currentRef.current.name) !== 'audio') return;
+      const prefs = audioPrefsRef.current;
+      // Repeat-one seeks instead of re-selecting: it is not a track change, and
+      // broadcasting it as one would put the room's sync into a loop.
+      if (prefs.repeat === 'one') {
+        try { v.currentTime = 0; } catch { /* not seekable */ }
+        void v.play().catch(() => {});
+        return;
+      }
       const idx = playlist.findIndex((f) => f.fileId === currentRef.current.fileId);
-      const next = idx >= 0 ? playlist[idx + 1] : undefined;
-      if (next) playTrack(next, togetherRef.current);
+      if (idx < 0) return;
+      const at = nextIndex(idx, playlist.length, prefs);
+      if (at !== null) playTrack(playlist[at], togetherRef.current);
     };
     v.addEventListener('ended', onEnded);
     return () => v.removeEventListener('ended', onEnded);
-  }, [playlist, playTrack]);
+  }, [playlist, playTrack, mediaEl]);
 
   // WebAudio tap for the real spectrum. Created ONCE per media element (the
   // browser allows a single MediaElementSource per element) and kept connected
@@ -4546,27 +4641,173 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   // headers + crossOrigin on the element, or the tap would output silence.
   const audioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const tapTriedRef = useRef(false);
+  // The tunable part of that graph. Held as refs and never rebuilt: changing a
+  // setting sets a value on a live node, so a slider drag does not tear down and
+  // re-splice the chain forty times a second (which audibly clicks).
+  const preampRef = useRef<GainNode | null>(null);
+  const bandsRef = useRef<BiquadFilterNode[]>([]);
+  const compRef = useRef<DynamicsCompressorNode | null>(null);
+  // Whether the tap exists at all. The equaliser rides the same graph, so when the
+  // source is tainted this is what tells the panel to say so instead of offering
+  // sliders that do nothing.
+  const [canEq, setCanEq] = useState(false);
+  // The element the graph is tapping. Guarding on the ELEMENT rather than on a
+  // once-only flag keeps both truths: a second tap on the SAME element throws
+  // (one MediaElementSource per element, which is why the flag existed), and a
+  // detached player is a NEW element whose audio would otherwise never be seen —
+  // the visualiser would sit dead in the window the user just tore off.
+  const tappedElRef = useRef<HTMLMediaElement | null>(null);
   useEffect(() => {
-    if (!isAudio || !mediaEl || tapTriedRef.current) return;
-    tapTriedRef.current = true;
+    if (!isAudio || !mediaEl || tappedElRef.current === mediaEl) return;
+    if (tappedElRef.current) {
+      try { void audioCtxRef.current?.close(); } catch { /* ignore */ }
+      audioCtxRef.current = null;
+      analyserRef.current = null;
+    }
+    tappedElRef.current = mediaEl;
     try {
       const ctx = new AudioContext();
       const src = ctx.createMediaElementSource(mediaEl);
+      const preamp = ctx.createGain();
+      // One peaking filter per band, in series. Q 1.0 is wide enough that five
+      // bands cover the spectrum without holes between them.
+      const bands = EQ_FREQS.map((hz) => {
+        const f = ctx.createBiquadFilter();
+        f.type = 'peaking';
+        f.frequency.value = hz;
+        f.Q.value = 1;
+        f.gain.value = 0;
+        return f;
+      });
+      // Always in the chain, bypassed by VALUE rather than by reconnection: a
+      // compressor with ratio 1 and a 0 dB threshold is arithmetically a wire, and
+      // re-splicing a live graph to toggle it would click.
+      const comp = ctx.createDynamicsCompressor();
+      comp.threshold.value = 0;
+      comp.ratio.value = 1;
+      comp.knee.value = 6;
+      comp.attack.value = 0.01;
+      comp.release.value = 0.25;
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.75;
-      src.connect(analyser);
+      // The analyser sits at the END, so the bars show what is actually leaving the
+      // player — an equaliser you can see is the point of having both.
+      let node: AudioNode = src;
+      node.connect(preamp); node = preamp;
+      for (const f of bands) { node.connect(f); node = f; }
+      node.connect(comp);
+      comp.connect(analyser);
       analyser.connect(ctx.destination);
       audioCtxRef.current = ctx;
       analyserRef.current = analyser;
+      preampRef.current = preamp;
+      bandsRef.current = bands;
+      compRef.current = comp;
+      setCanEq(true);
       const resume = () => { void ctx.resume().catch(() => {}); };
       mediaEl.addEventListener('play', resume);
       resume();
     } catch {
       analyserRef.current = null; // decorative bars take over below
+      preampRef.current = null;
+      bandsRef.current = [];
+      compRef.current = null;
+      setCanEq(false);
     }
   }, [isAudio, mediaEl]);
+
+  // ── Listener settings ─────────────────────────────────────────────────────
+  const [audioPrefs, setAudioPrefs] = useState<AudioPrefs>(loadAudioPrefs);
+  const [audioSettingsOpen, setAudioSettingsOpen] = useState(false);
+  const [outputs, setOutputs] = useState<AudioOutputDevice[]>([]);
+  const audioPrefsRef = useRef(audioPrefs);
+  audioPrefsRef.current = audioPrefs;
+  const patchAudioPrefs = useCallback((patch: Partial<AudioPrefs>) => {
+    setAudioPrefs((prev) => {
+      const next = normalizeAudioPrefs({ ...prev, ...patch });
+      saveAudioPrefs(next);
+      return next;
+    });
+  }, []);
+
+  // Push the settings onto the live graph. Ramps, not assignments: a stepped gain
+  // change on a playing stream is an audible click.
+  useEffect(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx) return;
+    const at = ctx.currentTime + 0.02;
+    preampRef.current?.gain.setTargetAtTime(gainFromDb(audioPrefs.eqOn ? audioPrefs.preamp : 0), ctx.currentTime, 0.01);
+    bandsRef.current.forEach((f, i) => {
+      f.gain.setTargetAtTime(audioPrefs.eqOn ? (audioPrefs.bands[i] ?? 0) : 0, ctx.currentTime, 0.01);
+    });
+    const comp = compRef.current;
+    if (comp) {
+      // -18 dB / 4:1 evens out a mixed queue without pumping; 0 dB / 1:1 is off.
+      comp.threshold.setValueAtTime(audioPrefs.normalize ? -18 : 0, at);
+      comp.ratio.setValueAtTime(audioPrefs.normalize ? 4 : 1, at);
+    }
+  }, [audioPrefs, canEq]);
+
+  // Output device. setSinkId is per ELEMENT, so it is re-applied whenever the
+  // player moves windows and builds a new one.
+  useEffect(() => {
+    const el = mediaEl as (HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+    if (!el || typeof el.setSinkId !== 'function') return;
+    el.setSinkId(audioPrefs.sinkId).catch(() => { /* device gone — stays on default */ });
+  }, [mediaEl, audioPrefs.sinkId]);
+
+  // Enumerate outputs when the panel opens (not before: the query is pointless
+  // until someone is looking, and labels can be empty until then anyway).
+  useEffect(() => {
+    if (!audioSettingsOpen || !navigator.mediaDevices?.enumerateDevices) return;
+    let alive = true;
+    navigator.mediaDevices.enumerateDevices().then((list) => {
+      if (!alive) return;
+      setOutputs(list
+        .filter((d) => d.kind === 'audiooutput' && d.deviceId && d.deviceId !== 'default')
+        .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `${t('audio.output')} ${i + 1}` })));
+    }).catch(() => { /* no permission, no list — the default output still works */ });
+    return () => { alive = false; };
+  }, [audioSettingsOpen, t]);
+
+  // Where the current track sits in the queue, and the two neighbours the
+  // transport can jump to. Manual skipping WRAPS (`repeat: 'all'`) even when
+  // repeat is off: pressing next at the end of a queue is a request, not a
+  // question, whereas a track ENDING at the same place is the queue finishing.
+  const queueIdx = playlist.findIndex((f) => f.fileId === current.fileId);
+  const canSkip = isAudio && playlist.length > 1 && queueIdx >= 0;
+  const playNext = useCallback(() => {
+    if (queueIdx < 0 || playlist.length < 2) return;
+    const at = nextIndex(queueIdx, playlist.length, { repeat: 'all', shuffle: audioPrefs.shuffle });
+    if (at !== null) playTrack(playlist[at], togetherRef.current);
+  }, [queueIdx, playlist, audioPrefs.shuffle, playTrack]);
+  const playPrev = useCallback(() => {
+    if (queueIdx < 0 || playlist.length < 2) return;
+    // The classic rule: past the first few seconds, "previous" means "start this
+    // one again", which is what the button is reached for most of the time.
+    const v = videoRef.current;
+    if (v && v.currentTime > 3) { try { v.currentTime = 0; } catch { /* not seekable */ } return; }
+    playTrack(playlist[(queueIdx - 1 + playlist.length) % playlist.length], togetherRef.current);
+  }, [queueIdx, playlist, playTrack]);
+
+  // Opening a track or a film puts it in its OWN window unless the listener turned
+  // that off — the room's file list is what they were looking at, and it stays.
+  // Once per mount, and one-way: closing the window must not be undone by this.
+  const autoDetachRef = useRef(false);
+  useEffect(() => {
+    if (autoDetachRef.current) return;
+    autoDetachRef.current = true;
+    if (audioPrefsRef.current.detachOnOpen) openPopout();
+  }, [openPopout]);
+
+  // Drives the maximise/restore glyph in the header above — queried per window, so
+  // a restored player never shows the wrong one.
+  const winMaximized = useDockWindowMaximized(PLAYER_ROOM_FRAME, detached);
+
+  // The room follows the player: while it is out, the column shows Files; bringing
+  // it home brings the stage back with it.
+  useEffect(() => { onDetachedChange?.(detached); }, [detached, onDetachedChange]);
   useEffect(() => () => { try { void audioCtxRef.current?.close(); } catch { /* ignore */ } }, []);
 
   // Visualizer: the real spectrum when the tap works; if the analyser stays
@@ -4594,6 +4835,11 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     let silentFrames = 0;
     const draw = () => {
       const box = canvas.parentElement?.getBoundingClientRect();
+      // Backgrounded (the user stepped back to the file column) the stage is
+      // display:none, so the box is 0x0: keep the loop alive to pick playback back
+      // up, but do not resize the canvas to nothing and paint into it 60 times a
+      // second for a window nobody can see.
+      if (box && (box.width === 0 || box.height === 0)) { raf = requestAnimationFrame(draw); return; }
       if (box && (canvas.width !== Math.floor(box.width) || canvas.height !== Math.floor(box.height))) {
         canvas.width = Math.floor(box.width);
         canvas.height = Math.floor(box.height);
@@ -4695,7 +4941,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     window.api.rooms.watchFile(roomId, current.fileId).then((info) => {
       if (!alive) return;
       setCover(info.coverUrl || null);
-      const v = videoRef.current;
+      const v = mediaEl;
       if (!v) return;
       // Watch-while-downloading is served no-cors by WebTorrent's own stream
       // server (it sends no ACAO); the cast server used for completed files DOES
@@ -4714,6 +4960,21 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       } else {
         v.src = info.hlsUrl;
       }
+      // Moving windows re-runs resource selection, so the fresh element starts at
+      // zero. Put the viewer back where they were — seeking is only honoured once
+      // metadata has landed, hence the wait.
+      const want = resumeRef.current;
+      resumeRef.current = null;
+      if (want) {
+        const apply = () => {
+          try { v.currentTime = want.time; } catch { /* not seekable */ }
+          v.muted = want.muted;
+          v.volume = want.volume;
+          if (want.paused) v.pause();
+        };
+        if (v.readyState >= 1) apply();
+        else v.addEventListener('loadedmetadata', apply, { once: true });
+      }
       v.play().catch(() => {});
       setLoading(false);
     }).catch((e) => { if (alive) { setError(String(e instanceof Error ? e.message : e)); setLoading(false); } });
@@ -4721,11 +4982,11 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
       alive = false;
       if (hlsRef.current) { try { hlsRef.current.destroy(); } catch { /* ignore */ } hlsRef.current = null; }
     };
-  }, [roomId, current.fileId, t]);
+  }, [roomId, current.fileId, t, mediaEl]);
 
   // Broadcast local play/pause/seek to peers when "together" is on.
   useEffect(() => {
-    const v = videoRef.current;
+    const v = mediaEl;
     if (!v) return;
     const send = (action: string) => {
       if (!togetherRef.current || applyingRemote.current) return;
@@ -4742,18 +5003,18 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     v.addEventListener('seeked', onSeeked);
     v.addEventListener('ratechange', onRate);
     return () => { v.removeEventListener('play', onPlay); v.removeEventListener('pause', onPause); v.removeEventListener('seeked', onSeeked); v.removeEventListener('ratechange', onRate); };
-  }, [roomId, current.fileId]);
+  }, [roomId, current.fileId, mediaEl]);
 
   // Leaving the player unmounts its <video> — close any PiP window it owns
   // instead of stranding a dead floating frame. The document is captured on SETUP:
   // the ref is already null by cleanup time, and PiP state lives on the video's own
   // document, so reading the main one would strand exactly the frame this prevents.
   useEffect(() => {
-    const doc = videoRef.current?.ownerDocument ?? document;
+    const doc = mediaEl?.ownerDocument ?? document;
     return () => {
       if (doc.pictureInPictureElement) void doc.exitPictureInPicture().catch(() => {});
     };
-  }, []);
+  }, [mediaEl]);
 
   // Track who's watching (presence) + apply remote sync when "together" is on.
   useEffect(() => {
@@ -4881,7 +5142,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   // collapsing the grid's side tracks, so the player itself needs no variant. An
   // unused class here would only invite a future rule that styles the player for a
   // state the player does not actually own.
-  return (
+  const stage = (
     <div className="room-player-inline">
       <div className="room-player">
         <div className="room-player-top">
@@ -4901,28 +5162,82 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
               )}
             </span>
           )}
+          {isAudio && (
+            <span className="room-sub-wrap">
+              <button
+                className={`room-player-sync room-sub-btn${audioSettingsOpen ? ' on' : ''}`}
+                onClick={() => { setAudioSettingsOpen((o) => !o); setSubOpen(false); }}
+                title={t('audio.title')}
+                aria-label={t('audio.title')}
+                aria-expanded={audioSettingsOpen}
+              >
+                <Icon name="sliders" size={14} />
+              </button>
+              {audioSettingsOpen && (
+                <AudioSettings
+                  prefs={audioPrefs}
+                  onChange={patchAudioPrefs}
+                  devices={outputs}
+                  canEq={canEq}
+                />
+              )}
+            </span>
+          )}
           <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
-            <Icon name="users" size={14} /> {together ? t('rooms.together.on') : t('rooms.together.off')}
+            <Icon name="users" size={14} /> <span className="room-player-sync-label">{together ? t('rooms.together.on') : t('rooms.together.off')}</span>
           </button>
           {/* Theater collapses the rail and the chat so the stage takes the room's
               full width. NOT fullscreen: watch-together is the one mode where
               fullscreen is the wrong answer, because the point is to still see the
-              room. Fullscreen stays available on the control bar for when it isn't. */}
+              room. Fullscreen stays available on the control bar for when it isn't.
+              Detached, it is meaningless — it would reshuffle a room nobody is
+              looking at — so the button goes with the stage. */}
+          {!detached && (
+            <button
+              className={`room-player-sync room-player-theater${theater ? ' on' : ''}`}
+              onClick={onToggleTheater}
+              title={theater ? t('rooms.theater.off') : t('rooms.theater.on')}
+              aria-pressed={theater}
+            >
+              <Icon name={theater ? 'minimize' : 'maximize'} size={14} />
+            </button>
+          )}
           <button
-            className={`room-player-sync room-player-theater${theater ? ' on' : ''}`}
-            onClick={onToggleTheater}
-            title={theater ? t('rooms.theater.off') : t('rooms.theater.on')}
-            aria-pressed={theater}
+            className={`room-player-sync room-player-detach${detached ? ' on' : ''}`}
+            onClick={toggleDetach}
+            title={t(detached ? 'player.attach' : 'player.detach')}
+            aria-label={t(detached ? 'player.attach' : 'player.detach')}
+            aria-pressed={detached}
           >
-            <Icon name={theater ? 'minimize' : 'maximize'} size={14} />
+            <Icon name={detached ? 'minimize' : 'external-link'} size={14} />
           </button>
-          <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
+          {/* Detached, this header IS the window's title bar (main.ts opens the
+              player frameless), so the app's own controls stand in for the caption
+              buttons. Close means close the PLAYER — same as the ✕ does docked —
+              while "bring home" stays its own button, because they are different
+              intentions and the frame never distinguished them. */}
+          {detached ? (
+            <WindowControls
+              maximized={winMaximized}
+              labels={{
+                minimize: t('window.minimize'),
+                maximize: t('window.maximize'),
+                restore: t('window.restore'),
+                close: t('common.close'),
+              }}
+              onMinimize={() => minimizeDockWindow(PLAYER_ROOM_FRAME)}
+              onToggleMaximize={() => toggleMaximizeDockWindow(PLAYER_ROOM_FRAME)}
+              onClose={onClose}
+            />
+          ) : (
+            <button className="room-player-close" onClick={onClose}><Icon name="x" size={18} /></button>
+          )}
         </div>
         <div className="room-player-body">
           <div className="room-player-main" ref={mainRef}>
             <div className="room-player-stage">
               <video
-                ref={videoRef}
+                ref={attachVideo}
                 className={`room-player-video ${isAudio ? 'room-player-video-hidden' : ''}`}
                 autoPlay
                 playsInline
@@ -4962,7 +5277,18 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                 ))}
               </div>
             </div>
-            <PlayerControls media={mediaEl} fullscreenTarget={mainRef} />
+            <PlayerControls media={mediaEl} fullscreenTarget={mainRef}>
+              {canSkip && (
+                <>
+                  <button className="pc-btn" onClick={playPrev} title={t('audio.prev')} aria-label={t('audio.prev')}>
+                    <Icon name="skip-forward" size={15} className="pc-flip" />
+                  </button>
+                  <button className="pc-btn" onClick={playNext} title={t('audio.next')} aria-label={t('audio.next')}>
+                    <Icon name="skip-forward" size={15} />
+                  </button>
+                </>
+              )}
+            </PlayerControls>
             {/* Presence + reactions on ONE horizontal row. The watchers used to be
                 a 260px fixed COLUMN beside the video, which is what made the player
                 unusable in the stage: the column is roughly `room − 592px`, so the
@@ -5012,6 +5338,32 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
         </div>
       </div>
     </div>
+  );
+
+  const away = portal(stage);
+  if (!away) return stage;
+  // Detached, the room does NOT go blank where the stage was: a tab that shows
+  // nothing looks broken, and the window it went to can be behind anything. The
+  // card says where it went and offers both ways back.
+  return (
+    <>
+      <div className="room-player-inline room-player-away">
+        <div className="room-player-away-card">
+          <Icon name="external-link" size={22} />
+          <div className="room-player-away-name" title={current.name}>{current.name}</div>
+          <div className="room-player-away-hint">{t('rooms.player.away')}</div>
+          <div className="room-player-away-actions">
+            <button className="room-player-sync" onClick={() => popout?.focus()}>
+              <Icon name="monitor" size={14} /> {t('rooms.player.focus')}
+            </button>
+            <button className="room-player-sync on" onClick={toggleDetach}>
+              <Icon name="minimize" size={14} /> {t('player.attach')}
+            </button>
+          </div>
+        </div>
+      </div>
+      {away}
+    </>
   );
 };
 
