@@ -3,6 +3,7 @@ import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent'
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority, RoomState } from '../../shared/types';
 import { safeBaseName } from '../../shared/path-safety';
+import { buildOPML, parseOPML } from '../../shared/opml';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
 import fsSync from 'fs';
@@ -2196,6 +2197,58 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('rss:ignoreItems', wrapHandler('rss:ignoreItems',
     async (_event, guids: string[], ignored?: boolean) => db.markRSSItemsIgnored(guids, ignored !== false)
+  ));
+
+  // --- OPML: how every other reader hands over a feed list ---
+
+  ipcMain.handle('rss:exportOPML', wrapHandler('rss:exportOPML',
+    async () => {
+      const result = await dialog.showSaveDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
+        title: t('dialog.exportOPML'),
+        defaultPath: 'havvn-feeds.opml',
+        filters: [{ name: 'OPML', extensions: ['opml', 'xml'] }],
+      });
+      if (result.canceled || !result.filePath) return { success: false, count: 0 };
+
+      const feeds = await db.getRSSFeeds();
+      await fs.writeFile(result.filePath, buildOPML(feeds.map(f => ({ name: f.name, url: f.url }))), 'utf-8');
+      log.info('RSS feeds exported', { path: result.filePath, count: feeds.length });
+      return { success: true, count: feeds.length, path: result.filePath };
+    }
+  ));
+
+  ipcMain.handle('rss:importOPML', wrapHandler('rss:importOPML',
+    async () => {
+      const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
+        title: t('dialog.importOPML'),
+        properties: ['openFile'],
+        filters: [{ name: 'OPML', extensions: ['opml', 'xml'] }],
+      });
+      if (result.canceled || result.filePaths.length === 0) return { success: false, added: 0, skipped: 0 };
+
+      const xml = await fs.readFile(result.filePaths[0], 'utf-8');
+      const imported = parseOPML(xml);
+
+      // Adding through the service arms each feed's timer; a URL already
+      // subscribed is skipped rather than duplicated.
+      const existing = new Set((await db.getRSSFeeds()).map(f => f.url));
+      const rss = getRSSService();
+      let added = 0;
+      for (const feed of imported) {
+        if (existing.has(feed.url)) continue;
+        await rss.addFeed({
+          name: feed.name,
+          url: feed.url,
+          enabled: true,
+          autoDownload: false,
+          intervalMinutes: 30,
+        });
+        added++;
+      }
+
+      log.info('RSS feeds imported', { file: result.filePaths[0], added, skipped: imported.length - added });
+      return { success: true, added, skipped: imported.length - added };
+    }
   ));
 
   // --- Auto-download rules ---

@@ -3,9 +3,10 @@
  * Manage RSS feed subscriptions with auto-download support.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
-import { Button, Icon, EmptyState, CategorySelect, useConfirm } from '../components';
+import { Button, Icon, EmptyState, CategorySelect, DropdownMenu, useConfirm } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import './RSSPage.css';
 
@@ -60,6 +61,16 @@ const RSSPage: React.FC = () => {
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [downloadingGuids, setDownloadingGuids] = useState<Set<string>>(new Set());
+  const itemsScrollRef = useRef<HTMLDivElement>(null);
+
+  const handleIgnoreItem = async (item: RSSItem) => {
+    try {
+      await window.api.rss.ignoreItems([item.guid]);
+      await loadItems(selectedFeed || undefined);
+    } catch (err) {
+      console.error('Failed to dismiss RSS item:', err);
+    }
+  };
 
   // Edit/Add feed modal state
   const [editingFeed, setEditingFeed] = useState<Partial<RSSFeed> | null>(null);
@@ -236,6 +247,33 @@ const RSSPage: React.FC = () => {
     }
   };
 
+  const handleImportOPML = async () => {
+    try {
+      const res = await window.api.rss.importOPML();
+      if (!res.success) return;
+      await loadFeeds();
+      await alert({
+        title: t('rss.opml.importDoneTitle'),
+        message: `${t('rss.opml.importAdded')} ${res.added}. ${t('rss.opml.importSkipped')} ${res.skipped}.`,
+      });
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    }
+  };
+
+  const handleExportOPML = async () => {
+    try {
+      const res = await window.api.rss.exportOPML();
+      if (!res.success) return;
+      await alert({
+        title: t('rss.opml.exportDoneTitle'),
+        message: `${t('rss.opml.exportDone')} ${res.count}`,
+      });
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    }
+  };
+
   const handleCheckAll = async () => {
     setCheckingAll(true);
     try {
@@ -342,13 +380,23 @@ const RSSPage: React.FC = () => {
     }
   };
 
-  const scopedItems = selectedFeed
-    ? items.filter(i => i.feedId === selectedFeed)
-    : items;
+  // Dismissed items stay in the store (so a rule can't re-grab them) but leave
+  // the list.
+  const scopedItems = (selectedFeed ? items.filter(i => i.feedId === selectedFeed) : items)
+    .filter(i => !i.ignored);
   const searchQuery = itemSearch.trim().toLowerCase();
   const displayedItems = searchQuery
     ? scopedItems.filter(i => i.title.toLowerCase().includes(searchQuery))
     : scopedItems;
+
+  // Only the rows in view are mounted.
+  const itemVirtualizer = useVirtualizer({
+    count: displayedItems.length,
+    getScrollElement: () => itemsScrollRef.current,
+    estimateSize: () => 64,
+    getItemKey: index => displayedItems[index].guid,
+    overscan: 8,
+  });
 
   if (loading) {
     return (
@@ -377,6 +425,27 @@ const RSSPage: React.FC = () => {
             >
               {t('rss.checkAll')}
             </Button>
+            {/* OPML: the format every other reader speaks. */}
+            <DropdownMenu
+              portal
+              items={[
+                {
+                  key: 'import',
+                  label: t('rss.opml.import'),
+                  icon: <Icon name="download" size={14} />,
+                  onSelect: () => { handleImportOPML(); },
+                },
+                {
+                  key: 'export',
+                  label: t('rss.opml.export'),
+                  icon: <Icon name="upload" size={14} />,
+                  onSelect: () => { handleExportOPML(); },
+                },
+              ]}
+              renderTrigger={({ toggle }) => (
+                <Button variant="ghost" size="sm" onClick={toggle} icon={<Icon name="more-horizontal" size={14} />} />
+              )}
+            />
             <Button
               variant="primary"
               size="sm"
@@ -588,48 +657,82 @@ const RSSPage: React.FC = () => {
                 <EmptyState icon="inbox" title={t('rss.items.empty.title')} description={t('rss.items.empty.desc')} />
               )
             ) : (
-              <div className="items-list">
-                {displayedItems.map(item => (
-                  <div key={item.guid} className={`item-row ${item.downloaded ? 'downloaded' : ''}`}>
-                    <div className="item-main">
-                      <div className="item-title" title={item.title}>{item.title}</div>
-                      <div className="item-meta">
-                        {item.pubDate && (
-                          <span className="item-meta-item">
-                            <Icon name="calendar" size={11} />
-                            {formatDate(item.pubDate)}
-                          </span>
-                        )}
-                        {item.size && (
-                          <span className="item-meta-item">
-                            <Icon name="hard-drive" size={11} />
-                            {formatBytes(item.size)}
-                          </span>
-                        )}
-                        {item.downloaded && (
-                          <span className="item-downloaded-badge">
-                            <Icon name="check" size={11} /> {t('rss.downloaded')}
-                          </span>
-                        )}
+              /* Virtualized: a feed's history runs to a thousand rows, and
+                 across feeds several thousand. */
+              <div className="items-list" ref={itemsScrollRef}>
+                <div className="items-virtual" style={{ height: `${itemVirtualizer.getTotalSize()}px` }}>
+                  {itemVirtualizer.getVirtualItems().map(virtualRow => {
+                    const item = displayedItems[virtualRow.index];
+                    return (
+                      <div
+                        key={virtualRow.key}
+                        className={`item-row ${item.downloaded ? 'downloaded' : ''}`}
+                        style={{
+                          position: 'absolute',
+                          top: 0,
+                          left: 0,
+                          width: '100%',
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
+                      >
+                        <div className="item-main">
+                          <div className="item-title" title={item.title}>{item.title}</div>
+                          <div className="item-meta">
+                            {item.pubDate && (
+                              <span className="item-meta-item">
+                                <Icon name="calendar" size={11} />
+                                {formatDate(item.pubDate)}
+                              </span>
+                            )}
+                            {item.size && (
+                              <span className="item-meta-item">
+                                <Icon name="hard-drive" size={11} />
+                                {formatBytes(item.size)}
+                              </span>
+                            )}
+                            {item.seeds !== undefined && (
+                              <span className="item-meta-item">
+                                <Icon name="upload" size={11} />
+                                {item.seeds}
+                              </span>
+                            )}
+                            {item.downloaded && (
+                              <span className="item-downloaded-badge">
+                                <Icon name="check" size={11} /> {t('rss.downloaded')}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="item-actions">
+                          {!item.downloaded ? (
+                            <>
+                              <Button
+                                variant="primary"
+                                size="sm"
+                                loading={downloadingGuids.has(item.guid)}
+                                onClick={() => handleDownloadItem(item)}
+                                icon={<Icon name="download" size={13} />}
+                              >
+                                {t('rss.download')}
+                              </Button>
+                              {/* Dismiss: kept in the store so it can't come
+                                  back, gone from the list. */}
+                              <button
+                                className="feed-delete-btn"
+                                title={t('rss.item.ignore')}
+                                onClick={() => handleIgnoreItem(item)}
+                              >
+                                <Icon name="x" size={14} />
+                              </button>
+                            </>
+                          ) : (
+                            <span className="check-done"><Icon name="check-circle" size={16} /></span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="item-actions">
-                      {!item.downloaded ? (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          loading={downloadingGuids.has(item.guid)}
-                          onClick={() => handleDownloadItem(item)}
-                          icon={<Icon name="download" size={13} />}
-                        >
-                          {t('rss.download')}
-                        </Button>
-                      ) : (
-                        <span className="check-done"><Icon name="check-circle" size={16} /></span>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
               </div>
             )}
           </>

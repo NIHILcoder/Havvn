@@ -5,6 +5,8 @@
 
 import { app } from 'electron';
 import { logger, httpFetch, decodeBody } from '../utils';
+import { showOsNotification } from '../utils/os-notify';
+import { t } from '../i18n';
 import * as db from '../db/store';
 import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { parseFeed } from '../../shared/feed-parse';
@@ -215,10 +217,28 @@ export class RSSService {
     // Rules act only on items that appeared after the feed was added.
     if (!isFirstCheck && newItems.length > 0) {
       await this.applyRules(feed, newItems);
+      // A feed fetching quietly in the background is invisible otherwise: you
+      // only learn it found something by opening the page.
+      await this.notifyNewItems(feed, newItems);
     }
 
     log.info('RSS feed checked', { name: feed.name, items: items.length, newItems: newItems.length });
     return items;
+  }
+
+  /** Tell the user a feed brought something in, if they asked to be told. */
+  private async notifyNewItems(feed: RSSFeed, newItems: RSSItem[]): Promise<void> {
+    try {
+      const settings = await db.getSettings();
+      if (!settings.enableNotifications) return;
+
+      const body = newItems.length === 1
+        ? newItems[0].title
+        : t('rss.notifyBody', { count: newItems.length });
+      showOsNotification(feed.name, body);
+    } catch (err) {
+      log.debug('RSS notification skipped', { error: String(err) });
+    }
   }
 
   /**

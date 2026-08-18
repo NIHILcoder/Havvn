@@ -1296,6 +1296,10 @@ export interface IpcApi {
     markFeedRead: (feedId?: string) => Promise<{ marked: number }>;
     ignoreItems: (guids: string[], ignored?: boolean) => Promise<void>;
 
+    // OPML — moving a subscription list in or out in one step
+    exportOPML: () => Promise<{ success: boolean; count: number; path?: string }>;
+    importOPML: () => Promise<{ success: boolean; added: number; skipped: number }>;
+
     // Auto-download rules
     getRules: () => Promise<RSSRule[]>;
     addRule: (rule: Omit<RSSRule, 'id'>) => Promise<RSSRule>;

@@ -295,16 +295,26 @@
 }
 
 /* Items list */
+/* The virtualized viewport. Rows live inside .items-virtual, sized to the whole
+   list so the scrollbar reflects everything rather than what is mounted. */
 .items-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
+  max-height: min(65vh, 700px);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.items-virtual {
+  position: relative;
+  width: 100%;
 }
 
 .item-row {
+  /* Absolutely positioned by the virtualizer, so the height is fixed and must
+     match estimateSize — a row that grew would overlap its neighbour. */
+  height: 64px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 1rem;
