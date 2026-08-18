@@ -4,7 +4,7 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.0.3] - 2026-08-18
 
 The player leaves the room and gets a window of its own — with a mixing desk.
 
