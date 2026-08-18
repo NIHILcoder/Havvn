@@ -5,7 +5,7 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { SearchProvider, PythonStatus, ProviderStat, SearchCategory } from '../../shared/types';
+import { SearchProvider, PythonStatus, ProviderStat, SearchCategory, PluginManifest } from '../../shared/types';
 import { MergedResult, mergeResults } from '../../shared/search-dedupe';
 import {
   Button,
@@ -168,6 +168,8 @@ const SearchPage: React.FC = () => {
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
   const [pythonStatus, setPythonStatus] = useState<PythonStatus | null>(null);
   const [checkingPython, setCheckingPython] = useState(false);
+  // What the chosen script says about itself, when it says anything.
+  const [manifest, setManifest] = useState<PluginManifest | null>(null);
 
   const checkPython = useCallback(async (force = false) => {
     setCheckingPython(true);
@@ -455,8 +457,16 @@ const SearchPage: React.FC = () => {
         filters: [{ name: 'Python', extensions: ['py'] }],
       });
       if (!res.canceled && res.filePaths[0]) {
-        setNewProvider(p => ({ ...p, url: res.filePaths[0] }));
+        const scriptPath = res.filePaths[0];
+        setNewProvider(p => ({ ...p, url: scriptPath }));
         if (!pythonStatus) checkPython();
+
+        // A plugin can describe itself; use it to fill the name and to say up
+        // front which credentials it needs, instead of finding out when a
+        // search fails.
+        const found = await window.api.search.readManifest(scriptPath);
+        setManifest(found);
+        if (found?.name) setNewProvider(p => ({ ...p, name: p.name || found.name! }));
       }
     } catch (err) {
       console.error('Browse failed:', err);
@@ -937,6 +947,23 @@ const SearchPage: React.FC = () => {
                     value={newProvider.password}
                     onChange={e => setNewProvider(p => ({ ...p, password: e.target.value }))}
                   />
+                </div>
+              )}
+
+              {/* What the plugin says about itself, when it says anything. */}
+              {newProvider.type === 'script' && manifest && (
+                <div className="plugin-manifest">
+                  <Icon name="info" size={14} />
+                  <span className="plugin-manifest-name">
+                    {manifest.name || t('search.plugin.unnamed')}
+                    {manifest.version && <span className="plugin-manifest-version"> v{manifest.version}</span>}
+                  </span>
+                  {manifest.description && <span className="plugin-manifest-desc">{manifest.description}</span>}
+                  {manifest.requires.length > 0 && (
+                    <span className="plugin-manifest-requires">
+                      {t('search.plugin.requires')} {manifest.requires.join(', ')}
+                    </span>
+                  )}
                 </div>
               )}
 

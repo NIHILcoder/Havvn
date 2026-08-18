@@ -913,3 +913,34 @@
   padding-bottom: 0.25rem;
   background: var(--color-bg-primary);
 }
+
+/* What a script plugin says about itself, when it carries a manifest. */
+.plugin-manifest {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.plugin-manifest-name {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.plugin-manifest-version {
+  font-family: var(--font-family-mono);
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.plugin-manifest-requires {
+  padding: 0.1rem 0.4rem;
+  font-size: 0.72rem;
+  background: var(--color-bg-secondary);
+  border-radius: 3px;
+}

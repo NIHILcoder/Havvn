@@ -7,6 +7,8 @@ import type { CompletionAction, CompletionPending, CompletionActionState } from 
 export type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
 import type { Theme } from './theme';
 export type { Theme, ThemeBase, ValidateResult } from './theme';
+import type { PluginManifest } from './plugin-manifest';
+export type { PluginManifest } from './plugin-manifest';
 // Virtual-LAN feature types live in their own dependency-free leaf module; re-export
 // the renderer-facing state shapes here so IPC surfaces keep one import hub.
 import type { RoomLanState } from './lan-types';
@@ -1328,6 +1330,8 @@ export interface IpcApi {
     // Categories the enabled indexers actually support, unioned. Empty when no
     // provider can answer t=caps (custom/script only).
     getCategories: () => Promise<SearchCategory[]>;
+    /** A script plugin's self-description, if it carries one. Null otherwise. */
+    readManifest: (scriptPath: string) => Promise<PluginManifest | null>;
     checkPython: (force?: boolean) => Promise<PythonStatus>;
   };
 

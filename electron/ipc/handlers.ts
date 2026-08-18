@@ -2340,6 +2340,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async () => getSearchService().getCategories()
   ));
 
+  ipcMain.handle('search:readManifest', wrapHandler('search:readManifest',
+    async (_event, scriptPath: string) => getSearchService().readScriptManifest(scriptPath)
+  ));
+
   ipcMain.handle('search:checkPython', wrapHandler('search:checkPython',
     async (_event, force?: boolean) => getPythonStatus(!!force)
   ));

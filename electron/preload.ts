@@ -672,6 +672,7 @@ const api: IpcApi = {
     removeProvider: (id: string) => ipcRenderer.invoke('search:removeProvider', id),
     testProvider: (id: string) => ipcRenderer.invoke('search:testProvider', id),
     getCategories: () => ipcRenderer.invoke('search:getCategories'),
+    readManifest: (scriptPath: string) => ipcRenderer.invoke('search:readManifest', scriptPath),
     checkPython: (force?: boolean) => ipcRenderer.invoke('search:checkPython', force),
   },
 
