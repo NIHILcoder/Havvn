@@ -3,16 +3,29 @@
  * Manages RSS feed subscriptions, polling, and auto-download of new torrent items.
  */
 
-import https from 'https';
-import http from 'http';
-import { URL } from 'url';
 import { app } from 'electron';
-import { logger } from '../utils';
+import { logger, httpFetchText } from '../utils';
 import * as db from '../db/store';
 import { RSSFeed, RSSItem } from '../../shared/types';
+import { parseFeed } from '../../shared/feed-parse';
 import { getTorrentManager } from '../torrent';
 
 const log = logger.child('RSSService');
+
+/** Feeds are XML documents; anything past this is not a feed. */
+const MAX_FEED_BYTES = 10 * 1024 * 1024;
+
+const FETCH_TIMEOUT_MS = 15000;
+
+/**
+ * Spread scheduled checks by up to ±10% of the interval. Without it every feed
+ * left on the default 30 minutes fires in the same instant, which looks like a
+ * burst to trackers that rate-limit.
+ */
+function jitter(intervalMs: number): number {
+  const spread = intervalMs * 0.1;
+  return Math.max(60_000, Math.round(intervalMs + (Math.random() * 2 - 1) * spread));
+}
 
 export class RSSService {
   private checkTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -25,18 +38,44 @@ export class RSSService {
     const feeds = await db.getRSSFeeds();
     log.info(`Initializing RSS service with ${feeds.length} feeds`);
 
+    const overdue: RSSFeed[] = [];
     for (const feed of feeds) {
-      if (feed.enabled) {
-        this.scheduleCheck(feed);
-      }
+      if (!feed.enabled) continue;
+      this.scheduleCheck(feed);
+      if (this.isOverdue(feed)) overdue.push(feed);
     }
+
+    // Arming a timer is not enough: a feed on a 6-hour interval whose last check
+    // was yesterday would stay silent for another 6 hours after every restart.
+    // Anything already past due gets checked now, staggered so they don't all
+    // leave at once.
+    overdue.forEach((feed, idx) => {
+      const delay = 3000 + idx * 2000;
+      setTimeout(() => {
+        this.checkFeed(feed.id).catch(err => {
+          log.error('Catch-up RSS feed check failed', { feedId: feed.id, error: err });
+        });
+      }, delay).unref?.();
+    });
+
+    if (overdue.length > 0) {
+      log.info(`Scheduled catch-up checks for ${overdue.length} overdue feeds`);
+    }
+  }
+
+  /** True when the feed has never been checked, or is past its interval. */
+  private isOverdue(feed: RSSFeed): boolean {
+    if (!feed.lastChecked) return true;
+    const last = Date.parse(feed.lastChecked);
+    if (!Number.isFinite(last)) return true;
+    return Date.now() - last >= (feed.intervalMinutes || 30) * 60 * 1000;
   }
 
   private scheduleCheck(feed: RSSFeed): void {
     // Clear existing timer
     this.clearTimer(feed.id);
 
-    const intervalMs = (feed.intervalMinutes || 30) * 60 * 1000;
+    const intervalMs = jitter((feed.intervalMinutes || 30) * 60 * 1000);
 
     const timer = setInterval(async () => {
       try {
@@ -97,8 +136,8 @@ export class RSSService {
     // news — store the items but never auto-download the whole backlog.
     const isFirstCheck = !feed.lastChecked;
 
-    const xml = await this.fetchURL(feed.url);
-    const items = this.parseRSS(xml, feedId);
+    const xml = await this.fetchFeed(feed.url);
+    const items = parseFeed(xml, feedId);
 
     // Apply filter if set
     const filtered = feed.filter ? this.filterItems(items, feed.filter) : items;
@@ -125,135 +164,21 @@ export class RSSService {
     await Promise.allSettled(enabled.map(f => this.checkFeed(f.id)));
   }
 
-  private async fetchURL(url: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const parsed = new URL(url);
-      const lib = parsed.protocol === 'https:' ? https : http;
-
-      const req = lib.get(url, {
-        headers: {
-          'User-Agent': `Havvn/${app.getVersion()} RSS Reader`,
-          'Accept': 'application/rss+xml, application/xml, text/xml, */*',
-        },
-        timeout: 15000,
-      }, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          // Follow redirect
-          this.fetchURL(res.headers.location).then(resolve).catch(reject);
-          return;
-        }
-
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode} fetching RSS feed`));
-          return;
-        }
-
-        let data = '';
-        res.on('data', chunk => { data += chunk; });
-        res.on('end', () => resolve(data));
-        res.on('error', reject);
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error('RSS fetch timeout'));
-      });
+  /**
+   * Fetch a feed document as text. Redirect hops are capped and resolved against
+   * the current URL, the body is size-capped, and the bytes are decoded with the
+   * charset the server or the XML declaration states — see `utils/http-fetch`.
+   */
+  private async fetchFeed(url: string): Promise<string> {
+    return httpFetchText(url, {
+      headers: {
+        'User-Agent': `Havvn/${app.getVersion()} RSS Reader`,
+        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+      },
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBytes: MAX_FEED_BYTES,
+      what: 'RSS feed',
     });
-  }
-
-  private parseRSS(xml: string, feedId: string): RSSItem[] {
-    const items: RSSItem[] = [];
-
-    try {
-      // Simple regex-based RSS parser (no external deps needed)
-      const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi;
-      let itemMatch;
-
-      while ((itemMatch = itemRegex.exec(xml)) !== null) {
-        const itemXml = itemMatch[1];
-
-        const title = this.extractTag(itemXml, 'title') || 'Untitled';
-        const guid = this.extractTag(itemXml, 'guid') || this.extractTag(itemXml, 'link') || title;
-        const pubDate = this.extractTag(itemXml, 'pubDate');
-
-        // Extract magnet or torrent link from various RSS formats
-        let link = '';
-
-        // Try enclosure first (common in torrent RSS)
-        const enclosureMatch = itemXml.match(/<enclosure[^>]*url="([^"]+)"[^>]*>/i);
-        if (enclosureMatch) {
-          link = enclosureMatch[1];
-        }
-
-        // Try torrent:magnetURI (Torrentz2, etc.)
-        if (!link) {
-          link = this.extractTag(itemXml, 'torrent:magnetURI') || '';
-        }
-
-        // Try link tag
-        if (!link) {
-          link = this.extractTag(itemXml, 'link') || '';
-        }
-
-        // URLs in XML carry escaped entities (&amp; is near-universal in
-        // tracker links) — decode or the link 404s.
-        link = this.decodeHTMLEntities(link);
-
-        // Try comments or description for magnet links
-        if (!link || (!link.startsWith('magnet:') && !link.endsWith('.torrent'))) {
-          const desc = this.extractTag(itemXml, 'description') || '';
-          const magnetMatch = desc.match(/magnet:\?[^\s"<>]+/);
-          if (magnetMatch) link = this.decodeHTMLEntities(magnetMatch[0]);
-        }
-
-        if (!link) continue; // Skip items without downloadable link
-
-        // Extract size from enclosure or torrent:contentLength
-        let size: number | undefined;
-        const enclosureLengthMatch = itemXml.match(/<enclosure[^>]*length="(\d+)"/i);
-        if (enclosureLengthMatch) size = parseInt(enclosureLengthMatch[1]);
-        const contentLength = this.extractTag(itemXml, 'torrent:contentLength');
-        if (contentLength) size = parseInt(contentLength);
-
-        items.push({
-          guid: String(guid),
-          title: this.decodeHTMLEntities(title),
-          link,
-          pubDate: pubDate || undefined,
-          downloaded: false,
-          size,
-          feedId,
-        });
-      }
-    } catch (err) {
-      log.error('RSS parse error', { error: err });
-    }
-
-    return items;
-  }
-
-  private extractTag(xml: string, tag: string): string | null {
-    // Handle CDATA
-    const cdataRegex = new RegExp(`<${tag}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i');
-    const cdataMatch = xml.match(cdataRegex);
-    if (cdataMatch) return cdataMatch[1].trim();
-
-    // Handle normal tag
-    const normalRegex = new RegExp(`<${tag}[^>]*>([^<]*)<\\/${tag}>`, 'i');
-    const normalMatch = xml.match(normalRegex);
-    if (normalMatch) return normalMatch[1].trim();
-
-    return null;
-  }
-
-  private decodeHTMLEntities(str: string): string {
-    return str
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
   }
 
   private filterItems(items: RSSItem[], filter: string): RSSItem[] {
@@ -272,6 +197,10 @@ export class RSSService {
 
     const manager = getTorrentManager();
 
+    // Collected and written once at the end: flagging each guid separately
+    // rewrote the entire item store per torrent.
+    const grabbed: string[] = [];
+
     for (const item of items) {
       if (downloadedGuids.has(item.guid)) continue;
 
@@ -284,17 +213,19 @@ export class RSSService {
           savePath: feed.savePath,
         });
 
-        await db.markRSSItemDownloaded(item.guid);
+        grabbed.push(item.guid);
         log.info('RSS auto-downloaded', { title: item.title, feedName: feed.name });
       } catch (err: any) {
         if (err?.code === 'DUPLICATE') {
           // Already in downloads — mark it so we don't retry on every check
-          await db.markRSSItemDownloaded(item.guid);
+          grabbed.push(item.guid);
         } else {
           log.error('RSS auto-download failed', { title: item.title, error: err });
         }
       }
     }
+
+    await db.markRSSItemsDownloaded(grabbed);
   }
 
   destroy(): void {

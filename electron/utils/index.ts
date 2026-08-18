@@ -4,6 +4,9 @@ export type { LogLevel, ModuleLogger } from './logger';
 export { detectVPN, getIpInfo } from './vpn-detector';
 export type { VPNDetectionResult } from './vpn-detector';
 
+export { httpFetch, httpFetchText, decodeBody } from './http-fetch';
+export type { HttpFetchOptions, HttpFetchResult } from './http-fetch';
+
 import fs from 'fs';
 import path from 'path';
 import { logger } from './logger';

@@ -1562,12 +1562,30 @@ export async function clearRSSItems(feedId?: string, onlyDownloaded = false): Pr
 }
 
 export async function markRSSItemDownloaded(guid: string): Promise<void> {
+  return markRSSItemsDownloaded([guid]);
+}
+
+/**
+ * Flag several items in one write.
+ *
+ * Auto-download marks every grabbed item, and doing that one guid at a time
+ * rewrote the whole (up to 5000-entry) array to disk per item — a feed that
+ * brought 40 new torrents cost 40 full serializations.
+ */
+export async function markRSSItemsDownloaded(guids: string[]): Promise<void> {
+  if (guids.length === 0) return;
+  const wanted = new Set(guids);
   const items: RSSItem[] = rssStore.get('rssItems') ?? [];
-  const idx = items.findIndex(i => i.guid === guid);
-  if (idx !== -1) {
-    items[idx].downloaded = true;
-    rssStore.set('rssItems', items);
+
+  let changed = false;
+  for (const item of items) {
+    if (wanted.has(item.guid) && !item.downloaded) {
+      item.downloaded = true;
+      changed = true;
+    }
   }
+
+  if (changed) rssStore.set('rssItems', items);
 }
 
 // === Search Providers ===

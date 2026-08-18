@@ -4,18 +4,16 @@
  * Users configure their own providers — no hardcoded tracker URLs.
  */
 
-import https from 'https';
-import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
-import { URL } from 'url';
 import { app } from 'electron';
-import { logger } from '../utils';
+import { logger, httpFetchText } from '../utils';
 import { t } from '../i18n';
 import * as db from '../db/store';
 import { SearchProvider, SearchResult } from '../../shared/types';
 import { parseScriptOutput } from '../../shared/search-parse';
+import { decodeEntities } from '../../shared/feed-parse';
 import { detectPython } from './python-detector';
 
 const log = logger.child('SearchService');
@@ -24,6 +22,21 @@ const log = logger.child('SearchService');
 // flood us with output.
 const SCRIPT_TIMEOUT_MS = 25000;
 const SCRIPT_MAX_BUFFER = 8 * 1024 * 1024; // 8 MB of stdout
+
+// Network limits for the HTTP-backed providers (Jackett / Torznab / custom).
+const FETCH_TIMEOUT_MS = 20000;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Read one attribute out of a start tag, accepting either quote style.
+ * The value is entity-decoded, as a real XML parser would: magnet URLs arrive
+ * with "&amp;" between parameters and are dead links until that is undone.
+ */
+function xmlAttr(tag: string, name: string): string | null {
+  const m = tag.match(new RegExp(`\\s${name}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i'));
+  if (!m) return null;
+  return decodeEntities(m[2] ?? m[3] ?? '');
+}
 
 export class SearchService {
 
@@ -147,7 +160,10 @@ export class SearchService {
     const results: SearchResult[] = [];
 
     try {
-      const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
+      // Tolerate attributes on the element (`<item xmlns:…>`) and whitespace in
+      // the closing tag; the old `/<item>/` only matched the bare form and
+      // returned zero results for indexers that emit either.
+      const itemRegex = /<item(?:\s[^>]*)?>([\s\S]*?)<\/item\s*>/gi;
       let match;
 
       while ((match = itemRegex.exec(xml)) !== null) {
@@ -161,10 +177,15 @@ export class SearchService {
         let seeds = 0;
         let leechers = 0;
 
-        const attrRegex = /<torznab:attr\s+name="([^"]+)"\s+value="([^"]+)"/gi;
+        // Servers vary: the namespace prefix isn't guaranteed, `value` sometimes
+        // precedes `name`, and single quotes are legal XML. Grab whole elements
+        // and pull each attribute out individually rather than assuming a layout.
+        const attrRegex = /<(?:\w+:)?attr\s[^>]*?\/?>/gi;
         let attrMatch;
         while ((attrMatch = attrRegex.exec(item)) !== null) {
-          const [, name, value] = attrMatch;
+          const name = xmlAttr(attrMatch[0], 'name');
+          const value = xmlAttr(attrMatch[0], 'value');
+          if (!name || value === null) continue;
           switch (name.toLowerCase()) {
             case 'magneturl': magnetUri = value; break;
             case 'infohash': infoHash = value; break;
@@ -324,21 +345,9 @@ export class SearchService {
     const normalMatch = xml.match(normalRegex);
     // Regular text content is entity-encoded ("&amp;", "&#39;", …) — decode it
     // so titles and links aren't shown/queried with raw entities.
-    if (normalMatch) return this.decodeEntities(normalMatch[1].trim());
+    if (normalMatch) return decodeEntities(normalMatch[1].trim());
 
     return null;
-  }
-
-  /** Decode the common XML/HTML entities found in feed titles and links. */
-  private decodeEntities(s: string): string {
-    return s
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
-      .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
-      .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)))
-      .replace(/&amp;/g, '&'); // last, so "&amp;lt;" doesn't become "<"
   }
 
   private async fetchJSON(url: string): Promise<any> {
@@ -346,34 +355,21 @@ export class SearchService {
     return JSON.parse(text);
   }
 
+  /**
+   * Fetch a provider response as text. Redirect hops are capped and resolved
+   * against the current URL, the body is size-capped, and the bytes are decoded
+   * with the declared charset — trackers that answer in windows-1251 used to
+   * come back as mojibake. See `utils/http-fetch`.
+   */
   private async fetchText(url: string, extraHeaders: Record<string, string> = {}): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const parsed = new URL(url);
-      const lib = parsed.protocol === 'https:' ? https : http;
-
-      const req = lib.get(url, {
-        headers: {
-          'User-Agent': `Havvn/${app.getVersion()} Search`,
-          ...extraHeaders,
-        },
-        timeout: 20000,
-      }, (res) => {
-        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-          this.fetchText(res.headers.location, extraHeaders).then(resolve).catch(reject);
-          return;
-        }
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode} from search provider`));
-          return;
-        }
-        let data = '';
-        res.on('data', (chunk: string) => { data += chunk; });
-        res.on('end', () => resolve(data));
-        res.on('error', reject);
-      });
-
-      req.on('error', reject);
-      req.on('timeout', () => { req.destroy(); reject(new Error('Search request timeout')); });
+    return httpFetchText(url, {
+      headers: {
+        'User-Agent': `Havvn/${app.getVersion()} Search`,
+        ...extraHeaders,
+      },
+      timeoutMs: FETCH_TIMEOUT_MS,
+      maxBytes: MAX_RESPONSE_BYTES,
+      what: 'search provider',
     });
   }
 }

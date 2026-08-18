@@ -928,6 +928,7 @@ export interface RSSItem {
   pubDate?: string;
   downloaded: boolean;
   size?: number;
+  seeds?: number;               // When the feed publishes one (torrent:seeds, nyaa:seeders)
   feedId: string;
 }
 
