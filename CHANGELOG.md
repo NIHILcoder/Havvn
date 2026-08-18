@@ -4,6 +4,58 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+The player leaves the room and gets a window of its own — with a mixing desk.
+
+### Added
+- **Music and video open in their own window.** Opening a track no longer takes
+  over the room's middle column: it opens a real window you can put on the other
+  monitor, while the room keeps showing the file list. One button brings it back
+  inside, closing the window brings it back too, and the position, the pause and
+  the volume survive the trip in both directions. The same button detaches the
+  player in Downloads. Turn it off in the sound settings if you want it inline.
+- **Sound settings for the music player.** A five-band equaliser with presets
+  (Flat, Bass, Vocal, Rock, Electronic), pre-gain, loudness levelling for a queue
+  of mixed recordings, repeat and shuffle, and an output device. Everything is
+  remembered — including across tracks, windows and sessions. The visualiser reads
+  the spectrum AFTER the equaliser, so the bars show what actually leaves the
+  player.
+- **Previous and next track in the transport.** Previous restarts the current
+  track once it is past the first few seconds, the way every music player does.
+
+### Changed
+- **The player windows wear Havvn's chrome, not Windows'.** The player already
+  draws its own header with the file name and its controls, so the OS caption above
+  it was a second bar saying the same thing. The header is the title bar now: drag
+  it to move the window, and minimise/maximise/close sit at its right edge.
+- **The app's window does not shrink below 1200×700 any more.** The three room
+  columns need 200 + 380 + 300 pixels plus the left navigation to hold their
+  content; below that the file list lost its height to a wrapped toolbar and the
+  chat box began breaking words mid-syllable.
+
+### Fixed
+- **Leaving the player's tab no longer stops the music.** The strip looked like
+  tabs, but clicking the other one ended the session — which is the opposite of why
+  music is in a room at all. The player keeps playing, keeps its place in the
+  queue, and keeps the room in sync while you browse the files. (Screen share still
+  closes when you leave it: an unwatched stream costs the person sharing it.)
+- **The file list scrolls again.** It has been unable to scroll since 3.0.2: the
+  change that took the frame off the panels deleted the list's scroll region along
+  with it, so a long list simply grew past the column and was cut off.
+- **The player stops painting over itself in a narrow column.** The visualiser held
+  a fixed 300px whatever the room gave it, so in a squeezed column it was drawn
+  straight over the transport, the listeners and the queue.
+- **Two widened side columns can no longer crush the middle one.** Dragged to their
+  maximum they left the stage 288px on a 1400px window; they now give width back as
+  the window narrows, instead of taking it all from the column doing the work.
+- **A detached track no longer plays silently.** A new window is a fresh page as
+  far as Chromium is concerned, and it muted the player to allow it to start.
+- **Smaller things that had stopped fitting:** the listeners' avatars were squeezed
+  to slivers by the reaction bar, the reaction bar wrapped onto three rows inside a
+  short player, the queue took more of the player than the picture did, and the
+  file filters stacked into five rows that left the list no room at all.
+
 ## [3.0.2] - 2026-08-17
 
 The room's three columns, made to look like three of the same thing.
