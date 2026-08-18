@@ -10,6 +10,32 @@
   border-top: 1px solid var(--color-border-subtle);
 }
 
+/* ── Narrow ───────────────────────────────────────────────────────────────
+   Every item in this row is `flex-shrink: 0` and the scrubber floors at 60px, so
+   the bar has a hard minimum around 450px and no wrap: below that it simply grew
+   past its container and drew over whatever was beside it. Nothing here wraps to a
+   second line — a transport that changes height as you resize is worse than one
+   that drops what it can spare — so the row sheds, in order of how little it costs.
+   The container is the PLAYER (`container: player / inline-size`), not the bar:
+   an element cannot query itself, and this way one block serves the room stage,
+   the downloads player and both of their pop-out windows. */
+@container player (max-width: 560px) {
+  /* The slider goes, the mute BUTTON stays: level is a preference you set once,
+     mute is what you reach for mid-track. */
+  .pc-vol { display: none; }
+  /* Elapsed stays, total goes — the scrubber already shows how much is left. */
+  .pc-duration { display: none; }
+  .pc { gap: var(--space-2); padding: 8px 10px; }
+}
+@container player (max-width: 420px) {
+  /* At this width the remaining buttons are the whole bar. Speed is a setting you
+     change once a session; the time readout costs 42px that the scrubber uses
+     better. */
+  .pc-rate-wrap { display: none; }
+  .pc-time { display: none; }
+  .pc { gap: 4px; padding: 6px 8px; }
+}
+
 .pc-btn {
   display: grid;
   place-items: center;
@@ -184,3 +210,7 @@
   .pc-vol { display: none; }
   .pc-duration { display: none; }
 }
+
+/* "Previous" is the skip glyph mirrored — one path, two directions, and no second
+   icon to keep in step with the first. */
+.pc-flip { transform: scaleX(-1); }

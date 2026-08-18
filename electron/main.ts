@@ -23,6 +23,7 @@ import {
   wantsCursorPlacement, dockWindowBoundsAtCursor,
   type PopoutDenyReason,
 } from '../shared/dock-windows';
+import { PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME } from '../shared/player-windows';
 
 
 // Load environment variables
@@ -597,8 +598,15 @@ async function createWindow(): Promise<void> {
 
   mainWindow = new BrowserWindow({
     ...restoredBounds(),
-    minWidth: 800,
-    minHeight: 600,
+    // The floor is the ROOM's three-column layout, and it is measured rather than
+    // guessed. The room gets the window minus ~310px of left navigation, and the
+    // three columns need 200 (rail) + 380 (files/player) + 300 (chat) + gutters to
+    // hold their content: below that the file list loses its height to a wrapped
+    // toolbar and the chat composer breaks words mid-syllable. 800 was far enough
+    // under that to guarantee both. The stacked one-column rules stay for the
+    // surfaces that are genuinely narrow — torn-off panels and player windows.
+    minWidth: 1200,
+    minHeight: 700,
     // Custom HUD title bar (renderer draws it): frameless on Windows/Linux with
     // our own window controls; hiddenInset on macOS keeps the native traffic
     // lights but frees the bar for our chrome. Kills the OS accent-coloured frame.
@@ -685,6 +693,11 @@ async function createWindow(): Promise<void> {
     width: 460, height: 700, minWidth: 320, minHeight: 380,
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : { frame: false }),
   };
+  // Same platform treatment the dock pool gets: no frame on Windows/Linux, inset
+  // traffic lights on macOS.
+  const PLAYER_CHROME: Electron.BrowserWindowConstructorOptions = process.platform === 'darwin'
+    ? { titleBarStyle: 'hiddenInset' as const }
+    : { frame: false };
   const POPOUTS: Record<string, Electron.BrowserWindowConstructorOptions> = {
     'havvn-theme-editor': { width: 480, height: 900, minWidth: 360, minHeight: 480 },
     // 'havvn-room-chat' is DELETED with RoomChat's bespoke pop-out: chat is an
@@ -692,6 +705,24 @@ async function createWindow(): Promise<void> {
     // Removing the name here is what stops a stale renderer from reopening the old
     // window; its saved BOUNDS live on as the seed for dock slot 1 below.
     'havvn-voice-settings': { width: 540, height: 760, minWidth: 420, minHeight: 520 },
+    // The player, detached. NOT a dock slot: it is about a file, not about a place
+    // in the room's layout, and as a seventh dock panel it would trip the pool
+    // invariant (`POOL_SIZE >= PANELS.length - 1`) for no benefit.
+    // FRAMELESS, like the dock windows and for the same reason: the player draws a
+    // header of its own (name, settings, watch-together, dock-back) and an OS
+    // caption above it is a second, mismatched bar saying the same thing. The
+    // header carries the app's own minimise/maximise/close cluster and the drag
+    // region, so nothing the frame did is lost. macOS keeps its traffic lights.
+    [PLAYER_VIDEO_FRAME]: { width: 960, height: 560, minWidth: 480, minHeight: 300, ...PLAYER_CHROME },
+    // Audio rides above other windows on purpose: music is what people play WHILE
+    // doing something else, and a bar that keeps sinking behind the thing they are
+    // doing is a bar they have to hunt for. Small enough that it costs no screen.
+    [PLAYER_AUDIO_FRAME]: { width: 420, height: 150, minWidth: 320, minHeight: 120, alwaysOnTop: true, ...PLAYER_CHROME },
+    // The room's stage, torn off: roomier than the downloads player because it
+    // carries the watchers strip, the reaction bar and (for music) the queue —
+    // and because watching together is the case where a second monitor earns its
+    // keep. Never alwaysOnTop: this one is what the user is looking AT.
+    [PLAYER_ROOM_FRAME]: { width: 1040, height: 660, minWidth: 520, minHeight: 340, ...PLAYER_CHROME },
     ...Object.fromEntries(DOCK_WINDOW_FRAME_NAMES.map((n) => [n, DOCK_WINDOW_OPTS])),
   };
   // Saved pop-out bounds, clamped: reject undersized ones, keep the position
@@ -995,6 +1026,15 @@ function applyContentSecurityPolicy(): void {
 async function initializeApp(): Promise<void> {
   // Disable GPU shader disk cache to prevent cache access errors
   app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+
+  // Chromium's autoplay rules are written for web PAGES, where a video that
+  // starts talking at you is an ambush. Here every stream plays because the user
+  // clicked a file, and the policy misfires in exactly the places that matter: a
+  // player torn into its OWN window is a fresh document with no activation of its
+  // own, so Chromium MUTES it to let it autoplay — measured, the detached track
+  // played silently with the mute button lit. Same for a window restored on
+  // launch. The switch is app-wide because child windows inherit it.
+  app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
   // Identify the app to Windows so notifications/toasts are attributed correctly
   // (otherwise they appear to come from "electron.exe", and may be suppressed).

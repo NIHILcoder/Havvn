@@ -17,6 +17,11 @@
 }
 
 .player-modal {
+  /* The query container the transport bar sizes against — the same name the room
+     stage uses, so PlayerControls.css carries ONE narrow block for both players
+     and for either of them in a window. inline-size for the reason spelled out
+     there: height is a @media matter here, not a container one. */
+  container: player / inline-size;
   display: flex;
   flex-direction: column;
   width: min(1000px, 100%);
@@ -467,3 +472,72 @@
 .player-cast-tv-btn:hover { border-color: var(--color-border-hover); }
 .player-cast-tv-btn.stop { color: var(--color-error); }
 .player-cast-tv-btn.stop:hover { border-color: var(--color-error); }
+
+/* ── Detached: the player in its own OS window ────────────────────────
+   The WINDOW is the frame now, so the card cosmetics (border, radius,
+   shadow, rise animation, the 90vh clamp that centred it over a backdrop)
+   all come off and the modal fills its host edge to edge. The hint strip
+   goes with them: a window the user deliberately tore off should spend its
+   pixels on the picture, and everything explanatory is still in the app. */
+.player-modal.detached {
+  width: 100%;
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+.player-modal.detached .player-note { display: none; }
+
+/* Fill the window instead of 70vh of it — same treatment as fullscreen. */
+.player-modal.detached-video .player-stage { flex: 1; min-height: 0; justify-content: center; }
+.player-modal.detached-video .player-video {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+  object-fit: contain;
+}
+
+/* Audio detaches as a compact bar (420×150): a title and a transport. The
+   record sleeve and the file chips need room this shape does not have. */
+.player-modal.detached-audio .player-files,
+.player-modal.detached-audio .player-audio-art { display: none; }
+.player-modal.detached-audio .player-body { align-items: stretch; background: none; }
+.player-modal.detached-audio .player-audio {
+  flex: 1;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+}
+.player-modal.detached-audio .player-audio-name {
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* Narrow: the header buttons keep their icons and drop their words (each already
+   carries a title), and the file strip stops competing for the width. */
+@container player (max-width: 560px) {
+  .player-cast-label { display: none; }
+  .player-header { gap: 0.5rem; padding: 0.6rem; }
+}
+
+/* Short: the hint strip and the file chips are the two things a cramped window
+   can lose without losing the player. */
+@media (max-height: 460px) {
+  .player-modal .player-note { display: none; }
+  .player-modal .player-files { max-height: 64px; overflow-y: auto; }
+}
+
+/* Detached, the header is the window's title bar (the pop-out is frameless), so it
+   drags the window and every control in it opts back out. */
+.popout-root .player-header { -webkit-app-region: drag; padding-right: 0; }
+.popout-root .player-header button,
+.popout-root .player-header input,
+.popout-root .player-header .player-sub-wrap,
+.popout-root .player-header .player-sub-panel { -webkit-app-region: no-drag; }

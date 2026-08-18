@@ -14,6 +14,10 @@ import { QRCode } from './QRCode';
 import { PlayerControls, fmtTime } from './PlayerControls';
 import { useTranslation } from '../utils/i18nContext';
 import { classifyMediaKind, MediaKind } from '../../shared/media';
+import { playerFrameName } from '../../shared/player-windows';
+import { usePopout } from '../utils/popout';
+import { WindowControls } from '../layout/WindowControls';
+import { useDockWindowMaximized, minimizeDockWindow, toggleMaximizeDockWindow } from '../pages/rooms/dock/dockWindowChrome';
 import './StreamPlayerModal.css';
 
 interface StreamFile {
@@ -384,6 +388,29 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
 
   const activeFile = files.find((f) => f.index === activeIndex) || null;
 
+  // ── detached window ────────────────────────────────────────────────────────
+  // Its own window rather than a dock panel: this is about a FILE, not about a
+  // place in the room's layout. Two frame names, one per shape — bounds are saved
+  // per frame, so a shared one would reopen the compact audio bar at the size of
+  // the last film (shared/player-windows.ts).
+  const frameName = playerFrameName(kind);
+  const { popout, portal, openPopout, closePopout } = usePopout(
+    frameName,
+    activeFile?.name || downloadName,
+  );
+  // Drives the maximise/restore glyph in the header, queried per window.
+  const winMaximized = useDockWindowMaximized(frameName, popout !== null);
+  const detached = popout !== null;
+  /**
+   * Where playback was when the media element was last torn down, so the copy
+   * that mounts in the other window can pick it up.
+   *
+   * Moving the subtree between documents does NOT move the element: React builds
+   * a new one for the new container, and a fresh media element starts at zero with
+   * its resource selection re-run. Without this, detaching a film restarts it.
+   */
+  const resumeRef = useRef<{ time: number; paused: boolean; muted: boolean; volume: number } | null>(null);
+
   // ── Serial mode ─────────────────────────────────────────────────────────────
   // Episode order = natural sort over the torrent-relative PATH ("E2" before
   // "E10", and Season 1 before Season 2 — basenames alone repeat across season
@@ -609,6 +636,73 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     }).catch(() => {});
   }, [activeCastUrl]);
 
+  /**
+   * Take the media element as it mounts, and put playback back where it was if a
+   * move is in flight. Restoring is gated on a PENDING request rather than done on
+   * every mount, because `key={streamUrl}` also remounts for a new file (next
+   * episode) and for the transcode switch — carrying 14:02 into the next episode
+   * would be a bug wearing the same clothes as the fix.
+   */
+  const attachMedia = useCallback((el: HTMLMediaElement | null) => {
+    setMediaEl(el);
+    const want = resumeRef.current;
+    if (!el || !want) return;
+    resumeRef.current = null;
+    const apply = () => {
+      // Seeking before metadata is ignored by the element, so wait for it when the
+      // fresh copy has not read the stream yet.
+      try { el.currentTime = want.time; } catch { /* not seekable */ }
+      // The sound state is part of the move: a new element in another document is
+      // born at the defaults, and Chromium may mute it to permit autoplay.
+      el.muted = want.muted;
+      el.volume = want.volume;
+      if (want.paused) el.pause();
+      else void el.play().catch(() => { /* autoplay refused — the controls still work */ });
+    };
+    if (el.readyState >= 1) apply();
+    else el.addEventListener('loadedmetadata', apply, { once: true });
+  }, []);
+
+  /** A new source cancels a pending resume: the position belonged to the old one. */
+  useEffect(() => { resumeRef.current = null; }, [streamUrl]);
+
+  /** Detach / bring home. Playback is captured HERE, before React tears the old
+   *  element down, so both directions of the move keep their place. */
+  const toggleDetach = useCallback(() => {
+    if (mediaEl) resumeRef.current = { time: mediaEl.currentTime, paused: mediaEl.paused, muted: mediaEl.muted, volume: mediaEl.volume };
+    if (detached) closePopout();
+    else if (!openPopout()) resumeRef.current = null; // denied — nothing moved
+  }, [mediaEl, detached, closePopout, openPopout]);
+
+  /** The window's own X bypasses the button, and the element then remounts
+   *  inline — capture the position there too, or the film restarts from zero. */
+  useEffect(() => {
+    if (!popout) return;
+    const capture = () => {
+      if (mediaEl) resumeRef.current = { time: mediaEl.currentTime, paused: mediaEl.paused, muted: mediaEl.muted, volume: mediaEl.volume };
+    };
+    popout.addEventListener('beforeunload', capture);
+    return () => popout.removeEventListener('beforeunload', capture);
+  }, [popout, mediaEl]);
+
+  /** The window is named after what is playing, and playlists move on. */
+  useEffect(() => {
+    if (!popout || popout.closed) return;
+    popout.document.title = activeFile?.name || downloadName;
+  }, [popout, activeFile, downloadName]);
+
+  const detachButton = (
+    <button
+      className={`pc-btn${detached ? ' active' : ''}`}
+      onClick={toggleDetach}
+      title={t(detached ? 'player.attach' : 'player.detach')}
+      aria-label={t(detached ? 'player.attach' : 'player.detach')}
+      type="button"
+    >
+      <Icon name={detached ? 'minimize' : 'external-link'} size={15} />
+    </button>
+  );
+
   const renderBody = useCallback(() => {
     if (error) {
       return (
@@ -633,12 +727,12 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
           <div className="player-audio-name">{activeFile?.name}</div>
           <audio
             key={streamUrl}
-            ref={(el) => setMediaEl(el)}
+            ref={attachMedia}
             src={streamUrl}
             autoPlay
             onError={handleMediaError}
           />
-          <PlayerControls media={mediaEl} seekable={!transcoded} />
+          <PlayerControls media={mediaEl} seekable={!transcoded}>{detachButton}</PlayerControls>
         </div>
       );
     }
@@ -646,7 +740,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       <div className="player-stage" ref={stageRef}>
         <video
           key={streamUrl}
-          ref={(el) => setMediaEl(el)}
+          ref={attachMedia}
           src={streamUrl}
           autoPlay
           className="player-video"
@@ -656,6 +750,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
           {subUrl && <track kind="subtitles" src={subUrl} srcLang="und" label={t('player.subtitles')} default />}
         </video>
         <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded}>
+          {detachButton}
           {nextFile && (
             <button className="pc-btn" onClick={playNext} title={t('player.nextEpisode')}>
               <Icon name="skip-forward" size={15} />
@@ -664,11 +759,13 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
         </PlayerControls>
       </div>
     );
-  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext]);
+  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext, detachButton]);
 
-  return (
-    <div className="player-overlay" onClick={onClose}>
-      <div className="player-modal" onClick={(e) => e.stopPropagation()}>
+  const shell = (
+    <div
+      className={`player-modal${detached ? ` detached detached-${kind === 'audio' ? 'audio' : 'video'}` : ''}`}
+      onClick={(e) => e.stopPropagation()}
+    >
         <div className="player-header">
           <div className="player-title">
             <span className="player-title-icon">
@@ -787,9 +884,27 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             <Icon name="tv" size={16} />
             <span className="player-cast-label">{t('player.cast')}</span>
           </button>
-          <button className="player-close" onClick={onClose} title={t('player.close')}>
-            <Icon name="x" size={18} />
-          </button>
+          {/* Detached, this row IS the window's title bar — the window is frameless,
+              so the app's own controls replace the caption buttons. Close still means
+              close the PLAYER; the button beside it is what brings it back inline. */}
+          {detached ? (
+            <WindowControls
+              maximized={winMaximized}
+              labels={{
+                minimize: t('window.minimize'),
+                maximize: t('window.maximize'),
+                restore: t('window.restore'),
+                close: t('player.close'),
+              }}
+              onMinimize={() => minimizeDockWindow(frameName)}
+              onToggleMaximize={() => toggleMaximizeDockWindow(frameName)}
+              onClose={onClose}
+            />
+          ) : (
+            <button className="player-close" onClick={onClose} title={t('player.close')}>
+              <Icon name="x" size={18} />
+            </button>
+          )}
         </div>
 
         {castOpen && (
@@ -898,8 +1013,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
           <Icon name="info" size={12} />
           <span>{transcoded ? t('player.transcodingNote') : t('player.note')}</span>
         </div>
-      </div>
     </div>
+  );
+
+  // Detached: the WINDOW is the frame, so no backdrop and no click-to-close — the
+  // whole point of moving out is that what is behind stays usable. Closing the
+  // window (its X, or the button) brings this straight back inline, playing.
+  return portal(shell) ?? (
+    <div className="player-overlay" onClick={onClose}>{shell}</div>
   );
 };
 
