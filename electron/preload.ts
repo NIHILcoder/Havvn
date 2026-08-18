@@ -29,6 +29,7 @@ import {
   ScreenSourceInfo,
   LanDiagReport,
   LanRoomPrefs,
+  SearchProgress,
 } from '../shared/types';
 import type {
   ConfigField,
@@ -646,12 +647,20 @@ const api: IpcApi = {
 
   // Priority 2: Search
   search: {
-    query: (query: string, category?: string) => ipcRenderer.invoke('search:query', query, category),
+    start: (query: string, category?: string, refresh?: boolean) =>
+      ipcRenderer.invoke('search:start', query, category, refresh),
+    cancel: (searchId: string) => ipcRenderer.invoke('search:cancel', searchId),
+    onProgress: (callback: (progress: SearchProgress) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, progress: SearchProgress) => callback(progress);
+      ipcRenderer.on('search:progress', handler);
+      return () => { ipcRenderer.removeListener('search:progress', handler); };
+    },
     getProviders: () => ipcRenderer.invoke('search:getProviders'),
     addProvider: (provider: any) => ipcRenderer.invoke('search:addProvider', provider),
     updateProvider: (id: string, updates: any) => ipcRenderer.invoke('search:updateProvider', id, updates),
     removeProvider: (id: string) => ipcRenderer.invoke('search:removeProvider', id),
     testProvider: (id: string) => ipcRenderer.invoke('search:testProvider', id),
+    getCategories: () => ipcRenderer.invoke('search:getCategories'),
     checkPython: (force?: boolean) => ipcRenderer.invoke('search:checkPython', force),
   },
 

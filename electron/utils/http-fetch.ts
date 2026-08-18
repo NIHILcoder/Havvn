@@ -42,6 +42,8 @@ export interface HttpFetchOptions {
   maxRedirects?: number;
   /** Label used in error messages, e.g. "RSS feed" -> "HTTP 404 fetching RSS feed". */
   what?: string;
+  /** Abort the request (and any redirect still to come) — used to cancel a search. */
+  signal?: AbortSignal;
 }
 
 export interface HttpFetchResult {
@@ -77,14 +79,19 @@ export function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<
     maxBytes = MAX_BYTES,
     maxRedirects = MAX_REDIRECTS,
     what = 'resource',
+    signal,
   } = options;
 
   const fetchOnce = (current: string, hopsLeft: number): Promise<HttpFetchResult> =>
     new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new Error(`Cancelled fetching ${what}`));
+        return;
+      }
       const parsed = assertFetchableUrl(current);
       const lib = parsed.protocol === 'https:' ? https : http;
 
-      const req = lib.get(current, { headers, timeout: timeoutMs }, (res: IncomingMessage) => {
+      const req = lib.get(current, { headers, timeout: timeoutMs, signal }, (res: IncomingMessage) => {
         const status = res.statusCode || 0;
 
         if (status >= 300 && status < 400 && res.headers.location) {

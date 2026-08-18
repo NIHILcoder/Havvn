@@ -91,6 +91,7 @@ const en: Dict = {
   // Search-provider test (main → renderer, shown as test result)
   'search.providerNotFound': 'Provider not found',
   'search.providerWorking': 'Provider is working correctly',
+  'search.providerNoSearch': 'Reachable, but this indexer reports that search is unavailable',
 
   // Application menu (the native File/Edit/View/Window bar)
   'menu.file': 'File',
@@ -184,6 +185,7 @@ const ru: Dict = {
   // Search-provider test (main → renderer, shown as test result)
   'search.providerNotFound': 'Провайдер не найден',
   'search.providerWorking': 'Провайдер работает корректно',
+  'search.providerNoSearch': 'Доступен, но индексер сообщает, что поиск недоступен',
 
   // Application menu (the native File/Edit/View/Window bar)
   'menu.file': 'Файл',

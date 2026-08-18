@@ -970,10 +970,56 @@ export interface SearchResult {
   size: number;
   seeds: number;
   leechers: number;
-  provider: string;
+  provider: string;              // The configured provider (e.g. "Jackett")
+  // The indexer the row actually came from. Jackett/Prowlarr aggregate many
+  // trackers behind one provider, and without this every row was labelled with
+  // the aggregator's name.
+  indexer?: string;
   publishDate?: string;
   category?: string;
   infoHash?: string;
+  detailsUrl?: string;           // Release page, for "open in browser"
+  grabs?: number;                // Times downloaded, where the indexer reports it
+  freeleech?: boolean;           // Torznab downloadvolumefactor === 0
+  imdbId?: string;
+}
+
+/** A category an indexer actually supports, from its Torznab caps document. */
+export interface SearchCategory {
+  id: string;
+  name: string;
+}
+
+/**
+ * What a provider says it can do. The category dropdown was hardcoded newznab
+ * numbers, which mean nothing to a custom or script provider and only
+ * coincidentally match a given Torznab indexer.
+ */
+export interface SearchCaps {
+  categories: SearchCategory[];
+  /** False when the indexer's caps document says plain search is unavailable. */
+  searchAvailable: boolean;
+}
+
+/** How one provider fared during a search — rendered as a status strip. */
+export interface ProviderStat {
+  name: string;
+  count: number;
+  ms: number;
+  error?: string;
+  state: 'pending' | 'ok' | 'failed';
+}
+
+/**
+ * One push from an in-flight search. Providers report as they finish rather
+ * than the whole search waiting on its slowest member (a script provider can
+ * take 25 seconds); the final message carries `done`.
+ */
+export interface SearchProgress {
+  searchId: string;
+  done: boolean;
+  stat?: ProviderStat;
+  results?: SearchResult[];
 }
 
 // IP Blocklist types
@@ -1206,12 +1252,21 @@ export interface IpcApi {
 
   // Search
   search: {
-    query: (query: string, category?: string) => Promise<SearchResult[]>;
+    // Kicks off a search and returns immediately with the providers that will
+    // report; results arrive over onProgress until `done`. A recent identical
+    // search is replayed from cache unless `refresh` is set.
+    start: (query: string, category?: string, refresh?: boolean)
+      => Promise<{ searchId: string; providers: string[]; cached?: boolean }>;
+    cancel: (searchId: string) => Promise<void>;
+    onProgress: (callback: (progress: SearchProgress) => void) => () => void;
     getProviders: () => Promise<SearchProvider[]>;
     addProvider: (provider: Omit<SearchProvider, 'id'>) => Promise<SearchProvider>;
     updateProvider: (id: string, updates: Partial<SearchProvider>) => Promise<SearchProvider>;
     removeProvider: (id: string) => Promise<void>;
     testProvider: (id: string) => Promise<{ success: boolean; message: string }>;
+    // Categories the enabled indexers actually support, unioned. Empty when no
+    // provider can answer t=caps (custom/script only).
+    getCategories: () => Promise<SearchCategory[]>;
     checkPython: (force?: boolean) => Promise<PythonStatus>;
   };
 

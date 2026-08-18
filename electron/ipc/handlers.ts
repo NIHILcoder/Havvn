@@ -2190,10 +2190,24 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // Priority 2: Search
   // ============================================================
 
-  ipcMain.handle('search:query', wrapHandler('search:query',
-    async (_event, query: string, category?: string) => {
+  ipcMain.handle('search:start', wrapHandler('search:start',
+    async (event, query: string, category?: string, refresh?: boolean) => {
       const searchSvc = getSearchService();
-      return searchSvc.search(query, category);
+      // Reply to the window that asked — the app has pop-out windows, so the
+      // main window is not necessarily the one running the search.
+      const sender = event.sender;
+      return searchSvc.start(
+        query,
+        category,
+        progress => { if (!sender.isDestroyed()) sender.send('search:progress', progress); },
+        { refresh: !!refresh }
+      );
+    }
+  ));
+
+  ipcMain.handle('search:cancel', wrapHandler('search:cancel',
+    async (_event, searchId: string) => {
+      getSearchService().cancel(searchId);
     }
   ));
 
@@ -2201,16 +2215,27 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async () => db.getSearchProviders()
   ));
 
+  // Any change to the provider set invalidates cached results — otherwise
+  // enabling an indexer replays an answer from before it existed.
   ipcMain.handle('search:addProvider', wrapHandler('search:addProvider',
-    async (_event, provider) => db.addSearchProvider(provider)
+    async (_event, provider) => {
+      getSearchService().clearResultCache();
+      return db.addSearchProvider(provider);
+    }
   ));
 
   ipcMain.handle('search:updateProvider', wrapHandler('search:updateProvider',
-    async (_event, id: string, updates) => db.updateSearchProvider(id, updates)
+    async (_event, id: string, updates) => {
+      getSearchService().clearResultCache();
+      return db.updateSearchProvider(id, updates);
+    }
   ));
 
   ipcMain.handle('search:removeProvider', wrapHandler('search:removeProvider',
-    async (_event, id: string) => db.removeSearchProvider(id)
+    async (_event, id: string) => {
+      getSearchService().clearResultCache();
+      return db.removeSearchProvider(id);
+    }
   ));
 
   ipcMain.handle('search:testProvider', wrapHandler('search:testProvider',
@@ -2218,6 +2243,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       const searchSvc = getSearchService();
       return searchSvc.testProvider(id);
     }
+  ));
+
+  ipcMain.handle('search:getCategories', wrapHandler('search:getCategories',
+    async () => getSearchService().getCategories()
   ));
 
   ipcMain.handle('search:checkPython', wrapHandler('search:checkPython',
