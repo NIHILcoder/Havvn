@@ -1,0 +1,121 @@
+/* Compact torrent search, opened from the add flow. */
+
+.tsm-form {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.tsm-input-wrap {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.tsm-input {
+  flex: 1;
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--color-text-primary);
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.tsm-options {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.tsm-options-label {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.tsm-category {
+  min-width: 160px;
+}
+
+.tsm-error {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  font-size: 0.82rem;
+  color: var(--color-error);
+  background: rgba(var(--color-error-rgb), 0.1);
+  border-radius: var(--radius-md);
+}
+
+.tsm-empty {
+  margin-top: 1.25rem;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.tsm-results {
+  max-height: 44vh;
+  margin-top: 0.85rem;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.tsm-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tsm-row:last-child { border-bottom: none; }
+.tsm-row:hover { background: var(--color-bg-hover); }
+.tsm-row.added { background: rgba(var(--color-success-rgb), 0.06); }
+
+.tsm-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.tsm-title {
+  font-size: 0.85rem;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tsm-meta {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.15rem;
+  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+}
+
+.tsm-seeds { color: var(--color-success); }
+
+.tsm-provider {
+  font-family: var(--font-family);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tsm-added {
+  display: inline-flex;
+  color: var(--color-success);
+}

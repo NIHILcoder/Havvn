@@ -25,6 +25,7 @@ export type { ContextMenuItem } from './ContextMenu';
 export { DropdownMenu } from './DropdownMenu';
 export type { DropdownMenuItem } from './DropdownMenu';
 export { TorrentFileSelector } from './TorrentFileSelector';
+export { TorrentSearchModal } from './TorrentSearchModal';
 export { SpeedGraph } from './SpeedGraph';
 export { CreateTorrentModal } from './CreateTorrentModal';
 export { FileTreeSelector } from './FileTreeSelector';

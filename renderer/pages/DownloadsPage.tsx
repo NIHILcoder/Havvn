@@ -17,6 +17,7 @@ import {
   ContextMenu,
   DropdownMenu,
   TorrentFileSelector,
+  TorrentSearchModal,
   TorrentControlModal,
   StreamPlayerModal,
   ShareLinkModal,
@@ -123,6 +124,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
   // File selector state
   const [showFileSelector, setShowFileSelector] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [pendingTorrent, setPendingTorrent] = useState<{
     path?: string;
     magnetUri?: string;
@@ -917,6 +919,16 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               },
             ]}
           />
+          {/* Searching is wanted at the moment of adding, not on another page. */}
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<Icon name="search" size={16} />}
+            onClick={() => setShowSearch(true)}
+            title={t('downloads.searchTorrents')}
+          >
+            <span className="btn-text">{t('downloads.searchTorrents')}</span>
+          </Button>
           <Button
             variant="primary"
             size="sm"
@@ -1194,6 +1206,20 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           <FilePreview
             downloadId={previewId}
             onClose={() => setPreviewId(null)}
+          />
+        )}
+
+        {/* Search torrents without leaving the add flow */}
+        {showSearch && (
+          <TorrentSearchModal
+            onClose={() => setShowSearch(false)}
+            onAdd={async (request) => {
+              const download = await window.api.addDownload(request);
+              // De-dupe by id, as the file-selector path does: a re-add of a
+              // previously failed download returns the EXISTING record.
+              setDownloads((prev) => [download, ...prev.filter((d) => d.id !== download.id)]);
+              addToast(`${t('downloads.downloadAddedWith')} ${request.name || ''}`.trim(), 'success');
+            }}
           />
         )}
 
