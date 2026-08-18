@@ -8,6 +8,7 @@ import { Download, DownloadStats } from '../../shared/types';
 import { canPause } from '../../shared/state-machine';
 import { Button, Icon, ProgressBar, StatusBadge, HealthBadge } from '../components';
 import { ViewMode, formatBytes, formatSpeed, formatEta, getTypeIcon, looksLikeMedia, isAudioMedia } from './download-helpers';
+import { useCategories, categoryLabel } from '../utils/useCategories';
 import { useTranslation } from '../utils/i18nContext';
 
 export interface DownloadItemProps {
@@ -51,6 +52,8 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
 }) => {
   const { t } = useTranslation();
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const categories = useCategories();
+  const categoryColor = categories.find(c => c.id === download.category)?.color;
 
   const currentStats = stats || {
     progress: download.progress,
@@ -134,7 +137,13 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
               {download.totalSize > 0 && <span>{formatBytes(download.totalSize)}</span>}
               {/* Shown only at widths where the progress column is dropped */}
               <span className="trow-sub-pct">{(progress * 100).toFixed(0)}%</span>
-              {download.category && <span className="trow-sub-cat">{download.category}</span>}
+              {/* Stored as a Category id, so resolve it — the raw "movies" was
+                  never meant to be the label the user reads. */}
+              {download.category && (
+                <span className="trow-sub-cat" style={categoryColor ? { color: categoryColor } : undefined}>
+                  {categoryLabel(categories, download.category)}
+                </span>
+              )}
               {status === 'error' && download.lastError && (
                 <span className="error-text truncate">{download.lastError}</span>
               )}

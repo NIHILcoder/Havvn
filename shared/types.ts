@@ -896,6 +896,12 @@ export interface AddDownloadRequest {
   savePath?: string;
   name?: string;
   selectedFiles?: number[];
+  // Category to file the download under, as a Category id ("movies", …). Lands
+  // on Download.category. Without this, everything grabbed by RSS or added from
+  // search arrived unlabelled and had to be sorted by hand.
+  categoryId?: string;
+  // Add without starting: the record shows up paused and waits to be resumed.
+  paused?: boolean;
 }
 
 export interface TorrentInfo {
@@ -919,6 +925,8 @@ export interface RSSFeed {
   lastChecked?: string;         // ISO date string
   intervalMinutes: number;      // Check interval
   savePath?: string;            // Override default save path
+  categoryId?: string;          // Category applied to everything this feed grabs
+  addPaused?: boolean;          // Grab into the list without starting the transfer
 }
 
 export interface RSSItem {

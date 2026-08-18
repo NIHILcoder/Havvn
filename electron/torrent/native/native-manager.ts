@@ -431,9 +431,14 @@ export class NativeTorrentManager {
     savePath?: string;
     name?: string;
     selectedFiles?: number[];
+    /** Category id to file the record under (Download.category). */
+    categoryId?: string;
+    /** Add without starting — the daemon takes it in stopped. */
+    paused?: boolean;
   }): Promise<Download> {
     await this.whenReady();
     const savePath = params.savePath || this.settings.defaultDownloadDir;
+    const paused = !!params.paused;
 
     // Magnet duplicates are knowable before touching the daemon.
     if (params.sourceType === 'magnet') {
@@ -455,9 +460,9 @@ export class NativeTorrentManager {
       let res;
       if (localTorrentPath) {
         const buf = fs.readFileSync(localTorrentPath);
-        res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: savePath, paused: false, filesUnwanted: unwantedIndices(buf, params.selectedFiles) });
+        res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: savePath, paused, filesUnwanted: unwantedIndices(buf, params.selectedFiles) });
       } else {
-        res = await this.rpc!.torrentAdd({ filename: params.sourceUri, downloadDir: savePath, paused: false });
+        res = await this.rpc!.torrentAdd({ filename: params.sourceUri, downloadDir: savePath, paused });
       }
       const hash = res.hashString.toLowerCase();
       if (res.duplicate) throw new TorrentError('This torrent is already in your downloads', 'DUPLICATE', this.hashToId.get(hash));
@@ -469,11 +474,12 @@ export class NativeTorrentManager {
         sourceUri: params.sourceUri,
         torrentFilePath: storedTorrentPath ?? undefined,
         savePath,
-        status: 'downloading',
+        status: paused ? 'paused' : 'downloading',
         selectedFiles: params.selectedFiles,
+        category: params.categoryId ?? null,
       });
       download.infoHash = hash;
-      download.status = 'downloading';
+      download.status = paused ? 'paused' : 'downloading';
       await db.updateDownloadField(download.id, 'infoHash', hash);
       this.records.set(download.id, download);
       this.link(download.id, hash);

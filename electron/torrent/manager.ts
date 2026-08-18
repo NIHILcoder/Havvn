@@ -775,6 +775,10 @@ export class TorrentManager {
     savePath?: string;
     name?: string;
     selectedFiles?: number[];
+    /** Category id to file the record under (Download.category). */
+    categoryId?: string;
+    /** Add without starting — the record lands paused and waits to be resumed. */
+    paused?: boolean;
   }): Promise<Download> {
     await this.whenReady();
     log.info('Adding new download', { sourceType: params.sourceType, name: params.name });
@@ -964,15 +968,18 @@ export class TorrentManager {
         log.debug('Torrent file copied', { from: localTorrentPath, to: torrentFilePath });
       }
 
-      // Create database record
+      // Create database record. A paused add starts life in 'paused' rather than
+      // 'queued': processQueue() only ever promotes queued rows, so the record
+      // simply sits in the list until the user resumes it.
       const download = await db.createDownload({
         name: params.name || 'Loading...',
         sourceType: params.sourceType,
         sourceUri,
         torrentFilePath,
         savePath,
-        status: 'queued',
+        status: params.paused ? 'paused' : 'queued',
         selectedFiles: params.selectedFiles,
+        category: params.categoryId ?? null,
       });
 
       log.info('Download record created', { id: download.id });

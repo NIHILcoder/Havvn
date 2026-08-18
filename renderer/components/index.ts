@@ -10,6 +10,7 @@ export { LogoMark, Wordmark } from './Logo';
 export { Button } from './Button';
 export { Input } from './Input';
 export { Select } from './Select';
+export { CategorySelect } from './CategorySelect';
 export { Toggle } from './Toggle';
 export { ProgressBar } from './ProgressBar';
 export { HealthBadge } from './HealthBadge';

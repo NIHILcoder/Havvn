@@ -184,6 +184,47 @@
   color: var(--color-text-muted);
 }
 
+/* Where a result goes when its Download button is pressed. */
+.results-add-options {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.add-options-label {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.results-add-options .add-category-select {
+  min-width: 150px;
+}
+
+.add-paused-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.add-paused-btn:hover {
+  color: var(--color-text-primary);
+  border-color: var(--color-border-hover);
+}
+
+.add-paused-btn.active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
 .results-table {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);

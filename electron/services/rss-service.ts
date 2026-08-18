@@ -211,6 +211,8 @@ export class RSSService {
           sourceUri: item.link,
           name: item.title,
           savePath: feed.savePath,
+          categoryId: feed.categoryId,
+          paused: feed.addPaused,
         });
 
         grabbed.push(item.guid);

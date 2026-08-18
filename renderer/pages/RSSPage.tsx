@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { RSSFeed, RSSItem } from '../../shared/types';
-import { Button, Icon, EmptyState, useConfirm } from '../components';
+import { Button, Icon, EmptyState, CategorySelect, useConfirm } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import './RSSPage.css';
 
@@ -137,6 +137,8 @@ const RSSPage: React.FC = () => {
           filter: editingFeed.filter,
           intervalMinutes: editingFeed.intervalMinutes ?? 30,
           savePath: editingFeed.savePath,
+          categoryId: editingFeed.categoryId,
+          addPaused: editingFeed.addPaused,
         });
       }
       setEditingFeed(null);
@@ -154,10 +156,16 @@ const RSSPage: React.FC = () => {
     setDownloadingGuids(prev => new Set(prev).add(item.guid));
     try {
       const isMagnet = item.link.startsWith('magnet:');
+      // A hand-picked item still belongs to its feed, so it inherits the same
+      // save path, category and paused choice the feed's auto-download uses.
+      const feed = feeds.find(f => f.id === item.feedId);
       await window.api.addDownload({
         sourceType: isMagnet ? 'magnet' : 'torrent_file',
         sourceUri: item.link,
         name: item.title,
+        savePath: feed?.savePath,
+        categoryId: feed?.categoryId,
+        paused: feed?.addPaused,
       });
       await window.api.rss.markDownloaded(item.guid);
       await loadItems(selectedFeed || undefined);
@@ -512,6 +520,17 @@ const RSSPage: React.FC = () => {
 
             <div className="form-field">
               <label>
+                {t('rss.form.category')}
+                <span className="field-hint">{t('rss.form.categoryHint')}</span>
+              </label>
+              <CategorySelect
+                value={editingFeed.categoryId || ''}
+                onChange={id => setEditingFeed(f => ({ ...f, categoryId: id || undefined }))}
+              />
+            </div>
+
+            <div className="form-field">
+              <label>
                 {t('rss.form.filter')}
                 <span className="field-hint">{t('rss.form.filterHint')}</span>
               </label>
@@ -548,6 +567,21 @@ const RSSPage: React.FC = () => {
                   role="switch"
                   aria-checked={!!editingFeed.autoDownload}
                   onClick={() => setEditingFeed(f => ({ ...f, autoDownload: !f?.autoDownload }))}
+                >
+                  <span className="toggle-slider" />
+                </button>
+              </label>
+              <label className="toggle-field">
+                <div>
+                  <span>{t('rss.form.addPaused')}</span>
+                  <span className="field-hint">{t('rss.form.addPausedHint')}</span>
+                </div>
+                <button
+                  type="button"
+                  className={`toggle-switch ${editingFeed.addPaused ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={!!editingFeed.addPaused}
+                  onClick={() => setEditingFeed(f => ({ ...f, addPaused: !f?.addPaused }))}
                 >
                   <span className="toggle-slider" />
                 </button>

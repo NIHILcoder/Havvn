@@ -5,7 +5,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react';
 import { SearchResult, SearchProvider, PythonStatus } from '../../shared/types';
-import { Button, Icon, EmptyState, useConfirm } from '../components';
+import { Button, Icon, EmptyState, CategorySelect, useConfirm } from '../components';
 import { cleanError } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
 import './SearchPage.css';
@@ -38,6 +38,11 @@ const SearchPage: React.FC = () => {
   const [hasSearched, setHasSearched] = useState(false);
   const [downloading, setDownloading] = useState<Set<number>>(new Set());
   const [addedIndices, setAddedIndices] = useState<Set<number>>(new Set());
+  // Where the Download button on a result row files the torrent, and whether it
+  // starts. Kept for the whole result list rather than per row — the choice is
+  // almost always the same for everything a single search turned up.
+  const [addCategoryId, setAddCategoryId] = useState('');
+  const [addPaused, setAddPaused] = useState(false);
 
   // Providers tab state
   const [showProviders, setShowProviders] = useState(false);
@@ -111,6 +116,8 @@ const SearchPage: React.FC = () => {
         sourceType: result.magnetUri ? 'magnet' : 'torrent_file',
         sourceUri: uri,
         name: result.title,
+        categoryId: addCategoryId || undefined,
+        paused: addPaused || undefined,
       });
 
       setAddedIndices(prev => new Set(prev).add(idx));
@@ -273,6 +280,26 @@ const SearchPage: React.FC = () => {
             <div className="search-results">
               <div className="search-results-header">
                 <span className="results-count">{results.length} {t('search.results')}</span>
+                {/* Governs what the Download button on every row below does. */}
+                <div className="results-add-options">
+                  <span className="add-options-label">{t('search.addTo')}</span>
+                  <CategorySelect
+                    value={addCategoryId}
+                    onChange={setAddCategoryId}
+                    className="add-category-select"
+                  />
+                  <button
+                    type="button"
+                    className={`add-paused-btn ${addPaused ? 'active' : ''}`}
+                    role="switch"
+                    aria-checked={addPaused}
+                    title={t('search.addPausedHint')}
+                    onClick={() => setAddPaused(p => !p)}
+                  >
+                    <Icon name="pause" size={13} />
+                    {t('search.addPaused')}
+                  </button>
+                </div>
               </div>
               <div className="results-table">
                 <div className="results-thead">
