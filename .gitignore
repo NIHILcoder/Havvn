@@ -73,6 +73,7 @@ rel-created.json
 rel-payload.json
 *.output
 .claude/
+themes/
 
 # ── Local website mockup (kept out of the repo) ─────────────
 website/
