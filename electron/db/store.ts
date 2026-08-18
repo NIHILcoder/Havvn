@@ -19,7 +19,7 @@
  */
 
 import Store from 'electron-store';
-import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
+import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, RSSRule, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
@@ -56,6 +56,9 @@ interface DownloadsSchema {
 interface RssSchema {
   rssFeeds: RSSFeed[];
   rssItems: RSSItem[];
+  rssRules: RSSRule[];
+  /** Set once the per-feed `filter` fields have been turned into rules. */
+  rssRulesMigrated?: boolean;
 }
 
 interface BlocklistSchema {
@@ -261,7 +264,7 @@ const downloadsStore = new Store<DownloadsSchema>({
 
 const rssStore = new Store<RssSchema>({
   name: 'rss',
-  defaults: { rssFeeds: [], rssItems: [] },
+  defaults: { rssFeeds: [], rssItems: [], rssRules: [] },
 });
 
 const blocklistStore = new Store<BlocklistSchema>({
@@ -1526,6 +1529,10 @@ export async function getRSSItems(feedId?: string): Promise<RSSItem[]> {
   return feedId ? items.filter(i => i.feedId === feedId) : items;
 }
 
+/** Items kept per feed, and how long anything is kept at all. */
+const MAX_ITEMS_PER_FEED = 1000;
+const ITEM_RETENTION_DAYS = 30;
+
 /**
  * Merge fetched items into the store (deduped by guid).
  * Returns only the items that were actually new — callers use this to
@@ -1536,11 +1543,115 @@ export async function saveRSSItems(items: RSSItem[]): Promise<RSSItem[]> {
   // Merge: only add new items (by guid)
   const existingGuids = new Set(existing.map(i => i.guid));
   const newItems = items.filter(i => !existingGuids.has(i.guid));
-  const merged = [...existing, ...newItems];
-  // Keep last 5000 items total
-  const trimmed = merged.slice(-5000);
-  rssStore.set('rssItems', trimmed);
+  rssStore.set('rssItems', pruneItems([...existing, ...newItems]));
   return newItems;
+}
+
+/**
+ * Trim stored items by age and per-feed count.
+ *
+ * The old rule was a single `slice(-5000)` across every feed, so one busy feed
+ * pushed a quiet feed's history out entirely. Budgets are per feed now, and
+ * anything older than the retention window goes regardless — except items still
+ * worth acting on (undownloaded and not dismissed), which survive the age sweep
+ * so a feed checked rarely doesn't lose its backlog.
+ */
+function pruneItems(items: RSSItem[]): RSSItem[] {
+  const cutoff = Date.now() - ITEM_RETENTION_DAYS * 86400000;
+
+  const byAge = items.filter(item => {
+    if (!item.pubDate) return true; // undated — only the per-feed cap applies
+    const published = Date.parse(item.pubDate);
+    if (!Number.isFinite(published)) return true;
+    if (published >= cutoff) return true;
+    return !item.downloaded && !item.ignored;
+  });
+
+  // Keep insertion order within a feed and drop from the front (oldest first).
+  const counts = new Map<string, number>();
+  for (const item of byAge) counts.set(item.feedId, (counts.get(item.feedId) || 0) + 1);
+
+  const overflow = new Map<string, number>();
+  for (const [feedId, count] of counts) {
+    if (count > MAX_ITEMS_PER_FEED) overflow.set(feedId, count - MAX_ITEMS_PER_FEED);
+  }
+  if (overflow.size === 0) return byAge;
+
+  return byAge.filter(item => {
+    const toDrop = overflow.get(item.feedId);
+    if (!toDrop) return true;
+    overflow.set(item.feedId, toDrop - 1);
+    return false;
+  });
+}
+
+// === RSS Rules ===
+
+export async function getRSSRules(): Promise<RSSRule[]> {
+  return rssStore.get('rssRules') ?? [];
+}
+
+export async function addRSSRule(rule: Omit<RSSRule, 'id'>): Promise<RSSRule> {
+  const rules = rssStore.get('rssRules') ?? [];
+  const newRule: RSSRule = { ...rule, id: uuidv4() };
+  rules.push(newRule);
+  rssStore.set('rssRules', rules);
+  return newRule;
+}
+
+export async function updateRSSRule(id: string, updates: Partial<RSSRule>): Promise<RSSRule> {
+  const rules = rssStore.get('rssRules') ?? [];
+  const idx = rules.findIndex((r: RSSRule) => r.id === id);
+  if (idx === -1) throw new Error(`RSS rule not found: ${id}`);
+  rules[idx] = { ...rules[idx], ...updates, id };
+  rssStore.set('rssRules', rules);
+  return rules[idx];
+}
+
+export async function removeRSSRule(id: string): Promise<void> {
+  const rules = (rssStore.get('rssRules') ?? []).filter((r: RSSRule) => r.id !== id);
+  rssStore.set('rssRules', rules);
+}
+
+/**
+ * Turn each feed's legacy `filter` into an equivalent rule, once.
+ *
+ * Auto-download used to be a per-feed regex; without this, upgrading would
+ * silently stop every working subscription. The feed's own `filter`,
+ * `autoDownload`, `savePath`, `categoryId` and `addPaused` become one rule
+ * scoped to that feed, which is exactly what it did before.
+ */
+export async function migrateRSSFiltersToRules(): Promise<number> {
+  if (rssStore.get('rssRulesMigrated')) return 0;
+
+  const feeds: RSSFeed[] = rssStore.get('rssFeeds') ?? [];
+  const rules: RSSRule[] = rssStore.get('rssRules') ?? [];
+
+  let created = 0;
+  for (const feed of feeds) {
+    // Only feeds that actually auto-downloaded had behaviour worth preserving.
+    if (!feed.autoDownload) continue;
+    if (rules.some(r => r.feedIds.length === 1 && r.feedIds[0] === feed.id)) continue;
+
+    rules.push({
+      id: uuidv4(),
+      name: feed.name,
+      enabled: true,
+      feedIds: [feed.id],
+      // The old filter was always a regex, so the migrated rule must be too —
+      // reinterpreting it as wildcards would change what it matches.
+      mode: 'regex',
+      include: feed.filter || '',
+      savePath: feed.savePath,
+      categoryId: feed.categoryId,
+      addPaused: feed.addPaused,
+    });
+    created++;
+  }
+
+  rssStore.set('rssRules', rules);
+  rssStore.set('rssRulesMigrated', true);
+  return created;
 }
 
 /**
@@ -1574,19 +1685,53 @@ export async function markRSSItemDownloaded(guid: string): Promise<void> {
  * brought 40 new torrents cost 40 full serializations.
  */
 export async function markRSSItemsDownloaded(guids: string[]): Promise<void> {
-  if (guids.length === 0) return;
+  return setRSSItemFlag(guids, 'downloaded', true);
+}
+
+/** Mark items read (or unread) — drives the unread badge. */
+export async function markRSSItemsRead(guids: string[], read = true): Promise<void> {
+  return setRSSItemFlag(guids, 'read', read);
+}
+
+/** Dismiss items: kept in the store so they can't come back, hidden from the list. */
+export async function markRSSItemsIgnored(guids: string[], ignored = true): Promise<void> {
+  return setRSSItemFlag(guids, 'ignored', ignored);
+}
+
+/** Mark every stored item of a feed (or of all feeds) as read. */
+export async function markFeedRead(feedId?: string): Promise<number> {
+  const items: RSSItem[] = rssStore.get('rssItems') ?? [];
+  let changed = 0;
+  for (const item of items) {
+    if (feedId && item.feedId !== feedId) continue;
+    if (!item.read) {
+      item.read = true;
+      changed++;
+    }
+  }
+  if (changed > 0) rssStore.set('rssItems', items);
+  return changed;
+}
+
+function setRSSItemFlag(
+  guids: string[],
+  flag: 'downloaded' | 'read' | 'ignored',
+  value: boolean
+): Promise<void> {
+  if (guids.length === 0) return Promise.resolve();
   const wanted = new Set(guids);
   const items: RSSItem[] = rssStore.get('rssItems') ?? [];
 
   let changed = false;
   for (const item of items) {
-    if (wanted.has(item.guid) && !item.downloaded) {
-      item.downloaded = true;
+    if (wanted.has(item.guid) && item[flag] !== value) {
+      item[flag] = value;
       changed = true;
     }
   }
 
   if (changed) rssStore.set('rssItems', items);
+  return Promise.resolve();
 }
 
 // === Search Providers ===

@@ -4,10 +4,11 @@
  */
 
 import { app } from 'electron';
-import { logger, httpFetchText } from '../utils';
+import { logger, httpFetch, decodeBody } from '../utils';
 import * as db from '../db/store';
-import { RSSFeed, RSSItem } from '../../shared/types';
+import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { parseFeed } from '../../shared/feed-parse';
+import { ruleCoversFeed, selectForRule, rememberKeys } from '../../shared/rss-rules';
 import { getTorrentManager } from '../torrent';
 
 const log = logger.child('RSSService');
@@ -27,6 +28,19 @@ function jitter(intervalMs: number): number {
   return Math.max(60_000, Math.round(intervalMs + (Math.random() * 2 - 1) * spread));
 }
 
+/** Cap on how far a failing feed's interval is stretched. */
+const MAX_BACKOFF_MULTIPLIER = 16;
+
+/**
+ * How long to wait before the next attempt. A feed that keeps failing doubles
+ * its interval each time, up to 16×, so a dead URL is retried occasionally
+ * rather than on the dot every thirty minutes forever.
+ */
+function backoffMultiplier(consecutiveFailures = 0): number {
+  if (consecutiveFailures <= 0) return 1;
+  return Math.min(2 ** consecutiveFailures, MAX_BACKOFF_MULTIPLIER);
+}
+
 export class RSSService {
   private checkTimers: Map<string, NodeJS.Timeout> = new Map();
   private initialized = false;
@@ -34,6 +48,11 @@ export class RSSService {
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+
+    // Existing per-feed filters become rules before anything runs, so an upgrade
+    // doesn't silently stop working subscriptions.
+    const migrated = await db.migrateRSSFiltersToRules();
+    if (migrated > 0) log.info(`Migrated ${migrated} feed filters into rules`);
 
     const feeds = await db.getRSSFeeds();
     log.info(`Initializing RSS service with ${feeds.length} feeds`);
@@ -75,18 +94,25 @@ export class RSSService {
     // Clear existing timer
     this.clearTimer(feed.id);
 
-    const intervalMs = jitter((feed.intervalMinutes || 30) * 60 * 1000);
+    const base = (feed.intervalMinutes || 30) * 60 * 1000;
+    const multiplier = backoffMultiplier(feed.consecutiveFailures);
+    const intervalMs = jitter(base * multiplier);
 
     const timer = setInterval(async () => {
       try {
         await this.checkFeed(feed.id);
       } catch (err) {
-        log.error('RSS feed check failed', { feedId: feed.id, error: err });
+        // checkFeed already recorded the failure and rescheduled with backoff.
+        log.debug('Scheduled RSS check failed', { feedId: feed.id, error: String(err) });
       }
     }, intervalMs);
 
     this.checkTimers.set(feed.id, timer);
-    log.debug('Scheduled RSS feed check', { feedId: feed.id, intervalMinutes: feed.intervalMinutes });
+    log.debug('Scheduled RSS feed check', {
+      feedId: feed.id,
+      intervalMinutes: feed.intervalMinutes,
+      backoff: multiplier > 1 ? multiplier : undefined,
+    });
   }
 
   private clearTimer(feedId: string): void {
@@ -135,26 +161,106 @@ export class RSSService {
     // First check ever for this feed? Then everything in it is history, not
     // news — store the items but never auto-download the whole backlog.
     const isFirstCheck = !feed.lastChecked;
+    const checkedAt = new Date().toISOString();
 
-    const xml = await this.fetchFeed(feed.url);
-    const items = parseFeed(xml, feedId);
-
-    // Apply filter if set
-    const filtered = feed.filter ? this.filterItems(items, feed.filter) : items;
-
-    // Save and learn which items are actually NEW (not seen on a prior check)
-    const newItems = await db.saveRSSItems(filtered);
-
-    // Update lastChecked
-    await db.updateRSSFeed(feedId, { lastChecked: new Date().toISOString() });
-
-    // Auto-download only items that appeared after the feed was added
-    if (feed.autoDownload && !isFirstCheck && newItems.length > 0) {
-      await this.autoDownload(feed, newItems);
+    let fetched;
+    try {
+      fetched = await this.fetchFeed(feed);
+    } catch (err) {
+      // Record the failure on the feed itself and let the caller see it too.
+      const message = err instanceof Error ? err.message : String(err);
+      const failures = (feed.consecutiveFailures || 0) + 1;
+      await db.updateRSSFeed(feedId, {
+        lastChecked: checkedAt,
+        lastStatus: 'failed',
+        lastError: message,
+        consecutiveFailures: failures,
+      });
+      // Back off so a dead feed isn't hammered on its normal interval.
+      this.scheduleCheck({ ...feed, consecutiveFailures: failures });
+      log.warn('RSS feed check failed', { name: feed.name, error: message, failures });
+      throw err;
     }
 
-    log.info('RSS feed checked', { name: feed.name, items: filtered.length, newItems: newItems.length });
-    return filtered;
+    // 304: the server says nothing changed, so there is nothing to parse.
+    if (fetched.notModified) {
+      await db.updateRSSFeed(feedId, {
+        lastChecked: checkedAt,
+        lastStatus: 'unchanged',
+        lastError: undefined,
+        consecutiveFailures: 0,
+      });
+      log.debug('RSS feed unchanged (304)', { name: feed.name });
+      return db.getRSSItems(feedId);
+    }
+
+    const items = parseFeed(fetched.body, feedId);
+
+    // Save and learn which items are actually NEW (not seen on a prior check)
+    const newItems = await db.saveRSSItems(items);
+
+    const wasFailing = (feed.consecutiveFailures || 0) > 0;
+    await db.updateRSSFeed(feedId, {
+      lastChecked: checkedAt,
+      lastStatus: 'ok',
+      lastError: undefined,
+      consecutiveFailures: 0,
+      lastItemCount: items.length,
+      etag: fetched.etag,
+      lastModified: fetched.lastModified,
+    });
+    // A feed that recovered goes back to its normal interval from its backoff.
+    if (wasFailing) this.scheduleCheck({ ...feed, consecutiveFailures: 0 });
+
+    // Rules act only on items that appeared after the feed was added.
+    if (!isFirstCheck && newItems.length > 0) {
+      await this.applyRules(feed, newItems);
+    }
+
+    log.info('RSS feed checked', { name: feed.name, items: items.length, newItems: newItems.length });
+    return items;
+  }
+
+  /**
+   * Run every enabled rule that covers this feed over the new items.
+   *
+   * Replaces the old one-filter-per-feed path: a rule can span feeds, several
+   * rules can share a feed, and each brings its own destination.
+   */
+  private async applyRules(feed: RSSFeed, newItems: RSSItem[]): Promise<void> {
+    const rules = (await db.getRSSRules()).filter(r => r.enabled && ruleCoversFeed(r, feed.id));
+    if (rules.length === 0) return;
+
+    // One item can satisfy two rules; download it once, for the first that claims it.
+    const claimed = new Set<string>();
+
+    for (const rule of rules) {
+      const candidates = newItems.filter(i => !claimed.has(i.guid));
+      if (candidates.length === 0) break;
+
+      const { selected, newKeys, skippedDuplicates } = selectForRule(rule, candidates);
+      if (selected.length === 0) {
+        if (skippedDuplicates.length > 0) {
+          log.debug('Rule skipped duplicate episodes', { rule: rule.name, skipped: skippedDuplicates.length });
+        }
+        continue;
+      }
+
+      for (const item of selected) claimed.add(item.guid);
+
+      const grabbed = await this.downloadForRule(rule, feed, selected);
+      await db.updateRSSRule(rule.id, {
+        lastMatch: new Date().toISOString(),
+        grabbedKeys: rememberKeys(rule, newKeys),
+      });
+
+      log.info('RSS rule matched', {
+        rule: rule.name,
+        feed: feed.name,
+        grabbed: grabbed.length,
+        skippedDuplicates: skippedDuplicates.length,
+      });
+    }
   }
 
   async checkAllFeeds(): Promise<void> {
@@ -165,58 +271,66 @@ export class RSSService {
   }
 
   /**
-   * Fetch a feed document as text. Redirect hops are capped and resolved against
-   * the current URL, the body is size-capped, and the bytes are decoded with the
+   * Fetch a feed document. Redirect hops are capped and resolved against the
+   * current URL, the body is size-capped, and the bytes are decoded with the
    * charset the server or the XML declaration states — see `utils/http-fetch`.
+   *
+   * Conditional: the validators from the last successful fetch are sent back, so
+   * an unchanged feed answers 304 with no body at all.
    */
-  private async fetchFeed(url: string): Promise<string> {
-    return httpFetchText(url, {
-      headers: {
-        'User-Agent': `Havvn/${app.getVersion()} RSS Reader`,
-        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-      },
+  private async fetchFeed(feed: RSSFeed): Promise<{
+    body: string;
+    notModified: boolean;
+    etag?: string;
+    lastModified?: string;
+  }> {
+    const headers: Record<string, string> = {
+      'User-Agent': `Havvn/${app.getVersion()} RSS Reader`,
+      'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+    };
+    if (feed.etag) headers['If-None-Match'] = feed.etag;
+    if (feed.lastModified) headers['If-Modified-Since'] = feed.lastModified;
+
+    const res = await httpFetch(feed.url, {
+      headers,
       timeoutMs: FETCH_TIMEOUT_MS,
       maxBytes: MAX_FEED_BYTES,
       what: 'RSS feed',
+      allowNotModified: true,
     });
-  }
 
-  private filterItems(items: RSSItem[], filter: string): RSSItem[] {
-    try {
-      const regex = new RegExp(filter, 'i');
-      return items.filter(item => regex.test(item.title));
-    } catch (err) {
-      log.warn('Invalid RSS filter regex', { filter, error: err });
-      return items;
+    if (res.status === 304) {
+      // Keep the validators we already had — 304 need not repeat them.
+      return { body: '', notModified: true, etag: feed.etag, lastModified: feed.lastModified };
     }
+
+    return {
+      body: decodeBody(res.body, String(res.headers['content-type'] || '')),
+      notModified: false,
+      etag: typeof res.headers.etag === 'string' ? res.headers.etag : undefined,
+      lastModified: typeof res.headers['last-modified'] === 'string' ? res.headers['last-modified'] : undefined,
+    };
   }
 
-  private async autoDownload(feed: RSSFeed, items: RSSItem[]): Promise<void> {
-    const existingItems = await db.getRSSItems(feed.id);
-    const downloadedGuids = new Set(existingItems.filter(i => i.downloaded).map(i => i.guid));
-
+  /** Add everything a rule selected, honouring its destination. */
+  private async downloadForRule(rule: RSSRule, feed: RSSFeed, items: RSSItem[]): Promise<string[]> {
     const manager = getTorrentManager();
-
-    // Collected and written once at the end: flagging each guid separately
-    // rewrote the entire item store per torrent.
     const grabbed: string[] = [];
 
     for (const item of items) {
-      if (downloadedGuids.has(item.guid)) continue;
-
       try {
         const isMagnet = item.link.startsWith('magnet:');
         await manager.addDownload({
           sourceType: isMagnet ? 'magnet' : 'torrent_file',
           sourceUri: item.link,
           name: item.title,
-          savePath: feed.savePath,
-          categoryId: feed.categoryId,
-          paused: feed.addPaused,
+          // The rule's destination wins; the feed's is the fallback.
+          savePath: rule.savePath || feed.savePath,
+          categoryId: rule.categoryId ?? feed.categoryId,
+          paused: rule.addPaused ?? feed.addPaused,
         });
-
         grabbed.push(item.guid);
-        log.info('RSS auto-downloaded', { title: item.title, feedName: feed.name });
+        log.info('RSS auto-downloaded', { title: item.title, rule: rule.name });
       } catch (err: any) {
         if (err?.code === 'DUPLICATE') {
           // Already in downloads — mark it so we don't retry on every check
@@ -228,6 +342,45 @@ export class RSSService {
     }
 
     await db.markRSSItemsDownloaded(grabbed);
+    return grabbed;
+  }
+
+  /**
+   * Run one rule over everything already stored — the "apply to existing items"
+   * action, and what makes a newly written rule able to pick up a backlog it
+   * would otherwise only see on the next post.
+   */
+  async runRuleNow(ruleId: string): Promise<{ grabbed: number; skipped: number }> {
+    const rules = await db.getRSSRules();
+    const rule = rules.find(r => r.id === ruleId);
+    if (!rule) throw new Error(`RSS rule not found: ${ruleId}`);
+
+    const feeds = await db.getRSSFeeds();
+    const items = (await db.getRSSItems()).filter(i => !i.downloaded && !i.ignored);
+
+    const { selected, newKeys, skippedDuplicates } = selectForRule(rule, items);
+    let grabbed = 0;
+
+    // Group by feed so each download still gets its feed's fallback settings.
+    for (const feed of feeds) {
+      const mine = selected.filter(i => i.feedId === feed.id);
+      if (mine.length === 0) continue;
+      grabbed += (await this.downloadForRule(rule, feed, mine)).length;
+    }
+
+    await db.updateRSSRule(rule.id, {
+      lastMatch: new Date().toISOString(),
+      grabbedKeys: rememberKeys(rule, newKeys),
+    });
+
+    log.info('RSS rule run manually', { rule: rule.name, grabbed, skipped: skippedDuplicates.length });
+    return { grabbed, skipped: skippedDuplicates.length };
+  }
+
+  /** What a rule would match among stored items — the editor's preview. */
+  async previewRule(rule: RSSRule): Promise<RSSItem[]> {
+    const items = await db.getRSSItems();
+    return selectForRule(rule, items).selected;
   }
 
   destroy(): void {

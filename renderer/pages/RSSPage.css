@@ -500,3 +500,167 @@
   border-color: var(--color-border-focus);
   box-shadow: var(--shadow-focus);
 }
+
+/* === Rules === */
+
+.rules-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.rules-desc {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--color-text-muted);
+}
+
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* Same skin as a feed row — they sit in the same page and read as siblings. */
+.rule-card {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  clip-path: var(--clip-cut);
+  transition: all 0.15s ease;
+}
+
+.rule-card:hover {
+  border-color: var(--color-accent-muted, var(--color-accent));
+}
+
+.rule-card.disabled {
+  opacity: 0.55;
+}
+
+.rule-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.rule-pattern {
+  margin: 0.15rem 0 0.3rem;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rule-pattern code {
+  padding: 0.05rem 0.3rem;
+  font-family: var(--font-family-mono);
+  background: var(--color-bg-tertiary);
+  border-radius: 3px;
+}
+
+.rule-exclude {
+  color: var(--color-text-muted);
+}
+
+/* A failing feed's reason, shown inline rather than only in the log. */
+.feed-meta-item.feed-error {
+  max-width: 320px;
+  color: var(--color-error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Wildcard / regex switch. */
+.mode-switch {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.mode-option {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  cursor: pointer;
+}
+
+.mode-option.active {
+  color: var(--color-text-primary);
+  background: var(--color-bg-secondary);
+}
+
+/* Explains where filtering went, in the form it used to live in. */
+.form-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  background: var(--color-bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.form-note-link {
+  font: inherit;
+  color: var(--color-accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* What the rule being edited matches right now. */
+.rule-preview {
+  margin-top: 0.5rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.rule-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.rule-preview-list {
+  max-height: 200px;
+  margin: 0.5rem 0 0;
+  padding-left: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.rule-preview-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0;
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rule-preview-more {
+  color: var(--color-text-muted);
+  font-style: italic;
+}

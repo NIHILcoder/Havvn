@@ -21,6 +21,7 @@
 
 import https from 'https';
 import http from 'http';
+import zlib from 'zlib';
 import { URL } from 'url';
 import { TextDecoder } from 'util';
 import { IncomingHttpHeaders, IncomingMessage } from 'http';
@@ -44,6 +45,12 @@ export interface HttpFetchOptions {
   what?: string;
   /** Abort the request (and any redirect still to come) — used to cancel a search. */
   signal?: AbortSignal;
+  /**
+   * Resolve instead of throwing on 304 Not Modified, so a conditional GET can
+   * report "unchanged" rather than looking like a failure. The result's body is
+   * empty in that case.
+   */
+  allowNotModified?: boolean;
 }
 
 export interface HttpFetchResult {
@@ -52,6 +59,23 @@ export interface HttpFetchResult {
   headers: IncomingHttpHeaders;
   /** The URL the body actually came from (after redirects). */
   url: string;
+}
+
+/**
+ * Undo Content-Encoding. A server that advertises an encoding it didn't apply is
+ * common enough that a failure here falls back to the raw bytes rather than
+ * failing the whole fetch.
+ */
+export function decompress(body: Buffer, contentEncoding: string): Buffer {
+  const encoding = contentEncoding.toLowerCase();
+  try {
+    if (encoding.includes('gzip')) return zlib.gunzipSync(body);
+    if (encoding.includes('deflate')) return zlib.inflateSync(body);
+    if (encoding.includes('br')) return zlib.brotliDecompressSync(body);
+  } catch {
+    // Not actually compressed — use what arrived.
+  }
+  return body;
 }
 
 /** Only ever talk HTTP(S) — never file:, data:, or anything a redirect suggests. */
@@ -80,7 +104,11 @@ export function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<
     maxRedirects = MAX_REDIRECTS,
     what = 'resource',
     signal,
+    allowNotModified = false,
   } = options;
+
+  // Ask for compression: feeds and API pages are text and compress heavily.
+  const requestHeaders = { 'Accept-Encoding': 'gzip, deflate', ...headers };
 
   const fetchOnce = (current: string, hopsLeft: number): Promise<HttpFetchResult> =>
     new Promise((resolve, reject) => {
@@ -91,8 +119,16 @@ export function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<
       const parsed = assertFetchableUrl(current);
       const lib = parsed.protocol === 'https:' ? https : http;
 
-      const req = lib.get(current, { headers, timeout: timeoutMs, signal }, (res: IncomingMessage) => {
+      const req = lib.get(current, { headers: requestHeaders, timeout: timeoutMs, signal }, (res: IncomingMessage) => {
         const status = res.statusCode || 0;
+
+        // 304 carries no body and is an answer, not a failure — the caller keeps
+        // whatever it had. It must be checked before the redirect range.
+        if (status === 304 && allowNotModified) {
+          res.resume();
+          resolve({ body: Buffer.alloc(0), status, headers: res.headers, url: current });
+          return;
+        }
 
         if (status >= 300 && status < 400 && res.headers.location) {
           res.resume(); // drain, or the socket is never released
@@ -132,7 +168,13 @@ export function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<
           chunks.push(chunk);
         });
         res.on('end', () => {
-          resolve({ body: Buffer.concat(chunks), status, headers: res.headers, url: current });
+          const raw = Buffer.concat(chunks);
+          resolve({
+            body: decompress(raw, String(res.headers['content-encoding'] || '')),
+            status,
+            headers: res.headers,
+            url: current,
+          });
         });
         res.on('error', reject);
       });

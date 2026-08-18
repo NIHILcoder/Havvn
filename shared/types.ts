@@ -927,6 +927,48 @@ export interface RSSFeed {
   savePath?: string;            // Override default save path
   categoryId?: string;          // Category applied to everything this feed grabs
   addPaused?: boolean;          // Grab into the list without starting the transfer
+
+  // Health. A feed that 404s used to look exactly like a healthy one.
+  lastError?: string;
+  lastStatus?: 'ok' | 'failed' | 'unchanged';
+  consecutiveFailures?: number; // Drives the retry backoff
+  lastItemCount?: number;
+
+  // Conditional GET, so an unchanged feed costs one 304 instead of the document.
+  etag?: string;
+  lastModified?: string;
+}
+
+/**
+ * An auto-download rule.
+ *
+ * Replaces the one-regex-per-feed arrangement, where a feed could carry exactly
+ * one filter going to exactly one path — you couldn't follow a show across two
+ * feeds, run two rules over one feed, or disable a rule without disabling the
+ * feed.
+ */
+export interface RSSRule {
+  id: string;
+  name: string;
+  enabled: boolean;
+  feedIds: string[];            // Empty = every feed
+  mode: 'wildcard' | 'regex';   // Wildcard by default; few people write regex
+  include: string;
+  exclude?: string;
+  minSize?: number;             // Bytes
+  maxSize?: number;
+  minSeeds?: number;
+  maxAgeDays?: number;
+  savePath?: string;
+  categoryId?: string;
+  addPaused?: boolean;
+  /** One copy per episode, whichever release group posts it. */
+  smartEpisode?: boolean;
+  /** Ignore anything before this point, e.g. "S02E03". */
+  startFrom?: string;
+  lastMatch?: string;           // ISO date of the most recent grab
+  /** Episode keys already taken, so a re-post isn't grabbed again. */
+  grabbedKeys?: string[];
 }
 
 export interface RSSItem {
@@ -935,6 +977,8 @@ export interface RSSItem {
   link: string;                 // Magnet or torrent URL
   pubDate?: string;
   downloaded: boolean;
+  read?: boolean;               // Seen by the user — drives the unread count
+  ignored?: boolean;            // Dismissed: kept for dedupe, hidden from the list
   size?: number;
   seeds?: number;               // When the feed publishes one (torrent:seeds, nyaa:seeders)
   feedId: string;
@@ -1248,6 +1292,19 @@ export interface IpcApi {
     getItems: (feedId: string) => Promise<RSSItem[]>;
     markDownloaded: (guid: string) => Promise<void>;
     clearItems: (feedId?: string, onlyDownloaded?: boolean) => Promise<{ removed: number }>;
+    markRead: (guids: string[], read?: boolean) => Promise<void>;
+    markFeedRead: (feedId?: string) => Promise<{ marked: number }>;
+    ignoreItems: (guids: string[], ignored?: boolean) => Promise<void>;
+
+    // Auto-download rules
+    getRules: () => Promise<RSSRule[]>;
+    addRule: (rule: Omit<RSSRule, 'id'>) => Promise<RSSRule>;
+    updateRule: (id: string, updates: Partial<RSSRule>) => Promise<RSSRule>;
+    removeRule: (id: string) => Promise<void>;
+    /** What this rule (saved or not) matches among stored items. */
+    previewRule: (rule: RSSRule) => Promise<RSSItem[]>;
+    /** Apply a saved rule to everything already stored. */
+    runRule: (id: string) => Promise<{ grabbed: number; skipped: number }>;
   };
 
   // Search

@@ -643,6 +643,15 @@ const api: IpcApi = {
     getItems: (feedId: string) => ipcRenderer.invoke('rss:getItems', feedId),
     markDownloaded: (guid: string) => ipcRenderer.invoke('rss:markDownloaded', guid),
     clearItems: (feedId?: string, onlyDownloaded?: boolean) => ipcRenderer.invoke('rss:clearItems', feedId, onlyDownloaded),
+    markRead: (guids: string[], read?: boolean) => ipcRenderer.invoke('rss:markRead', guids, read),
+    markFeedRead: (feedId?: string) => ipcRenderer.invoke('rss:markFeedRead', feedId),
+    ignoreItems: (guids: string[], ignored?: boolean) => ipcRenderer.invoke('rss:ignoreItems', guids, ignored),
+    getRules: () => ipcRenderer.invoke('rss:getRules'),
+    addRule: (rule: any) => ipcRenderer.invoke('rss:addRule', rule),
+    updateRule: (id: string, updates: any) => ipcRenderer.invoke('rss:updateRule', id, updates),
+    removeRule: (id: string) => ipcRenderer.invoke('rss:removeRule', id),
+    previewRule: (rule: any) => ipcRenderer.invoke('rss:previewRule', rule),
+    runRule: (id: string) => ipcRenderer.invoke('rss:runRule', id),
   },
 
   // Priority 2: Search

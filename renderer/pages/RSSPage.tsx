@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { RSSFeed, RSSItem } from '../../shared/types';
+import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { Button, Icon, EmptyState, CategorySelect, useConfirm } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import './RSSPage.css';
@@ -26,7 +26,25 @@ const formatBytes = (bytes?: number): string => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-type Tab = 'feeds' | 'items' | 'add';
+/** Dot colour for a feed row: disabled, failing, or healthy. */
+const feedStatusColor = (feed: RSSFeed): string => {
+  if (!feed.enabled) return '#6b7280';
+  if (feed.lastError) return '#ef4444';
+  return '#22c55e';
+};
+
+type Tab = 'feeds' | 'items' | 'add' | 'rules' | 'ruleEdit';
+
+/** A fresh rule: wildcard mode and the smart episode filter on, which is what
+ *  most people want and what regex-first defaults made hard to discover. */
+const newRule = (): Partial<RSSRule> => ({
+  name: '',
+  enabled: true,
+  feedIds: [],
+  mode: 'wildcard',
+  include: '',
+  smartEpisode: true,
+});
 
 const RSSPage: React.FC = () => {
   const { t } = useTranslation();
@@ -46,6 +64,134 @@ const RSSPage: React.FC = () => {
   // Edit/Add feed modal state
   const [editingFeed, setEditingFeed] = useState<Partial<RSSFeed> | null>(null);
   const [savingFeed, setSavingFeed] = useState(false);
+
+  // Rules
+  const [rules, setRules] = useState<RSSRule[]>([]);
+  const [editingRule, setEditingRule] = useState<Partial<RSSRule> | null>(null);
+  const [savingRule, setSavingRule] = useState(false);
+  const [runningRuleId, setRunningRuleId] = useState<string | null>(null);
+  // What the rule being edited would match right now, so it can be tuned
+  // against real items instead of guessed at.
+  const [rulePreview, setRulePreview] = useState<RSSItem[] | null>(null);
+
+  const loadRules = useCallback(async () => {
+    try {
+      setRules(await window.api.rss.getRules());
+    } catch (err) {
+      console.error('Failed to load RSS rules:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRules();
+  }, [loadRules]);
+
+  // Preview the rule as it is typed. Debounced — every keystroke otherwise runs
+  // the matcher over every stored item.
+  useEffect(() => {
+    if (!editingRule) {
+      setRulePreview(null);
+      return;
+    }
+    const rule = editingRule;
+    const timer = setTimeout(() => {
+      window.api.rss
+        .previewRule({
+          id: rule.id || 'preview',
+          name: rule.name || '',
+          enabled: true,
+          feedIds: rule.feedIds || [],
+          mode: rule.mode || 'wildcard',
+          include: rule.include || '',
+          exclude: rule.exclude,
+          minSize: rule.minSize,
+          maxSize: rule.maxSize,
+          minSeeds: rule.minSeeds,
+          maxAgeDays: rule.maxAgeDays,
+          smartEpisode: rule.smartEpisode,
+          startFrom: rule.startFrom,
+          // Deliberately not passing grabbedKeys: the preview should show what
+          // the rule matches, not what is left after past grabs.
+        })
+        .then(setRulePreview)
+        .catch(() => setRulePreview([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [editingRule]);
+
+  const handleSaveRule = async () => {
+    if (!editingRule?.name) return;
+    setSavingRule(true);
+    try {
+      const payload = {
+        name: editingRule.name || '',
+        enabled: editingRule.enabled ?? true,
+        feedIds: editingRule.feedIds || [],
+        mode: editingRule.mode || 'wildcard',
+        include: editingRule.include || '',
+        exclude: editingRule.exclude,
+        minSize: editingRule.minSize,
+        maxSize: editingRule.maxSize,
+        minSeeds: editingRule.minSeeds,
+        maxAgeDays: editingRule.maxAgeDays,
+        savePath: editingRule.savePath,
+        categoryId: editingRule.categoryId,
+        addPaused: editingRule.addPaused,
+        smartEpisode: editingRule.smartEpisode,
+        startFrom: editingRule.startFrom,
+        grabbedKeys: editingRule.grabbedKeys,
+      };
+      if (editingRule.id) {
+        await window.api.rss.updateRule(editingRule.id, payload);
+      } else {
+        await window.api.rss.addRule(payload);
+      }
+      setEditingRule(null);
+      await loadRules();
+      setTab('rules');
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    } finally {
+      setSavingRule(false);
+    }
+  };
+
+  const handleDeleteRule = async (id: string) => {
+    if (!(await confirm({ message: t('rss.rule.deleteConfirm'), danger: true }))) return;
+    try {
+      await window.api.rss.removeRule(id);
+      await loadRules();
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    }
+  };
+
+  const handleToggleRule = async (rule: RSSRule) => {
+    try {
+      await window.api.rss.updateRule(rule.id, { enabled: !rule.enabled });
+      await loadRules();
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    }
+  };
+
+  /** Apply a rule to the backlog already stored, not just to future posts. */
+  const handleRunRule = async (rule: RSSRule) => {
+    if (!(await confirm({ message: t('rss.rule.runConfirm') }))) return;
+    setRunningRuleId(rule.id);
+    try {
+      const { grabbed, skipped } = await window.api.rss.runRule(rule.id);
+      await loadRules();
+      await alert({
+        title: t('rss.rule.runDoneTitle'),
+        message: `${t('rss.rule.runDoneAdded')} ${grabbed}. ${t('rss.rule.runDoneSkipped')} ${skipped}.`,
+      });
+    } catch (err: any) {
+      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+    } finally {
+      setRunningRuleId(null);
+    }
+  };
 
   const loadFeeds = useCallback(async () => {
     try {
@@ -248,9 +394,17 @@ const RSSPage: React.FC = () => {
           <button className={`rss-tab ${tab === 'items' ? 'active' : ''}`} onClick={() => { setTab('items'); loadItems(selectedFeed || undefined); }}>
             {t('rss.tab.items')} {scopedItems.length > 0 && `(${scopedItems.length})`}
           </button>
+          <button className={`rss-tab ${tab === 'rules' ? 'active' : ''}`} onClick={() => { setTab('rules'); loadRules(); }}>
+            {t('rss.tab.rules')} {rules.length > 0 && `(${rules.length})`}
+          </button>
           {editingFeed !== null && (
             <button className={`rss-tab ${tab === 'add' ? 'active' : ''}`} onClick={() => setTab('add')}>
               {editingFeed.id ? t('rss.tab.edit') : t('rss.tab.add')}
+            </button>
+          )}
+          {editingRule !== null && (
+            <button className={`rss-tab ${tab === 'ruleEdit' ? 'active' : ''}`} onClick={() => setTab('ruleEdit')}>
+              {editingRule.id ? t('rss.rule.editTitle') : t('rss.rule.addTitle')}
             </button>
           )}
         </div>
@@ -270,9 +424,12 @@ const RSSPage: React.FC = () => {
               <div className="feeds-list">
                 {feeds.map(feed => (
                   <div key={feed.id} className={`feed-card ${!feed.enabled ? 'disabled' : ''}`}>
-                    <div className="feed-status-dot" style={{
-                      background: feed.enabled ? '#22c55e' : '#6b7280'
-                    }} />
+                    {/* A failing feed used to look exactly like a healthy one. */}
+                    <div
+                      className="feed-status-dot"
+                      title={feed.lastError || undefined}
+                      style={{ background: feedStatusColor(feed) }}
+                    />
                     <div className="feed-main">
                       <div className="feed-name">{feed.name}</div>
                       <div className="feed-url">{feed.url}</div>
@@ -287,16 +444,27 @@ const RSSPage: React.FC = () => {
                           <Icon name="refresh" size={11} />
                           {t('rss.every')} {feed.intervalMinutes}{t('rss.minutesShort')}
                         </span>
-                        {feed.autoDownload && (
+                        {/* How many rules act on this feed — auto-download is a
+                            property of rules now, not of the feed. */}
+                        {rules.filter(r => r.enabled && (r.feedIds.length === 0 || r.feedIds.includes(feed.id))).length > 0 && (
                           <span className="feed-meta-item auto-dl">
-                            <Icon name="download" size={11} />
-                            {t('rss.autoDownload')}
+                            <Icon name="filter" size={11} />
+                            {rules.filter(r => r.enabled && (r.feedIds.length === 0 || r.feedIds.includes(feed.id))).length}
+                            {' '}
+                            {t('rss.tab.rules').toLowerCase()}
                           </span>
                         )}
-                        {feed.filter && (
-                          <span className="feed-meta-item filter">
-                            <Icon name="filter" size={11} />
-                            {t('rss.filter')} <code>{feed.filter}</code>
+                        {feed.lastItemCount !== undefined && !feed.lastError && (
+                          <span className="feed-meta-item">
+                            <Icon name="list" size={11} />
+                            {feed.lastItemCount}
+                          </span>
+                        )}
+                        {feed.lastError && (
+                          <span className="feed-meta-item feed-error" title={feed.lastError}>
+                            <Icon name="alert-circle" size={11} />
+                            {feed.lastError}
+                            {(feed.consecutiveFailures || 0) > 1 && ` (×${feed.consecutiveFailures})`}
                           </span>
                         )}
                       </div>
@@ -467,6 +635,374 @@ const RSSPage: React.FC = () => {
           </>
         )}
 
+        {/* RULES TAB */}
+        {tab === 'rules' && (
+          <>
+            <div className="rules-toolbar">
+              <p className="rules-desc">{t('rss.rule.desc')}</p>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => { setEditingRule(newRule()); setTab('ruleEdit'); }}
+                icon={<Icon name="plus" size={14} />}
+              >
+                {t('rss.rule.add')}
+              </Button>
+            </div>
+
+            {rules.length === 0 ? (
+              <EmptyState
+                icon="filter"
+                title={t('rss.rule.empty.title')}
+                description={t('rss.rule.empty.desc')}
+              />
+            ) : (
+              <div className="rules-list">
+                {rules.map(rule => (
+                  <div key={rule.id} className={`rule-card ${!rule.enabled ? 'disabled' : ''}`}>
+                    <div className="feed-status-dot" style={{ background: rule.enabled ? '#22c55e' : '#6b7280' }} />
+                    <div className="rule-main">
+                      <div className="feed-name">{rule.name}</div>
+                      <div className="rule-pattern">
+                        <code>{rule.include || t('rss.rule.matchesEverything')}</code>
+                        {rule.exclude && <span className="rule-exclude"> − <code>{rule.exclude}</code></span>}
+                      </div>
+                      <div className="feed-meta">
+                        <span className="feed-meta-item">
+                          <Icon name="rss" size={11} />
+                          {rule.feedIds.length === 0
+                            ? t('rss.rule.allFeeds')
+                            : rule.feedIds
+                                .map(id => feeds.find(f => f.id === id)?.name)
+                                .filter(Boolean)
+                                .join(', ') || t('rss.rule.allFeeds')}
+                        </span>
+                        {rule.smartEpisode && (
+                          <span className="feed-meta-item auto-dl">
+                            <Icon name="check" size={11} />
+                            {t('rss.rule.smart')}
+                          </span>
+                        )}
+                        {rule.startFrom && (
+                          <span className="feed-meta-item">
+                            <Icon name="clock" size={11} />
+                            {t('rss.rule.from')} {rule.startFrom}
+                          </span>
+                        )}
+                        {rule.lastMatch && (
+                          <span className="feed-meta-item">
+                            <Icon name="download" size={11} />
+                            {formatDate(rule.lastMatch)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="feed-actions">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        loading={runningRuleId === rule.id}
+                        onClick={() => handleRunRule(rule)}
+                        title={t('rss.rule.runHint')}
+                        icon={<Icon name="play" size={14} />}
+                      >
+                        {t('rss.rule.run')}
+                      </Button>
+                      <button
+                        className="feed-edit-btn"
+                        onClick={() => { setEditingRule({ ...rule }); setTab('ruleEdit'); }}
+                        title={t('rss.edit')}
+                      >
+                        <Icon name="edit-2" size={14} />
+                      </button>
+                      <button
+                        className={`feed-toggle-btn ${rule.enabled ? 'on' : 'off'}`}
+                        onClick={() => handleToggleRule(rule)}
+                        title={rule.enabled ? t('rss.disable') : t('rss.enable')}
+                      >
+                        <Icon name={rule.enabled ? 'eye' : 'eye-off'} size={14} />
+                      </button>
+                      <button
+                        className="feed-delete-btn"
+                        onClick={() => handleDeleteRule(rule.id)}
+                        title={t('rss.delete')}
+                      >
+                        <Icon name="trash" size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* RULE EDITOR */}
+        {tab === 'ruleEdit' && editingRule !== null && (
+          <div className="feed-form">
+            <h2>{editingRule.id ? t('rss.rule.editTitle') : t('rss.rule.addTitle')}</h2>
+
+            <div className="form-field">
+              <label>{t('rss.rule.name')}</label>
+              <input
+                type="text"
+                className="field-input"
+                placeholder={t('rss.rule.namePlaceholder')}
+                value={editingRule.name || ''}
+                onChange={e => setEditingRule(r => ({ ...r, name: e.target.value }))}
+              />
+            </div>
+
+            <div className="form-row-2">
+              <div className="form-field">
+                <label>
+                  {t('rss.rule.include')}
+                  <span className="field-hint">
+                    {editingRule.mode === 'regex' ? t('rss.rule.includeHintRegex') : t('rss.rule.includeHint')}
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  className="field-input"
+                  placeholder={editingRule.mode === 'regex' ? 'S\\d+E\\d+' : 'show name 1080p'}
+                  value={editingRule.include || ''}
+                  onChange={e => setEditingRule(r => ({ ...r, include: e.target.value }))}
+                />
+              </div>
+              <div className="form-field">
+                <label>
+                  {t('rss.rule.exclude')}
+                  <span className="field-hint">{t('rss.rule.excludeHint')}</span>
+                </label>
+                <input
+                  type="text"
+                  className="field-input"
+                  placeholder="hdtv cam"
+                  value={editingRule.exclude || ''}
+                  onChange={e => setEditingRule(r => ({ ...r, exclude: e.target.value || undefined }))}
+                />
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label>{t('rss.rule.mode')}</label>
+              <div className="mode-switch">
+                {(['wildcard', 'regex'] as const).map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    className={`mode-option ${(editingRule.mode || 'wildcard') === m ? 'active' : ''}`}
+                    onClick={() => setEditingRule(r => ({ ...r, mode: m }))}
+                  >
+                    {m === 'wildcard' ? t('rss.rule.modeWildcard') : t('rss.rule.modeRegex')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label>
+                {t('rss.rule.feeds')}
+                <span className="field-hint">{t('rss.rule.feedsHint')}</span>
+              </label>
+              <div className="items-filter-row">
+                <button
+                  className={`filter-chip ${(editingRule.feedIds || []).length === 0 ? 'active' : ''}`}
+                  onClick={() => setEditingRule(r => ({ ...r, feedIds: [] }))}
+                >
+                  {t('rss.rule.allFeeds')}
+                </button>
+                {feeds.map(f => {
+                  const on = (editingRule.feedIds || []).includes(f.id);
+                  return (
+                    <button
+                      key={f.id}
+                      className={`filter-chip ${on ? 'active' : ''}`}
+                      onClick={() => setEditingRule(r => {
+                        const current = r?.feedIds || [];
+                        return {
+                          ...r,
+                          feedIds: on ? current.filter(id => id !== f.id) : [...current, f.id],
+                        };
+                      })}
+                    >
+                      {f.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="form-row-2">
+              <div className="form-field">
+                <label>
+                  {t('rss.rule.minSeeds')}
+                  <span className="field-hint">{t('rss.rule.boundHint')}</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="field-input"
+                  value={editingRule.minSeeds ?? ''}
+                  onChange={e => setEditingRule(r => ({ ...r, minSeeds: e.target.value ? parseInt(e.target.value) : undefined }))}
+                />
+              </div>
+              <div className="form-field">
+                <label>
+                  {t('rss.rule.maxAge')}
+                  <span className="field-hint">{t('rss.rule.boundHint')}</span>
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  className="field-input"
+                  value={editingRule.maxAgeDays ?? ''}
+                  onChange={e => setEditingRule(r => ({ ...r, maxAgeDays: e.target.value ? parseInt(e.target.value) : undefined }))}
+                />
+              </div>
+            </div>
+
+            <div className="form-row-2">
+              <div className="form-field">
+                <label>{t('rss.rule.minSize')}</label>
+                <input
+                  type="number"
+                  min="0"
+                  className="field-input"
+                  placeholder="GB"
+                  value={editingRule.minSize ? editingRule.minSize / (1024 ** 3) : ''}
+                  onChange={e => setEditingRule(r => ({
+                    ...r,
+                    minSize: e.target.value ? Math.round(parseFloat(e.target.value) * 1024 ** 3) : undefined,
+                  }))}
+                />
+              </div>
+              <div className="form-field">
+                <label>{t('rss.rule.maxSize')}</label>
+                <input
+                  type="number"
+                  min="0"
+                  className="field-input"
+                  placeholder="GB"
+                  value={editingRule.maxSize ? editingRule.maxSize / (1024 ** 3) : ''}
+                  onChange={e => setEditingRule(r => ({
+                    ...r,
+                    maxSize: e.target.value ? Math.round(parseFloat(e.target.value) * 1024 ** 3) : undefined,
+                  }))}
+                />
+              </div>
+            </div>
+
+            <div className="form-row-2">
+              <div className="form-field">
+                <label>{t('rss.form.savePath')}</label>
+                <input
+                  type="text"
+                  className="field-input"
+                  placeholder={t('rss.form.savePathPlaceholder')}
+                  value={editingRule.savePath || ''}
+                  onChange={e => setEditingRule(r => ({ ...r, savePath: e.target.value || undefined }))}
+                />
+              </div>
+              <div className="form-field">
+                <label>{t('rss.form.category')}</label>
+                <CategorySelect
+                  value={editingRule.categoryId || ''}
+                  onChange={id => setEditingRule(r => ({ ...r, categoryId: id || undefined }))}
+                />
+              </div>
+            </div>
+
+            <div className="form-field">
+              <label>
+                {t('rss.rule.startFrom')}
+                <span className="field-hint">{t('rss.rule.startFromHint')}</span>
+              </label>
+              <input
+                type="text"
+                className="field-input"
+                placeholder="S02E03"
+                value={editingRule.startFrom || ''}
+                onChange={e => setEditingRule(r => ({ ...r, startFrom: e.target.value || undefined }))}
+              />
+            </div>
+
+            <div className="form-toggles">
+              <label className="toggle-field">
+                <div>
+                  <span>{t('rss.rule.smart')}</span>
+                  <span className="field-hint">{t('rss.rule.smartHint')}</span>
+                </div>
+                <button
+                  type="button"
+                  className={`toggle-switch ${editingRule.smartEpisode ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={!!editingRule.smartEpisode}
+                  onClick={() => setEditingRule(r => ({ ...r, smartEpisode: !r?.smartEpisode }))}
+                >
+                  <span className="toggle-slider" />
+                </button>
+              </label>
+              <label className="toggle-field">
+                <div>
+                  <span>{t('rss.form.addPaused')}</span>
+                  <span className="field-hint">{t('rss.form.addPausedHint')}</span>
+                </div>
+                <button
+                  type="button"
+                  className={`toggle-switch ${editingRule.addPaused ? 'active' : ''}`}
+                  role="switch"
+                  aria-checked={!!editingRule.addPaused}
+                  onClick={() => setEditingRule(r => ({ ...r, addPaused: !r?.addPaused }))}
+                >
+                  <span className="toggle-slider" />
+                </button>
+              </label>
+            </div>
+
+            {/* What the rule matches right now — a rule tuned blind is a rule
+                that grabs the wrong thing at 3am. */}
+            <div className="rule-preview">
+              <div className="rule-preview-head">
+                <Icon name="eye" size={14} />
+                {rulePreview === null
+                  ? t('rss.rule.previewLoading')
+                  : `${t('rss.rule.previewCount')} ${rulePreview.length}`}
+              </div>
+              {rulePreview && rulePreview.length > 0 && (
+                <ul className="rule-preview-list">
+                  {rulePreview.slice(0, 20).map(item => (
+                    <li key={item.guid} title={item.title}>
+                      {item.downloaded && <Icon name="check" size={11} />}
+                      {item.title}
+                    </li>
+                  ))}
+                  {rulePreview.length > 20 && (
+                    <li className="rule-preview-more">
+                      + {rulePreview.length - 20}
+                    </li>
+                  )}
+                </ul>
+              )}
+            </div>
+
+            <div className="form-actions">
+              <Button variant="ghost" onClick={() => { setEditingRule(null); setTab('rules'); }}>
+                {t('rss.form.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                loading={savingRule}
+                disabled={!editingRule.name}
+                onClick={handleSaveRule}
+                icon={<Icon name="check" size={16} />}
+              >
+                {editingRule.id ? t('rss.form.save') : t('rss.rule.add')}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* ADD/EDIT TAB */}
         {tab === 'add' && editingFeed !== null && (
           <div className="feed-form">
@@ -529,18 +1065,18 @@ const RSSPage: React.FC = () => {
               />
             </div>
 
-            <div className="form-field">
-              <label>
-                {t('rss.form.filter')}
-                <span className="field-hint">{t('rss.form.filterHint')}</span>
-              </label>
-              <input
-                type="text"
-                className="field-input"
-                placeholder={t('rss.form.filterPlaceholder')}
-                value={editingFeed.filter || ''}
-                onChange={e => setEditingFeed(f => ({ ...f, filter: e.target.value || undefined }))}
-              />
+            {/* Filtering and auto-download moved to rules, which can span feeds
+                and carry their own destination. A feed just fetches now. */}
+            <div className="form-note">
+              <Icon name="info" size={14} />
+              <span>{t('rss.form.rulesMoved')}</span>
+              <button
+                type="button"
+                className="form-note-link"
+                onClick={() => { setEditingFeed(null); setTab('rules'); loadRules(); }}
+              >
+                {t('rss.tab.rules')}
+              </button>
             </div>
 
             <div className="form-toggles">
@@ -558,23 +1094,8 @@ const RSSPage: React.FC = () => {
               </label>
               <label className="toggle-field">
                 <div>
-                  <span>{t('rss.form.autoDl')}</span>
-                  <span className="field-hint">{t('rss.form.autoDlHint')}</span>
-                </div>
-                <button
-                  type="button"
-                  className={`toggle-switch ${editingFeed.autoDownload ? 'active' : ''}`}
-                  role="switch"
-                  aria-checked={!!editingFeed.autoDownload}
-                  onClick={() => setEditingFeed(f => ({ ...f, autoDownload: !f?.autoDownload }))}
-                >
-                  <span className="toggle-slider" />
-                </button>
-              </label>
-              <label className="toggle-field">
-                <div>
                   <span>{t('rss.form.addPaused')}</span>
-                  <span className="field-hint">{t('rss.form.addPausedHint')}</span>
+                  <span className="field-hint">{t('rss.form.addPausedFeedHint')}</span>
                 </div>
                 <button
                   type="button"

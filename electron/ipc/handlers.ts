@@ -2186,6 +2186,44 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  ipcMain.handle('rss:markRead', wrapHandler('rss:markRead',
+    async (_event, guids: string[], read?: boolean) => db.markRSSItemsRead(guids, read !== false)
+  ));
+
+  ipcMain.handle('rss:markFeedRead', wrapHandler('rss:markFeedRead',
+    async (_event, feedId?: string) => ({ marked: await db.markFeedRead(feedId) })
+  ));
+
+  ipcMain.handle('rss:ignoreItems', wrapHandler('rss:ignoreItems',
+    async (_event, guids: string[], ignored?: boolean) => db.markRSSItemsIgnored(guids, ignored !== false)
+  ));
+
+  // --- Auto-download rules ---
+
+  ipcMain.handle('rss:getRules', wrapHandler('rss:getRules',
+    async () => db.getRSSRules()
+  ));
+
+  ipcMain.handle('rss:addRule', wrapHandler('rss:addRule',
+    async (_event, rule) => db.addRSSRule(rule)
+  ));
+
+  ipcMain.handle('rss:updateRule', wrapHandler('rss:updateRule',
+    async (_event, id: string, updates) => db.updateRSSRule(id, updates)
+  ));
+
+  ipcMain.handle('rss:removeRule', wrapHandler('rss:removeRule',
+    async (_event, id: string) => db.removeRSSRule(id)
+  ));
+
+  ipcMain.handle('rss:previewRule', wrapHandler('rss:previewRule',
+    async (_event, rule) => getRSSService().previewRule(rule)
+  ));
+
+  ipcMain.handle('rss:runRule', wrapHandler('rss:runRule',
+    async (_event, id: string) => getRSSService().runRuleNow(id)
+  ));
+
   // ============================================================
   // Priority 2: Search
   // ============================================================
