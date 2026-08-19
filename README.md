@@ -24,6 +24,9 @@ point. Its real job is the things classic clients *can't* do, all peer-to-peer w
   auto-sync into a shared folder and you **chat, end-to-end encrypted and signed**.
   Connections even hop between members, so a room works across home networks **without
   any infrastructure of its own**.
+- 🎮 **Play together.** A room can become a **private LAN** so games that only speak
+  local network work over the internet, and you can run a **dedicated server** inside
+  the room — no accounts, no hosted game service.
 - 🎙️ **Hang out in voice.** Serverless room voice chat with **neural noise suppression**,
   **screen sharing** (system audio included, echo-cancelled) and a **global push-to-talk**.
 - 🛡️ **See what the swarm sees.** A live privacy dashboard shows your exposed IP, ISP
@@ -70,24 +73,39 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **Bundled native Transmission engine** for fast, battle-tested transfers, with a
   WebTorrent fallback (WebTorrent also powers rooms and share links)
 - Add torrents via **.torrent file, magnet link, or drag & drop** — local files *and*
-  remote `.torrent` URLs are supported
+  remote `.torrent` URLs are supported — or **search from Downloads** without leaving
+  the add flow
 - Pause / resume / remove (with optional file deletion), retry failed downloads
 - **Per-file selection & priority**, sequential download, global speed limit
 - **Seed ratio / seed time limits**, tracker add/remove per torrent
+- **Category and paused** on add — from the dialog, from search, and from RSS — so a
+  week of grabs does not land in one pile already transferring
 - Categories, search/filter/sort, list & detailed views
 - Open the OS "open with" dialog when you double-click a `.torrent` — no silent adds
 
 ### Discover content
-- **Pluggable search providers** — bring your own **Jackett**, **Prowlarr (Torznab)**, or
-  a custom JSON API; test connectivity from the UI. No indexers are bundled
-- **RSS feeds** with auto-download, regex title filters and per-feed intervals; only new
-  items (after you subscribe) are grabbed, never the whole back-catalogue. One legal FOSS
-  feed is pre-seeded **disabled** (opt-in, no background traffic until you enable it) —
-  plus one-click list cleanup
+- **Pluggable search** — bring your own **Jackett**, **Prowlarr (Torznab)**, a custom
+  JSON API, or a **local Python script**. No indexers are bundled. Results arrive as
+  each provider answers (and can be cancelled), collapse into **one row per torrent**,
+  and carry the actions that matter: pick files, copy the magnet, open the release
+  page, add paused into a category. Categories come from the indexer (`t=caps`). A
+  script can describe itself in a `th-plugin` comment so you see its name and required
+  credentials before a search fails — see [search plugins](docs/search-plugins/)
+- **RSS as a rule engine** — a rule watches any set of feeds (or all of them), matches
+  on words or a regex with include and exclude, bounds size, seeds and age, and files
+  what it grabs with its own path, category and paused choice. Smart episode matching
+  keeps **one copy per episode** when several groups post the same one. Feeds import
+  and export as **OPML**. Only items that appear after you subscribe are grabbed, never
+  the back-catalogue. One legal FOSS feed is pre-seeded **disabled** (opt-in, no
+  background traffic until you enable it)
 
 ### Stream & watch
 - **Built-in player** — watch/listen to a file *while it's still downloading*; playback
-  starts before the download finishes
+  starts before the download finishes. Music and video **open in their own window**
+  (the app's chrome, not an OS caption) and come home on demand; position, pause and
+  volume survive the trip
+- **A mixing desk for music** — five-band equaliser with presets, loudness levelling,
+  repeat/shuffle and an output device, remembered across tracks, windows and sessions
 - **Subtitles** — embedded text tracks (mkv, etc.) and sidecar `.srt` / `.ass` / `.vtt`
   files are converted to WebVTT on the fly and overlaid on playback
 - **On-the-fly transcoding** — formats the browser can't decode (mkv, HEVC, AVI…) are
@@ -111,8 +129,9 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   find each other over WebRTC and converge a file manifest, live presence, and
   **end-to-end encrypted chat** over **AES-256-GCM** channels keyed from the code
 - **A real app-grade room layout** — three regions (People + Voice | Stage | Chat) with
-  draggable splitters that remember their widths; **pop the chat or voice settings out**
-  into their own window and drag them to a second monitor
+  draggable splitters that remember their widths; **tear any panel out** (chat, voice,
+  files, LAN, server) into its own window and drag it to a second monitor — a call
+  stays connected and a download keeps going
 - **End-to-end encrypted rooms** — opt in at creation and the swarm carries **ciphertext
   only**: files are encrypted on your disk before seeding and decrypted after download,
   never plaintext on the wire. The room's content key is **distributed in an
@@ -156,6 +175,17 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   public WebRTC trackers to broker the first handshake (no file bytes, no plaintext). Point
   Havvn at your own instead in Settings → Sharing; an unusable entry falls back to the
   public set rather than leaving a room with nowhere to announce
+
+### Play together
+- **Virtual LAN** — the host starts a session, admitted members get a virtual address
+  and a direct encrypted link. Broadcast and multicast are replicated so LAN games
+  find each other without anyone typing an address; a server hosted in the room is
+  announced the same way. Relayed paths are opt-in and never drawn as a healthy
+  direct link. **Windows only**, for now — other members still share files, chat and
+  voice
+- **A dedicated server in the room** — install, start, stop and a live console from
+  the room itself; mods shared in the room can be mirrored in with consent. Minecraft
+  is the module that exists today; others are named as coming
 
 ### Voice & screen share
 - **Room voice chat with zero infrastructure** — a serverless WebRTC mesh between
@@ -238,6 +268,7 @@ it than not.
 | Torrents     | Transmission (bundled native engine) with a WebTorrent fallback; WebTorrent + WebRTC for rooms & share links |
 | Voice        | WebRTC mesh, RNNoise noise suppression (WASM AudioWorklet), global hotkeys via uiohook |
 | Persistence  | electron-store (local JSON)                   |
+| Tests        | Vitest                                        |
 | Build        | webpack (renderer), tsc (main), electron-builder |
 
 ---
@@ -263,6 +294,7 @@ npm run dev
 ```bash
 npm run build        # compile main + renderer
 npm run typecheck    # type-check both projects
+npm test             # unit tests (vitest)
 npm run lint         # lint
 ```
 
@@ -281,6 +313,8 @@ electron/            Main process (TypeScript)
   torrent/           Torrent engines, creator, watch folder, LAN cast/HLS server
   services/          RSS, search, IP blocklist
   sharing/           Share Links + Rooms (WebRTC seeder/engine in a hidden window)
+  lan/               Virtual LAN (Windows)
+  gameserver/        In-room dedicated servers
   scheduler/         Time-based scheduler engine
   db/                electron-store wrapper
   ipc/               Typed IPC handlers
@@ -288,7 +322,7 @@ electron/            Main process (TypeScript)
   main.ts            App lifecycle, tray, window, security
   preload.ts         contextBridge IPC API
 renderer/            React UI (pages, components, stores, i18n)
-shared/              Types and the download state machine
+shared/              Types, parsers, rule matching, the download state machine
 vendor/              Bundled native engine (Transmission)
 build/               App icons & installer resources
 ```
@@ -310,7 +344,7 @@ QUEUED → DOWNLOADING → COMPLETED → SEEDING
 Invalid transitions are rejected to keep state consistent.
 
 ### Persistence
-Downloads, settings, feeds and providers are stored locally via
+Downloads, settings, feeds, rules and providers are stored locally via
 **electron-store** (JSON). Progress is written on a debounced interval (batched into a
 single write) to keep disk I/O low while torrents are active, so downloads resume after a
 restart.
@@ -348,14 +382,18 @@ multiple severity levels, and automatic cleanup of old files.
   (one member is enough) for that.
 - **Watch-while-downloading in rooms** covers non-E2E rooms and browser-native formats;
   everything else plays the moment the download completes.
+- **Virtual LAN is Windows only** — members on macOS or Linux can still share files,
+  chat and voice; they cannot join the tunnel.
+- **Game servers** — Minecraft is the only module so far, and a server lives on its
+  host's machine.
 
 ---
 
 ## Contributing
 
 CI runs on every push / PR (`.github/workflows/ci.yml`): type-check and build are required
-gates; lint runs as advisory. Please run `npm run typecheck` and `npm run build` before
-opening a PR.
+gates; lint runs as advisory. Please run `npm run typecheck`, `npm test` and `npm run build`
+before opening a PR.
 
 ---
 
