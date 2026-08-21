@@ -10,7 +10,7 @@ import { t } from '../i18n';
 import * as db from '../db/store';
 import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { parseFeed } from '../../shared/feed-parse';
-import { ruleCoversFeed, selectForRule, rememberKeys } from '../../shared/rss-rules';
+import { ruleCoversFeed, selectForRule, rememberKeys, isRssInventorySeeded, keysToRemember } from '../../shared/rss-rules';
 import { getTorrentManager } from '../torrent';
 
 const log = logger.child('RSSService');
@@ -160,9 +160,10 @@ export class RSSService {
 
     log.info('Checking RSS feed', { name: feed.name, url: feed.url });
 
-    // First check ever for this feed? Then everything in it is history, not
-    // news — store the items but never auto-download the whole backlog.
-    const isFirstCheck = !feed.lastChecked;
+    // First successful inventory of this feed? Then everything in it is history,
+    // not news — store the items but never auto-download the whole backlog.
+    // lastChecked is written on failed attempts too, so it is not this gate.
+    const isFirstCheck = !isRssInventorySeeded(feed);
     const checkedAt = new Date().toISOString();
 
     let fetched;
@@ -258,7 +259,7 @@ export class RSSService {
       const candidates = newItems.filter(i => !claimed.has(i.guid));
       if (candidates.length === 0) break;
 
-      const { selected, newKeys, skippedDuplicates } = selectForRule(rule, candidates);
+      const { selected, skippedDuplicates } = selectForRule(rule, candidates);
       if (selected.length === 0) {
         if (skippedDuplicates.length > 0) {
           log.debug('Rule skipped duplicate episodes', { rule: rule.name, skipped: skippedDuplicates.length });
@@ -271,7 +272,7 @@ export class RSSService {
       const grabbed = await this.downloadForRule(rule, feed, selected);
       await db.updateRSSRule(rule.id, {
         lastMatch: new Date().toISOString(),
-        grabbedKeys: rememberKeys(rule, newKeys),
+        grabbedKeys: rememberKeys(rule, keysToRemember(rule, selected, grabbed)),
       });
 
       log.info('RSS rule matched', {
@@ -378,23 +379,23 @@ export class RSSService {
     const feeds = await db.getRSSFeeds();
     const items = (await db.getRSSItems()).filter(i => !i.downloaded && !i.ignored);
 
-    const { selected, newKeys, skippedDuplicates } = selectForRule(rule, items);
-    let grabbed = 0;
+    const { selected, skippedDuplicates } = selectForRule(rule, items);
+    const grabbedGuids: string[] = [];
 
     // Group by feed so each download still gets its feed's fallback settings.
     for (const feed of feeds) {
       const mine = selected.filter(i => i.feedId === feed.id);
       if (mine.length === 0) continue;
-      grabbed += (await this.downloadForRule(rule, feed, mine)).length;
+      grabbedGuids.push(...await this.downloadForRule(rule, feed, mine));
     }
 
     await db.updateRSSRule(rule.id, {
       lastMatch: new Date().toISOString(),
-      grabbedKeys: rememberKeys(rule, newKeys),
+      grabbedKeys: rememberKeys(rule, keysToRemember(rule, selected, grabbedGuids)),
     });
 
-    log.info('RSS rule run manually', { rule: rule.name, grabbed, skipped: skippedDuplicates.length });
-    return { grabbed, skipped: skippedDuplicates.length };
+    log.info('RSS rule run manually', { rule: rule.name, grabbed: grabbedGuids.length, skipped: skippedDuplicates.length });
+    return { grabbed: grabbedGuids.length, skipped: skippedDuplicates.length };
   }
 
   /** What a rule would match among stored items — the editor's preview. */

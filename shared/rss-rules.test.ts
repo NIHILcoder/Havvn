@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { patternMatches, isExcluded, ruleMatches, selectForRule, rememberKeys, MAX_GRABBED_KEYS } from './rss-rules';
+import { patternMatches, isExcluded, ruleMatches, selectForRule, rememberKeys, isRssInventorySeeded, keysToRemember, MAX_GRABBED_KEYS } from './rss-rules';
 import { RSSItem, RSSRule } from './types';
 
 const GB = 1024 * 1024 * 1024;
@@ -205,5 +205,57 @@ describe('rememberKeys', () => {
     expect(out).toHaveLength(MAX_GRABBED_KEYS);
     expect(out[out.length - 1]).toBe('fresh');
     expect(out).not.toContain('k0');
+  });
+});
+
+describe('isRssInventorySeeded', () => {
+  it('treats a never-checked feed as unseeded', () => {
+    expect(isRssInventorySeeded({})).toBe(false);
+  });
+
+  it('does not treat a failed fetch as a seeded inventory', () => {
+    // lastChecked is written on failure; that used to trip the backlog gate.
+    expect(isRssInventorySeeded({ lastStatus: 'failed' })).toBe(false);
+  });
+
+  it('treats a successful parse as seeded, including an empty feed', () => {
+    expect(isRssInventorySeeded({ lastStatus: 'ok', lastItemCount: 12 })).toBe(true);
+    expect(isRssInventorySeeded({ lastItemCount: 0 })).toBe(true);
+  });
+
+  it('stays seeded after a later failure so new items are not skipped', () => {
+    expect(isRssInventorySeeded({ lastStatus: 'failed', lastItemCount: 12 })).toBe(true);
+  });
+
+  it('treats a 304 / stored validators as seeded', () => {
+    expect(isRssInventorySeeded({ lastStatus: 'unchanged' })).toBe(true);
+    expect(isRssInventorySeeded({ etag: '"abc"' })).toBe(true);
+    expect(isRssInventorySeeded({ lastModified: 'Wed, 01 Jan 2026 00:00:00 GMT' })).toBe(true);
+  });
+});
+
+describe('keysToRemember', () => {
+  it('keeps keys only for items that actually landed', () => {
+    const selected = [
+      item({ guid: 'a', title: 'Some.Show.S01E05.1080p.WEB-DL-ALPHA' }),
+      item({ guid: 'b', title: 'Some.Show.S01E06.1080p.WEB-DL-ALPHA' }),
+    ];
+    const r = rule({ smartEpisode: true });
+    expect(keysToRemember(r, selected, ['a']).sort()).toEqual(['some show|s1e5']);
+  });
+
+  it('remembers nothing when every add failed', () => {
+    const selected = [item({ guid: 'a', title: 'Some.Show.S01E05.1080p' })];
+    expect(keysToRemember(rule({ smartEpisode: true }), selected, [])).toEqual([]);
+  });
+
+  it('is a no-op when Smart episode is off', () => {
+    const selected = [item({ guid: 'a', title: 'Some.Show.S01E05.1080p' })];
+    expect(keysToRemember(rule({ smartEpisode: false }), selected, ['a'])).toEqual([]);
+  });
+
+  it('includes a duplicate add so a re-post of the same episode stays skipped', () => {
+    const selected = [item({ guid: 'a', title: 'Some.Show.S01E05.1080p' })];
+    expect(keysToRemember(rule({ smartEpisode: true }), selected, ['a'])).toEqual(['some show|s1e5']);
   });
 });
