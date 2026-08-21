@@ -6,7 +6,7 @@
  * with what actually gets downloaded would be worse than no preview.
  */
 
-import { RSSItem, RSSRule } from './types';
+import { RSSFeed, RSSItem, RSSRule } from './types';
 import { episodeKey, isAtOrAfter, parseRelease } from './release-parse';
 
 /** Episode keys remembered per rule before the oldest are dropped. */
@@ -176,4 +176,44 @@ export function rememberKeys(rule: RSSRule, keys: string[]): string[] {
   if (keys.length === 0) return rule.grabbedKeys || [];
   const merged = [...(rule.grabbedKeys || []), ...keys.filter(k => !(rule.grabbedKeys || []).includes(k))];
   return merged.length > MAX_GRABBED_KEYS ? merged.slice(-MAX_GRABBED_KEYS) : merged;
+}
+
+/**
+ * Has this feed ever stored an inventory?
+ *
+ * `lastChecked` is also written on a failed fetch (backoff + "last tried" UI),
+ * so it cannot be the backlog gate. A failed first attempt that counted as
+ * "already initialized" made the next successful poll auto-download the entire
+ * historical feed.
+ *
+ * Inventory lands only after a parsed body (`lastItemCount`, including 0) or
+ * after a 304 / validators that can only exist once a body was fetched.
+ */
+export function isRssInventorySeeded(feed: Pick<RSSFeed, 'lastItemCount' | 'lastStatus' | 'etag' | 'lastModified'>): boolean {
+  return feed.lastItemCount !== undefined
+    || feed.lastStatus === 'ok'
+    || feed.lastStatus === 'unchanged'
+    || Boolean(feed.etag)
+    || Boolean(feed.lastModified);
+}
+
+/**
+ * Episode keys to remember for the items that actually landed (or were already
+ * in Downloads). Selection keys must not be persisted when the add failed —
+ * otherwise Smart episode skips that episode forever.
+ */
+export function keysToRemember(rule: RSSRule, selected: RSSItem[], grabbedGuids: string[]): string[] {
+  if (!rule.smartEpisode) return [];
+  const ok = new Set(grabbedGuids);
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const item of selected) {
+    if (!ok.has(item.guid)) continue;
+    const key = episodeKey(parseRelease(item.title));
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  return keys;
 }
