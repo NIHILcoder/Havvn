@@ -95,8 +95,10 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   on words or a regex with include and exclude, bounds size, seeds and age, and files
   what it grabs with its own path, category and paused choice. Smart episode matching
   keeps **one copy per episode** when several groups post the same one. Feeds import
-  and export as **OPML**. Only items that appear after you subscribe are grabbed, never
-  the back-catalogue. One legal FOSS feed is pre-seeded **disabled** (opt-in, no
+  and export as **OPML**. New items raise a notification if you asked to be told;
+  rows you dismiss leave the list but stay remembered so a rule cannot grab them
+  again. Only items that appear after you subscribe are grabbed, never the
+  back-catalogue. One legal FOSS feed is pre-seeded **disabled** (opt-in, no
   background traffic until you enable it)
 
 ### Stream & watch
