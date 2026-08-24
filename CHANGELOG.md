@@ -4,6 +4,65 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.4] - 2026-08-24
+
+RSS becomes a rule engine, and search stops showing the same torrent three times.
+
+### Added
+- **RSS rules, not one filter nailed to a feed.** A rule watches any set of feeds
+  (or all of them), matches on words or a regex with include and exclude, bounds
+  size, seeds and age, and files what it grabs with its own path, category and
+  paused choice. You can follow a show across two feeds, run two rules over one
+  feed, or switch a rule off without switching the feed off. Existing
+  per-feed filters become rules on first launch, so an upgrade does not silently
+  stop working subscriptions.
+- **One copy per episode.** Smart episode matching (on by default) groups
+  release-group variants of the same episode and keeps the best-seeded one. A
+  start-from threshold skips anything before e.g. S02E03. The editor previews
+  what a rule would match on items you already have, and a manual run can pick
+  up a backlog a new rule would otherwise only see on the next post.
+- **A feed list in one file.** Subscriptions import and export as OPML, the way
+  every other reader hands a collection over. A URL already subscribed is
+  skipped rather than duplicated.
+- **Search as one row per torrent.** The same release from three indexers
+  collapses into one row that keeps every source, takes the best seed count, and
+  still has a link if one indexer's URL is dead. Results arrive as each provider
+  answers, and a search can be cancelled. The row carries the actions that
+  matter: pick files, copy the magnet, open the release page, add paused into a
+  category. Jackett/Prowlarr categories come from the indexer (`t=caps`).
+- **A plugin that names itself before a search fails.** A script provider can
+  declare its name, version and required credentials in a `th-plugin` comment.
+  Choosing the file fills the form from that, instead of finding out a login was
+  needed when the search came back empty. Plugins without a manifest keep
+  working exactly as before.
+- **Search from the moment you add a torrent.** The add dialog in Downloads
+  carries a compact search — same providers, same deduplication, one action on
+  the best-seeded hits — so you do not have to leave the page you were on.
+  Closing the dialog cancels the search.
+- **A category and a pause for whatever gets added.** The add dialog, a search
+  row and an RSS rule can all file a grab under a category and leave it paused.
+  Category names finally resolve in the download list (the id was stored, the
+  label was not wired).
+- **RSS that is visible while it works.** New items raise an OS notification if
+  you asked to be told. The items list is virtualized, dismissed rows leave the
+  list but stay remembered so a rule cannot re-grab them, and a seed count the
+  feed already carried is drawn.
+
+### Fixed
+- **Feeds in other alphabets, and Atom feeds at all.** Multi-byte titles no
+  longer break on a chunk boundary; Atom `<entry>` feeds (Nyaa and the rest)
+  populate instead of looking alive and staying empty; redirects resolve against
+  the current URL and stop after five hops; a feed or search answer is capped at
+  10 MB. A feed whose interval is hours long is checked on launch if it is
+  already overdue, rather than waiting another full interval after every
+  restart.
+- **A failed first check no longer auto-downloads the whole history.** The
+  backlog gate treated `lastChecked` as “this feed is initialized,” but a failed
+  fetch writes that field without storing items. The next successful poll then
+  ran the rules over every historical item. Inventory is gated on a real parse
+  now. Smart-episode keys are remembered only for items that actually landed, so
+  a failed add is retried instead of skipped forever.
+
 ## [3.0.3] - 2026-08-18
 
 The player leaves the room and gets a window of its own — with a mixing desk.
