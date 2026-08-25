@@ -64,6 +64,8 @@ interface RssSchema {
 interface BlocklistSchema {
   ipBlocklists: IPBlocklist[];
   blocklistData: Record<string, string>; // id -> packed IP ranges as CSV
+  /** Per-IP bans from the Peers tab; IPv4 dotted-quad. Session-only bans live in memory. */
+  manualBans: string[];
 }
 
 interface SearchSchema {
@@ -188,6 +190,7 @@ const configStore = new Store<ConfigSchema>({
       // TCP-only on Windows was a major cause of peer scarcity. Toggle in
       // Settings → Advanced (enableUtp) to force TCP-only.
       enableUtp: true,
+      encryption: 'preferred' as const,
       maxConnections: 100,
       maxConnectionsGlobal: 300,
       portMin: 6881,
@@ -269,7 +272,7 @@ const rssStore = new Store<RssSchema>({
 
 const blocklistStore = new Store<BlocklistSchema>({
   name: 'blocklists',
-  defaults: { ipBlocklists: [], blocklistData: {} },
+  defaults: { ipBlocklists: [], blocklistData: {}, manualBans: [] },
 });
 
 const searchStore = new Store<SearchSchema>({
@@ -1893,6 +1896,14 @@ export async function saveBlocklistData(id: string, data: string): Promise<void>
 export async function getBlocklistData(id: string): Promise<string | null> {
   const blocklistData = blocklistStore.get('blocklistData') ?? {};
   return blocklistData[id] ?? null;
+}
+
+export function getManualPeerBans(): string[] {
+  return blocklistStore.get('manualBans') ?? [];
+}
+
+export function setManualPeerBans(ips: string[]): void {
+  blocklistStore.set('manualBans', ips);
 }
 
 // === Friend swarms / private rooms (Phase 3) ===

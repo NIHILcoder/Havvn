@@ -611,6 +611,9 @@ const api: IpcApi = {
   getPeers: (id: string) =>
     ipcRenderer.invoke('downloads:getPeers', id),
 
+  banPeer: (address: string, persist: boolean) =>
+    ipcRenderer.invoke('downloads:banPeer', address, persist),
+
   // Swarm world map (peers grouped by country, across all active torrents)
   getSwarmGeo: () =>
     ipcRenderer.invoke('swarm:getGeo'),
@@ -624,6 +627,15 @@ const api: IpcApi = {
 
   removeTracker: (id: string, url: string) =>
     ipcRenderer.invoke('downloads:removeTracker', id, url),
+
+  reannounceDownload: (id: string) =>
+    ipcRenderer.invoke('downloads:reannounce', id),
+
+  getPieces: (id: string) =>
+    ipcRenderer.invoke('downloads:getPieces', id),
+
+  setDownloadLocation: (id: string, location: string, move: boolean) =>
+    ipcRenderer.invoke('downloads:setLocation', id, location, move),
 
   // Watch folder
   getWatchFolderStatus: () =>

@@ -432,6 +432,18 @@ export interface PeerInfo {
     peerInterested: boolean;       // the peer is interested in us
     peerChoking: boolean;          // the peer is choking us
   };
+  /** Transmission peer flag string (D/d/U/u/E/T/I/…); synthesized on webtorrent. */
+  flagStr?: string;
+  /** ISO 3166-1 alpha-2 from the offline geo DB; absent when unresolved. */
+  country?: string;
+}
+
+/** Have-map for the Pieces tab: `buckets` is a 0..1 fill per UI cell. */
+export interface TorrentPieces {
+  pieceCount: number;
+  pieceSize: number;
+  haveCount: number;
+  buckets: number[];
 }
 
 export interface DownloadStats {
@@ -538,6 +550,9 @@ export interface AppSettings {
   // platform-based (off on Windows, on elsewhere) due to a historic native-module
   // crash on Windows; takes effect after a restart (set at engine creation).
   enableUtp: boolean;
+  // BitTorrent protocol encryption (MSE/PE). Native daemon only; webtorrent
+  // has no MSE. Default `preferred` matches the sidecar's historical hardcode.
+  encryption: 'required' | 'preferred' | 'tolerated';
   maxConnections: number;          // per-torrent connection ceiling
   // Global connection budget across ALL torrents. The effective per-torrent limit
   // is scaled down as more torrents run so the total never exceeds this — prevents
@@ -1113,12 +1128,17 @@ export interface IpcApi {
   setSeedTimeLimit: (id: string, minutes: number) => Promise<void>;
   // Peers
   getPeers: (id: string) => Promise<PeerInfo[]>;
+  /** Drop a connected peer by address (`ip:port`). persist = also write a /32 into the blocklist. */
+  banPeer: (address: string, persist: boolean) => Promise<void>;
   // Live swarm world map: peers across all active torrents, grouped by country.
   getSwarmGeo: () => Promise<SwarmGeo>;
   // Tracker management
   getTrackers: (id: string) => Promise<TrackerInfo[]>;
   addTracker: (id: string, url: string) => Promise<void>;
   removeTracker: (id: string, url: string) => Promise<void>;
+  reannounceDownload: (id: string) => Promise<void>;
+  getPieces: (id: string) => Promise<TorrentPieces>;
+  setDownloadLocation: (id: string, location: string, move: boolean) => Promise<void>;
 
   // Settings
   getSettings: () => Promise<AppSettings>;

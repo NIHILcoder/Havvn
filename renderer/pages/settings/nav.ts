@@ -24,7 +24,7 @@ export const SETTINGS_GROUPS: string[] = ['core', 'privacy', 'seeding', 'appeara
 export const SETTINGS_NAV: SettingsNavItem[] = [
   { id: 'general', icon: 'settings', group: 'core', keywords: 'engine движок autostart автозапуск update обновления tray трей startup запуск' },
   { id: 'downloads', icon: 'download', group: 'core', keywords: 'folder папка directory каталог watch слежение авто-перемещение disk диск guard активных' },
-  { id: 'connection', icon: 'activity', group: 'core', keywords: 'speed скорость limit лимит peers пиры connections подключения port порт dht utp upnp turbo турбо' },
+  { id: 'connection', icon: 'activity', group: 'core', keywords: 'speed скорость limit лимит peers пиры connections подключения port порт dht utp upnp turbo турбо proxy прокси socks encryption шифрование' },
   { id: 'privacy', icon: 'shield', group: 'privacy', keywords: 'vpn kill-switch логи logs doh dns encrypt шифрование anonymous приватность killswitch' },
   { id: 'sharing', icon: 'globe', group: 'privacy', keywords: 'web remote qr turn relay релей профили profiles share общий доступ mobile мобильный' },
   { id: 'seeding', icon: 'share-2', group: 'seeding', keywords: 'seed раздача ratio рейтинг time время limit лимит' },

@@ -29,6 +29,8 @@ export interface SidecarOptions {
   peerPort?: number;    // default: pick a free ephemeral port
   /** Extra settings.json keys layered over the managed defaults (e.g. speed limits). */
   settingsOverrides?: Record<string, unknown>;
+  /** Merged over `process.env` for the daemon (tracker proxy via libcurl). */
+  env?: Record<string, string>;
   onLog?: (line: string) => void;
   /** Fired when the daemon exits without stop() being called (crash → caller decides restart policy). */
   onUnexpectedExit?: (code: number | null) => void;
@@ -91,6 +93,7 @@ export class TransmissionSidecar {
     const child = spawn(this.opts.binaryPath, ['-f', '--config-dir', this.opts.configDir], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: this.opts.env ? { ...process.env, ...this.opts.env } : undefined,
     });
     this.child = child;
     try { fs.writeFileSync(this.pidFile, String(child.pid), { mode: 0o600 }); } catch { /* best effort */ }

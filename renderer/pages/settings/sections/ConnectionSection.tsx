@@ -12,8 +12,8 @@
 
 import React from 'react';
 import { useSettings } from '../SettingsContext';
-import { SettingsCard, SettingRow, NumberField, RestartPendingNotice } from '../controls';
-import { Icon, Toggle } from '../../../components';
+import { SettingsCard, SettingRow, NumberField, RestartPendingNotice, TextField } from '../controls';
+import { Icon, Toggle, Select } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 
 export const ConnectionSection: React.FC = () => {
@@ -26,13 +26,16 @@ export const ConnectionSection: React.FC = () => {
     altSpeedEnabled, setAltSpeedEnabled,
     altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
     enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
+    encryption, setEncryption, setSettings, loadSettings,
     maxConnections, setMaxConnections,
     maxConnectionsGlobal, setMaxConnectionsGlobal,
     portMin, setPortMin,
     portForwarding, setPortForwarding, pfStatus,
+    proxyEnabled, setProxyEnabled, proxyType, setProxyType,
+    proxyHost, setProxyHost, proxyPort, setProxyPort,
+    proxyUsername, setProxyUsername, proxyPassword, setProxyPassword,
+    proxyRestartPending, setProxyRestartPending,
   } = useSettings();
-
-  // Dynamic i18n keys (built at runtime) need a cast past the literal union.
   const tk = (k: string) => t(k as Parameters<typeof t>[0]);
 
   // Coloured status pill for UPnP port forwarding — markup kept from the old
@@ -235,6 +238,35 @@ export const ConnectionSection: React.FC = () => {
             />
           }
         />
+        <SettingRow
+          label={t('settings.encryption')}
+          description={t('settings.encryption.desc')}
+          control={
+            <div style={{ width: 180 }}>
+              <Select
+                options={[
+                  { value: 'required', label: t('settings.encryption.required') },
+                  { value: 'preferred', label: t('settings.encryption.preferred') },
+                  { value: 'tolerated', label: t('settings.encryption.tolerated') },
+                ]}
+                value={encryption}
+                onChange={async (v) => {
+                  const next = v === 'required' || v === 'tolerated' ? v : 'preferred';
+                  setEncryption(next);
+                  setSettings((prev) => (prev ? { ...prev, encryption: next } : prev));
+                  try { await window.api.updateSettings({ encryption: next }); }
+                  catch { await loadSettings(); }
+                }}
+              />
+            </div>
+          }
+        />
+        {(runningEngine ?? engine) === 'webtorrent' && (
+          <div className="settings-notice-compact">
+            <Icon name="info" size={14} />
+            <span>{t('settings.encryption.nativeOnly')}</span>
+          </div>
+        )}
         {/* PEX/LSD toggles removed: WebTorrent can't switch PEX off and has
             no LSD implementation — the switches were placebo. */}
         {/* The native engine pushes these over RPC and applies them at once, so
@@ -317,6 +349,98 @@ export const ConnectionSection: React.FC = () => {
           <Icon name="info" size={14} />
           <span>{t('settings.advanced.restartNote')}</span>
         </div>
+      </SettingsCard>
+
+      <SettingsCard title={t('settings.grp.proxy')} icon="globe">
+        <SettingRow
+          label={t('settings.proxyEnable')}
+          description={t('settings.proxyEnable.desc')}
+          control={
+            <Toggle
+              checked={proxyEnabled}
+              onChange={(v) => {
+                setProxyRestartPending(true);
+                void applyToggle(v, setProxyEnabled, { proxyEnabled: v });
+              }}
+              ariaLabel={t('settings.proxyEnable')}
+            />
+          }
+        />
+        {proxyEnabled && (
+          <>
+            <SettingRow
+              label={t('settings.proxyType')}
+              description={t('settings.proxyType.desc')}
+              control={
+                <div style={{ width: 150 }}>
+                  <Select
+                    options={[
+                      { value: 'http', label: 'HTTP' },
+                      { value: 'https', label: 'HTTPS' },
+                      { value: 'socks5', label: 'SOCKS5' },
+                    ]}
+                    value={proxyType}
+                    onChange={(v) => setProxyType(v === 'https' || v === 'socks5' ? v : 'http')}
+                  />
+                </div>
+              }
+            />
+            <SettingRow
+              label={t('settings.proxyHost')}
+              description={t('settings.proxyHost.desc')}
+              control={
+                <TextField
+                  value={proxyHost}
+                  onChange={setProxyHost}
+                  mono
+                  ariaLabel={t('settings.proxyHost')}
+                />
+              }
+            />
+            <SettingRow
+              label={t('settings.proxyPort')}
+              description={t('settings.proxyPort.desc')}
+              control={
+                <NumberField
+                  value={proxyPort}
+                  onChange={(v) => setProxyPort(Math.round(v) || 0)}
+                  min={1}
+                  max={65535}
+                  ariaLabel={t('settings.proxyPort')}
+                />
+              }
+            />
+            <SettingRow
+              label={t('settings.proxyUser')}
+              description={t('settings.proxyUser.desc')}
+              control={
+                <TextField
+                  value={proxyUsername}
+                  onChange={setProxyUsername}
+                  ariaLabel={t('settings.proxyUser')}
+                />
+              }
+            />
+            <SettingRow
+              label={t('settings.proxyPass')}
+              description={t('settings.proxyPass.desc')}
+              control={
+                <input
+                  className="stg-text"
+                  type="password"
+                  value={proxyPassword}
+                  aria-label={t('settings.proxyPass')}
+                  onChange={(e) => setProxyPassword(e.target.value)}
+                />
+              }
+            />
+          </>
+        )}
+        <div className="settings-notice-compact">
+          <Icon name="info" size={14} />
+          <span>{t('settings.proxyNote')}</span>
+        </div>
+        {proxyRestartPending && <RestartPendingNotice text={t('settings.proxy.pending')} />}
       </SettingsCard>
     </>
   );

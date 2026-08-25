@@ -100,11 +100,20 @@ function useSettingsController() {
   // Advanced (now part of Connection)
   const [enableDHT, setEnableDHT] = useState(true);
   const [enableUtp, setEnableUtp] = useState(false);
+  const [encryption, setEncryption] = useState<'required' | 'preferred' | 'tolerated'>('preferred');
   const [maxConnections, setMaxConnections] = useState(55);
   const [maxConnectionsGlobal, setMaxConnectionsGlobal] = useState(200);
   const [portMin, setPortMin] = useState(6881);
   const [portForwarding, setPortForwarding] = useState(true);
   const [pfStatus, setPfStatus] = useState<PortForwardStatus | null>(null);
+
+  const [proxyEnabled, setProxyEnabled] = useState(false);
+  const [proxyType, setProxyType] = useState<'http' | 'https' | 'socks5'>('http');
+  const [proxyHost, setProxyHost] = useState('');
+  const [proxyPort, setProxyPort] = useState(8080);
+  const [proxyUsername, setProxyUsername] = useState('');
+  const [proxyPassword, setProxyPassword] = useState('');
+  const [proxyRestartPending, setProxyRestartPending] = useState(false);
 
   // Watch folder
   const [watchFolderEnabled, setWatchFolderEnabled] = useState(false);
@@ -260,13 +269,19 @@ function useSettingsController() {
       autoMovePath !== (s.autoMovePath ?? '') ||
       diskGuardMinFreeMB !== (s.diskGuardMinFreeMB ?? 2048) ||
       defaultSeedRatioLimit !== s.defaultSeedRatioLimit ||
-      defaultSeedTimeLimitMinutes !== s.defaultSeedTimeLimitMinutes;
+      defaultSeedTimeLimitMinutes !== s.defaultSeedTimeLimitMinutes ||
+      proxyHost !== (s.proxyHost ?? '') ||
+      proxyPort !== (s.proxyPort ?? 8080) ||
+      proxyType !== (s.proxyType ?? 'http') ||
+      proxyUsername !== (s.proxyUsername ?? '') ||
+      proxyPassword !== (s.proxyPassword ?? '');
     setHasChanges(changed);
   }, [
     settings, defaultDownloadDir, maxDownKbps, maxUpKbps, altDownKbps, altUpKbps, maxActiveDownloads,
     maxConnections, maxConnectionsGlobal, portMin,
     watchFolderPath, autoMovePath, diskGuardMinFreeMB,
     defaultSeedRatioLimit, defaultSeedTimeLimitMinutes,
+    proxyHost, proxyPort, proxyType, proxyUsername, proxyPassword,
   ]);
 
   const applyTheme = (selectedTheme: Theme) => {
@@ -316,10 +331,18 @@ function useSettingsController() {
 
       setEnableDHT(s.enableDHT ?? true);
       setEnableUtp(s.enableUtp ?? true);
+      setEncryption(s.encryption === 'required' || s.encryption === 'tolerated' ? s.encryption : 'preferred');
       setMaxConnections(s.maxConnections ?? 55);
       setMaxConnectionsGlobal(s.maxConnectionsGlobal ?? 200);
       setPortMin(s.portMin ?? 6881);
       setPortForwarding(s.portForwarding ?? true);
+
+      setProxyEnabled(s.proxyEnabled ?? false);
+      setProxyType(s.proxyType === 'https' || s.proxyType === 'socks5' ? s.proxyType : 'http');
+      setProxyHost(s.proxyHost ?? '');
+      setProxyPort(s.proxyPort ?? 8080);
+      setProxyUsername(s.proxyUsername ?? '');
+      setProxyPassword(s.proxyPassword ?? '');
 
       setWatchFolderEnabled(s.watchFolderEnabled ?? false);
       setWatchFolderPath(s.watchFolderPath ?? '');
@@ -611,6 +634,11 @@ function useSettingsController() {
         diskGuardMinFreeMB,
         defaultSeedRatioLimit,
         defaultSeedTimeLimitMinutes,
+        proxyHost,
+        proxyPort,
+        proxyType,
+        proxyUsername,
+        proxyPassword,
         enableNotifications,
         enableSounds,
         notifyOnComplete,
@@ -641,6 +669,15 @@ function useSettingsController() {
 
       setMessage({ type: 'success', text: t('settings.msg.saved') });
       setHasChanges(false);
+      if (
+        proxyHost !== (settings.proxyHost ?? '') ||
+        proxyPort !== (settings.proxyPort ?? 8080) ||
+        proxyType !== (settings.proxyType ?? 'http') ||
+        proxyUsername !== (settings.proxyUsername ?? '') ||
+        proxyPassword !== (settings.proxyPassword ?? '')
+      ) {
+        setProxyRestartPending(true);
+      }
       await loadSettings();
     } catch (error) {
       console.error('Failed to save settings:', error);
@@ -666,6 +703,11 @@ function useSettingsController() {
       setDiskGuardMinFreeMB(settings.diskGuardMinFreeMB ?? 2048);
       setDefaultSeedRatioLimit(settings.defaultSeedRatioLimit ?? 0);
       setDefaultSeedTimeLimitMinutes(settings.defaultSeedTimeLimitMinutes ?? 0);
+      setProxyHost(settings.proxyHost ?? '');
+      setProxyPort(settings.proxyPort ?? 8080);
+      setProxyType(settings.proxyType === 'https' || settings.proxyType === 'socks5' ? settings.proxyType : 'http');
+      setProxyUsername(settings.proxyUsername ?? '');
+      setProxyPassword(settings.proxyPassword ?? '');
       setHasChanges(false);
     }
     if (schedulerConfig) {
@@ -768,8 +810,13 @@ function useSettingsController() {
     maxActiveDownloads, setMaxActiveDownloads,
     altSpeedEnabled, setAltSpeedEnabled, altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
     enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
+    encryption, setEncryption,
     maxConnections, setMaxConnections, maxConnectionsGlobal, setMaxConnectionsGlobal,
     portMin, setPortMin, portForwarding, setPortForwarding, pfStatus,
+    proxyEnabled, setProxyEnabled, proxyType, setProxyType,
+    proxyHost, setProxyHost, proxyPort, setProxyPort,
+    proxyUsername, setProxyUsername, proxyPassword, setProxyPassword,
+    proxyRestartPending, setProxyRestartPending,
     // DoH
     dohEnabled, setDohEnabled, dohTemplateId, dohTemplates,
     dohNewName, setDohNewName, dohNewUrl, setDohNewUrl, dohAdding, dohTest,
