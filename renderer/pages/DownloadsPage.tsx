@@ -676,6 +676,32 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
   }, [addToast, loadDownloads]);
 
+  const handleReannounce = useCallback(async (id: string) => {
+    try {
+      await window.api.reannounceDownload(id);
+      addToast(t('downloads.reannouncing'), 'success');
+    } catch (error) {
+      addToast(
+        `${t('tcm.failed')}: ${error instanceof Error ? error.message : String(error)}`,
+        'error'
+      );
+    }
+  }, [addToast]);
+
+  const handleMoveData = useCallback(async (id: string) => {
+    try {
+      const dest = await window.api.selectDirectory();
+      if (!dest) return;
+      await window.api.setDownloadLocation(id, dest, true);
+      await loadDownloads();
+    } catch (error) {
+      addToast(
+        `${t('tcm.failed')}: ${error instanceof Error ? error.message : String(error)}`,
+        'error'
+      );
+    }
+  }, [addToast, loadDownloads]);
+
   const handleOpenFolder = useCallback(async (path: string) => {
     try {
       await window.api.openPath(path);
@@ -1324,6 +1350,22 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               icon: 'refresh-cw',
               onClick: () => {
                 handleRecheck(contextMenu.downloadId);
+                setContextMenu(null);
+              }
+            },
+            {
+              label: t('downloads.reannounce'),
+              icon: 'refresh',
+              onClick: () => {
+                void handleReannounce(contextMenu.downloadId);
+                setContextMenu(null);
+              }
+            },
+            {
+              label: t('downloads.moveData'),
+              icon: 'folder',
+              onClick: () => {
+                void handleMoveData(contextMenu.downloadId);
                 setContextMenu(null);
               }
             },

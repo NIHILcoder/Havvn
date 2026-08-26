@@ -3,6 +3,7 @@ import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent'
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority, RoomState } from '../../shared/types';
 import { safeBaseName } from '../../shared/path-safety';
+import { peerHostToIPv4 } from '../../shared/ip-range';
 import { buildOPML, parseOPML } from '../../shared/opml';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
@@ -1318,6 +1319,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         dohEnabled: updated.dohEnabled,
         dohTemplateId: updated.dohTemplateId,
         dohCustomTemplates: updated.dohCustomTemplates,
+        encryption: updated.encryption,
+        proxyEnabled: updated.proxyEnabled,
+        proxyType: updated.proxyType,
+        proxyHost: updated.proxyHost,
+        proxyPort: updated.proxyPort,
+        proxyUsername: updated.proxyUsername,
+        proxyPassword: updated.proxyPassword,
       });
 
       // Restart the disk-space guard if its settings changed
@@ -2078,6 +2086,25 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  ipcMain.handle('downloads:banPeer', wrapHandler('downloads:banPeer',
+    async (_event, address: string, persist: boolean) => {
+      const ipNum = peerHostToIPv4(String(address || ''));
+      if (ipNum === null) {
+        throw new TorrentError('Peer address is not IPv4', 'INVALID_PEER');
+      }
+      const blSvc = getIPBlocklistService();
+      try {
+        blSvc.banIPv4(ipNum, !!persist);
+      } catch (err) {
+        if (err instanceof Error && err.message === 'BAN_LIMIT') {
+          throw new TorrentError('Manual ban list is full', 'BAN_LIMIT');
+        }
+        throw err;
+      }
+      await torrentManager.applyIpBlocklist(blSvc.getRanges());
+    }
+  ));
+
   // Aggregated swarm geography for the live world map (all active torrents).
   ipcMain.handle('swarm:getGeo', wrapHandler('swarm:getGeo',
     async () => {
@@ -2101,6 +2128,22 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('downloads:removeTracker', wrapHandler('downloads:removeTracker',
     async (_event, id: string, url: string) => {
       return await torrentManager.removeTracker(id, url);
+    }
+  ));
+
+  ipcMain.handle('downloads:reannounce', wrapHandler('downloads:reannounce',
+    async (_event, id: string) => {
+      await torrentManager.reannounceDownload(id);
+    }
+  ));
+
+  ipcMain.handle('downloads:getPieces', wrapHandler('downloads:getPieces',
+    async (_event, id: string) => torrentManager.getPieces(id)
+  ));
+
+  ipcMain.handle('downloads:setLocation', wrapHandler('downloads:setLocation',
+    async (_event, id: string, location: string, move: boolean) => {
+      await torrentManager.setDownloadLocation(id, String(location || ''), !!move);
     }
   ));
 

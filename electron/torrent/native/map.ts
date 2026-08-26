@@ -136,6 +136,7 @@ export function mapPeers(t: TrTorrent): PeerInfo[] {
       peerInterested: p.peerIsInterested,
       peerChoking: p.clientIsChoked,
     },
+    flagStr: p.flagStr || undefined,
   }));
 }
 

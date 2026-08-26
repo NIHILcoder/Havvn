@@ -9,7 +9,7 @@ import { URL } from 'url';
 import { getHostEnv } from './host/env';
 import { TorrentError } from './errors';
 import { ipToNum, ipInRanges, isPrivateOrReservedIPv4 } from '../../shared/ip-range';
-import { clientFromWire, peerProgress, safeSpeed, normalizeConnType } from './peer-utils';
+import { clientFromWire, peerProgress, safeSpeed, normalizeConnType, wireFlagStr } from './peer-utils';
 import {
   Download,
   DownloadStatus,
@@ -23,6 +23,7 @@ import {
   RunningTransport,
   SwarmGeo,
   SwarmGeoPoint,
+  TorrentPieces,
 } from '../../shared/types';
 import {
   isValidTransition,
@@ -39,6 +40,7 @@ import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { extractInfoHashFromMagnet } from '../../shared/magnet';
 import { shouldStopSeeding } from '../../shared/seeding-limits';
 import { planRestore } from '../../shared/restore-plan';
+import { EMPTY_PIECES, haveFromBitfield, summarizeHave } from '../../shared/piece-bitfield';
 import { peekCastServer } from './cast-server';
 import { probeAudioStreams, audioTrackList, audioTrackParam, parseAudioTrackParam, transcodeMapArgs, AudioTrackListItem } from './audio-probe';
 import { spawn, ChildProcess } from 'child_process';
@@ -221,7 +223,8 @@ export class TorrentManager {
   private dohTemplateId = 'cloudflare';
   private dohCustomTemplates: DohTemplate[] = [];
   // IP blocklist filtering runs here (where the WebTorrent client lives). Main
-  // ships the merged, sorted ranges via applyIpBlocklist(); wires are hooked once.
+  // ships the merged, sorted ranges via applyIpBlocklist(); the wire hook is
+  // installed once, then live wires are re-scanned whenever ranges change.
   private blockedRanges: Array<[number, number]> = [];
   private blocklistHooked = false;
   // Whether the offline country DB (ip3country) has been initialized. Lazy so a
@@ -2532,25 +2535,36 @@ export class TorrentManager {
   /**
    * Apply IP-blocklist filtering to the live client. Main owns the lists/parsing
    * and ships the merged, sorted [start,end] ranges; we drop any peer whose IPv4
-   * falls inside a range. Wires are hooked once; later calls just swap the ranges
-   * (the hook reads this.blockedRanges live).
+   * falls inside a range. The wire hook is installed once; later calls swap the
+   * ranges AND re-scan live wires so a just-banned IP is torn down immediately
+   * instead of lingering until it reconnects.
    */
   applyIpBlocklist(ranges: Array<[number, number]>): void {
     this.blockedRanges = ranges;
-    if (this.blocklistHooked || !this.client) return;
-    this.blocklistHooked = true;
+    if (!this.client) return;
 
-    const checkWire = (wire: any): void => {
-      const n = typeof wire?.remoteAddress === 'string' ? ipToNum(wire.remoteAddress) : null;
-      if (n !== null && ipInRanges(this.blockedRanges, n)) { try { wire.destroy(); } catch { /* ignore */ } }
-    };
-    const hookTorrent = (torrent: any): void => {
-      torrent.on('wire', checkWire);
-      for (const w of (torrent.wires || [])) checkWire(w);
-    };
-    this.client.on('torrent', hookTorrent);
-    for (const t of (((this.client as any).torrents) || [])) hookTorrent(t);
-    log.info('IP blocklist filtering active in torrent host', { ranges: ranges.length });
+    if (!this.blocklistHooked) {
+      this.blocklistHooked = true;
+      const hookTorrent = (torrent: any): void => {
+        torrent.on('wire', (wire: any) => this.dropIfBlocked(wire));
+        for (const w of (torrent.wires || [])) this.dropIfBlocked(w);
+      };
+      this.client.on('torrent', hookTorrent);
+      for (const t of (((this.client as any).torrents) || [])) hookTorrent(t);
+      log.info('IP blocklist filtering active in torrent host', { ranges: ranges.length });
+      return;
+    }
+
+    for (const t of (((this.client as any).torrents) || [])) {
+      for (const w of (t.wires || [])) this.dropIfBlocked(w);
+    }
+  }
+
+  private dropIfBlocked(wire: any): void {
+    const n = typeof wire?.remoteAddress === 'string' ? ipToNum(wire.remoteAddress) : null;
+    if (n !== null && ipInRanges(this.blockedRanges, n)) {
+      try { wire.destroy(); } catch { /* ignore */ }
+    }
   }
 
   /**
@@ -2953,6 +2967,13 @@ export class TorrentManager {
     dohEnabled?: boolean;
     dohTemplateId?: string;
     dohCustomTemplates?: DohTemplate[];
+    encryption?: 'required' | 'preferred' | 'tolerated';
+    proxyEnabled?: boolean;
+    proxyType?: 'http' | 'https' | 'socks5';
+    proxyHost?: string;
+    proxyPort?: number;
+    proxyUsername?: string;
+    proxyPassword?: string;
   }): Promise<void> {
     log.debug('Updating settings', settings);
 
@@ -3288,6 +3309,7 @@ export class TorrentManager {
     const managed = this.managedTorrents.get(id);
     const torrent = managed?.torrent as any;
     if (!torrent) return [];
+    this.ensureGeoInit();
 
     const numPieces: number = Array.isArray(torrent.pieces) ? torrent.pieces.length : 0;
     const peerMap = torrent._peers || {};
@@ -3302,7 +3324,7 @@ export class TorrentManager {
       // Strip the IPv4-mapped-IPv6 prefix (incoming TCP shows ::ffff:1.2.3.4).
       const address = rawAddress.replace(/^::ffff:/i, '');
 
-      out.push({
+      const row: PeerInfo = {
         address,
         client: clientFromWire(wire),
         connType: normalizeConnType(wire.type || peer.type),
@@ -3317,7 +3339,11 @@ export class TorrentManager {
           peerInterested: !!wire.peerInterested,
           peerChoking: !!wire.peerChoking,
         },
-      });
+      };
+      row.flagStr = wireFlagStr(row.flags, row.connType) || undefined;
+      const cc = this.lookupCountry(address);
+      if (cc) row.country = cc;
+      out.push(row);
     }
 
     // Fastest peers first — most relevant to the user.
@@ -3461,6 +3487,33 @@ export class TorrentManager {
     } catch (_) {
       return [];
     }
+  }
+
+  async reannounceDownload(id: string): Promise<void> {
+    await this.whenReady();
+    const torrent = this.managedTorrents.get(id)?.torrent as { announce?: () => void } | undefined;
+    if (!torrent) throw new TorrentError('Download not found', 'NOT_FOUND', id);
+    try { torrent.announce?.(); } catch (e) {
+      throw new TorrentError(e instanceof Error ? e.message : String(e), 'TRACKER_ERROR', id);
+    }
+  }
+
+  getPieces(id: string): TorrentPieces {
+    const torrent = this.managedTorrents.get(id)?.torrent as {
+      pieceLength?: number;
+      pieces?: unknown[];
+      bitfield?: { buffer?: Uint8Array };
+    } | undefined;
+    if (!torrent) return EMPTY_PIECES;
+    const pieceCount = Array.isArray(torrent.pieces) ? torrent.pieces.length : 0;
+    if (pieceCount <= 0) return EMPTY_PIECES;
+    const buf = torrent.bitfield?.buffer;
+    const have = buf ? haveFromBitfield(buf, pieceCount) : new Uint8Array(pieceCount);
+    return summarizeHave(have, torrent.pieceLength ?? 0);
+  }
+
+  async setDownloadLocation(id: string, _location: string, _move: boolean): Promise<void> {
+    throw new TorrentError('Set location requires the native engine', 'UNSUPPORTED', id);
   }
 
   /** Strip a single trailing slash so URLs dedupe the way bittorrent-tracker does. */

@@ -48,7 +48,7 @@ export interface TrPeer {
   rateToClient: number; // B/s we download from this peer
   rateToPeer: number;   // B/s we upload to this peer
   progress: number;     // 0..1
-  flagStr: string;
+  flagStr?: string;
   // Choke/interest state, transmission-side naming: client* = us, peer* = them.
   clientIsChoked: boolean;     // the peer is choking US
   clientIsInterested: boolean; // WE want the peer's data
@@ -213,5 +213,13 @@ export class TransmissionRpc {
    */
   torrentRenamePath(id: number | string, oldPath: string, newName: string): Promise<void> {
     return this.call('torrent-rename-path', { ids: [id], path: oldPath, name: newName }).then(() => undefined);
+  }
+
+  torrentSetLocation(ids: TrIds, location: string, move: boolean): Promise<void> {
+    return this.call('torrent-set-location', { ids, location, move }).then(() => undefined);
+  }
+
+  torrentReannounce(ids: TrIds): Promise<void> {
+    return this.call('torrent-reannounce', { ids }).then(() => undefined);
   }
 }

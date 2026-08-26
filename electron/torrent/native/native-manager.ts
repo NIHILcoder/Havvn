@@ -41,9 +41,12 @@ import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
 import { selectVpnIPv4, resolveBindOverrides } from '../../../shared/vpn-bind';
 import { composeUploadLimits } from '../../../shared/upload-limits';
 import { AdaptiveThrottle } from '../adaptive-throttle';
+import { daemonProxyEnv } from '../../../shared/tracker-proxy';
+import { encryptionToSettingsInt, normalizeProtocolEncryption } from '../../../shared/protocol-encryption';
+import { EMPTY_PIECES, summarizePieces } from '../../../shared/piece-bitfield';
 import type {
   AppSettings, Download, DownloadStats, FilePriority, NetworkHealth, PeerInfo, RunningTransport,
-  SourceType, SwarmGeo, TorrentFile, TorrentInfo, TrackerInfo, VpnBindStatus,
+  SourceType, SwarmGeo, TorrentFile, TorrentInfo, TorrentPieces, TrackerInfo, VpnBindStatus,
 } from '../../../shared/types';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -164,7 +167,12 @@ export class NativeTorrentManager {
       peerPort: (this.settings.portMin ?? 0) > 0 ? this.settings.portMin : undefined,
       // Main's existing UPnP service owns the router mapping (honors the
       // portForwarding toggle); don't let the daemon double-map the port.
-      settingsOverrides: { 'port-forwarding-enabled': false, ...bindOverrides },
+      settingsOverrides: {
+        'port-forwarding-enabled': false,
+        encryption: encryptionToSettingsInt(normalizeProtocolEncryption(this.settings.encryption)),
+        ...bindOverrides,
+      },
+      env: daemonProxyEnv(this.settings),
       onLog: (line) => log.debug('daemon', { line }),
       // Host exits → proxy respawns the whole host → clean engine restart.
       onUnexpectedExit: (code) => { log.error('transmission daemon died', { code }); process.exit(1); },
@@ -209,7 +217,7 @@ export class NativeTorrentManager {
       'pex-enabled': s.enablePEX ?? true,   // real toggles at last — webtorrent ignored these
       'lpd-enabled': s.enableLSD ?? true,
       'utp-enabled': s.enableUtp ?? true,
-      'encryption': 'preferred',
+      'encryption': normalizeProtocolEncryption(s.encryption),
       'peer-limit-per-torrent': s.maxConnections ?? 100,
       'peer-limit-global': s.maxConnectionsGlobal ?? 300,
       'speed-limit-down-enabled': (s.maxDownKbps ?? 0) > 0,
@@ -672,7 +680,14 @@ export class NativeTorrentManager {
     const hash = this.idToHash.get(id);
     if (!hash) return [];
     const [t] = await this.rpc!.torrentGet(['peers'], hash);
-    return t ? mapPeers(t) : [];
+    const peers = t ? mapPeers(t) : [];
+    this.ensureGeoInit();
+    const raw = t?.peers ?? [];
+    for (let i = 0; i < peers.length; i++) {
+      const cc = this.lookupCountry(raw[i]?.address ?? '');
+      if (cc) peers[i].country = cc;
+    }
+    return peers;
   }
 
   async getTrackers(id: string): Promise<TrackerInfo[]> {
@@ -681,6 +696,34 @@ export class NativeTorrentManager {
     if (!hash) return [];
     const [t] = await this.rpc!.torrentGet(['trackerStats'], hash);
     return t ? mapTrackers(t) : [];
+  }
+
+  async reannounceDownload(id: string): Promise<void> {
+    await this.whenReady();
+    const hash = this.idToHash.get(id);
+    if (!hash) throw new TorrentError('Download not found', 'NOT_FOUND', id);
+    await this.rpc!.torrentReannounce(hash);
+  }
+
+  async getPieces(id: string): Promise<TorrentPieces> {
+    await this.whenReady();
+    const hash = this.idToHash.get(id);
+    if (!hash) return EMPTY_PIECES;
+    const [t] = await this.rpc!.torrentGet(['pieceCount', 'pieceSize', 'pieces'], hash);
+    if (!t || !(t.pieceCount ?? 0)) return EMPTY_PIECES;
+    return summarizePieces(t.pieces ?? '', t.pieceCount ?? 0, t.pieceSize ?? 0);
+  }
+
+  async setDownloadLocation(id: string, location: string, move: boolean): Promise<void> {
+    await this.whenReady();
+    const dest = location.trim();
+    if (!dest) throw new TorrentError('Location is empty', 'INVALID_INPUT', id);
+    const d = this.getRecord(id);
+    const hash = await this.ensureInDaemon(d);
+    fs.mkdirSync(dest, { recursive: true });
+    await this.rpc!.torrentSetLocation(hash, dest, move);
+    d.savePath = dest;
+    await db.updateDownloadField(id, 'savePath', dest);
   }
 
   /**
@@ -759,20 +802,27 @@ export class NativeTorrentManager {
    * transmission can't load a file:// blocklist, and won't hot-reload a dropped
    * file — but blocklist-update fetches from blocklist-url and compiles + activates
    * live. So serve the generated P2P list from a tiny loopback endpoint and point
-   * the daemon at it. Fire-and-forget: main calls this unconditionally at startup.
+   * the daemon at it. Awaited so a Peers-tab ban is in the daemon before the UI
+   * refreshes; startup still fire-and-forgets via the same path.
    */
-  applyIpBlocklist(ranges: Array<[number, number]>): void {
-    void this.applyBlocklist(ranges).catch((e) => log.warn('blocklist apply failed', { error: String(e) }));
+  applyIpBlocklist(ranges: Array<[number, number]>): Promise<void> {
+    return this.applyBlocklist(ranges);
   }
 
   private async applyBlocklist(ranges: Array<[number, number]>): Promise<void> {
+    await this.whenReady();
     if (!this.rpc) return;
-    if (ranges.length === 0) { await this.rpc.sessionSet({ 'blocklist-enabled': false }); return; }
-    this.blocklistBody = buildBlocklistP2P(ranges);
-    const port = await this.ensureBlocklistServer();
-    await this.rpc.sessionSet({ 'blocklist-url': `http://127.0.0.1:${port}/${this.blocklistToken}`, 'blocklist-enabled': true });
-    const res = await this.rpc.blocklistUpdate();
-    log.info('IP blocklist applied to daemon', { rules: res['blocklist-size'], ranges: ranges.length });
+    try {
+      if (ranges.length === 0) { await this.rpc.sessionSet({ 'blocklist-enabled': false }); return; }
+      this.blocklistBody = buildBlocklistP2P(ranges);
+      const port = await this.ensureBlocklistServer();
+      await this.rpc.sessionSet({ 'blocklist-url': `http://127.0.0.1:${port}/${this.blocklistToken}`, 'blocklist-enabled': true });
+      const res = await this.rpc.blocklistUpdate();
+      log.info('IP blocklist applied to daemon', { rules: res['blocklist-size'], ranges: ranges.length });
+    } catch (e) {
+      log.warn('blocklist apply failed', { error: String(e) });
+      throw e;
+    }
   }
 
   private ensureBlocklistServer(): Promise<number> {

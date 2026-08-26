@@ -75,3 +75,19 @@ export function normalizeConnType(type: unknown): PeerInfo['connType'] {
     default: return 'other';
   }
 }
+
+/** Compact qBT-style flag string from choke/interest + transport. */
+export function wireFlagStr(
+  flags: PeerInfo['flags'],
+  connType: PeerInfo['connType'],
+): string {
+  let s = '';
+  if (flags.interested && !flags.peerChoking) s += 'D';
+  else if (flags.interested) s += 'd';
+  if (flags.peerInterested && !flags.choking) s += 'U';
+  else if (flags.peerInterested) s += 'u';
+  if (connType === 'webrtc') s += 'E';
+  if (connType.startsWith('utp')) s += 'T';
+  if (connType.endsWith('-in')) s += 'I';
+  return s;
+}

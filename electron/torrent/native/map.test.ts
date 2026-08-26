@@ -135,6 +135,7 @@ describe('mapPeers', () => {
       address: '1.2.3.4:51413', connType: 'utp-out', downSpeed: 500, upSpeed: 100,
       downloaded: 1234, uploaded: 99,
       flags: { interested: true, choking: false, peerInterested: true, peerChoking: true },
+      flagStr: 'DE',
     });
   });
 });
