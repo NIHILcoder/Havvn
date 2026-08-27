@@ -20,7 +20,7 @@ export { Alert } from './Alert';
 export { EmptyState } from './EmptyState';
 export { Toast, ToastContainer } from './Toast';
 export type { ToastProps } from './Toast';
-export { ContextMenu } from './ContextMenu';
+export { ContextMenu, clampContextMenuPos } from './ContextMenu';
 export type { ContextMenuItem } from './ContextMenu';
 export { DropdownMenu } from './DropdownMenu';
 export type { DropdownMenuItem } from './DropdownMenu';

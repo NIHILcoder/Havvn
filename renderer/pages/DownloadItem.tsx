@@ -240,7 +240,10 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             size="sm"
             iconOnly
             icon={<Icon name="more-horizontal" size={14} />}
-            onClick={(e) => onContextMenu?.(e, download.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              onContextMenu?.(e, download.id);
+            }}
             title={t('downloads.more')}
           />
         </div>

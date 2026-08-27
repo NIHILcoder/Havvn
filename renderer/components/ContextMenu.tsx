@@ -1,17 +1,24 @@
 /**
  * Context Menu Component
  *
- * Right-click context menu for downloads — and for room file rows, which can be
- * shown in a DETACHED window. Every DOM global here therefore resolves from the
- * menu's own element (`ownerDocument`), with the host-window context as the
- * fallback before the ref exists: the caller portals this menu into the document
- * the right-clicked row lives in, and the dismiss listeners + the viewport clamp
- * must agree with it. Mixing realms is worse here than elsewhere because the clamp
- * WRITES its answer back into inline style, so a wrong-window measurement sticks.
- * In the main window every one of these resolves to the real globals.
+ * Right-click (and ⋯) menu for downloads and room file rows. The menu is always
+ * portaled to the host window's <body>: `.page-container` / `.main-content`
+ * overflow:hidden clips position:fixed descendants in Chromium, which is why
+ * the ⋯ menu on a compact download row used to show only its left strip.
+ *
+ * Clamp lives in React state (not a DOM write after paint). Writing
+ * `el.style.left` used to lose on the next parent render — Downloads ticks
+ * stats ~1/s, React reapplied the original click coords, and the menu jumped
+ * back off the right edge.
+ *
+ * Every DOM global resolves from the menu's own document, with the host-window
+ * context as fallback before the ref exists. A room file row can live in a
+ * detached panel; mixing realms is worse here than elsewhere because the clamp
+ * is viewport math.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Icon, IconName } from './Icon';
 import { useHostWindow } from '../utils/hostWindow';
 import './ContextMenu.css';
@@ -32,12 +39,37 @@ interface ContextMenuProps {
   onClose: () => void;
 }
 
+const PAD = 8;
+
+/**
+ * Keep a point-anchored menu inside the given viewport. Pure so the geometry
+ * is testable without createPortal (which react-dom/server throws on).
+ */
+export function clampContextMenuPos(
+  x: number,
+  y: number,
+  menuW: number,
+  menuH: number,
+  viewportW: number,
+  viewportH: number,
+): { x: number; y: number; maxHeight: number } {
+  const maxHeight = Math.max(120, viewportH - PAD * 2);
+  const h = Math.min(menuH, maxHeight);
+  let nx = x + menuW + PAD > viewportW ? viewportW - menuW - PAD : x;
+  let ny = y + h + PAD > viewportH ? viewportH - h - PAD : y;
+  nx = Math.max(PAD, nx);
+  ny = Math.max(PAD, ny);
+  return { x: nx, y: ny, maxHeight };
+}
+
 export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const host = useHostWindow();
+  const [pos, setPos] = useState<{ x: number; y: number; maxHeight: number } | null>(null);
 
   useEffect(() => {
     const doc = menuRef.current?.ownerDocument ?? host.document;
+    if (!doc) return;
     const handleClickOutside = (event: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
         onClose();
@@ -59,35 +91,33 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
     };
   }, [onClose, host]);
 
-  // Adjust position to keep menu within viewport — the rect and the viewport must
-  // come from the SAME window, or the menu is clamped against a box it isn't in.
-  useEffect(() => {
-    if (menuRef.current) {
-      const rect = menuRef.current.getBoundingClientRect();
-      const win = menuRef.current.ownerDocument.defaultView ?? host.window;
-      const viewportWidth = win.innerWidth;
-      const viewportHeight = win.innerHeight;
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!el) return;
+    const win = el.ownerDocument.defaultView ?? host.window;
+    setPos(clampContextMenuPos(
+      x,
+      y,
+      el.offsetWidth,
+      el.scrollHeight,
+      win.innerWidth,
+      win.innerHeight,
+    ));
+  }, [x, y, items.length, host]);
 
-      let adjustedX = x;
-      let adjustedY = y;
-
-      if (rect.right > viewportWidth) {
-        adjustedX = viewportWidth - rect.width - 10;
-      }
-
-      if (rect.bottom > viewportHeight) {
-        adjustedY = viewportHeight - rect.height - 10;
-      }
-
-      menuRef.current.style.left = `${adjustedX}px`;
-      menuRef.current.style.top = `${adjustedY}px`;
-    }
-  }, [x, y, host]);
-
-  return (
+  const node = (
     <>
       <div className="context-menu-backdrop" onClick={onClose} />
-      <div ref={menuRef} className="context-menu" style={{ left: x, top: y }}>
+      <div
+        ref={menuRef}
+        className="context-menu"
+        style={{
+          left: pos?.x ?? -9999,
+          top: pos?.y ?? -9999,
+          maxHeight: pos?.maxHeight,
+          visibility: pos ? 'visible' : 'hidden',
+        }}
+      >
         {items.map((item, index) => (
           item.divider ? (
             <div key={index} className="context-menu-divider" />
@@ -111,4 +141,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
       </div>
     </>
   );
+
+  const body = host.document?.body;
+  return body ? createPortal(node, body) : node;
 };
