@@ -4,6 +4,36 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [3.0.5] - 2026-08-28
+
+The torrent side gets the controls that were missing when a transfer stuck
+or a bad peer needed to go.
+
+### Added
+- **Protocol encryption you can actually pick.** Settings → Connection now
+  exposes Required / Preferred / Allowed for BitTorrent MSE/PE. The native
+  engine applies it live; WebTorrent has no MSE and the UI says so. Default
+  stays Preferred — the same value the daemon already used, just not hidden.
+- **A tracker proxy that does not pretend to cover peers.** HTTP, HTTPS and
+  SOCKS5 (with auth) sit on the Connection page using the existing settings
+  keys. Announces go through the proxy; peer sockets do not, because
+  Transmission 4 cannot SOCKS them. The note in the UI is unchanged on purpose.
+- **A piece map, a move, and a force reannounce.** The torrent dialog shows
+  have/missing pieces. “Move data” relocates files and keeps seeding (native
+  engine). Trackers and the download ⋯ menu can force a reannounce without
+  waiting for the next interval.
+- **Peers as a tool, not a readout.** Each row shows country (offline GeoIP)
+  and D/d/U/u/E/T/I flags. Right-click bans the IP for this session, or writes
+  a /32 into the same blocklist the engines already honor. IPv4 only — the
+  P2P list format has no IPv6.
+
+### Fixed
+- **The ⋯ menu stayed on screen.** It was clipped by the list’s overflow and
+  jumped back off the right edge on every stats tick. It now portals to the
+  window and clamps to the viewport.
+- **Torrent tabs no longer grow a horizontal scroller.** Six tabs share the
+  dialog width instead of overflowing it.
+
 ## [3.0.4] - 2026-08-24
 
 RSS becomes a rule engine, and search stops showing the same torrent three times.

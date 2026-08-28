@@ -1,6 +1,6 @@
 {
   "name": "havvn",
-  "version": "3.0.4",
+  "version": "3.0.5",
   "description": "A modern, privacy-focused BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
