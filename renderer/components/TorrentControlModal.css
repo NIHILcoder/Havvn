@@ -27,12 +27,12 @@
   gap: 0;
 }
 
-/* Tabs — pinned below the Modal header while the body scrolls. */
+/* Tabs — equal slices of the dialog width, never a horizontal scroller. */
 .tcm-tabs {
   display: flex;
   border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
-  overflow-x: auto;
+  overflow: hidden;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -40,18 +40,31 @@
 }
 
 .tcm-tab {
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.55rem 1rem;
-  font-size: 0.85rem;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.5rem 0.35rem;
+  font-size: 0.78rem;
   font-weight: 500;
   border: none;
   background: transparent;
   color: var(--color-text-muted);
   cursor: pointer;
   border-bottom: 2px solid transparent;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.tcm-tab svg {
+  flex-shrink: 0;
+}
+
+.tcm-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -462,7 +475,7 @@
 .tcm-peers-table { border: 1px solid var(--color-border); border-radius: var(--radius-sm, 6px); overflow: hidden; }
 .tcm-peers-head, .tcm-peer-row {
   display: grid;
-  grid-template-columns: minmax(110px, 1.4fr) minmax(90px, 1.3fr) 64px 96px 72px 72px;
+  grid-template-columns: 52px minmax(90px, 1.3fr) minmax(70px, 1.1fr) 52px 56px 88px 64px 64px;
   align-items: center; gap: 8px; padding: 7px 10px;
 }
 .tcm-peers-head {
@@ -471,7 +484,12 @@
   border-bottom: 1px solid var(--color-border);
 }
 .tcm-peers-body { max-height: 320px; overflow-y: auto; }
-.tcm-peer-row { font-size: 12.5px; color: var(--color-text-primary); border-bottom: 1px solid var(--color-border); }
+.tcm-peers-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.tcm-peer-row { font-size: 12.5px; color: var(--color-text-primary); border-bottom: 1px solid var(--color-border); cursor: context-menu; }
 .tcm-peer-row:last-child { border-bottom: none; }
 .tcm-peer-row:hover { background: var(--color-bg-hover); }
 .tcm-peer-row .mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
@@ -485,3 +503,22 @@
 .pc-spd { font-size: 12px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pc-spd.dn { color: var(--color-success); }
 .pc-spd.up { color: var(--color-accent-primary); }
+.pc-cc { font-size: 11px; color: var(--color-text-muted); white-space: nowrap; }
+.pc-flags { font-size: 11px; color: var(--color-text-secondary, var(--color-text-muted)); letter-spacing: 0.04em; }
+
+.tcm-piece-map {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--color-bg-secondary);
+}
+.tcm-piece {
+  width: 8px;
+  height: 14px;
+  flex: 0 0 auto;
+  background: var(--color-accent);
+  border-radius: var(--radius-sm);
+}

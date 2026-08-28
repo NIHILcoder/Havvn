@@ -4,12 +4,15 @@
  * seed ratio/time, file priorities, tracker management.
  */
 
-import React, { useState, useEffect } from 'react';
-import { Download, TorrentFile, TrackerInfo, FilePriority, PeerInfo } from '../../shared/types';
+import React, { useState, useEffect, useRef } from 'react';
+import { Download, TorrentFile, TrackerInfo, FilePriority, PeerInfo, TorrentPieces } from '../../shared/types';
+import { peerHostToIPv4 } from '../../shared/ip-range';
 import { Button, Icon } from './index';
 import { Modal } from './Modal';
+import { ContextMenu } from './ContextMenu';
 import { useConfirm } from './ConfirmDialog';
 import { useTranslation } from '../utils/i18nContext';
+import { cleanError } from '../utils/format-helpers';
 import './TorrentControlModal.css';
 
 interface TorrentControlModalProps {
@@ -18,9 +21,14 @@ interface TorrentControlModalProps {
   onUpdate?: () => void;
 }
 
-type Tab = 'download' | 'seeding' | 'files' | 'peers' | 'trackers';
+type Tab = 'download' | 'seeding' | 'files' | 'peers' | 'trackers' | 'pieces';
 
 const formatSpeed = (bps: number): string => (bps > 0 ? formatBytes(bps) + '/s' : '—');
+
+function codeToFlag(cc: string): string {
+  if (!/^[A-Za-z]{2}$/.test(cc)) return '';
+  return cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
+}
 
 const FILE_PRIORITY_COLORS: Record<FilePriority, string> = {
   skip: '#6b7280',
@@ -43,7 +51,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   onUpdate,
 }) => {
   const { t } = useTranslation();
-  const { alert } = useConfirm();
+  const { alert, confirm } = useConfirm();
   const [tab, setTab] = useState<Tab>('download');
 
   // Localized "Ns/Nm/Nh ago" for a tracker's last-announce timestamp.
@@ -86,6 +94,13 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   // Peers tab state
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [peersLoaded, setPeersLoaded] = useState(false);
+  const [peerMenu, setPeerMenu] = useState<{ x: number; y: number; address: string } | null>(null);
+  const bannedIpsRef = useRef<Set<number>>(new Set());
+
+  const [pieces, setPieces] = useState<TorrentPieces | null>(null);
+  const [piecesLoaded, setPiecesLoaded] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [reannouncing, setReannouncing] = useState(false);
 
   // Load data when tab changes
   useEffect(() => {
@@ -99,11 +114,32 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
     let alive = true;
     const tick = () => {
       window.api.getPeers(download.id)
-        .then((list) => { if (alive) { setPeers(list || []); setPeersLoaded(true); } })
+        .then((list) => {
+          if (!alive) return;
+          const hide = bannedIpsRef.current;
+          setPeers((list || []).filter((p) => {
+            const n = peerHostToIPv4(p.address);
+            return n === null || !hide.has(n);
+          }));
+          setPeersLoaded(true);
+        })
         .catch(() => { if (alive) setPeersLoaded(true); });
     };
     tick();
     const iv = setInterval(tick, 1500);
+    return () => { alive = false; clearInterval(iv); };
+  }, [tab, download.id]);
+
+  useEffect(() => {
+    if (tab !== 'pieces') return;
+    let alive = true;
+    const tick = () => {
+      window.api.getPieces(download.id)
+        .then((result) => { if (alive) { setPieces(result); setPiecesLoaded(true); } })
+        .catch(() => { if (alive) setPiecesLoaded(true); });
+    };
+    tick();
+    const iv = setInterval(tick, 2000);
     return () => { alive = false; clearInterval(iv); };
   }, [tab, download.id]);
 
@@ -128,6 +164,32 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
       console.error('Failed to load trackers:', err);
     } finally {
       setLoadingTrackers(false);
+    }
+  };
+
+  const handleMoveData = async () => {
+    const dest = await window.api.selectDirectory();
+    if (!dest) return;
+    setMoving(true);
+    try {
+      await window.api.setDownloadLocation(download.id, dest, true);
+      onUpdate?.();
+    } catch (err) {
+      await alert({ message: `${t('tcm.failed')}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setMoving(false);
+    }
+  };
+
+  const handleReannounce = async () => {
+    setReannouncing(true);
+    try {
+      await window.api.reannounceDownload(download.id);
+      await loadTrackers();
+    } catch (err) {
+      await alert({ message: `${t('tcm.failed')}: ${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setReannouncing(false);
     }
   };
 
@@ -198,15 +260,39 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
     }
   };
 
+  const handleBanPeer = async (address: string, persist: boolean) => {
+    setPeerMenu(null);
+    if (peerHostToIPv4(address) === null) {
+      await alert({ message: t('tcm.ban.ipv4Only') });
+      return;
+    }
+    if (persist && !(await confirm({ message: t('tcm.ban.confirmPersist'), danger: true }))) return;
+    try {
+      await window.api.banPeer(address, persist);
+      const banned = peerHostToIPv4(address);
+      if (banned !== null) bannedIpsRef.current.add(banned);
+      setPeers((prev) => prev.filter((p) => peerHostToIPv4(p.address) !== banned));
+    } catch (err) {
+      const msg = cleanError(err);
+      await alert({
+        message: msg.includes('INVALID_PEER')
+          ? t('tcm.ban.ipv4Only')
+          : `${t('tcm.ban.failed')}: ${msg}`,
+      });
+    }
+  };
+
   const tabs: { id: Tab; label: string; icon: string }[] = [
     { id: 'download', label: t('tcm.tabDownload'), icon: 'download' },
     { id: 'seeding', label: t('status.seeding'), icon: 'upload' },
     { id: 'files', label: t('downloads.files'), icon: 'file' },
     { id: 'peers', label: t('table.peers'), icon: 'users' },
+    { id: 'pieces', label: t('create.pieces'), icon: 'grid' },
     { id: 'trackers', label: t('trackers.tab'), icon: 'server' },
   ];
 
   return (
+    <>
     <Modal
       onClose={onClose}
       icon="settings"
@@ -228,8 +314,8 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
               className={`tcm-tab ${tab === t.id ? 'active' : ''}`}
               onClick={() => setTab(t.id)}
             >
-              <Icon name={t.icon as any} size={15} />
-              {t.label}
+              <Icon name={t.icon as any} size={14} />
+              <span className="tcm-tab-label">{t.label}</span>
             </button>
           ))}
         </div>
@@ -254,6 +340,25 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                 >
                   <span className="tcm-toggle-knob" />
                 </button>
+              </div>
+
+              <div className="tcm-divider" />
+
+              <div className="tcm-field">
+                <div className="tcm-field-info">
+                  <span className="tcm-field-label">{t('tcm.moveData')}</span>
+                  <span className="tcm-field-desc">{t('tcm.moveDataDesc')}</span>
+                  <span className="tcm-field-desc" title={download.savePath}>{download.savePath}</span>
+                </div>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={moving}
+                  onClick={() => { void handleMoveData(); }}
+                  icon={<Icon name="folder" size={14} />}
+                >
+                  {t('settings.choose')}
+                </Button>
               </div>
 
               <div className="tcm-divider" />
@@ -424,10 +529,13 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                     <span><strong>{peers.length}</strong> {t('share.peers')}</span>
                     <span className="tcm-peers-live"><span className="tcm-live-dot" /> {t('tcm.live')}</span>
                   </div>
+                  <p className="tcm-peers-hint">{t('tcm.ban.hint')}</p>
                   <div className="tcm-peers-table">
                     <div className="tcm-peers-head">
+                      <span className="pc-cc">{t('privacy.dash.location')}</span>
                       <span className="pc-addr">{t('tcm.colAddress')}</span>
                       <span className="pc-client">{t('tcm.colClient')}</span>
+                      <span className="pc-flags">{t('tcm.colFlags')}</span>
                       <span className="pc-type">{t('tcm.colConn')}</span>
                       <span className="pc-prog">{t('common.done')}</span>
                       <span className="pc-spd">↓</span>
@@ -435,9 +543,18 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                     </div>
                     <div className="tcm-peers-body">
                       {peers.map((p) => (
-                        <div key={p.address} className="tcm-peer-row">
+                        <div
+                          key={p.address}
+                          className="tcm-peer-row"
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            setPeerMenu({ x: e.clientX, y: e.clientY, address: p.address });
+                          }}
+                        >
+                          <span className="pc-cc" title={p.country || ''}>{p.country ? `${codeToFlag(p.country)} ${p.country}` : '—'}</span>
                           <span className="pc-addr mono" title={p.address}>{p.address}</span>
                           <span className="pc-client" title={p.client || t('tcm.unknown')}>{p.client || '—'}</span>
+                          <span className="pc-flags mono" title={p.flagStr || ''}>{p.flagStr || '—'}</span>
                           <span className="pc-type">{CONN_LABELS[p.connType]}</span>
                           <span className="pc-prog">
                             <span className="pc-prog-bar"><span className="pc-prog-fill" style={{ width: `${Math.round(p.progress * 100)}%` }} /></span>
@@ -448,6 +565,45 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                         </div>
                       ))}
                     </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {tab === 'pieces' && (
+            <div className="tcm-section">
+              {!piecesLoaded ? (
+                <div className="tcm-loading">
+                  <span className="spinner" />
+                  <span>{t('tcm.loadingFiles')}</span>
+                </div>
+              ) : !pieces || pieces.pieceCount === 0 ? (
+                <div className="tcm-empty">
+                  <Icon name="grid" size={32} />
+                  <p>{t('tcm.noPieces')}</p>
+                  <span>{t('tcm.noPiecesHint')}</span>
+                </div>
+              ) : (
+                <>
+                  <div className="tcm-peers-summary">
+                    <span>
+                      <strong>{pieces.haveCount}</strong>
+                      {' / '}
+                      {pieces.pieceCount}
+                      {' '}
+                      {t('create.pieces')}
+                    </span>
+                    <span>{((pieces.haveCount / pieces.pieceCount) * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="tcm-piece-map" role="img" aria-label={t('create.pieces')}>
+                    {pieces.buckets.map((fill, i) => (
+                      <span
+                        key={i}
+                        className="tcm-piece"
+                        style={{ opacity: 0.12 + 0.88 * fill }}
+                      />
+                    ))}
                   </div>
                 </>
               )}
@@ -476,6 +632,15 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   icon={<Icon name="plus" size={14} />}
                 >
                   {t('trackers.add')}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={reannouncing}
+                  onClick={() => { void handleReannounce(); }}
+                  icon={<Icon name="refresh-cw" size={14} />}
+                >
+                  {t('tcm.reannounce')}
                 </Button>
               </div>
 
@@ -525,6 +690,34 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
           )}
         </div>
     </Modal>
+    {peerMenu && (
+      <ContextMenu
+        x={peerMenu.x}
+        y={peerMenu.y}
+        onClose={() => setPeerMenu(null)}
+        items={peerHostToIPv4(peerMenu.address) === null
+          ? [{
+              label: t('tcm.ban.ipv4Only'),
+              icon: 'slash',
+              disabled: true,
+              onClick: () => {},
+            }]
+          : [
+              {
+                label: t('tcm.ban.session'),
+                icon: 'slash',
+                onClick: () => { void handleBanPeer(peerMenu.address, false); },
+              },
+              {
+                label: t('tcm.ban.persist'),
+                icon: 'slash',
+                danger: true,
+                onClick: () => { void handleBanPeer(peerMenu.address, true); },
+              },
+            ]}
+      />
+    )}
+    </>
   );
 };
 

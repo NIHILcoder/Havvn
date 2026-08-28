@@ -10,8 +10,12 @@ import zlib from 'zlib';
 import { URL } from 'url';
 import { logger } from '../utils';
 import * as db from '../db/store';
+import { ipToNum as parseIPv4, numToIp } from '../../shared/ip-range';
 
 const log = logger.child('IPBlocklist');
+
+/** Hard cap so a furious click-loop cannot grow blocklists.json without bound. */
+const MANUAL_BAN_CAP = 2000;
 
 interface IPRange {
   start: number;
@@ -20,6 +24,10 @@ interface IPRange {
 
 export class IPBlocklistService {
   private ranges: IPRange[] = [];
+  /** Merged URL-list ranges only; session + persisted /32s are folded in by rebuild(). */
+  private listRanges: IPRange[] = [];
+  private sessionBans = new Set<number>();
+  private persistentBans = new Set<number>();
 
   get entryCount(): number {
     return this.ranges.length;
@@ -36,6 +44,8 @@ export class IPBlocklistService {
 
   /**
    * Load all enabled blocklists from store and merge into in-memory ranges.
+   * Session bans are kept — a list refresh must not un-ban a peer this process
+   * just kicked.
    */
   async loadAll(): Promise<void> {
     const blocklists = await db.getIPBlocklists();
@@ -56,9 +66,42 @@ export class IPBlocklistService {
     // range (e.g. ranges (1,100) and (50,60): a lookup of 80 lands on (50,60),
     // walks right, and never sees that (1,100) also covers it).
     allRanges.sort((a, b) => a.start - b.start);
-    this.ranges = this.mergeRanges(allRanges);
+    this.listRanges = this.mergeRanges(allRanges);
+
+    this.persistentBans.clear();
+    for (const ip of db.getManualPeerBans()) {
+      const n = parseIPv4(ip);
+      if (n !== null) this.persistentBans.add(n);
+    }
+    this.rebuild();
 
     log.info(`Loaded ${this.ranges.length} blocked IP ranges from ${enabled.length} blocklists`);
+  }
+
+  /**
+   * Ban a single IPv4 for this process. `persist` also writes it to the manual
+   * list so it survives restart. Idempotent.
+   */
+  banIPv4(ipNum: number, persist: boolean): void {
+    this.sessionBans.add(ipNum >>> 0);
+    if (persist) {
+      if (!this.persistentBans.has(ipNum) && this.persistentBans.size >= MANUAL_BAN_CAP) {
+        throw new Error('BAN_LIMIT');
+      }
+      this.persistentBans.add(ipNum >>> 0);
+      db.setManualPeerBans([...this.persistentBans].map((n) => numToIp(n)));
+    }
+    this.rebuild();
+  }
+
+  /** Fold URL lists + session + persisted /32s into this.ranges. */
+  private rebuild(): void {
+    const extra: IPRange[] = [];
+    for (const n of this.sessionBans) extra.push({ start: n, end: n });
+    for (const n of this.persistentBans) extra.push({ start: n, end: n });
+    const all = this.listRanges.concat(extra);
+    all.sort((a, b) => a.start - b.start);
+    this.ranges = this.mergeRanges(all);
   }
 
   /** Coalesce a sorted list of ranges into non-overlapping ranges. */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ipToNum, ipInRanges } from './ip-range';
+import { ipToNum, ipInRanges, peerHostToIPv4 } from './ip-range';
 
 describe('ipToNum', () => {
   it('parses dotted IPv4 to uint32', () => {
@@ -17,6 +17,25 @@ describe('ipToNum', () => {
     expect(ipToNum('256.1.1.1')).toBeNull();
     expect(ipToNum('not-an-ip')).toBeNull();
     expect(ipToNum('')).toBeNull();
+  });
+});
+
+describe('peerHostToIPv4', () => {
+  it('accepts bare IPv4 and ip:port', () => {
+    expect(peerHostToIPv4('1.2.3.4')).toBe(ipToNum('1.2.3.4'));
+    expect(peerHostToIPv4('1.2.3.4:51413')).toBe(ipToNum('1.2.3.4'));
+  });
+
+  it('strips IPv4-mapped IPv6, with or without a port', () => {
+    expect(peerHostToIPv4('::ffff:8.8.8.8')).toBe(ipToNum('8.8.8.8'));
+    expect(peerHostToIPv4('::ffff:8.8.8.8:6881')).toBe(ipToNum('8.8.8.8'));
+    expect(peerHostToIPv4('[::ffff:8.8.8.8]:6881')).toBe(ipToNum('8.8.8.8'));
+  });
+
+  it('rejects IPv6, hostnames, and empty', () => {
+    expect(peerHostToIPv4('[2001:db8::1]:80')).toBeNull();
+    expect(peerHostToIPv4('tracker.example.com:80')).toBeNull();
+    expect(peerHostToIPv4('')).toBeNull();
   });
 });
 

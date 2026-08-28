@@ -14,6 +14,23 @@ export function ipToNum(ip: string): number | null {
   return ((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]) >>> 0;
 }
 
+/**
+ * Host of a live peer (`ip:port`, `[v6]:port`, or bare IP) → IPv4 uint32.
+ * IPv6 and hostnames return null — the blocklist is IPv4-only (P2P-plaintext).
+ */
+export function peerHostToIPv4(address: string): number | null {
+  let host = address.trim();
+  if (!host) return null;
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end > 0) host = host.slice(1, end);
+  } else {
+    const m = /^(.+):(\d+)$/.exec(host);
+    if (m && m[1].includes('.')) host = m[1];
+  }
+  return ipToNum(host);
+}
+
 /** Whether `ipNum` falls inside any range, via binary search. `ranges` MUST be
  *  sorted ascending by start and non-overlapping (the blocklist merges them). */
 export function ipInRanges(ranges: ReadonlyArray<readonly [number, number]>, ipNum: number): boolean {
