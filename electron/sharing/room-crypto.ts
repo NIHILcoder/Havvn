@@ -13,6 +13,9 @@
  */
 
 import crypto from 'crypto';
+import { normalizeCode, codeIsE2E, buildInvite, parseInvite, E2E_SUFFIX } from '../../shared/room-invite';
+
+export { normalizeCode, codeIsE2E, buildInvite, parseInvite };
 
 // Curated, easy-to-say wordlists. Kept short and unambiguous (no homophones,
 // no easily-confused words). Code = adj-adj-noun-noun-NNNN: 32·32·32·32·9000 ≈
@@ -42,31 +45,12 @@ function pick<T>(arr: T[]): T {
   return arr[b % arr.length];
 }
 
-// End-to-end encrypted rooms carry an extra "-e2e" segment in their invite code,
-// so a joiner knows the room is E2E BEFORE any peer says hello — otherwise a
-// member joining an empty/hostile swarm could share a file in plaintext. The
-// suffix is part of the KDF input like the rest of the code (tampering with it
-// just derives the wrong key). Codes from older builds never end in "-e2e", so
-// they safely parse as "not E2E".
-const E2E_SUFFIX = '-e2e';
-
 /** Generate a fresh, speakable invite code, e.g. "swift-amber-otter-comet-4821"
  *  ("…-4821-e2e" for an end-to-end encrypted room). */
 export function generateRoomCode(e2e = false): string {
   const n = crypto.randomInt(1000, 10000); // 4 digits, no leading zero
   const base = [pick(ADJECTIVES), pick(ADJECTIVES), pick(NOUNS), pick(NOUNS), n].join('-');
   return e2e ? base + E2E_SUFFIX : base;
-}
-
-/** True when the invite code marks its room end-to-end encrypted. Old-format
- *  codes carry no marker and return false (their E2E-ness is learned via gossip). */
-export function codeIsE2E(code: string): boolean {
-  return normalizeCode(code).endsWith(E2E_SUFFIX);
-}
-
-/** Normalize so trivial copy/paste differences still resolve to the same room. */
-export function normalizeCode(code: string): string {
-  return code.trim().toLowerCase().replace(/\s+/g, '-').replace(/-+/g, '-');
 }
 
 // COMPATIBILITY-CRITICAL: the KDF salt keeps the pre-rebrand value on purpose.
@@ -121,31 +105,6 @@ export function randomPeerId(): string {
  */
 export function deriveMemberId(pub: string): string {
   return crypto.createHash('sha256').update(pub, 'utf8').digest('hex').slice(0, 32);
-}
-
-// A shareable invite optionally PINS the room owner: "<code>~<ownerId>", where
-// ownerId is the owner's key-derived memberId (a commitment to their pubkey). A
-// joiner given the pin adopts ONLY that identity as owner, so a member can't
-// self-declare as owner to a fresh joiner. The pin is NOT part of the KDF — a
-// joiner who pastes only the bare speakable code still derives the same key and
-// joins (unpinned = trust-on-first-use, the historical behavior). The separator
-// is a char that never appears in a code or a hex id.
-const INVITE_SEP = '~';
-const OWNER_ID_RE = /^[0-9a-f]{32}$/; // deriveMemberId shape
-
-/** Build the shareable invite for a room, pinning the owner when known. */
-export function buildInvite(code: string, ownerId?: string): string {
-  const c = normalizeCode(code);
-  return ownerId && OWNER_ID_RE.test(ownerId) ? c + INVITE_SEP + ownerId : c;
-}
-
-/** Split a pasted invite into its KDF code and (optional, validated) owner pin. */
-export function parseInvite(raw: string): { code: string; ownerPin: string } {
-  const s = (raw || '').trim();
-  const i = s.indexOf(INVITE_SEP);
-  if (i < 0) return { code: normalizeCode(s), ownerPin: '' };
-  const pin = s.slice(i + 1).trim().toLowerCase();
-  return { code: normalizeCode(s.slice(0, i)), ownerPin: OWNER_ID_RE.test(pin) ? pin : '' };
 }
 
 /** Encrypt a JSON-serializable object → compact base64 token (iv|tag|cipher). */
