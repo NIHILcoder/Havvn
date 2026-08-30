@@ -14,7 +14,8 @@
  * see file bytes or plaintext.
  *
  * Keep in sync with the receiver pages (docs/share/index.html,
- * docs/watch/index.html) — those run in the browser and can't import this.
+ * docs/watch/index.html, docs/room/) and shared/room-guest-url.ts — those run
+ * in the browser and can't import this.
  */
 
 import { parseTrackers } from '../../shared/trackers';

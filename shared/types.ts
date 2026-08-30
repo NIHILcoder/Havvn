@@ -210,6 +210,8 @@ export interface RoomMember {
   color?: string;        // profile display color (signed 'profile' gossip; '' / absent = default)
   status?: string;       // short status line (signed 'profile' gossip)
   avatarImg?: string;    // custom avatar data URL (signed 'profile' gossip; absent = identicon)
+  /** Browser guest (no desktop install). Unsigned hello/ping field — display only. */
+  guest?: boolean;
 }
 
 /** A chat message in a room (gossiped between members; capped + persisted locally). */

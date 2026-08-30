@@ -133,7 +133,7 @@ type Msg =
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; transferChain?: TransferLink[] }
+  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; transferChain?: TransferLink[]; guest?: boolean }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -146,7 +146,7 @@ type Msg =
   // by `at`; kept separate from 'add' because mergeFile is add-only.
   | { t: 'assign'; fileId: string; folderId: string; at: number; memberId: string }
   | { t: 'have'; memberId: string; fileId: string }
-  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string }
+  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string; guest?: boolean }
   // Rich profile (custom avatar image / name color / status line). A SEPARATE
   // rarely-sent Msg — never on the 15s ping (the image is ~tens of KB) — and
   // SIGNED with a per-member monotonic `at` floor, unlike hello/ping's display
@@ -2238,6 +2238,7 @@ function clampGossip(msg: any): void {
   // collide with other messages). An out-of-bounds value breaks the sender's
   // signature and the message dies at verify — exactly like oversized chat text;
   // legit senders stay in range (the IPC boundary enforces the same limits).
+  if (msg.t === 'hello' || msg.t === 'ping') msg.guest = msg.guest === true;
   if (msg.t === 'profile') {
     msg.status = clampStr(msg.status, PROFILE_STATUS_MAX);
     msg.color = typeof msg.color === 'string' && (msg.color === '' || PROFILE_COLOR_RE.test(msg.color)) ? msg.color : '';
@@ -2337,6 +2338,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       bindIdentity(room, msg.memberId, msg.pub); // TOFU their identity key from the greet, so we can verify their signed commands
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
+      if (msg.guest === true) m.guest = true;
       m.have = Array.from(new Set(msg.have || []));
       maybeAdoptRoomName(room, msg.roomName);
       // Track the name's LWW clock once we're in sync on the name, so a later
@@ -2458,6 +2460,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (direct) wire.memberId = msg.memberId;
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
+      if (msg.guest === true) m.guest = true;
       m.have = Array.from(new Set(msg.have || []));
       maybeAdoptRoomName(room, msg.roomName);
       maybeAdoptOwner(room, msg.ownerId);
