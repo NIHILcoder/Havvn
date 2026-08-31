@@ -22,7 +22,8 @@
     "renderer/**/*.ts",
     "renderer/**/*.tsx",
     "electron/**/*.ts",
-    "shared/**/*.ts"
+    "shared/**/*.ts",
+    "guest/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
