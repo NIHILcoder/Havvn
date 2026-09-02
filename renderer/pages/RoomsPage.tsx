@@ -50,6 +50,8 @@ import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
 import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
+import { buildGuestUrl } from '../../shared/room-guest-url';
+import { parseTrackers } from '../../shared/trackers';
 import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import { classifyMediaKind, isDirectlyPlayable, isImage } from '../../shared/media';
 import { PLAYER_ROOM_FRAME } from '../../shared/player-windows';
@@ -231,6 +233,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const [avatarPool, setAvatarPool] = useState<string[]>([]);
   const [profileColor, setProfileColor] = useState('');
   const [profileStatus, setProfileStatus] = useState('');
+  // Browser-join URL for the invite dialog (public trackers omitted from the
+  // query so the common link stays short; custom trackers are encoded when set).
+  const [guestUrl, setGuestUrl] = useState('');
 
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selectedId;
@@ -379,6 +384,18 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dialog]);
+
+  useEffect(() => {
+    if (dialog !== 'invite' || !room) { setGuestUrl(''); return; }
+    const invite = room.invite || room.code;
+    let alive = true;
+    window.api.getSettings().then((s) => {
+      if (!alive) return;
+      const custom = parseTrackers(s.customTrackers);
+      setGuestUrl(buildGuestUrl(invite, custom.length ? custom : undefined));
+    }).catch(() => { if (alive) setGuestUrl(buildGuestUrl(invite)); });
+    return () => { alive = false; };
+  }, [dialog, room?.invite, room?.code]);
 
   // A havvn://join/<invite> deep link (routed here from main) opens the Join
   // dialog PREFILLED — the user still confirms (a deep link is untrusted input,
@@ -811,14 +828,26 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
               </div>
             );
           })()}
+          {guestUrl && (
+            <div className="rooms-invite-browser">
+              <button
+                type="button"
+                className="rooms-invite-copy"
+                onClick={() => copy(guestUrl, t('rooms.browserLinkCopied'))}
+              >
+                <Icon name="globe" size={15} /> {t('rooms.copyBrowserLink')}
+              </button>
+              <p className="rooms-invite-browser-hint">{t('rooms.inviteBrowserHint')}</p>
+            </div>
+          )}
           <button
             type="button"
-            className="rooms-invite-copy"
+            className="rooms-invite-link"
             onClick={() => copy(room.invite || room.code, t('rooms.codeCopied'))}
           >
-            <Icon name="copy" size={15} /> {t('rooms.copyInvite')}
+            <Icon name="copy" size={14} /> {t('rooms.copyInvite')}
           </button>
-          {/* A one-click deep link — opens the app straight to a prefilled Join dialog. */}
+          {/* Opens the installed app at a prefilled Join dialog. */}
           <button
             type="button"
             className="rooms-invite-link"
@@ -3404,7 +3433,7 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
         />
       )}
       {room.members.map((m) => (
-        <div key={m.memberId} className={`room-member ${m.online ? '' : 'offline'} ${m.muted ? 'muted' : ''}`} title={m.status ? m.status : m.isSelf ? t('rooms.you') : m.relayed ? t('rooms.relayed') : m.online ? t('rooms.direct') : t('rooms.offline')}>
+        <div key={m.memberId} className={`room-member ${m.online ? '' : 'offline'} ${m.muted ? 'muted' : ''}${m.guest ? ' guest' : ''}`} title={m.guest ? t('rooms.guestHint') : m.status ? m.status : m.isSelf ? t('rooms.you') : m.relayed ? t('rooms.relayed') : m.online ? t('rooms.direct') : t('rooms.offline')}>
           <button
             type="button"
             className="room-member-open"
@@ -3416,6 +3445,7 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
           <span className="room-member-name" style={m.color ? { color: m.color } : undefined}>
             {m.role === 'owner' && <Icon name="star" size={11} className="room-member-owner" />}
             {m.isSelf ? (m.name && m.name !== 'You' ? m.name : t('rooms.you')) : m.name}
+            {m.guest && <span className="room-member-guest" title={t('rooms.guestHint')}>{t('rooms.guest')}</span>}
             {m.relayed && <Icon name="network" size={11} className="room-member-relay" />}
           </span>
           <span className="room-member-have" title={m.muted ? undefined : t('rooms.memberHaveHint').replace('{n}', String(m.have.length)).replace('{total}', String(room.files.length))}>

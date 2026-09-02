@@ -71,7 +71,9 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
             {name}
           </span>
           <span className="profile-card-presence">
-            {member.online ? (member.relayed ? t('rooms.relayed') : t('rooms.direct')) : t('rooms.offline')}
+            {member.guest
+              ? t('rooms.guest')
+              : member.online ? (member.relayed ? t('rooms.relayed') : t('rooms.direct')) : t('rooms.offline')}
           </span>
         </div>
       </div>
@@ -80,6 +82,7 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
         <span title={t('rooms.memberHaveHint').replace('{n}', String(member.have.length)).replace('{total}', String(totalFiles))}>
           <Icon name="download" size={11} /> {member.have.length}/{totalFiles}
         </span>
+        {member.guest && <span className="profile-card-guesttag" title={t('rooms.guestHint')}>{t('rooms.guest')}</span>}
         {member.muted && <span className="profile-card-mutedtag">{t('rooms.muted')}</span>}
       </div>
       {!member.isSelf && (onMuteToggle || onKick || onTransfer) && (
