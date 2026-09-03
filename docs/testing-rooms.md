@@ -55,6 +55,10 @@ distinct members in a room. You can launch more with different names
    stays in sync, and the player shows who's watching.
 9. **Persistence.** Quit and relaunch each instance → rooms, members list,
    manifest (re-seeded), history, and E2E config all survive.
+10. **Browser guest.** Copy the *browser* invite link (or open
+    `docs/room/index.html#<invite>` locally). Confirm join on the gate — the
+    guest appears with a Guest badge, can chat / join voice / watch a
+    non-E2E playable file, and cannot write files or see LAN / game server.
 
 ## Notes
 

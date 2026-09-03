@@ -716,7 +716,7 @@ classDiagram
 | WebRemoteServer | main, порт из настроек | Мобильный пульт, token auth, выключен по умолчанию |
 | Transmission RPC | sidecar localhost | Управление native-движком |
 | webpack-dev-server | только `npm run dev` | HMR renderer |
-| Статика | `docs/share/index.html`, `docs/watch/index.html` | Браузер друга: принять шару / смотреть LAN |
+| Статика | `docs/share/index.html`, `docs/watch/index.html`, `docs/room/` | Браузер друга: принять шару / смотреть LAN / войти в комнату |
 
 Внешние URL, которые пользователь сам настраивает: RSS, Jackett/Torznab, блоклисты, свои WebRTC-трекеры, опциональный TURN.
 

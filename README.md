@@ -126,6 +126,10 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   start-seeding-immediately
 - **Instant Share Links** — send a completed download to anyone via a browser link
   (peer-to-peer over WebRTC, no install on their side); short links + QR
+- **Join a room from the browser** — the invite dialog copies a link
+  that opens chat, voice and watch-together in Chrome, Edge or Firefox. No
+  install on their side; you keep Havvn open. Encrypted files and the rest of
+  the app (LAN, game server, file write) stay in the desktop client
 - **Rooms (friend swarms)** — create a private group, share a speakable invite code, and
   everyone's files auto-distribute peer-to-peer into a shared folder. No cloud: members
   find each other over WebRTC and converge a file manifest, live presence, and
@@ -384,6 +388,9 @@ multiple severity levels, and automatic cleanup of old files.
   (one member is enough) for that.
 - **Watch-while-downloading in rooms** covers non-E2E rooms and browser-native formats;
   everything else plays the moment the download completes.
+- **Browser room guests** get chat, voice and watch-together only. They cannot
+  write files, join the virtual LAN or run a game server, and encrypted room
+  files do not play in the tab. The host must keep Havvn open.
 - **Virtual LAN is Windows only** — members on macOS or Linux can still share files,
   chat and voice; they cannot join the tunnel.
 - **Game servers** — Minecraft is the only module so far, and a server lives on its
@@ -395,7 +402,9 @@ multiple severity levels, and automatic cleanup of old files.
 
 CI runs on every push / PR (`.github/workflows/ci.yml`): type-check and build are required
 gates; lint runs as advisory. Please run `npm run typecheck`, `npm test` and `npm run build`
-before opening a PR.
+before opening a PR. The guest page (`docs/room/guest.js`) is produced by
+`npm run build:guest` (also part of `npm run build`) and must be committed so
+GitHub Pages can serve it.
 
 ---
 

@@ -4,6 +4,15 @@ All notable changes to Havvn (formerly TorrentHunt) are documented here.
 This project follows [Keep a Changelog](https://keepachangelog.com/) and
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Join a room from the browser.** The invite dialog copies a GitHub Pages
+  link so a friend can open chat, voice and watch-together in
+  Chrome, Edge or Firefox without installing Havvn. Guests stay on the public
+  mesh — no file write, LAN or game server — and encrypted files still need
+  the app. The host must keep Havvn open.
+
 ## [3.0.5] - 2026-08-28
 
 The torrent side gets the controls that were missing when a transfer stuck
