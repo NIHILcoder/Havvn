@@ -292,7 +292,7 @@ const SearchPage: React.FC = () => {
     };
   }, []);
 
-  const handleDownload = async (result: MergedResult, selectedFiles?: number[]) => {
+  const handleDownload = async (result: MergedResult, selectedFiles?: number[], savePath?: string) => {
     const key = rowKey(result);
     if (downloading.has(key)) return;
     setDownloading(prev => new Set(prev).add(key));
@@ -308,6 +308,7 @@ const SearchPage: React.FC = () => {
         categoryId: addCategoryId || undefined,
         paused: addPaused || undefined,
         selectedFiles,
+        savePath,
       });
 
       setAddedKeys(prev => new Set(prev).add(key));
@@ -333,10 +334,10 @@ const SearchPage: React.FC = () => {
   };
 
   /** Confirm out of the file picker: add with just the files that stayed ticked. */
-  const handlePreviewConfirm = async (selectedIndices: number[]) => {
+  const handlePreviewConfirm = async (selectedIndices: number[], savePath?: string) => {
     const target = previewTarget;
     setPreviewTarget(null);
-    if (target) await handleDownload(target, selectedIndices);
+    if (target) await handleDownload(target, selectedIndices, savePath);
   };
 
   const rowMenuItems = (r: MergedResult) => {

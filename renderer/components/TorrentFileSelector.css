@@ -22,6 +22,29 @@
    borders, so neutralize the shared Modal body's padding + gap. */
 .tfs-body { padding: 0; gap: 0; }
 
+.tfs-destination {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.tfs-destination-path {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 180px;
+  min-width: 0;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.tfs-destination-path > span { overflow-wrap: anywhere; }
+.tfs-destination-path > span:first-child { color: var(--color-text-primary); }
+.tfs-destination-path > [role="alert"] { color: var(--color-error); }
+
 .file-selector-stats {
   display: flex;
   align-items: center;

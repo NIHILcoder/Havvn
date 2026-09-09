@@ -610,10 +610,11 @@
    containing-block hazard. Add it together with the first rule that needs it. */
 .room-chat-section {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   gap: 0;
 }
-.room-chat-section .room-chat { flex: 1; min-height: 0; }
+.room-chat-section .room-chat { flex: 1; min-width: 0; min-height: 0; }
 .room-chat-section .room-chat-log { flex: 1; max-height: none; }
 
 /* Chat-zone tabs (Chat / History) — compact, matching the room's 11px chrome. */
@@ -1314,7 +1315,10 @@
   padding: var(--space-3);
 }
 .room-chat-log .room-files-empty { margin: auto 0; background: transparent; border: none; }
-.room-chat-msg { display: flex; align-items: flex-end; gap: var(--space-2); max-width: 88%; }
+/* min-width:0 — a reply quote with an invite (or any nowrap token) must shrink
+   inside the log. Default min-width:auto lets that child blow the column, then
+   overflow:hidden on .room-chat clips the day label and every other bubble. */
+.room-chat-msg { display: flex; align-items: flex-end; gap: var(--space-2); max-width: 88%; min-width: 0; }
 .room-chat-msg.mine { align-self: flex-end; flex-direction: row-reverse; }
 .room-chat-bubble-wrap { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .room-chat-msg.mine .room-chat-bubble-wrap { align-items: flex-end; }
@@ -1488,6 +1492,8 @@
   display: flex;
   align-items: baseline;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
   max-width: 100%;
   margin-bottom: 3px;
   padding: 2px 8px;
@@ -1498,8 +1504,8 @@
   line-height: 1.3;
   overflow: hidden;
 }
-.room-chat-quote-name { color: var(--color-accent-primary); font-weight: 600; flex: none; }
-.room-chat-quote-text { color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.room-chat-quote-name { color: var(--color-accent-primary); font-weight: 600; flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-chat-quote-text { flex: 1; min-width: 0; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* "· edited" appended to the timestamp. */
 .room-chat-edited { font-style: italic; }
 
@@ -1508,15 +1514,17 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 6px;
+  width: 100%;
+  min-width: 0;
   padding: 4px 8px;
   border-left: 2px solid var(--color-accent-primary);
   border-radius: var(--radius-sm); /* squared HUD (accent left rule stays) */
   background: var(--color-bg-tertiary);
   font-size: 12px;
   color: var(--color-text-secondary);
+  overflow: hidden;
 }
-.room-chat-compose-ctx-label { flex: none; }
+.room-chat-compose-ctx-label { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .room-chat-compose-ctx-quote { flex: 1; min-width: 0; color: var(--color-text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .room-chat-compose-ctx-x {
   flex: none;
@@ -1664,13 +1672,25 @@
   .room-chat-typing-dots span { animation: none; opacity: 0.7; }
 }
 
+/* Column so the reply/edit banner sits ABOVE the input. It used to be a
+   sibling in this row — a nowrap invite in the quote grew the composer past
+   the column, and .room-chat { overflow: hidden } ate the whole log. */
 .room-chat-compose {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: var(--space-2);
   padding: var(--space-2);
   border-top: 1px solid var(--color-border-subtle);
+  min-width: 0;
 }
-.room-chat-compose .rooms-input { flex: 1; }
+.room-chat-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.room-chat-compose .rooms-input { flex: 1; min-width: 0; }
 
 /* ── Files (concept .frow: flat hairline rows inside the card) ─────────── */
 /* Quick client-side filter over the room's file list (shown for >5 files) */

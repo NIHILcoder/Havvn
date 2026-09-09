@@ -12,7 +12,7 @@ import { TorrentError } from '../errors';
 /** torrent-get fields the 750ms stats tick requests (request only what you read). */
 export const ENGINE_STAT_FIELDS = [
   'hashString', 'name', 'status', 'percentDone', 'metadataPercentComplete',
-  'rateDownload', 'rateUpload', 'peersConnected', 'peersSendingToUs',
+  'rateDownload', 'rateUpload', 'peersConnected', 'peers',
   'sizeWhenDone', 'downloadedEver', 'uploadedEver', 'eta', 'isFinished',
   'error', 'errorString',
 ];
@@ -70,9 +70,9 @@ export function mapStats(d: Download, t?: TrTorrent): DownloadStats {
     upSpeedBps: t.rateUpload,
     etaSeconds: t.eta > 0 ? t.eta : null,
     peers: t.peersConnected,
-    // Unlike webtorrent, transmission tells us who actually feeds us. While
-    // seeding this is naturally 0 (we download nothing).
-    seeds: t.peersSendingToUs,
+    // A seed has the entire torrent, even when it is currently choking us.
+    // peersSendingToUs counts active uploaders, including incomplete peers.
+    seeds: (t.peers ?? []).filter((peer) => peer.progress >= 1).length,
     status: mapStatus(t, d.status),
   };
 }

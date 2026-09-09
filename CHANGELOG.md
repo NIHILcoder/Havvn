@@ -6,12 +6,31 @@ This project follows [Keep a Changelog](https://keepachangelog.com/) and
 
 ## [Unreleased]
 
+## [3.0.6] - 2026-09-09
+
 ### Added
 - **Join a room from the browser.** The invite dialog copies a GitHub Pages
   link so a friend can open chat, voice and watch-together in
   Chrome, Edge or Firefox without installing Havvn. Guests stay on the public
   mesh — no file write, LAN or game server — and encrypted files still need
   the app. The host must keep Havvn open.
+- **A separate download folder for each torrent.** Choose a destination in the
+  file-selection dialog, including search results, without changing the default
+  folder. The choice is also available when metadata preview fails.
+
+### Fixed
+- Default download-folder changes now reach the running native engine immediately.
+- Compact torrent checkboxes keep their inset instead of touching the clipped edge.
+- Native seed counts reflect complete connected peers, including idle seeds,
+  instead of counting only peers currently sending data.
+- Failed native torrent removal no longer hides a transfer that may still be running.
+- Deleting data restores missing daemon entries first; missing magnet metadata
+  now reports an error instead of silently leaving files behind.
+- Global seeding-ratio limits use the correct RPC switch. Explicit unlimited
+  torrent ratios override the global limit, and individual ratios survive re-adds.
+- Room reply quotes, long names and invite links no longer overflow the chat.
+  Reply/edit banners sit above the composer in the app; browser reply text
+  shrinks without pushing the dismiss button out of view.
 
 ## [3.0.5] - 2026-08-28
 

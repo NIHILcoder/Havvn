@@ -26,7 +26,7 @@ interface TorrentInfo {
 interface TorrentFileSelectorProps {
   torrentPath?: string;
   magnetUri?: string;
-  onConfirm: (selectedIndices: number[]) => void;
+  onConfirm: (selectedIndices: number[], savePath?: string) => void;
   onCancel: () => void;
 }
 
@@ -50,9 +50,14 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [savePath, setSavePath] = useState<string>();
+  const [choosingPath, setChoosingPath] = useState(false);
+  const [pathError, setPathError] = useState(false);
   const [selectAllState, setSelectAllState] = useState<'all' | 'none' | 'partial'>('all');
 
   useEffect(() => {
+    setSavePath(undefined);
+    setPathError(false);
     loadTorrentInfo();
   }, [torrentPath, magnetUri]);
 
@@ -179,8 +184,41 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
     if (selectedFiles.size === 0) {
       return;
     }
-    onConfirm(Array.from(selectedFiles));
+    onConfirm(Array.from(selectedFiles), savePath);
   };
+
+  const pathPicker = (
+    <div className="tfs-destination">
+      <div className="tfs-destination-path">
+        <span>{t('filePicker.savePath')}</span>
+        <span title={savePath}>{savePath || t('filePicker.defaultPath')}</span>
+        {pathError && <span role="alert">{t('filePicker.choosePathFailed')}</span>}
+      </div>
+      <Button
+        variant="secondary"
+        size="sm"
+        icon={<Icon name="folder-open" size={14} />}
+        disabled={choosingPath}
+        onClick={async () => {
+          setChoosingPath(true);
+          setPathError(false);
+          try {
+            const chosen = await window.api.selectDirectory();
+            if (chosen) setSavePath(chosen);
+          } catch {
+            setPathError(true);
+          } finally {
+            setChoosingPath(false);
+          }
+        }}
+      >{t('settings.choose')}</Button>
+      {savePath && (
+        <Button variant="ghost" size="sm" onClick={() => setSavePath(undefined)}>
+          {t('filePicker.defaultPath')}
+        </Button>
+      )}
+    </div>
+  );
 
   if (loading) {
     return (
@@ -213,10 +251,11 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
           <Icon name="alert-circle" size={48} />
           <h3>{t('filePicker.loadFailed')}</h3>
           <p>{error || t('filePicker.errorUnknown')}</p>
+          {pathPicker}
           <div className="file-selector-error-actions">
             {/* Preview is optional — a metadata timeout must not block the add.
                 Empty selection = download everything. */}
-            <Button variant="primary" onClick={() => onConfirm([])}>{t('filePicker.addAnyway')}</Button>
+            <Button variant="primary" disabled={choosingPath} onClick={() => onConfirm([], savePath)}>{t('filePicker.addAnyway')}</Button>
             <Button onClick={onCancel}>{t('player.close')}</Button>
           </div>
         </div>
@@ -246,7 +285,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
             variant="primary"
             icon={<Icon name="download" size={16} />}
             onClick={handleConfirm}
-            disabled={selectedFiles.size === 0}
+            disabled={selectedFiles.size === 0 || choosingPath}
           >
             {t('filePicker.downloadSelected')} ({selectedFiles.size})
           </Button>
@@ -270,6 +309,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         </div>
 
         {/* Search and Quick Actions */}
+        {pathPicker}
         <div className="file-selector-controls">
           <div className="search-box">
             <Icon name="search" size={16} />

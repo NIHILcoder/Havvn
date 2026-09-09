@@ -4089,23 +4089,25 @@ const RoomChat: React.FC<{
               ))}
             </div>
           )}
-          <textarea
-            ref={composeRef}
-            className="rooms-input room-chat-input"
-            placeholder={t('rooms.chatPlaceholder')}
-            value={text}
-            maxLength={2000}
-            rows={1}
-            onChange={(e) => {
-              setText(e.target.value);
-              pingTyping(e.target.value);
-              trackMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-            }}
-            onKeyDown={onComposeKeyDown}
-          />
-          <Button variant="primary" size="sm" onClick={send} loading={sending} disabled={!text.trim()} icon={<Icon name="send" size={14} />}>
-            {t('rooms.chatSend')}
-          </Button>
+          <div className="room-chat-compose-row">
+            <textarea
+              ref={composeRef}
+              className="rooms-input room-chat-input"
+              placeholder={t('rooms.chatPlaceholder')}
+              value={text}
+              maxLength={2000}
+              rows={1}
+              onChange={(e) => {
+                setText(e.target.value);
+                pingTyping(e.target.value);
+                trackMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+              }}
+              onKeyDown={onComposeKeyDown}
+            />
+            <Button variant="primary" size="sm" onClick={send} loading={sending} disabled={!text.trim()} icon={<Icon name="send" size={14} />}>
+              {t('rooms.chatSend')}
+            </Button>
+          </div>
         </div>
       </div>
       )}

@@ -1,6 +1,9 @@
 {
   "nav.downloads": "Загрузки",
   "filePicker.title": "Выберите файлы для загрузки",
+  "filePicker.savePath": "Сохранить этот торрент в",
+  "filePicker.defaultPath": "Папка из настроек",
+  "filePicker.choosePathFailed": "Не удалось выбрать папку",
   "filePicker.loading": "Загрузка информации о торренте…",
   "filePicker.loadFailed": "Не удалось загрузить торрент",
   "filePicker.addAnyway": "Добавить всё равно (все файлы)",

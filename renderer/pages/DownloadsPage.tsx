@@ -552,7 +552,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
   };
 
-  const handleFileSelectionConfirm = async (selectedIndices: number[]) => {
+  const handleFileSelectionConfirm = async (selectedIndices: number[], savePath?: string) => {
     // Re-entry guard: a second click while the add is in flight used to fire a
     // second addDownload and surface a confusing "already being added" error.
     if (!pendingTorrent || isAddingTorrent) return;
@@ -561,6 +561,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       sourceType: (pendingTorrent.path ? 'torrent_file' : 'magnet') as 'torrent_file' | 'magnet',
       sourceUri: pendingTorrent.path || pendingTorrent.magnetUri!,
       selectedFiles: selectedIndices,
+      savePath,
     };
 
     // Close the dialog immediately — the engine confirms fast now (metadata

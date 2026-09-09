@@ -2944,6 +2944,8 @@ export class TorrentManager {
    * Update manager settings
    */
   async updateSettings(settings: {
+    // WebTorrent reads this from DB on add; native caches it via this contract.
+    defaultDownloadDir?: string;
     maxActiveDownloads?: number;
     maxDownKbps?: number;
     maxUpKbps?: number;

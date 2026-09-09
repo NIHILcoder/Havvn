@@ -1,6 +1,9 @@
 {
   "nav.downloads": "Downloads",
   "filePicker.title": "Select Files to Download",
+  "filePicker.savePath": "Save this torrent to",
+  "filePicker.defaultPath": "Folder from settings",
+  "filePicker.choosePathFailed": "Could not select a folder",
   "filePicker.loading": "Loading torrent information…",
   "filePicker.loadFailed": "Failed to Load Torrent",
   "filePicker.addAnyway": "Add anyway (all files)",

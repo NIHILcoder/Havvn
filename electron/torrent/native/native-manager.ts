@@ -222,7 +222,7 @@ export class NativeTorrentManager {
       'peer-limit-global': s.maxConnectionsGlobal ?? 300,
       'speed-limit-down-enabled': (s.maxDownKbps ?? 0) > 0,
       'alt-speed-enabled': s.altSpeedEnabled ?? false,
-      'seed-ratio-limited': (s.defaultSeedRatioLimit ?? 0) > 0,
+      seedRatioLimited: (s.defaultSeedRatioLimit ?? 0) > 0,
       // BOTH upload ceilings (and the limiter switch) come from one composition
       // of the manual caps with the adaptive one — never from s.maxUpKbps
       // directly. Writing the raw setting here would stomp the adaptive cap on
@@ -409,6 +409,12 @@ export class NativeTorrentManager {
     if (d.customTrackers?.length || d.removedTrackers?.length) {
       await this.applyTrackerListEdit(hash, { add: d.customTrackers, remove: d.removedTrackers })
         .catch((e) => log.warn('tracker re-apply failed', { id: d.id, error: String(e) }));
+    }
+    if (d.seedRatioLimit != null) {
+      await this.rpc!.torrentSet(hash, {
+        seedRatioLimit: d.seedRatioLimit,
+        seedRatioMode: d.seedRatioLimit > 0 ? 1 : 2,
+      });
     }
     return hash;
   }
@@ -608,9 +614,21 @@ export class NativeTorrentManager {
   async removeDownload(id: string, deleteFiles: boolean): Promise<void> {
     await this.whenReady();
     const d = this.getRecord(id);
-    const hash = this.idToHash.get(id);
+    let hash = this.idToHash.get(id);
+    if (!hash && deleteFiles) {
+      hash = await this.ensureInDaemon(d);
+    }
+    if (hash && deleteFiles) {
+      // A restored magnet without metadata cannot tell the daemon which disk
+      // files belong to it. Keep the record so the user can retry after metadata
+      // is available instead of reporting a successful data deletion.
+      const [torrent] = await this.rpc!.torrentGet(['metadataPercentComplete'], hash);
+      if (!torrent || torrent.metadataPercentComplete < 1) {
+        throw new TorrentError('Torrent metadata is unavailable; cannot delete its files yet', 'NOT_ACTIVE', id);
+      }
+    }
     if (hash) {
-      await this.rpc!.torrentRemove(hash, deleteFiles).catch((e) => log.warn('daemon remove failed', { id, error: String(e) }));
+      await this.rpc!.torrentRemove(hash, deleteFiles);
       this.idToHash.delete(id);
       this.hashToId.delete(hash);
     }
@@ -784,7 +802,7 @@ export class NativeTorrentManager {
     const d = this.getRecord(id);
     const hash = this.idToHash.get(id);
     // Enforced by the daemon itself when live; persisted either way.
-    if (hash) await this.rpc!.torrentSet(hash, { seedRatioLimit: ratio, seedRatioMode: ratio > 0 ? 1 : 0 });
+    if (hash) await this.rpc!.torrentSet(hash, { seedRatioLimit: ratio, seedRatioMode: ratio > 0 ? 1 : 2 });
     d.seedRatioLimit = ratio;
     await db.updateDownloadField(id, 'seedRatioLimit', ratio);
   }

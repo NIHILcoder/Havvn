@@ -51,7 +51,17 @@ describe('mapStatus', () => {
 describe('mapStats', () => {
   it('uses live daemon numbers when present', () => {
     const s = mapStats(dl({}), tr({}));
-    expect(s).toMatchObject({ id: 'id1', progress: 0.5, downSpeedBps: 1000, peers: 5, seeds: 3, etaSeconds: 60, status: 'downloading' });
+    expect(s).toMatchObject({ id: 'id1', progress: 0.5, downSpeedBps: 1000, peers: 5, seeds: 0, etaSeconds: 60, status: 'downloading' });
+  });
+  it('counts complete connected peers, regardless of whether they send data', () => {
+    const peers = [
+      { progress: 1, rateToClient: 0 },
+      { progress: 1, rateToClient: 100 },
+      { progress: 0.5, rateToClient: 200 },
+      { progress: 0.999, rateToClient: 100 },
+    ] as TrPeer[];
+    expect(mapStats(dl({}), tr({ peers, peersSendingToUs: 3 })).seeds).toBe(2);
+    expect(mapStats(dl({}), tr({ peers, peersSendingToUs: 0, status: TrStatus.Seeding })).seeds).toBe(2);
   });
   it('falls back to the persisted snapshot with zero speeds when the torrent is not live', () => {
     const s = mapStats(dl({ status: 'paused', progress: 0.4 }), undefined);

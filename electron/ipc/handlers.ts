@@ -1287,6 +1287,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       // whole session from `this.settings` on each call, so an absent key means
       // it re-sends the stale one it already had.
       await torrentManager.updateSettings({
+        defaultDownloadDir: updated.defaultDownloadDir,
         maxActiveDownloads: updated.maxActiveDownloads,
         maxDownKbps: updated.maxDownKbps,
         maxUpKbps: updated.maxUpKbps,

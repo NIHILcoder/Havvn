@@ -484,11 +484,11 @@
 }
 
 /* Multi-select checkbox — revealed on hover / when active */
-.download-checkbox {
+input[type="checkbox"].download-checkbox {
   flex-shrink: 0;
   width: 15px;
   height: 15px;
-  margin-left: var(--space-3);
+  margin: 0 0 0 var(--space-3);
   accent-color: var(--color-accent-primary);
   cursor: pointer;
   opacity: 0;
@@ -793,7 +793,7 @@
   background: var(--color-bg-secondary);
 }
 
-.download-item-detailed .download-checkbox {
+.download-item-detailed input[type="checkbox"].download-checkbox {
   position: absolute;
   left: 0;
   top: 18px;

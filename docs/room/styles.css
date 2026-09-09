@@ -229,7 +229,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
   padding: 6px 0;
 }
-.msg { display: flex; gap: 8px; align-items: flex-start; }
+.msg { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
 .msg.grp { padding-left: 34px; }
 .msg .bubble { min-width: 0; flex: 1; }
 .msg .bubble header {
@@ -252,6 +252,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .quote {
   font-size: 12px; color: var(--muted); border-left: 2px solid var(--blaze);
   padding: 2px 0 2px 8px; margin-bottom: 4px;
+  min-width: 0; overflow: hidden; overflow-wrap: anywhere;
 }
 .acts { display: none; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .msg:hover .acts, .msg:focus-within .acts { display: flex; }
@@ -270,7 +271,9 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   display: flex; align-items: center; gap: 8px;
   font-size: 12px; color: var(--text-2);
   border-left: 2px solid var(--blaze); padding: 4px 8px; margin-bottom: 6px;
+  min-width: 0; overflow: hidden;
 }
+.reply-bar .reply-q { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reply-bar[hidden] { display: none !important; }
 .reply-bar button { margin-left: auto; border: none; background: none; color: var(--muted); cursor: pointer; }
 

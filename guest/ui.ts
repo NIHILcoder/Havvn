@@ -512,7 +512,7 @@ export class GuestApp {
     }
     const c = s.chat.find((m) => m.id === this.replyTo);
     const text = (s.chatEdits[this.replyTo] || c?.text || '').slice(0, 80);
-    const html = `${esc(c?.name || '')}: ${esc(text)}<button type="button" data-act="reply-x" aria-label="×">×</button>`;
+    const html = `<span class="reply-q">${esc(c?.name || '')}: ${esc(text)}</span><button type="button" data-act="reply-x" aria-label="×">×</button>`;
     if (html === this.last.reply) return;
     this.last.reply = html;
     el.hidden = false;
