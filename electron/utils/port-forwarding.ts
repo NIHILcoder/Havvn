@@ -1,16 +1,15 @@
 /**
- * Port forwarding (UPnP IGD)
+ * Port forwarding (UPnP IGD + NAT-PMP)
  *
  * WebTorrent (µTP disabled) accepts incoming peers over a single TCP port. If
  * the router doesn't forward that port, the client can only make *outgoing*
  * connections — which throttles peer count and speed, especially for torrents
- * with few seeds. This service asks the router (via UPnP) to forward the
- * listening port back to this machine and keeps the lease renewed.
+ * with few seeds. This service asks the router (via UPnP or NAT-PMP) to forward
+ * the listening port back to this machine and keeps the lease renewed.
  *
  * Design notes:
- *  - UPnP IGD covers the large majority of consumer routers. NAT-PMP/PCP is a
- *    niche addition; the service interface is protocol-agnostic so it can be
- *    layered in later without touching callers.
+ *  - Tries UPnP first (covers most consumer routers), falls back to NAT-PMP
+ *    (Apple routers, some ISP gateways).
  *  - A fixed listening port (Settings → Advanced) is required for a *stable*
  *    mapping across restarts — a random OS port can still be mapped for the
  *    session but won't persist, so we surface that in the status.
@@ -18,9 +17,11 @@
  *    must never break startup. Failure is reported as status, not thrown.
  */
 
-import { Client } from '@runonflux/nat-upnp';
+import * as natPmp from 'nat-pmp';
+import * as natUpnp from 'nat-upnp';
 import { logger } from './logger';
 import * as db from '../db/store';
+import * as os from 'os';
 
 const log = logger.child('PortForward');
 
@@ -28,13 +29,13 @@ export type PortForwardState =
   | 'disabled'     // turned off in settings
   | 'mapping'      // attempt in progress
   | 'mapped'       // router is forwarding the port
-  | 'unsupported'  // no UPnP-capable gateway found
+  | 'unsupported'  // no UPnP/NAT-PMP-capable gateway found
   | 'failed';      // gateway found but the mapping was refused / errored
 
 export interface PortForwardStatus {
   state: PortForwardState;
   port: number | null;
-  method: 'upnp' | null;
+  method: 'upnp' | 'nat-pmp' | null;
   externalIp?: string;
   error?: string;
   updatedAt: number;
@@ -43,14 +44,59 @@ export interface PortForwardStatus {
 const LEASE_TTL_SECONDS = 3600;          // ask the router for a 1-hour lease
 const RENEW_INTERVAL_MS = 30 * 60 * 1000; // renew every 30 min (well before expiry)
 const REQUEST_TIMEOUT_MS = 4000;          // SSDP/SOAP timeout — keep startup snappy
+function request<T>(start: (done: (error: Error | null, value?: T) => void) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Port mapping request timed out')), REQUEST_TIMEOUT_MS);
+    try {
+      start((error, value) => {
+        clearTimeout(timer);
+        if (error) reject(error);
+        else resolve(value as T);
+      });
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
+  });
+}
+
 const DESCRIPTION = 'Havvn'; // shown in the router's port-forward table
 
+/**
+ * Get default gateway IP address from network interfaces
+ */
+function getDefaultGateway(): string | null {
+  try {
+    const ifaces = os.networkInterfaces();
+    // Look for primary network interface (typically has default route)
+    for (const [name, addrs] of Object.entries(ifaces)) {
+      if (!addrs || /^(lo|loopback|vmnet|veth|docker)/i.test(name)) continue;
+
+      for (const addr of addrs) {
+        if ((addr.family === 'IPv4' || (addr.family as unknown as number) === 4) && !addr.internal) {
+          // Extract gateway from IP (typically .1 on the subnet)
+          const parts = addr.address.split('.');
+          if (parts.length === 4) {
+            return `${parts[0]}.${parts[1]}.${parts[2]}.1`;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    log.warn('Failed to detect gateway', { error: String(e) });
+  }
+  // Common default gateways as fallback
+  return '192.168.1.1';
+}
+
 class PortForwardingService {
-  private client: Client | null = null;
+  private upnpClient: natUpnp.Client | null = null;
+  private pmpClient: natPmp.Client | null = null;
   private port: number | null = null;
   private renewTimer: NodeJS.Timeout | null = null;
   private inFlight = false;
   private status: PortForwardStatus = { state: 'disabled', port: null, method: null, updatedAt: Date.now() };
+  private currentMethod: 'upnp' | 'nat-pmp' | null = null;
 
   getStatus(): PortForwardStatus {
     return this.status;
@@ -65,74 +111,176 @@ class PortForwardingService {
       this.setStatus({ state: 'failed', port: null, method: null, error: 'No fixed listening port to forward' });
       return;
     }
-    if (this.client && this.port === port && this.status.state === 'mapped') return;
+    if ((this.upnpClient || this.pmpClient) && this.port === port && this.status.state === 'mapped') return;
 
     await this.stop();
     this.port = port;
-    this.client = new Client({ timeout: REQUEST_TIMEOUT_MS });
 
     await this.mapOnce();
     // Keep the lease alive and recover from transient router hiccups.
     this.renewTimer = setInterval(() => { void this.mapOnce(); }, RENEW_INTERVAL_MS);
   }
 
-  /** Remove the mapping, stop renewing, and release the UPnP client. */
+  /** Remove the mapping, stop renewing, and release clients. */
   async stop(): Promise<void> {
     if (this.renewTimer) {
       clearInterval(this.renewTimer);
       this.renewTimer = null;
     }
-    if (this.client && this.port) {
+
+    // Remove UPnP mapping
+    if (this.upnpClient && this.port && this.currentMethod === 'upnp') {
       try {
-        await this.client.removeMapping({ public: this.port, protocol: 'tcp' });
+        await request<void>(done => this.upnpClient!.portUnmapping({ public: this.port!, protocol: 'tcp' }, err => done(err)));
         log.info('Removed UPnP port mapping', { port: this.port });
       } catch {
         /* router may have already dropped it — ignore */
       }
     }
-    if (this.client) {
-      try { this.client.close(); } catch { /* ignore */ }
-      this.client = null;
+
+    // Remove NAT-PMP mapping
+    if (this.pmpClient && this.port && this.currentMethod === 'nat-pmp') {
+      try {
+        await request<void>((done) => {
+          this.pmpClient!.portUnmapping({ private: this.port!, type: 'tcp' }, (err) => {
+            done(err);
+          });
+        });
+        log.info('Removed NAT-PMP port mapping', { port: this.port });
+      } catch {
+        /* ignore */
+      }
     }
+
+    if (this.upnpClient) {
+      try { this.upnpClient.close(); } catch { /* ignore */ }
+      this.upnpClient = null;
+    }
+    if (this.pmpClient) {
+      try { this.pmpClient.close(); } catch { /* ignore */ }
+      this.pmpClient = null;
+    }
+
     this.port = null;
+    this.currentMethod = null;
     this.setStatus({ state: 'disabled', port: null, method: null });
   }
 
   private async mapOnce(): Promise<void> {
-    if (!this.client || !this.port || this.inFlight) return;
+    if (!this.port || this.inFlight) return;
     this.inFlight = true;
-    const client = this.client;
     const port = this.port;
+
     try {
-      // Probe for an IGD first so "router has no UPnP" reads as a clean,
-      // non-alarming state rather than a generic failure.
-      try {
-        await client.getGateway();
-      } catch {
-        this.setStatus({ state: 'unsupported', port, method: null, error: 'No UPnP-capable router found' });
+      // Try UPnP first (most common)
+      const upnpSuccess = await this.tryUPnP(port);
+      if (upnpSuccess) {
+        this.currentMethod = 'upnp';
         return;
       }
 
+      // Fallback to NAT-PMP (Apple routers, some ISPs)
+      const pmpSuccess = await this.tryNATPMP(port);
+      if (pmpSuccess) {
+        this.currentMethod = 'nat-pmp';
+        return;
+      }
+
+      // Both methods failed
+      this.setStatus({
+        state: 'unsupported',
+        port,
+        method: null,
+        error: 'No UPnP or NAT-PMP capable router found'
+      });
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      this.setStatus({ state: 'failed', port, method: null, error });
+      log.warn('Port mapping failed', { port, error });
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private async tryUPnP(port: number): Promise<boolean> {
+    try {
+      if (!this.upnpClient) {
+        this.upnpClient = natUpnp.createClient();
+      }
+
+      const client = this.upnpClient;
+
+      // Probe for an IGD
+      try {
+        await request<natUpnp.Device>(done => client.findGateway(done));
+      } catch {
+        return false; // No UPnP router
+      }
+
       this.setStatus({ state: 'mapping', port, method: 'upnp' });
-      await client.createMapping({
+
+      await request<void>(done => client.portMapping({
         public: port,
         private: port,
         protocol: 'tcp',
         ttl: LEASE_TTL_SECONDS,
         description: DESCRIPTION,
-      });
+      }, err => done(err)));
 
       let externalIp: string | undefined;
-      try { externalIp = await client.getPublicIp(); } catch { /* optional enrichment */ }
+      try { externalIp = await request<string>(done => client.externalIp(done)); } catch { /* optional */ }
 
       this.setStatus({ state: 'mapped', port, method: 'upnp', externalIp });
       log.info('Port forwarded via UPnP', { port, externalIp });
+      return true;
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      this.setStatus({ state: 'failed', port, method: 'upnp', error });
-      log.warn('UPnP port mapping failed', { port, error });
-    } finally {
-      this.inFlight = false;
+      log.debug('UPnP mapping failed, will try NAT-PMP', { error: String(e) });
+      return false;
+    }
+  }
+
+  private async tryNATPMP(port: number): Promise<boolean> {
+    try {
+      const gateway = getDefaultGateway();
+      if (!gateway) return false;
+
+      if (!this.pmpClient) {
+        this.pmpClient = natPmp.connect(gateway);
+        this.pmpClient.on('error', error => log.warn('NAT-PMP socket error', { error: String(error) }));
+      }
+
+      const client = this.pmpClient;
+
+      this.setStatus({ state: 'mapping', port, method: 'nat-pmp' });
+
+      // Create mapping
+      await request<void>((done) => {
+        client.portMapping({
+          private: port,
+          public: port,
+          ttl: LEASE_TTL_SECONDS,
+          type: 'tcp'
+        }, (err) => {
+          done(err);
+        });
+      });
+
+      // Get external IP
+      let externalIp: string | undefined;
+      try {
+        externalIp = await request<string>((done) => {
+          client.externalIp((err, info) => {
+            done(err, info?.ip.join('.'));
+          });
+        });
+      } catch { /* optional */ }
+
+      this.setStatus({ state: 'mapped', port, method: 'nat-pmp', externalIp });
+      log.info('Port forwarded via NAT-PMP', { port, externalIp, gateway });
+      return true;
+    } catch (e) {
+      log.debug('NAT-PMP mapping failed', { error: String(e) });
+      return false;
     }
   }
 
