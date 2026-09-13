@@ -25,6 +25,22 @@ import { getWatchFolderService } from '../torrent/watch-folder';
 import { t } from '../i18n';
 import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
 
+// Security: Import validation and rate limiting utilities
+import {
+  validateDownloadPath,
+  validateTrackerUrl,
+  validateMagnetUri,
+  validateRoomId,
+  validateFileId,
+  validateDownloadId,
+  validateChatMessage,
+  validatePort,
+  validateFileName,
+  safeCompare,
+  generateSecureToken,
+} from '../utils/security';
+import { globalRateLimiter, RATE_LIMITS, createWebContentsKey } from '../utils/rate-limiter';
+
 const log = logger.child('IPC');
 
 // ── Game-server console tail ─────────────────────────────────────────────────
@@ -248,29 +264,65 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   // Downloads
   ipcMain.handle('downloads:add', wrapHandler('downloads:add',
-    async (_event, request: AddDownloadRequest) => {
+    async (event, request: AddDownloadRequest) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:add', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.ADD_DOWNLOAD.maxRequests, RATE_LIMITS.ADD_DOWNLOAD.windowMs);
+
+      // Validate inputs
+      if (!request || typeof request !== 'object' || Array.isArray(request)) {
+        throw new Error('Invalid download request');
+      }
+      if (!['magnet', 'torrent_file', 'catalog'].includes(request.sourceType) ||
+          typeof request.sourceUri !== 'string' || !request.sourceUri.trim()) {
+        throw new Error('Invalid download source');
+      }
+      if (request.sourceType === 'magnet') {
+        validateMagnetUri(request.sourceUri);
+      }
+      if (request.savePath) {
+        request.savePath = validateDownloadPath(request.savePath);
+      }
+      if (request.categoryId !== undefined && typeof request.categoryId !== 'string') {
+        throw new Error('Invalid category: must be a string');
+      }
+
       return torrentManager.addDownload(request);
     }
   ));
 
   ipcMain.handle('downloads:pause', wrapHandler('downloads:pause',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:pause', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.PAUSE_RESUME.maxRequests, RATE_LIMITS.PAUSE_RESUME.windowMs);
+
+      // Validate
+      validateDownloadId(id);
       return await torrentManager.pauseDownload(id);
     }
   ));
 
   ipcMain.handle('downloads:resume', wrapHandler('downloads:resume',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:resume', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.PAUSE_RESUME.maxRequests, RATE_LIMITS.PAUSE_RESUME.windowMs);
+
+      // Validate
+      validateDownloadId(id);
       return await torrentManager.resumeDownload(id);
     }
   ));
 
   ipcMain.handle('downloads:remove', wrapHandler('downloads:remove',
-    async (_event, id: string, deleteFiles: boolean) => {
+    async (event, id: string, deleteFiles: boolean) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:remove', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.REMOVE_DOWNLOAD.maxRequests, RATE_LIMITS.REMOVE_DOWNLOAD.windowMs);
+
       // Validate arguments
-      if (typeof id !== 'string') {
-        throw new Error(`Invalid id parameter: expected string, got ${typeof id}`);
-      }
+      validateDownloadId(id);
       if (typeof deleteFiles !== 'boolean') {
         throw new Error(`Invalid deleteFiles parameter: expected boolean, got ${typeof deleteFiles}`);
       }
@@ -279,7 +331,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('downloads:stopSeeding', wrapHandler('downloads:stopSeeding',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:stopSeeding', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.PAUSE_RESUME.maxRequests, RATE_LIMITS.PAUSE_RESUME.windowMs);
+
+      // Validate
+      validateDownloadId(id);
       return await torrentManager.stopSeeding(id);
     }
   ));
@@ -350,13 +408,25 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('downloads:retry', wrapHandler('downloads:retry',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:retry', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.GENERIC.maxRequests, RATE_LIMITS.GENERIC.windowMs);
+
+      // Validate
+      validateDownloadId(id);
       return await torrentManager.retryDownload(id);
     }
   ));
 
   ipcMain.handle('downloads:recheck', wrapHandler('downloads:recheck',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:recheck', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.GENERIC.maxRequests, RATE_LIMITS.GENERIC.windowMs);
+
+      // Validate
+      validateDownloadId(id);
       return await torrentManager.recheckDownload(id);
     }
   ));
@@ -532,18 +602,45 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:create', wrapHandler('rooms:create',
-    async (_event, name: string, e2e?: boolean) => roomManager.createRoom(typeof name === 'string' ? name.trim() : '', !!e2e)
+    async (event, name: string, e2e?: boolean) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:create', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.CREATE_ROOM.maxRequests, RATE_LIMITS.CREATE_ROOM.windowMs);
+
+      // Validate
+      if (typeof name !== 'string' || !name.trim()) {
+        throw new Error('Room name is required');
+      }
+      if (name.length > 100) {
+        throw new Error('Room name is too long (max 100 characters)');
+      }
+
+      return roomManager.createRoom(name.trim(), !!e2e);
+    }
   ));
 
   ipcMain.handle('rooms:join', wrapHandler('rooms:join',
-    async (_event, code: string) => {
-      if (typeof code !== 'string' || !code.trim()) throw new Error('Room code is required');
+    async (event, code: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:join', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.JOIN_ROOM.maxRequests, RATE_LIMITS.JOIN_ROOM.windowMs);
+
+      // Validate
+      if (typeof code !== 'string' || !code.trim()) {
+        throw new Error('Room code is required');
+      }
+
       return roomManager.joinRoom(code);
     }
   ));
 
   ipcMain.handle('rooms:leave', wrapHandler('rooms:leave',
-    async (_event, roomId: string, deleteFiles?: boolean) => roomManager.leaveRoom(roomId, deleteFiles)
+    async (event, roomId: string, deleteFiles?: boolean) => {
+      // Validate
+      validateRoomId(roomId);
+
+      return roomManager.leaveRoom(roomId, deleteFiles);
+    }
   ));
 
   ipcMain.handle('rooms:list', wrapHandler('rooms:list',
@@ -592,9 +689,27 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   };
 
   ipcMain.handle('rooms:addFiles', wrapHandler('rooms:addFiles',
-    async (_event, roomId: string, paths: string[], folderId?: string) =>
+    async (event, roomId: string, paths: string[], folderId?: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:addFiles', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.GENERIC.maxRequests, RATE_LIMITS.GENERIC.windowMs);
+
+      // Validate
+      validateRoomId(roomId);
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new Error('paths must be a non-empty array');
+      }
+
+      // Validate each path
+      const validatedPaths = paths.map(p => validateDownloadPath(p));
+
+      if (folderId) {
+        validateFileId(folderId);
+      }
+
       // Dropping a folder adds the files inside it (the engine seeds files only).
-      roomManager.addFiles(roomId, expandRoomAddPaths(paths), folderId ? { folderId } : undefined)
+      return roomManager.addFiles(roomId, expandRoomAddPaths(validatedPaths), folderId ? { folderId } : undefined);
+    }
   ));
 
   ipcMain.handle('rooms:pickAndAddFiles', wrapHandler('rooms:pickAndAddFiles',
@@ -716,11 +831,34 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:removeFile', wrapHandler('rooms:removeFile',
-    async (_event, roomId: string, fileId: string) => roomManager.removeFile(roomId, fileId)
+    async (event, roomId: string, fileId: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:removeFile', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.GENERIC.maxRequests, RATE_LIMITS.GENERIC.windowMs);
+
+      // Validate
+      validateRoomId(roomId);
+      validateFileId(fileId);
+
+      return roomManager.removeFile(roomId, fileId);
+    }
   ));
 
   ipcMain.handle('rooms:removeFiles', wrapHandler('rooms:removeFiles',
-    async (_event, roomId: string, fileIds: string[]) => roomManager.removeFiles(roomId, Array.isArray(fileIds) ? fileIds : [])
+    async (event, roomId: string, fileIds: string[]) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:removeFiles', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.GENERIC.maxRequests, RATE_LIMITS.GENERIC.windowMs);
+
+      // Validate
+      validateRoomId(roomId);
+      if (!Array.isArray(fileIds)) {
+        throw new Error('fileIds must be an array');
+      }
+      fileIds.forEach(id => validateFileId(id));
+
+      return roomManager.removeFiles(roomId, fileIds);
+    }
   ));
 
   ipcMain.handle('rooms:rename', wrapHandler('rooms:rename',
@@ -1179,10 +1317,35 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:sendChat', wrapHandler('rooms:sendChat',
-    async (_event, roomId: string, text: string, replyTo?: string) => roomManager.sendChat(roomId, text, replyTo ? String(replyTo) : undefined)
+    async (event, roomId: string, text: string, replyTo?: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:sendChat', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.SEND_CHAT.maxRequests, RATE_LIMITS.SEND_CHAT.windowMs);
+
+      // Validate
+      validateRoomId(roomId);
+      validateChatMessage(text);
+      if (replyTo) {
+        validateFileId(replyTo); // Message IDs follow same format
+      }
+
+      return roomManager.sendChat(roomId, text, replyTo ? String(replyTo) : undefined);
+    }
   ));
+
   ipcMain.handle('rooms:editChat', wrapHandler('rooms:editChat',
-    async (_event, roomId: string, msgId: string, text: string) => roomManager.editChat(roomId, String(msgId || ''), text)
+    async (event, roomId: string, msgId: string, text: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('rooms:editChat', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.SEND_CHAT.maxRequests, RATE_LIMITS.SEND_CHAT.windowMs);
+
+      // Validate
+      validateRoomId(roomId);
+      validateFileId(String(msgId || '')); // Message IDs follow same format
+      validateChatMessage(text);
+
+      return roomManager.editChat(roomId, String(msgId || ''), text);
+    }
   ));
 
   // Room identity backup — the keypair + profile + joined rooms as one JSON
@@ -2121,30 +2284,52 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('downloads:addTracker', wrapHandler('downloads:addTracker',
-    async (_event, id: string, url: string) => {
+    async (event, id: string, url: string) => {
+      // Rate limiting
+      const key = createWebContentsKey('downloads:addTracker', event.sender.id);
+      globalRateLimiter.checkOrThrow(key, RATE_LIMITS.ADD_DOWNLOAD.maxRequests, RATE_LIMITS.ADD_DOWNLOAD.windowMs);
+
+      // Validate inputs
+      validateDownloadId(id);
+      validateTrackerUrl(url);
+
       return await torrentManager.addTracker(id, url);
     }
   ));
 
   ipcMain.handle('downloads:removeTracker', wrapHandler('downloads:removeTracker',
-    async (_event, id: string, url: string) => {
+    async (event, id: string, url: string) => {
+      // Validate inputs
+      validateDownloadId(id);
+      validateTrackerUrl(url);
+
       return await torrentManager.removeTracker(id, url);
     }
   ));
 
   ipcMain.handle('downloads:reannounce', wrapHandler('downloads:reannounce',
-    async (_event, id: string) => {
+    async (event, id: string) => {
+      // Validate
+      validateDownloadId(id);
       await torrentManager.reannounceDownload(id);
     }
   ));
 
   ipcMain.handle('downloads:getPieces', wrapHandler('downloads:getPieces',
-    async (_event, id: string) => torrentManager.getPieces(id)
+    async (event, id: string) => {
+      // Validate
+      validateDownloadId(id);
+      return torrentManager.getPieces(id);
+    }
   ));
 
   ipcMain.handle('downloads:setLocation', wrapHandler('downloads:setLocation',
-    async (_event, id: string, location: string, move: boolean) => {
-      await torrentManager.setDownloadLocation(id, String(location || ''), !!move);
+    async (event, id: string, location: string, move: boolean) => {
+      // Validate inputs
+      validateDownloadId(id);
+      const validatedLocation = validateDownloadPath(String(location || ''));
+
+      await torrentManager.setDownloadLocation(id, validatedLocation, !!move);
     }
   ));
 
