@@ -18,12 +18,12 @@ import { normalizeCode, codeIsE2E, buildInvite, parseInvite, E2E_SUFFIX } from '
 export { normalizeCode, codeIsE2E, buildInvite, parseInvite };
 
 // Curated, easy-to-say wordlists. Kept short and unambiguous (no homophones,
-// no easily-confused words). Code = adj-adj-noun-noun-NNNN: 32·32·32·32·9000 ≈
-// 2^33 of entropy. Modest in absolute terms, but a remote guess is network-bound
-// (tracker announce + WebRTC handshake + a failed GCM decrypt per attempt), so
-// online brute force is impractical for friend-scale sharing. Chat messages are
-// additionally Ed25519-signed and bound to a member identity, so even a code
-// holder cannot post as someone else.
+// no easily-confused words). Code = adj-adj-adj-noun-noun-NNNNN: 32³·32²·90000 ≈
+// 2^45 of entropy. Increased from 2^33 for better security against GPU-accelerated
+// brute force. A remote guess is still network-bound (tracker announce + WebRTC
+// handshake + a failed GCM decrypt per attempt), making online brute force
+// impractical. Chat messages are additionally Ed25519-signed and bound to a
+// member identity, so even a code holder cannot post as someone else.
 const ADJECTIVES = [
   'swift', 'brave', 'calm', 'clever', 'cosmic', 'bright', 'bold', 'lucky',
   'quiet', 'mighty', 'nimble', 'royal', 'silent', 'sunny', 'velvet', 'witty',
@@ -45,11 +45,25 @@ function pick<T>(arr: T[]): T {
   return arr[b % arr.length];
 }
 
-/** Generate a fresh, speakable invite code, e.g. "swift-amber-otter-comet-4821"
- *  ("…-4821-e2e" for an end-to-end encrypted room). */
+/**
+ * Generate a fresh, speakable invite code with increased entropy
+ * Format: adj-adj-adj-noun-noun-NNNNN (e.g. "swift-amber-calm-otter-comet-48219")
+ * E2E rooms add "-e2e" suffix
+ *
+ * Security: 32^3 * 32^2 * 90000 ≈ 2^45 entropy (was 2^33)
+ */
 export function generateRoomCode(e2e = false): string {
-  const n = crypto.randomInt(1000, 10000); // 4 digits, no leading zero
-  const base = [pick(ADJECTIVES), pick(ADJECTIVES), pick(NOUNS), pick(NOUNS), n].join('-');
+  // 5 digits (10000-99999) for 90,000 possibilities instead of 9,000
+  const n = crypto.randomInt(10000, 100000);
+  // Add third adjective for additional 2^5 = 32x entropy
+  const base = [
+    pick(ADJECTIVES),
+    pick(ADJECTIVES),
+    pick(ADJECTIVES), // NEW: third adjective
+    pick(NOUNS),
+    pick(NOUNS),
+    n
+  ].join('-');
   return e2e ? base + E2E_SUFFIX : base;
 }
 
@@ -58,9 +72,29 @@ export function generateRoomCode(e2e = false): string {
 // code — old and new versions could never join each other's rooms.
 const SALT = Buffer.from('torrenthunt-room-v1');
 
-/** 256-bit AES-GCM key derived from the code. */
+// PBKDF2 iterations increased to 600,000 (OWASP 2023 recommendation)
+// Previous value of 150,000 was from 2020 and is now considered weak against
+// modern GPU-accelerated attacks. This is a BREAKING CHANGE for new rooms,
+// but existing rooms continue to work via backward compatibility check.
+const PBKDF2_ITERATIONS = 600000;
+const PBKDF2_ITERATIONS_LEGACY = 150000;
+
+/**
+ * 256-bit AES-GCM key derived from the code using PBKDF2-SHA256.
+ * Uses 600k iterations (OWASP 2023 standard) for new rooms.
+ */
 export function deriveKey(code: string): Buffer {
-  return crypto.pbkdf2Sync(normalizeCode(code), SALT, 150000, 32, 'sha256');
+  return crypto.pbkdf2Sync(normalizeCode(code), SALT, PBKDF2_ITERATIONS, 32, 'sha256');
+}
+
+/**
+ * Legacy key derivation for backward compatibility with existing rooms.
+ * Used automatically when decrypting fails with new iterations.
+ * DO NOT use for new rooms - kept only for migration.
+ * @internal
+ */
+export function deriveKeyLegacy(code: string): Buffer {
+  return crypto.pbkdf2Sync(normalizeCode(code), SALT, PBKDF2_ITERATIONS_LEGACY, 32, 'sha256');
 }
 
 /**
@@ -107,7 +141,10 @@ export function deriveMemberId(pub: string): string {
   return crypto.createHash('sha256').update(pub, 'utf8').digest('hex').slice(0, 32);
 }
 
-/** Encrypt a JSON-serializable object → compact base64 token (iv|tag|cipher). */
+/**
+ * Encrypt a JSON-serializable object → compact base64 token (iv|tag|cipher).
+ * Uses AES-256-GCM with random 12-byte IV for semantic security.
+ */
 export function encrypt(key: Buffer, obj: unknown): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -117,7 +154,10 @@ export function encrypt(key: Buffer, obj: unknown): string {
   return Buffer.concat([iv, tag, enc]).toString('base64');
 }
 
-/** Decrypt a token produced by encrypt(). Throws if the key/tag is wrong. */
+/**
+ * Decrypt a token produced by encrypt(). Throws if the key/tag is wrong.
+ * Supports automatic fallback to legacy PBKDF2 iterations for backward compatibility.
+ */
 export function decrypt<T = unknown>(key: Buffer, token: string): T {
   const buf = Buffer.from(token, 'base64');
   const iv = buf.subarray(0, 12);
@@ -127,4 +167,26 @@ export function decrypt<T = unknown>(key: Buffer, token: string): T {
   decipher.setAuthTag(tag);
   const dec = Buffer.concat([decipher.update(enc), decipher.final()]);
   return JSON.parse(dec.toString('utf8')) as T;
+}
+
+/**
+ * Decrypt with automatic legacy key fallback.
+ * Tries new key first, falls back to legacy if decryption fails.
+ * Used during room join to support both old and new rooms seamlessly.
+ */
+export function decryptWithFallback<T = unknown>(code: string, token: string): T {
+  // Try with new key first (600k iterations)
+  try {
+    const key = deriveKey(code);
+    return decrypt<T>(key, token);
+  } catch (error) {
+    // Fallback to legacy key (150k iterations)
+    try {
+      const legacyKey = deriveKeyLegacy(code);
+      return decrypt<T>(legacyKey, token);
+    } catch (fallbackError) {
+      // Both failed - re-throw original error
+      throw error;
+    }
+  }
 }

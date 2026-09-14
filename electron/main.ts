@@ -1,7 +1,7 @@
 // MUST be first: sets an isolated userData dir for `TH_INSTANCE` test copies
 // before electron-store / the logger read the path at module load.
 import { isSecondaryInstance, isLanHelper } from './app-instance';
-import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog, safeStorage } from 'electron';
 import path from 'path';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
@@ -990,40 +990,81 @@ async function createWindow(): Promise<void> {
   }
 }
 
-// Apply a Content-Security-Policy to the renderer. Only enabled in production —
-// the webpack dev server relies on eval/websocket which a strict CSP would break.
-// This mitigates XSS from untrusted strings (torrent names, RSS/search results).
+/**
+ * Apply a Content-Security-Policy to the renderer. Enabled in both production
+ * and development to catch CSP violations early. Development mode allows additional
+ * sources needed for webpack HMR (eval, WebSocket).
+ */
 function applyContentSecurityPolicy(): void {
-  if (process.env.NODE_ENV === 'development') return;
+  const isDev = process.env.NODE_ENV === 'development';
 
   const csp = [
     "default-src 'self'",
-    "script-src 'self'",
+    // Script: allow eval in dev for webpack HMR, disallow in production
+    "script-src 'self'" + (isDev ? " 'unsafe-eval'" : ""),
     "style-src 'self' 'unsafe-inline'", // style-loader injects styles as inline <style> tags
     "img-src 'self' data: https: http:", // posters, QR codes, remote thumbnails
     "font-src 'self' data:",
     // Local-only WebTorrent streaming server (127.0.0.1:<random port>)
     "media-src 'self' http://127.0.0.1:* http://localhost:*",
-    "connect-src 'self'",
+    // Connect: WebSocket for HMR in dev mode
+    "connect-src 'self'" + (isDev ? " ws://localhost:* ws://127.0.0.1:*" : ""),
     "object-src 'none'",
     "frame-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    // Report violations in development
+    ...(isDev ? ["report-uri /csp-violation"] : []),
   ].join('; ');
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     // The hidden room-engine page (a blank file:// host for the WebRTC engine) must
     // NOT get the renderer's CSP: connect-src 'self' would block the room trackers'
     // WSS and break all room networking. It loads no remote content, so no CSP.
-    if (details.url.startsWith('file://') && details.url.includes('room-engine.html')) { callback({ responseHeaders: details.responseHeaders }); return; }
+    if (details.url.startsWith('file://') && details.url.includes('room-engine.html')) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [csp],
+        // Additional security headers
+        'X-Content-Type-Options': ['nosniff'],
+        'X-Frame-Options': ['DENY'],
+        'X-XSS-Protection': ['1; mode=block'],
       },
     });
   });
+
+  if (isDev) {
+    logger.info('App', 'CSP enabled in development mode', { csp });
+  }
 }
 
 async function initializeApp(): Promise<void> {
+  // SECURITY CHECK: Verify encryption is available before proceeding
+  // Without encryption, we cannot safely store room keys, passwords, or tokens
+  if (!safeStorage.isEncryptionAvailable()) {
+    const { dialog } = await import('electron');
+    await dialog.showMessageBox({
+      type: 'error',
+      title: 'Security Error',
+      message: 'System Encryption Unavailable',
+      detail:
+        'Havvn requires OS-level encryption to protect your data:\n\n' +
+        '• Windows: DPAPI (enabled by default)\n' +
+        '• macOS: Keychain (enabled by default)\n' +
+        '• Linux: libsecret (install via package manager)\n\n' +
+        'Please ensure your system has encryption support enabled.',
+      buttons: ['Exit'],
+    });
+    logger.error('App', 'Cannot start: safeStorage encryption unavailable');
+    app.exit(1);
+    return;
+  }
+
   // Disable GPU shader disk cache to prevent cache access errors
   app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
 
@@ -1051,7 +1092,7 @@ async function initializeApp(): Promise<void> {
     sanitize: privacyCfg.sanitizeLogs === true,
   });
 
-  logger.info('App', 'Havvn starting...');
+  logger.info('App', 'Havvn starting...', { encryptionAvailable: true });
 
   // Upgrade this install's room memberId to the key-derived form (see the store).
   // Runs here — after 'ready', before any room work — so the signing key is only
@@ -1359,14 +1400,15 @@ app.on('before-quit', async (event) => {
 });
 
 // cleanup() can be reached twice on quit (window-all-closed → app.quit() →
-// before-quit). Every step is try/catch'd, but there's no point running the
-// whole teardown again — guard it.
-let cleanupDone = false;
+// before-quit). Use a promise to ensure it only runs once and subsequent
+// calls wait for the same cleanup to complete.
+let cleanupPromise: Promise<void> | null = null;
 
 async function cleanup(): Promise<void> {
-  if (cleanupDone) return;
-  cleanupDone = true;
-  logger.info('App', 'Cleaning up...');
+  if (cleanupPromise) return cleanupPromise;
+
+  cleanupPromise = (async () => {
+    logger.info('App', 'Cleaning up...');
 
   // Stop the global PTT key hook FIRST — its native thread would otherwise keep
   // the process alive past app.exit().
@@ -1387,22 +1429,28 @@ async function cleanup(): Promise<void> {
     const privacyConfig = (store.get('privacyConfig') as any) || {};
     if (privacyConfig.clearDataOnExit) {
       logger.info('App', 'clearDataOnExit enabled — removing logs and temp files');
-      const fs = await import('fs');
+      const fs = await import('fs/promises');
       const pathMod = await import('path');
 
-      // Remove copied .torrent files
+      // Remove copied .torrent files (async with timeout)
       const torrentsDir = pathMod.join(app.getPath('userData'), 'torrents');
-      if (fs.existsSync(torrentsDir)) {
-        fs.rmSync(torrentsDir, { recursive: true, force: true });
+      try {
+        await Promise.race([
+          fs.rm(torrentsDir, { recursive: true, force: true }),
+          new Promise((resolve) => setTimeout(resolve, 2000))
+        ]);
         logger.info('App', 'Deleted temp torrent files');
-      }
+      } catch { /* ignore errors */ }
 
-      // Remove log files
+      // Remove log files (async with timeout)
       const logsDir = pathMod.join(app.getPath('userData'), 'logs');
-      if (fs.existsSync(logsDir)) {
-        fs.rmSync(logsDir, { recursive: true, force: true });
+      try {
+        await Promise.race([
+          fs.rm(logsDir, { recursive: true, force: true }),
+          new Promise((resolve) => setTimeout(resolve, 2000))
+        ]);
         logger.info('App', 'Deleted log files');
-      }
+      } catch { /* ignore errors */ }
     }
   } catch (e) {
     logger.error('App', 'Error during clearDataOnExit', { error: e });
@@ -1542,4 +1590,7 @@ async function cleanup(): Promise<void> {
   logger.info('App', 'electron-store will auto-save on exit.');
 
   logger.close();
+  })();
+
+  return cleanupPromise;
 }

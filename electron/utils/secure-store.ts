@@ -97,8 +97,13 @@ export class SecureStore<T extends Record<string, any>> {
       const buffer = safeStorage.encryptString(jsonString);
       return buffer.toString('base64');
     } else {
-      // Fallback: simple obfuscation (NOT SECURE!)
-      return Buffer.from(jsonString).toString('base64');
+      // SECURITY: Refuse to store sensitive data without proper encryption
+      // This prevents a false sense of security and data exposure
+      throw new Error(
+        'Secure storage is not available on this system. ' +
+        'Cannot store sensitive data without encryption. ' +
+        'Please ensure your OS keychain/credential manager is accessible (DPAPI on Windows, Keychain on macOS, libsecret on Linux).'
+      );
     }
   }
 
@@ -114,13 +119,13 @@ export class SecureStore<T extends Record<string, any>> {
         const decrypted = safeStorage.decryptString(buffer);
         return JSON.parse(decrypted);
       } else {
-        // Fallback: simple deobfuscation
-        const decrypted = buffer.toString('utf-8');
-        return JSON.parse(decrypted);
+        // SECURITY: If encryption is not available, we should never have encrypted data
+        // This means either the system changed or data is corrupted
+        throw new Error('Cannot decrypt data: encryption not available on this system');
       }
     } catch (error) {
       console.error('Failed to decrypt data:', error);
-      return null;
+      throw new Error(`Failed to decrypt secure data: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 

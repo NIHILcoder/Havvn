@@ -20,17 +20,28 @@ export function isEncryptionAvailable(): boolean {
   }
 }
 
-/** Encrypt a secret for storage. No-op for empty strings or when unavailable. */
+/**
+ * Encrypt a secret for storage.
+ * SECURITY: Throws if encryption is unavailable - we never store secrets in plaintext.
+ */
 export function encryptSecret(plain: string | undefined | null): string {
   if (!plain) return '';
   if (typeof plain !== 'string') return '';
   if (plain.startsWith(PREFIX)) return plain; // already encrypted
-  if (!isEncryptionAvailable()) return plain; // platform can't encrypt — store as-is
+
+  // CRITICAL: Never store secrets without encryption
+  if (!isEncryptionAvailable()) {
+    throw new Error(
+      'Cannot store secret: system encryption is unavailable. ' +
+      'Havvn requires OS-level encryption (Windows DPAPI, macOS Keychain, or Linux libsecret) to run securely.'
+    );
+  }
+
   try {
     const buf = safeStorage.encryptString(plain);
     return PREFIX + buf.toString('base64');
-  } catch {
-    return plain;
+  } catch (error) {
+    throw new Error(`Failed to encrypt secret: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

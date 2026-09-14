@@ -9,7 +9,7 @@
  */
 
 import os from 'os';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import https from 'https';
 import { logger } from './logger';
@@ -17,7 +17,7 @@ import { VPN_IFACE_PATTERNS, selectVpnIPv4, VpnIfaceAddr } from '../../shared/vp
 import { isLanSessionAddressStr } from '../../shared/lan-ip';
 import { lanSubnets } from '../lan/lan-net-registry';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface VPNDetectionResult {
   isVPNActive: boolean;
@@ -232,22 +232,22 @@ async function checkVPNDNS(): Promise<boolean> {
     let dnsServers: string[] = [];
 
     if (platform === 'win32') {
-      // Windows: Use ipconfig /all
-      const { stdout } = await execAsync('ipconfig /all');
+      // Windows: Use ipconfig /all (safer with execFile)
+      const { stdout } = await execFileAsync('ipconfig', ['/all']);
       const dnsMatches = stdout.match(/DNS Servers.*?:\s*([\d.]+)/gi);
       if (dnsMatches) {
         dnsServers = dnsMatches.map(m => m.split(':')[1].trim());
       }
     } else if (platform === 'darwin') {
       // macOS: Use scutil
-      const { stdout } = await execAsync('scutil --dns');
+      const { stdout } = await execFileAsync('scutil', ['--dns']);
       const dnsMatches = stdout.match(/nameserver\[\d+]\s*:\s*([\d.]+)/gi);
       if (dnsMatches) {
         dnsServers = dnsMatches.map(m => m.split(':')[1].trim());
       }
     } else if (platform === 'linux') {
       // Linux: Check /etc/resolv.conf
-      const { stdout } = await execAsync('cat /etc/resolv.conf');
+      const { stdout } = await execFileAsync('cat', ['/etc/resolv.conf']);
       const dnsMatches = stdout.match(/nameserver\s+([\d.]+)/gi);
       if (dnsMatches) {
         dnsServers = dnsMatches.map(m => m.split(/\s+/)[1]);
@@ -293,10 +293,10 @@ async function checkVPNRoutes(): Promise<boolean> {
     let routeOutput = '';
 
     if (platform === 'win32') {
-      const { stdout } = await execAsync('route print');
+      const { stdout } = await execFileAsync('route', ['print']);
       routeOutput = stdout;
     } else if (platform === 'darwin' || platform === 'linux') {
-      const { stdout } = await execAsync('netstat -rn');
+      const { stdout } = await execFileAsync('netstat', ['-rn']);
       routeOutput = stdout;
     }
 
