@@ -1,5 +1,6 @@
 import WebTorrent, { Torrent } from 'webtorrent';
 import path from 'path';
+import { clearSelections, hasNoSelections } from './selections';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
@@ -902,7 +903,7 @@ export class TorrentManager {
       // torrent wasn't destroyed, or a map/engine desync). Re-adding it makes
       // WebTorrent throw "Cannot add duplicate torrent" — which previously leaked
       // to the UI as a raw "downloads:add" error. Catch it here with a clear one.
-      if (infoHashToCheck && this.client.get(infoHashToCheck)) {
+      if (infoHashToCheck && await this.client.get(infoHashToCheck)) {
         log.warn('Duplicate torrent rejected (already present in the engine)', { infoHash: infoHashToCheck });
         throw new TorrentError('This torrent is already in your downloads.', 'DUPLICATE');
       }
@@ -1395,7 +1396,7 @@ export class TorrentManager {
         // can even re-emit 'done' several times while selections are empty, hence
         // the duplicate logs one used to see on pause.)
         const sel = (torrent as unknown as { _selections?: unknown[] })._selections;
-        if (Array.isArray(sel) && sel.length === 0) {
+        if (hasNoSelections(sel)) {
           log.debug('Ignoring spurious done (no selections — torrent is paused/halted)', { id });
           return;
         }
@@ -1777,7 +1778,7 @@ export class TorrentManager {
     const t = torrent as any;
     try { t.pause(); } catch { /* ignore */ }
     try {
-      if (Array.isArray(t._selections)) t._selections.length = 0;
+      clearSelections(t._selections);
       t._critical = [];
       if (typeof t._updateInterest === 'function') t._updateInterest();
     } catch (e) {
@@ -1800,7 +1801,7 @@ export class TorrentManager {
       try { t.resume(); } catch { /* ignore */ }
       // Start from a clean slate: selections accumulate (see haltTorrent) and a
       // pile of stale entries is exactly what used to defeat pause.
-      if (Array.isArray(t._selections)) t._selections.length = 0;
+      clearSelections(t._selections);
       if (managed.selectedFiles && managed.selectedFiles.length > 0) {
         managed.selectedFiles.forEach((index) => {
           if (index < torrent.files.length) torrent.files[index].select();
