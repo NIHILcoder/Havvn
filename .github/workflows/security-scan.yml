@@ -38,7 +38,7 @@ jobs:
           npm audit >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload audit report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: npm-audit-report
           path: audit-report.json
