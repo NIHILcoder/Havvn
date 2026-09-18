@@ -80,7 +80,7 @@
     "@types/uuid": "^9.0.7",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.70.0",
-    "concurrently": "^8.2.2",
+    "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
     "css-loader": "^6.8.1",
     "electron": "^42.4.0",
