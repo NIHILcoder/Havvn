@@ -89,7 +89,7 @@ jobs:
 
       # DRAFT release — a human reviews it and presses Publish on GitHub
       - name: Create draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: false
