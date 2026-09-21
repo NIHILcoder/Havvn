@@ -18,7 +18,7 @@ export function validateFilePath(filePath: string, allowedRoots?: string[]): str
   const normalized = path.normalize(filePath);
 
   // Check for directory traversal attempts
-  if (normalized.includes('..')) {
+  if (filePath.split(/[\\/]+/).includes('..')) {
     throw new ValidationError('Path traversal detected');
   }
 
@@ -140,9 +140,9 @@ export function validateTorrentId(id: string): string {
  * Validate port number
  */
 export function validatePort(port: number | string): number {
-  const portNum = typeof port === 'string' ? parseInt(port, 10) : port;
+  const portNum = typeof port === 'string' && /^\d+$/.test(port) ? Number(port) : port;
 
-  if (isNaN(portNum) || !Number.isInteger(portNum)) {
+  if (typeof portNum !== 'number' || !Number.isInteger(portNum)) {
     throw new ValidationError('Port must be an integer');
   }
 
@@ -191,7 +191,7 @@ export function validateRoomCode(code: string): string {
   }
 
   // Format: adj-adj-adj-noun-noun-NNNNN or adj-adj-adj-noun-noun-NNNNN-e2e
-  const pattern = /^[a-z]+-[a-z]+-[a-z]+-[a-z]+-[a-z]+-\d{5}(?:-e2e)?$/;
+  const pattern = /^(?:(?:[a-z]+-){4}\d{4}|(?:[a-z]+-){5}\d{5})(?:-e2e)?$/;
   if (!pattern.test(code.toLowerCase())) {
     throw new ValidationError('Invalid room code format');
   }

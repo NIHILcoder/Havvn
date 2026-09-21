@@ -11,7 +11,7 @@
 
 import { DbRequest, DbBridgeFn } from './protocol';
 
-type DB = typeof import('../../db/store');
+type DB = typeof import('../../db/store.js');
 
 let send: ((msg: DbRequest) => void) | null = null;
 let seq = 0;

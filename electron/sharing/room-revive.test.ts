@@ -150,12 +150,14 @@ let reqSeq = 1000;
 async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise<T> {
   const reqId = ++reqSeq;
   inst.listeners['room-cmd'](null, { reqId, ...msg });
-  await flush();
-  const res = inst.sent
-    .filter((s) => s.channel === 'room-res')
-    .map((s) => s.payload)
-    .find((p) => p?.reqId === reqId);
-  if (!res) throw new Error('engine sent no response');
+  const res = await vi.waitFor(() => {
+    const response = inst.sent
+      .filter((s) => s.channel === 'room-res')
+      .map((s) => s.payload)
+      .find((p) => p?.reqId === reqId);
+    if (!response) throw new Error('engine sent no response');
+    return response;
+  }, { timeout: 2000, interval: 10 });
   if (!res.ok) throw new Error(res.error);
   return res.data as T;
 }

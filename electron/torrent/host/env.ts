@@ -42,7 +42,7 @@ export function getHostEnv(): HostEnv {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fs = require('fs') as typeof import('fs');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getEngineChoice } = require('../../db/store') as typeof import('../../db/store');
+    const { getEngineChoice } = require('../../db/store') as typeof import('../../db/store.js');
 
     // Only a Windows daemon is vendored today; other platforms fall back below.
     const engineBinary = process.platform === 'win32'

@@ -1,21 +1,8 @@
+import { clearSelections, hasNoSelections } from './selections';
 /**
- * Regression test: pausing a PARTIAL download must not be reported as "complete".
- *
- * Root cause (pinned here against real WebTorrent loopback wires): the app pauses
- * by clearing torrent._selections (manager.haltTorrent). But WebTorrent's
- * _checkDone() treats "no selections" as DONE — its own comment says "if all
- * current selections are satisfied, OR there are no selections, then torrent is
- * done" — and fires a spurious 'done' when the next in-flight piece verifies.
- * With the old ordering (status still 'downloading' at halt time), the manager's
- * 'done' handler then falsely marked the half-finished torrent as seeding/100%.
- *
- * This test proves the WebTorrent behaviour our fix guards against, so a
- * webtorrent upgrade that changes it can't silently rot the guard:
- *   1) a genuinely partial torrent (progress < 1) still has t.done === false;
- *   2) after clearing _selections, _checkDone() reports done === true and t.done
- *      flips true — the false completion — even though progress is still < 1;
- *   3) the exact condition the manager's backstop keys on (_selections.length===0
- *      while progress < 1) holds at that moment.
+ * Regression: clearing selections while pausing a partial download must not
+ * report completion. WebTorrent 3 checks actual pieces; preserve this behavior
+ * across upgrades, using the same selection helper as manager.haltTorrent.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import WebTorrent from 'webtorrent';
@@ -49,7 +36,7 @@ afterAll(async () => {
 });
 
 describe('pause must not falsely complete a partial download', () => {
-  it('clearing _selections makes WebTorrent report a partial torrent as done', async () => {
+  it('clearing selections keeps a partial torrent incomplete', async () => {
     const seedTorrent: any = await new Promise((resolve) =>
       seeder.seed([path.join(seedDir, 'a.bin'), path.join(seedDir, 'b.bin')],
         { name: 'falsecomplete', announce: [] } as any, resolve),
@@ -75,18 +62,17 @@ describe('pause must not falsely complete a partial download', () => {
 
     // Pause the way manager.haltTorrent does: clear the selection list.
     try { t.pause(); } catch { /* ignore */ }
-    t._selections.length = 0;
+    clearSelections(t._selections);
     t._critical = [];
     t._updateInterest();
 
-    // The false completion: with no selections, _checkDone() reports done — and
-    // flips t.done true — even though the torrent is still partial.
+    // Empty selections must not turn a partial download into a completed one.
     const reportedDone = t._checkDone();
     expect(t.progress).toBeLessThan(1);          // still NOT actually complete
-    expect(reportedDone).toBe(true);             // ...yet WebTorrent says "done"
-    expect(t.done).toBe(true);
+    expect(reportedDone).toBe(false);
+    expect(t.done).toBe(false);
 
     // This is precisely the condition the manager's 'done' backstop keys on.
-    expect(Array.isArray(t._selections) && t._selections.length === 0).toBe(true);
+    expect(hasNoSelections(t._selections)).toBe(true);
   }, 60000);
 });

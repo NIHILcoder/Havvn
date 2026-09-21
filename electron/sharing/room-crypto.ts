@@ -13,6 +13,7 @@
  */
 
 import crypto from 'crypto';
+import { ROOM_KDF_SALT, ROOM_KDF_LEGACY_ITERATIONS, roomKdfIterations } from '../../shared/room-kdf';
 import { normalizeCode, codeIsE2E, buildInvite, parseInvite, E2E_SUFFIX } from '../../shared/room-invite';
 
 export { normalizeCode, codeIsE2E, buildInvite, parseInvite };
@@ -70,31 +71,21 @@ export function generateRoomCode(e2e = false): string {
 // COMPATIBILITY-CRITICAL: the KDF salt keeps the pre-rebrand value on purpose.
 // Changing it would make Havvn builds derive different keys from the same room
 // code — old and new versions could never join each other's rooms.
-const SALT = Buffer.from('torrenthunt-room-v1');
+const SALT = Buffer.from(ROOM_KDF_SALT);
 
-// PBKDF2 iterations increased to 600,000 (OWASP 2023 recommendation)
-// Previous value of 150,000 was from 2020 and is now considered weak against
-// modern GPU-accelerated attacks. This is a BREAKING CHANGE for new rooms,
-// but existing rooms continue to work via backward compatibility check.
-const PBKDF2_ITERATIONS = 600000;
-const PBKDF2_ITERATIONS_LEGACY = 150000;
-
-/**
- * 256-bit AES-GCM key derived from the code using PBKDF2-SHA256.
- * Uses 600k iterations (OWASP 2023 standard) for new rooms.
- */
+/** Historical invite codes retain their original protocol key. */
 export function deriveKey(code: string): Buffer {
-  return crypto.pbkdf2Sync(normalizeCode(code), SALT, PBKDF2_ITERATIONS, 32, 'sha256');
+  return crypto.pbkdf2Sync(normalizeCode(code), SALT, roomKdfIterations(code), 32, 'sha256');
 }
 
 /**
  * Legacy key derivation for backward compatibility with existing rooms.
- * Used automatically when decrypting fails with new iterations.
+ * Explicit helper for recovering historical encrypted data.
  * DO NOT use for new rooms - kept only for migration.
  * @internal
  */
 export function deriveKeyLegacy(code: string): Buffer {
-  return crypto.pbkdf2Sync(normalizeCode(code), SALT, PBKDF2_ITERATIONS_LEGACY, 32, 'sha256');
+  return crypto.pbkdf2Sync(normalizeCode(code), SALT, ROOM_KDF_LEGACY_ITERATIONS, 32, 'sha256');
 }
 
 /**
@@ -156,7 +147,7 @@ export function encrypt(key: Buffer, obj: unknown): string {
 
 /**
  * Decrypt a token produced by encrypt(). Throws if the key/tag is wrong.
- * Supports automatic fallback to legacy PBKDF2 iterations for backward compatibility.
+ * Uses the supplied protocol key without a downgrade.
  */
 export function decrypt<T = unknown>(key: Buffer, token: string): T {
   const buf = Buffer.from(token, 'base64');
@@ -171,11 +162,11 @@ export function decrypt<T = unknown>(key: Buffer, token: string): T {
 
 /**
  * Decrypt with automatic legacy key fallback.
- * Tries new key first, falls back to legacy if decryption fails.
- * Used during room join to support both old and new rooms seamlessly.
+ * Tries the selected protocol key first, then the historical key.
+ * Offline recovery only: this cannot negotiate tracker discovery or room joins.
  */
 export function decryptWithFallback<T = unknown>(code: string, token: string): T {
-  // Try with new key first (600k iterations)
+  // Try the key selected by the invite format.
   try {
     const key = deriveKey(code);
     return decrypt<T>(key, token);

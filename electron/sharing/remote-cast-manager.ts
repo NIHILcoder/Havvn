@@ -64,7 +64,7 @@ export class RemoteCastManager {
     const preload = path.join(__dirname, 'remote-cast-engine.js');
     const win = new BrowserWindow({
       show: false,
-      webPreferences: { preload, nodeIntegration: false, contextIsolation: false, sandbox: false, backgroundThrottling: false },
+      webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: false, backgroundThrottling: false },
     });
     win.webContents.on('render-process-gone', (_e, details) => {
       log.warn('Remote-cast window gone', { reason: details?.reason });

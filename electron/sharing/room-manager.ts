@@ -228,7 +228,7 @@ export class RoomManager {
     });
     // A file entered/changed in a room's manifest — persist it so the room shows
     // and re-seeds it immediately on the next launch, before peers reconnect.
-    ipcMain.on('room-manifest-add', (_e, payload: { roomId: string; file: import('../../shared/types').PersistedRoomFile }) => {
+    ipcMain.on('room-manifest-add', (_e, payload: { roomId: string; file: import('../../shared/types.js').PersistedRoomFile }) => {
       try { if (payload?.roomId && payload?.file?.fileId) db.upsertRoomManifestFile(payload.roomId, payload.file); } catch { /* ignore */ }
     });
     ipcMain.on('room-manifest-del', (_e, payload: { roomId: string; fileId: string }) => {
@@ -236,7 +236,7 @@ export class RoomManager {
     });
     // A folder was created/edited (ours or a peer's) — persist so it (and the
     // file grouping) survives restart, before peers reconnect.
-    ipcMain.on('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types').PersistedRoomFolder }) => {
+    ipcMain.on('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types.js').PersistedRoomFolder }) => {
       try { if (payload?.roomId && payload?.folder?.id) db.upsertRoomFolder(payload.roomId, payload.folder); } catch { /* ignore */ }
     });
     // A folder was deleted — persist the tombstone; drop it from the set ONLY if
@@ -252,7 +252,7 @@ export class RoomManager {
     });
     // A new activity-log event was observed — persist it (capped) so the room's
     // history survives restart.
-    ipcMain.on('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types').RoomEvent }) => {
+    ipcMain.on('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types.js').RoomEvent }) => {
       try {
         if (!payload?.roomId || !payload?.event?.id) return;
         db.appendRoomEvents(payload.roomId, [payload.event]);
@@ -265,7 +265,7 @@ export class RoomManager {
     });
     // A chat message (sent or received) — persist it (capped, deduped by id) and,
     // if it's from someone else and not the room you're looking at, OS-notify.
-    ipcMain.on('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types').RoomChatMessage; backfill?: boolean }) => {
+    ipcMain.on('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types.js').RoomChatMessage; backfill?: boolean }) => {
       try {
         if (!payload?.roomId || !payload?.message?.id) return;
         const isNew = db.appendRoomChats(payload.roomId, [payload.message]);
@@ -417,7 +417,7 @@ export class RoomManager {
       webPreferences: {
         preload,
         nodeIntegration: false,
-        contextIsolation: false, // preload shares the page window (native WebRTC)
+        contextIsolation: true, // route dynamic imports through the Node loader in the isolated preload
         sandbox: false,
         backgroundThrottling: false,
       },
@@ -852,7 +852,7 @@ export class RoomManager {
     }
     const abs = this.resolveLocalPath(roomId, fileId);
     // The cast server runs in the torrent host; publish the room file there.
-    const { getTorrentManager } = await import('../torrent');
+    const { getTorrentManager } = await import('../torrent/index.js');
     return getTorrentManager().castPublishDiskFile(abs);
   }
 
@@ -861,7 +861,7 @@ export class RoomManager {
    *  fully on disk (resolveLocalPath). */
   async imageUrl(roomId: string, fileId: string): Promise<{ url: string }> {
     const abs = this.resolveLocalPath(roomId, fileId);
-    const { getTorrentManager } = await import('../torrent');
+    const { getTorrentManager } = await import('../torrent/index.js');
     return getTorrentManager().castPublishImage(abs);
   }
 
@@ -884,14 +884,14 @@ export class RoomManager {
   /** Subtitle tracks for a downloaded room file (embedded text + sidecars). */
   async subtitleList(roomId: string, fileId: string): Promise<SubtitleTrackItem[]> {
     const abs = this.resolveLocalPath(roomId, fileId);
-    const { getTorrentManager } = await import('../torrent');
+    const { getTorrentManager } = await import('../torrent/index.js');
     return listSubtitleTracks(getTorrentManager().ffmpegBinary, abs);
   }
 
   /** A chosen subtitle track as WebVTT text (renderer wraps it in a blob URL). */
   async subtitleGet(roomId: string, fileId: string, key: string): Promise<string> {
     const abs = this.resolveLocalPath(roomId, fileId);
-    const { getTorrentManager } = await import('../torrent');
+    const { getTorrentManager } = await import('../torrent/index.js');
     return getSubtitleVtt(getTorrentManager().ffmpegBinary, abs, key);
   }
 
@@ -1482,7 +1482,7 @@ export class RoomManager {
   }
 
   /** Host: gossip game-server mirror state to peers. */
-  broadcastServerMirror(roomId: string, payload: import('../../shared/gameserver-types').ServerMirrorState): void {
+  broadcastServerMirror(roomId: string, payload: import('../../shared/gameserver-types.js').ServerMirrorState): void {
     if (!roomId || !payload) return;
     const body = serializeMirrorBody(payload);
     if (this.win && !this.win.isDestroyed() && this.ready) {
@@ -1499,7 +1499,7 @@ export class RoomManager {
   }
 
   /** Every peer mirror in this room — one per member currently hosting. */
-  getServerMirrors(roomId: string): import('../../shared/gameserver-types').ServerMirrorState[] {
+  getServerMirrors(roomId: string): import('../../shared/gameserver-types.js').ServerMirrorState[] {
     return this.cache.get(roomId)?.srvMirrors ?? [];
   }
 

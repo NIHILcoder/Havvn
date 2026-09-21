@@ -279,14 +279,14 @@ const api: IpcApi = {
   getNetworkProfiles: () => {
     return ipcRenderer.invoke('netprofiles:list');
   },
-  saveNetworkProfile: (profile: import('../shared/types').NetworkProfile) => {
+  saveNetworkProfile: (profile: import('../shared/types.js').NetworkProfile) => {
     return ipcRenderer.invoke('netprofiles:save', profile);
   },
   deleteNetworkProfile: (id: string) => {
     return ipcRenderer.invoke('netprofiles:delete', id);
   },
-  onNetworkProfile: (callback: (payload: { current: import('../shared/types').NetworkInfo; activeId: string | null }) => void) => {
-    const listener = (_e: unknown, payload: { current: import('../shared/types').NetworkInfo; activeId: string | null }) => callback(payload);
+  onNetworkProfile: (callback: (payload: { current: import('../shared/types.js').NetworkInfo; activeId: string | null }) => void) => {
+    const listener = (_e: unknown, payload: { current: import('../shared/types.js').NetworkInfo; activeId: string | null }) => callback(payload);
     ipcRenderer.on('network:profileChanged', listener);
     return () => ipcRenderer.removeListener('network:profileChanged', listener);
   },
@@ -1009,8 +1009,8 @@ const api: IpcApi = {
     return () => { ipcRenderer.removeListener('rooms:lanWarn', handler); };
   },
 
-  onServerAlert: (callback: (payload: { roomId: string } & import('../shared/gameserver-types').ServerAlert) => void): (() => void) => {
-    const handler = (_event: IpcRendererEvent, payload: { roomId: string } & import('../shared/gameserver-types').ServerAlert) => callback(payload);
+  onServerAlert: (callback: (payload: { roomId: string } & import('../shared/gameserver-types.js').ServerAlert) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, payload: { roomId: string } & import('../shared/gameserver-types.js').ServerAlert) => callback(payload);
     ipcRenderer.on('rooms:srvAlert', handler);
     return () => { ipcRenderer.removeListener('rooms:srvAlert', handler); };
   },

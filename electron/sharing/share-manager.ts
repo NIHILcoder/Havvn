@@ -64,7 +64,7 @@ export class ShareManager {
       webPreferences: {
         preload,
         nodeIntegration: false,
-        contextIsolation: false, // preload shares the page window (native WebRTC)
+        contextIsolation: true, // route dynamic imports through the Node loader in the isolated preload
         sandbox: false,          // allow require() in the preload
         backgroundThrottling: false, // keep seeding/WebRTC alive while hidden
       },

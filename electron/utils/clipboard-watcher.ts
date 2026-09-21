@@ -29,6 +29,8 @@ const POLL_INTERVAL_MS = 2_000;
 let timer: NodeJS.Timeout | null = null;
 let deliver: ((uri: string) => void) | null = null;
 let hasWindow: (() => boolean) | null = null;
+let generation = 0;
+let readingGeneration: number | null = null;
 let seeded = false;
 let lastSeenHash = '';
 let lastDeliveredInfoHash = '';
@@ -43,6 +45,8 @@ export function initClipboardWatcher(opts: { deliver: (uri: string) => void; has
 
 /** (Re)start or stop the poll loop based on the persisted setting. */
 export async function restartClipboardWatcherFromConfig(): Promise<void> {
+  stopClipboardWatcher();
+  const current = generation;
   let enabled = false;
   try {
     enabled = (await db.getSettings()).clipboardWatchEnabled === true;
@@ -50,7 +54,7 @@ export async function restartClipboardWatcherFromConfig(): Promise<void> {
     enabled = false;
   }
 
-  stopClipboardWatcher();
+  if (current !== generation) return;
   if (!enabled) {
     log.info('Clipboard magnet watcher disabled');
     return;
@@ -62,28 +66,36 @@ export async function restartClipboardWatcherFromConfig(): Promise<void> {
   // (clipboard locked), the FIRST successful tick seeds instead of delivering,
   // so a transient failure here can't leak a pre-existing magnet through.
   try {
-    lastSeenHash = sha1(clipboard.readText().trim());
+    const text = await clipboard.readText();
+    if (current !== generation) return;
+    lastSeenHash = sha1(text.trim());
     seeded = true;
   } catch {
+    if (current !== generation) return;
     lastSeenHash = '';
     seeded = false;
   }
+  if (current !== generation) return;
   lastDeliveredInfoHash = '';
   log.info('Clipboard magnet watcher enabled');
-  timer = setInterval(tick, POLL_INTERVAL_MS);
+  timer = setInterval(() => { void tick(current); }, POLL_INTERVAL_MS);
 }
 
 export function stopClipboardWatcher(): void {
+  generation++;
   if (timer) {
     clearInterval(timer);
     timer = null;
   }
 }
 
-function tick(): void {
+async function tick(current: number): Promise<void> {
+  if (current !== generation || readingGeneration === current) return;
+  readingGeneration = current;
   try {
     if (!hasWindow?.()) return;
-    const text = clipboard.readText().trim();
+    const text = (await clipboard.readText()).trim();
+    if (current !== generation || !hasWindow?.()) return;
     const hash = sha1(text);
     if (!seeded) {
       // The enable-time seed failed — this first successful read becomes the
@@ -111,5 +123,7 @@ function tick(): void {
   } catch {
     // Clipboard locked by another app / non-text content — skip this tick
     // WITHOUT touching lastSeenHash, so a transient failure can't re-fire.
+  } finally {
+    if (readingGeneration === current) readingGeneration = null;
   }
 }

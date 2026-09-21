@@ -1,3 +1,4 @@
+import { useChromiumWebRTC } from './chromium-webrtc';
 /**
  * Remote-cast engine — PRELOAD of a hidden BrowserWindow (Chromium WebRTC),
  * same pattern as share-seeder / room-engine.
@@ -21,7 +22,7 @@ import crypto from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const TrackerClient = require('bittorrent-tracker') as any;
+let TrackerClient: any;
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 
@@ -146,9 +147,10 @@ function stopSession(id: string): void {
   try { session.tracker?.stop(); session.tracker?.destroy(); } catch { /* ignore */ }
 }
 
-ipcRenderer.on('rcast-cmd', (_e, msg: any) => {
+ipcRenderer.on('rcast-cmd', async (_e, msg: any) => {
   const { type, reqId } = msg;
   try {
+    if (msg.type === 'start') { useChromiumWebRTC(); TrackerClient ??= (await import('bittorrent-tracker')).default; }
     let data: any;
     if (type === 'start') data = startSession(msg.payload);
     else if (type === 'stop') { stopSession(msg.id); data = { ok: true }; }

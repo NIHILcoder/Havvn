@@ -1,6 +1,6 @@
 /**
  * Browser-safe room crypto. Byte-identical to electron/sharing/room-crypto.ts
- * (PBKDF2-SHA256 150k, AES-GCM iv|tag|cipher, HMAC-SHA1 rendezvous, SHA-1 topic,
+ * (version-selected PBKDF2-SHA256, AES-GCM iv|tag|cipher, HMAC-SHA1 rendezvous, SHA-1 topic,
  * SHA-256 member id, Ed25519 PEM).
  *
  * Uses Web Crypto so the guest page and Node tests (via crypto.webcrypto) share
@@ -10,8 +10,7 @@
 
 import { normalizeCode } from './room-invite';
 
-const SALT_STR = 'torrenthunt-room-v1';
-const PBKDF2_ITERS = 150_000;
+import { ROOM_KDF_SALT, roomKdfIterations } from './room-kdf';
 
 function subtle(): SubtleCrypto {
   const c = globalThis.crypto;
@@ -68,7 +67,7 @@ export async function deriveKeyWeb(code: string): Promise<Uint8Array> {
   const s = subtle();
   const material = await s.importKey('raw', asSource(utf8(normalizeCode(code))), 'PBKDF2', false, ['deriveBits']);
   const bits = await s.deriveBits(
-    { name: 'PBKDF2', salt: asSource(utf8(SALT_STR)), iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: asSource(utf8(ROOM_KDF_SALT)), iterations: roomKdfIterations(code), hash: 'SHA-256' },
     material,
     256,
   );

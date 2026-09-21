@@ -228,7 +228,7 @@ let current: MainLang = 'en';
 export function initMainI18n(): void {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { getUiLanguage } = require('../db/store') as typeof import('../db/store');
+    const { getUiLanguage } = require('../db/store') as typeof import('../db/store.js');
     current = getUiLanguage();
   } catch {
     current = 'en';
@@ -241,7 +241,7 @@ export function setMainLanguage(lang: unknown): void {
   current = lang;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { setUiLanguage } = require('../db/store') as typeof import('../db/store');
+    const { setUiLanguage } = require('../db/store') as typeof import('../db/store.js');
     setUiLanguage(lang);
   } catch {
     /* best-effort — the in-memory value still updates */

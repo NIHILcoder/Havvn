@@ -1,3 +1,4 @@
+import { useChromiumWebRTC } from './chromium-webrtc';
 /**
  * Share seeder — runs as the PRELOAD of a hidden BrowserWindow.
  *
@@ -16,7 +17,8 @@ import { ipcRenderer } from 'electron';
 import fs from 'fs';
 // Required (not bundled), so this resolves WebTorrent's NODE build — which can
 // seed from a path — while WebRTC comes from the window below.
-import WebTorrent from 'webtorrent';
+import type WebTorrentType from 'webtorrent';
+let WebTorrent: typeof WebTorrentType;
 
 // GitHub Pages receiver path. The repo was renamed TorrentHunt → Havvn, so Pages
 // now serves at /Havvn/ and NEW links must use it. Links shared under the old
@@ -50,6 +52,7 @@ function ensureClient(useTurn: boolean, turnServers: any[] = []): any {
     clientUseTurn = useTurn;
     const iceServers = useTurn ? STUN_SERVERS.concat(turnServers) : STUN_SERVERS;
     client = new WebTorrent({
+      natUpnp: false, natPmp: false,
       utp: false,
       dht: false,
       tracker: { wrtc: nativeWrtc, rtcConfig: { iceServers } },
@@ -64,12 +67,14 @@ function toInfo(e: ShareEntry) {
   return { downloadId: e.downloadId, name: e.name, infoHash: e.infoHash, magnetURI: e.magnetURI, link: e.link, createdAt: e.createdAt };
 }
 
-function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[] = [], trackers: string[] = RENDEZVOUS_TRACKERS): Promise<ShareEntry> {
+async function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[] = [], trackers: string[] = RENDEZVOUS_TRACKERS): Promise<ShareEntry> {
   const existing = shares.get(downloadId);
   if (existing) return Promise.resolve(existing);
   if (!fs.existsSync(contentPath)) {
     return Promise.reject(new Error('File not found on disk — the download must be complete to share'));
   }
+  useChromiumWebRTC();
+  WebTorrent ??= (await import('webtorrent')).default;
   const c = ensureClient(useTurn, turnServers);
   return new Promise<ShareEntry>((resolve, reject) => {
     let settled = false;

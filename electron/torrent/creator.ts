@@ -5,7 +5,7 @@
  * Uses WebTorrent's seed functionality which handles torrent creation internally.
  */
 
-import WebTorrent from 'webtorrent';
+
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -265,9 +265,10 @@ export async function createTorrentFile(
     : DEFAULT_TRACKERS;
   const announce = announceList.flat();
 
+  const { default: WebTorrent } = await import('webtorrent');
   return new Promise((resolve, reject) => {
     // Create a temporary WebTorrent client for seeding
-    const client = new WebTorrent({ utp: false } as any);
+    const client = new WebTorrent({ utp: false, natUpnp: false, natPmp: false } as any);
 
     // create-torrent (used by WebTorrent.seed) doesn't expose hashing progress,
     // so we estimate it from total size at a conservative hash rate. This is an

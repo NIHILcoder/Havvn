@@ -55,7 +55,7 @@ const CONSOLE_BATCH_MAX = 400;
 interface ConsoleWatch {
   instanceId: string;
   unsubscribe: () => void;
-  pending: import('../../shared/gameserver-types').ConsoleLine[];
+  pending: import('../../shared/gameserver-types.js').ConsoleLine[];
   timer: NodeJS.Timeout | null;
 }
 
@@ -370,14 +370,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // ── Mobile web remote ────────────────────────────────────────────────────
   const webRemoteInfo = async () => {
     const settings = await db.getSettings();
-    const { getWebRemoteServer } = await import('../torrent/web-remote');
+    const { getWebRemoteServer } = await import('../torrent/web-remote.js');
     const info = getWebRemoteServer().getInfo();
     return { enabled: settings.webRemoteEnabled === true, ...info };
   };
 
   const applyWebRemote = async () => {
     const settings = await db.getSettings();
-    const { getWebRemoteServer } = await import('../torrent/web-remote');
+    const { getWebRemoteServer } = await import('../torrent/web-remote.js');
     const srv = getWebRemoteServer();
     if (settings.webRemoteEnabled) {
       const token = await db.getOrCreateWebRemoteToken();
@@ -512,14 +512,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // Remote streaming over WebRTC (watch outside the local network)
   ipcMain.handle('cast:remoteStart', wrapHandler('cast:remoteStart',
     async (_event, id: string, fileIndex: number) => {
-      const { getRemoteCastManager } = await import('../sharing/remote-cast-manager');
+      const { getRemoteCastManager } = await import('../sharing/remote-cast-manager.js');
       return getRemoteCastManager().start(id, fileIndex);
     }
   ));
 
   ipcMain.handle('cast:remoteStop', wrapHandler('cast:remoteStop',
     async (_event, sessionId: string) => {
-      const { getRemoteCastManager } = await import('../sharing/remote-cast-manager');
+      const { getRemoteCastManager } = await import('../sharing/remote-cast-manager.js');
       return getRemoteCastManager().stop(sessionId);
     }
   ));
@@ -527,14 +527,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // Cast to TV (Chromecast / Android TV)
   ipcMain.handle('cast:tvList', wrapHandler('cast:tvList',
     async () => {
-      const { getChromecastManager } = await import('../torrent/chromecast');
+      const { getChromecastManager } = await import('../torrent/chromecast.js');
       return getChromecastManager().list();
     }
   ));
 
   ipcMain.handle('cast:tvRefresh', wrapHandler('cast:tvRefresh',
     async () => {
-      const { getChromecastManager } = await import('../torrent/chromecast');
+      const { getChromecastManager } = await import('../torrent/chromecast.js');
       const mgr = getChromecastManager();
       mgr.refresh();
       return mgr.list();
@@ -543,7 +543,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('cast:tvPlay', wrapHandler('cast:tvPlay',
     async (_event, id: string, fileIndex: number, host: string) => {
-      const { getChromecastManager } = await import('../torrent/chromecast');
+      const { getChromecastManager } = await import('../torrent/chromecast.js');
       const media = await torrentManager.castTvMedia(id, fileIndex);
       await getChromecastManager().play(host, media);
       return { ok: true };
@@ -552,7 +552,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('cast:tvControl', wrapHandler('cast:tvControl',
     async (_event, host: string, action: 'pause' | 'resume' | 'stop') => {
-      const { getChromecastManager } = await import('../torrent/chromecast');
+      const { getChromecastManager } = await import('../torrent/chromecast.js');
       const mgr = getChromecastManager();
       if (action === 'pause') await mgr.pause(host);
       else if (action === 'resume') await mgr.resume(host);
@@ -1022,7 +1022,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // of Electron UI; the manager owns staging and the trust boundary.
   ipcMain.handle('rooms:srvPickImport', wrapHandler('rooms:srvPickImport',
     async (_event, moduleId: string) => {
-      const { IMPORT_EXTENSIONS } = await import('../gameserver/import-store');
+      const { IMPORT_EXTENSIONS } = await import('../gameserver/import-store.js');
       const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, {
         title: 'Import server files',
         properties: ['openFile'],
@@ -1494,13 +1494,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
       // Restart the disk-space guard if its settings changed
       if (settings.diskGuardEnabled !== undefined || settings.diskGuardMinFreeMB !== undefined) {
-        const { restartGuardFromConfig } = await import('../utils/disk-guard');
+        const { restartGuardFromConfig } = await import('../utils/disk-guard.js');
         await restartGuardFromConfig();
       }
 
       // Restart the clipboard magnet watcher when its toggle changes
       if (settings.clipboardWatchEnabled !== undefined) {
-        const { restartClipboardWatcherFromConfig } = await import('../utils/clipboard-watcher');
+        const { restartClipboardWatcherFromConfig } = await import('../utils/clipboard-watcher.js');
         await restartClipboardWatcherFromConfig();
       }
 
@@ -1508,13 +1508,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       // (The port itself only takes effect after a restart, but re-running here
       // turns forwarding on/off live and re-maps when the user fixes the port.)
       if (settings.portForwarding !== undefined || settings.portMin !== undefined) {
-        const { restartPortForwardingFromConfig } = await import('../utils/port-forwarding');
+        const { restartPortForwardingFromConfig } = await import('../utils/port-forwarding.js');
         await restartPortForwardingFromConfig(() => torrentManager.getListeningPort());
       }
 
       // Re-apply the active network-profile overlay so a manual base-setting change
       // (or toggling the feature) doesn't clobber the per-network override.
-      const { applyForCurrentNetwork } = await import('../services/network-profiles');
+      const { applyForCurrentNetwork } = await import('../services/network-profiles.js');
       void applyForCurrentNetwork(true);
 
       return updated;
@@ -1529,13 +1529,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('categories:add', wrapHandler('categories:add',
-    async (_event, category: Omit<import('../../shared/types').Category, 'id'>) => {
+    async (_event, category: Omit<import('../../shared/types.js').Category, 'id'>) => {
       return db.addCategory(category);
     }
   ));
 
   ipcMain.handle('categories:update', wrapHandler('categories:update',
-    async (_event, id: string, updates: Partial<import('../../shared/types').Category>) => {
+    async (_event, id: string, updates: Partial<import('../../shared/types.js').Category>) => {
       return db.updateCategory(id, updates);
     }
   ));
@@ -1560,7 +1560,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('scheduler:update', wrapHandler('scheduler:update',
-    async (_event, config: Partial<import('../../shared/types').SchedulerConfig>) => {
+    async (_event, config: Partial<import('../../shared/types.js').SchedulerConfig>) => {
       return db.updateScheduler(config);
     }
   ));
@@ -1639,7 +1639,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         const session = mainWindow.webContents.session;
         await session.clearCache();
         await session.clearStorageData({
-          storages: ['cachestorage', 'serviceworkers', 'websql', 'indexdb'],
+          storages: ['cachestorage', 'serviceworkers', 'indexdb'],
         });
         log.info('Cache cleared successfully');
         return { success: true };
@@ -1732,12 +1732,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       const MAX_ENTRIES = 5000; // guard against gigantic trees
       let count = 0;
 
-      const build = async (p: string): Promise<import('../../shared/types').FsFileNode | null> => {
+      const build = async (p: string): Promise<import('../../shared/types.js').FsFileNode | null> => {
         if (count >= MAX_ENTRIES) return null;
         const stats = await fs.stat(p);
         if (stats.isDirectory()) {
           const entries = await fs.readdir(p, { withFileTypes: true });
-          const children: import('../../shared/types').FsFileNode[] = [];
+          const children: import('../../shared/types.js').FsFileNode[] = [];
           let dirSize = 0;
           for (const entry of entries) {
             if (count >= MAX_ENTRIES) break;
@@ -1753,7 +1753,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         return { path: p, name: path.basename(p), size: stats.size, isDirectory: false };
       };
 
-      const roots: import('../../shared/types').FsFileNode[] = [];
+      const roots: import('../../shared/types.js').FsFileNode[] = [];
       for (const sp of sourcePaths) {
         const node = await build(sp);
         if (node) roots.push(node);
@@ -1853,7 +1853,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // leak flag. Only runs when the user opens the Privacy tab or hits Refresh.
   ipcMain.handle('privacy:getIpInfo', wrapHandler('privacy:getIpInfo',
     async () => {
-      const { getIpInfo } = await import('../utils');
+      const { getIpInfo } = await import('../utils/index.js');
       return getIpInfo();
     }
   ));
@@ -1876,7 +1876,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // Live UPnP port-forwarding status for the Advanced settings panel.
   ipcMain.handle('network:getPortForwardStatus', wrapHandler('network:getPortForwardStatus',
     async () => {
-      const { getPortForwarding } = await import('../utils/port-forwarding');
+      const { getPortForwarding } = await import('../utils/port-forwarding.js');
       return getPortForwarding().getStatus();
     }
   ));
@@ -1897,13 +1897,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // DNS-over-HTTPS resolver templates (built-in + custom) for the Network panel.
   ipcMain.handle('doh:getTemplates', wrapHandler('doh:getTemplates',
     async () => {
-      const { getDohTemplates } = await import('../services/doh');
+      const { getDohTemplates } = await import('../services/doh.js');
       return getDohTemplates();
     }
   ));
   ipcMain.handle('doh:addTemplate', wrapHandler('doh:addTemplate',
     async (_event, name: string, url: string) => {
-      const { addDohTemplate } = await import('../services/doh');
+      const { addDohTemplate } = await import('../services/doh.js');
       const tpl = await addDohTemplate(name, url);
       // A new custom resolver may be (or become) the active one — re-apply live.
       const s = await db.getSettings();
@@ -1913,7 +1913,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
   ipcMain.handle('doh:deleteTemplate', wrapHandler('doh:deleteTemplate',
     async (_event, id: string) => {
-      const { deleteDohTemplate } = await import('../services/doh');
+      const { deleteDohTemplate } = await import('../services/doh.js');
       const res = await deleteDohTemplate(id);
       const s = await db.getSettings();
       await torrentManager.updateSettings({ dohTemplateId: s.dohTemplateId, dohCustomTemplates: s.dohCustomTemplates });
@@ -1922,7 +1922,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
   ipcMain.handle('doh:test', wrapHandler('doh:test',
     async (_event, url: string) => {
-      const { testDohResolver } = await import('../services/doh');
+      const { testDohResolver } = await import('../services/doh.js');
       return testDohResolver(url);
     }
   ));
@@ -1930,25 +1930,25 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // Smart network profiles
   ipcMain.handle('netprofiles:current', wrapHandler('netprofiles:current',
     async () => {
-      const { detectNetwork } = await import('../services/network-profiles');
+      const { detectNetwork } = await import('../services/network-profiles.js');
       return detectNetwork();
     }
   ));
   ipcMain.handle('netprofiles:list', wrapHandler('netprofiles:list',
     async () => {
-      const { getProfilesState } = await import('../services/network-profiles');
+      const { getProfilesState } = await import('../services/network-profiles.js');
       return getProfilesState();
     }
   ));
   ipcMain.handle('netprofiles:save', wrapHandler('netprofiles:save',
-    async (_event, profile: import('../../shared/types').NetworkProfile) => {
-      const { saveProfile } = await import('../services/network-profiles');
+    async (_event, profile: import('../../shared/types.js').NetworkProfile) => {
+      const { saveProfile } = await import('../services/network-profiles.js');
       return saveProfile(profile);
     }
   ));
   ipcMain.handle('netprofiles:delete', wrapHandler('netprofiles:delete',
     async (_event, id: string) => {
-      const { deleteProfile } = await import('../services/network-profiles');
+      const { deleteProfile } = await import('../services/network-profiles.js');
       return deleteProfile(id);
     }
   ));
@@ -1961,7 +1961,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('privacy:isEncryptionAvailable', wrapHandler('privacy:isEncryptionAvailable',
     async () => {
-      const { isEncryptionAvailable } = await import('../db/secrets');
+      const { isEncryptionAvailable } = await import('../db/secrets.js');
       return isEncryptionAvailable();
     }
   ));
@@ -1979,7 +1979,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       // Restart the VPN guard when either of its toggles changes (kill-switch
       // reacts live; the engine bind applies on restart but the monitor arms now)
       if (updates.vpnKillSwitch !== undefined || updates.vpnBindEngine !== undefined) {
-        const { restartGuardFromConfig } = await import('../utils/vpn-guard');
+        const { restartGuardFromConfig } = await import('../utils/vpn-guard.js');
         await restartGuardFromConfig();
       }
       return result;
@@ -2010,10 +2010,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, enabled: boolean) => {
       // Register under a friendly name ("Havvn") instead of the raw
       // executable, so Task Manager / Startup lists it as Havvn rather
-      // than electron.exe. openAsHidden: start minimised to tray at login.
+      // than electron.exe. The launch argument starts the app minimised to tray.
       app.setLoginItemSettings({
         openAtLogin: enabled,
-        openAsHidden: enabled,
+        args: ['--havvn-start-hidden'],
         name: 'Havvn',
         path: process.execPath,
       });

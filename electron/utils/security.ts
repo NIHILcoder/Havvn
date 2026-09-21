@@ -64,6 +64,8 @@ export function validateTrackerUrl(url: unknown): asserts url is string {
     throw new Error('Tracker URL must be a string');
   }
 
+  if (url.length > 2048) throw new Error('Tracker URL too long');
+
   try {
     const parsed = new URL(url);
 
@@ -78,6 +80,11 @@ export function validateTrackerUrl(url: unknown): asserts url is string {
     const blockedPatterns = [
       'localhost',
       '127.',
+      '169.254.',
+      '0.',
+      '[fc', '[fd', '[fe8', '[fe9', '[fea', '[feb',
+      '[::ffff:',
+      '[::]',
       '192.168.',
       '10.',
       '172.16.', '172.17.', '172.18.', '172.19.', '172.20.',
@@ -109,6 +116,8 @@ export function validateDownloadPath(filePath: unknown): string {
   if (filePath.length === 0) {
     throw new Error('Path cannot be empty');
   }
+
+  if (filePath.includes('\0')) throw new Error('Invalid null byte in path');
 
   // Нормализация пути
   const normalized = path.normalize(filePath);
@@ -211,6 +220,10 @@ export function validateFileName(fileName: unknown): asserts fileName is string 
 
   if (fileName.length > 255) {
     throw new Error('File name too long (max 255 characters)');
+  }
+
+  if (fileName === '.' || fileName === '..' || /[\\/]/.test(fileName)) {
+    throw new Error('File name contains path components');
   }
 
   // Проверка на недопустимые символы

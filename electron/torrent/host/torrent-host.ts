@@ -38,11 +38,11 @@ interface EngineManager {
 function createEngine(engine: 'native' | 'webtorrent'): EngineManager {
   if (engine === 'native') {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { NativeTorrentManager } = require('../native/native-manager') as typeof import('../native/native-manager');
+    const { NativeTorrentManager } = require('../native/native-manager') as typeof import('../native/native-manager.js');
     return new NativeTorrentManager();
   }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { TorrentManager } = require('../manager') as typeof import('../manager');
+  const { TorrentManager } = require('../manager') as typeof import('../manager.js');
   return new TorrentManager();
 }
 
@@ -135,7 +135,7 @@ port.on('message', async (e) => {
         // Re-push state when the TCP pool actually binds — the port isn't known
         // yet at the postState() below, so main's mirror would otherwise keep 0.
         manager.onListening(() => postState());
-        try { await manager.initialize(); } catch { /* manager logs + recovers per-torrent */ }
+        await manager.initialize();
         postState();
         post({ kind: 'ready' });
       } catch (err) {

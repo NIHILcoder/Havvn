@@ -137,7 +137,7 @@ class TorrentManagerProxy {
     try {
       // Lazy import: the blocklist service pulls db/store; keep the proxy's
       // module graph free of it until a host is actually up.
-      const { getIPBlocklistService } = await import('../../services/ip-blocklist');
+      const { getIPBlocklistService } = await import('../../services/ip-blocklist.js');
       const ranges = getIPBlocklistService().getRanges();
       if (ranges.length > 0) await this.applyIpBlocklist(ranges);
     } catch (e) {

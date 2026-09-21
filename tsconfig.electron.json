@@ -3,8 +3,17 @@
   "compilerOptions": {
     "outDir": "dist/electron",
     "rootDir": ".",
-    "module": "CommonJS"
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
   },
-  "include": ["electron/**/*.ts", "shared/**/*.ts"],
-  "exclude": ["node_modules", "dist", "renderer", "**/*.test.ts"]
+  "include": [
+    "electron/**/*.ts",
+    "shared/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "renderer",
+    "**/*.test.ts"
+  ]
 }

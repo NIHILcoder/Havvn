@@ -45,7 +45,7 @@ export async function deleteDohTemplate(id: string): Promise<{ ok: boolean }> {
   const s = await db.getSettings();
   const custom = Array.isArray(s.dohCustomTemplates) ? s.dohCustomTemplates : [];
   const next = custom.filter((t) => t.id !== id);
-  const patch: Partial<import('../../shared/types').AppSettings> = { dohCustomTemplates: next };
+  const patch: Partial<import('../../shared/types.js').AppSettings> = { dohCustomTemplates: next };
   if (s.dohTemplateId === id) patch.dohTemplateId = BUILTIN_DOH_TEMPLATES[0].id;
   await db.updateSettings(patch);
   log.info('Custom DoH resolver removed', { id });

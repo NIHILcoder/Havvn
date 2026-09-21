@@ -1,18 +1,8 @@
+import { clearSelections, hasNoSelections } from './selections';
 /**
- * Regression test for the pause mechanism, against REAL WebTorrent loopback
- * wires (a seeder and a leecher over 127.0.0.1 — no network, no trackers).
- *
- * History: pause was reported broken three times. Root cause (proven here):
- * every select() call pushes a NEW entry onto torrent._selections (the app
- * selects on ready, on resume, on stream-open, and WebTorrent adds its own
- * whole-torrent default), while deselect() removes only the FIRST entry that
- * matches its exact (from,to,priority) — so "deselect everything" leaves
- * duplicates behind, the torrent stays interested, and pieces keep flowing.
- *
- * The fix (manager.haltTorrent) clears torrent._selections directly. This test
- * pins BOTH facts so a webtorrent upgrade or refactor can't silently regress:
- *   1) deselect-based pausing is insufficient once selections are duplicated;
- *   2) the halt sequence actually stops bytes; resume restarts them.
+ * Exercise the production halt sequence against real WebTorrent loopback peers.
+ * Repeated file selections must not prevent pausing: bytes stop after clearing
+ * selections and resume when files are selected again.
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import WebTorrent from 'webtorrent';
@@ -73,15 +63,13 @@ describe('pause mechanism (real loopback wires)', () => {
       await sleep(200);
     }
 
-    // Fact 1: deselect-everything does NOT empty the selection list once
-    // selections are duplicated (this is what made pause a no-op in the app).
-    t.files.forEach((f: any) => f.deselect());
-    try { t.deselect(0, t.pieces.length - 1, 0); } catch { /* may not match */ }
-    expect(t._selections.length).toBeGreaterThan(0);
+    // Verify the application's halt sequence, independent of whether a library
+    // version deduplicates repeated selections internally.
+    expect(hasNoSelections(t._selections)).toBe(false);
 
     // Fact 2: the halt sequence used by manager.haltTorrent stops the flow.
     try { t.pause(); } catch { /* ignore */ }
-    t._selections.length = 0;
+    clearSelections(t._selections);
     t._critical = [];
     t._updateInterest();
     await sleep(1200); // let in-flight piece requests land

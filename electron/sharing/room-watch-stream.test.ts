@@ -83,6 +83,19 @@ vi.mock('bittorrent-tracker', () => {
   return { default: FakeTracker };
 });
 
+vi.mock('../torrent/stream-server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../torrent/stream-server')>();
+  return { createTorrentStreamServer: (...args: Parameters<typeof actual.createTorrentStreamServer>) => {
+    const server = actual.createTorrentStreamServer(...args);
+    H.createServerCalls++;
+    server.on('listening', () => {
+      const address = server.address();
+      if (address && typeof address !== 'string') server.on('close', () => H.closedPorts.push(address.port));
+    });
+    return server;
+  } };
+});
+
 class FakePeer {
   connected = true;
   other: FakePeer | null = null;
@@ -113,9 +126,14 @@ let reqSeq = 7000;
 async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise<T> {
   const reqId = ++reqSeq;
   inst.listeners['room-cmd'](null, { reqId, ...msg });
-  await flush();
-  const res = inst.sent.filter((s) => s.channel === 'room-res').map((s) => s.payload).find((p) => p?.reqId === reqId);
-  if (!res) throw new Error('engine sent no response');
+  // Await the actual reply rather than 25 unconditional timer ticks per command.
+  // Windows timer granularity makes those ticks consume most of the test budget.
+  const res = await vi.waitFor(() => {
+    const response = inst.sent.filter((s) => s.channel === 'room-res')
+      .map((s) => s.payload).find((p) => p?.reqId === reqId);
+    if (!response) throw new Error('engine sent no response');
+    return response;
+  }, { timeout: 2000, interval: 10 });
   if (!res.ok) throw new Error(res.error);
   return res.data as T;
 }

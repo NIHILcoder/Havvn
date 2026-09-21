@@ -1,3 +1,4 @@
+import { useChromiumWebRTC } from './chromium-webrtc';
 /**
  * Room engine — runs as the PRELOAD of a hidden BrowserWindow (one per app),
  * exactly like share-seeder.ts, so it uses Chromium's native WebRTC (the native
@@ -24,7 +25,9 @@
 import { ipcRenderer } from 'electron';
 import fs from 'fs';
 import path from 'path';
-import WebTorrent from 'webtorrent';
+import type WebTorrentType from 'webtorrent';
+import { createTorrentStreamServer } from '../torrent/stream-server';
+let WebTorrent: typeof WebTorrentType;
 import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
 import { encryptFile, decryptFile, generateRoomSecret } from './room-e2e';
 import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
@@ -36,7 +39,40 @@ import crypto from 'crypto';
 import type { ServerMirrorState } from '../../shared/gameserver-types';
 import { parseMirrorBody } from '../gameserver/server-mirror';
 
-import TrackerClient from 'bittorrent-tracker';
+let TrackerClient: any;
+let networkingModules: Promise<void> | undefined;
+async function loadNetworkingModules(): Promise<void> {
+  useChromiumWebRTC();
+  networkingModules ??= Promise.all([import('webtorrent'), import('bittorrent-tracker')]).then(([wt, tracker]) => {
+    WebTorrent = wt.default;
+    TrackerClient = tracker.default;
+  }).catch(error => { networkingModules = undefined; throw error; });
+  await networkingModules;
+}
+
+const pendingRoomTorrents = new WeakMap<object, Map<string, any>>();
+function rememberRoomTorrent(client: any, hash: string, torrent: any): any {
+  if (!torrent) return torrent;
+  let pending = pendingRoomTorrents.get(client);
+  if (!pending) { pending = new Map(); pendingRoomTorrents.set(client, pending); }
+  pending.set(hash, torrent);
+  torrent.once?.('close', () => { if (pending?.get(hash) === torrent) pending.delete(hash); });
+  return torrent;
+}
+function addKnownTorrent(client: any, hash: string, source: any, options: any, callback: any): any {
+  return rememberRoomTorrent(client, hash, client.add(source, options, callback));
+}
+function seedKnownTorrent(client: any, hash: string, source: any, options: any, callback: any): any {
+  return rememberRoomTorrent(client, hash, client.seed(source, options, callback));
+}
+function findTorrent(client: any, hash: string): any {
+  const pending = pendingRoomTorrents.get(client)?.get(hash);
+  if (pending && !pending.destroyed) return pending;
+  // WebTorrent 3 get() is async; room event handlers need a synchronous guard.
+  return Array.isArray(client.torrents)
+    ? client.torrents.find((t: any) => t.infoHash === hash)
+    : client.get(hash);
+}
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 import { VoiceSession, VoiceAdapter, SignalKind, LoopbackKind, MicTester, defaultVoiceSettings, sanitizeVoiceSettings } from './room-voice';
@@ -424,6 +460,7 @@ function ensureClient(room: Room): any {
   let c = clients.get(room.roomId);
   if (!c) {
     c = new WebTorrent({
+      natUpnp: false, natPmp: false,
       utp: false,
       dht: false,
       uploadLimit: kbpsToLimit(room.upKbps),
@@ -2098,7 +2135,7 @@ function clampFile(f: any): RoomFile | null {
     name,
     size: Number.isFinite(f.size) ? f.size : 0,
     // fileId IS the infoHash by construction; clamping used to drop this field,
-    // which voided every c.get(file.infoHash) re-entry guard for remote files.
+    // which voided every findTorrent(c, file.infoHash) re-entry guard for remote files.
     infoHash: fileId,
     magnetURI,
     addedBy: clampStr(f.addedBy, MAX_STR),
@@ -2933,7 +2970,7 @@ function applyTombstone(room: Room, fileId: string, at: number, by?: { id: strin
   if (existed) logEvent(room, { type: 'file-removed', actorId: by?.id || '', actorName: by?.name || '?', fileName: existed.name });
   const tr = room.transfers.get(fileId);
   const c = clients.get(room.roomId);
-  if (c) { const t = c.get(fileId); if (t) { try { c.remove(t); } catch { /* ignore */ } } }
+  if (c) { const t = findTorrent(c, fileId); if (t) { try { c.remove(t); } catch { /* ignore */ } } }
   room.files.delete(fileId);
   room.transfers.delete(fileId);
   for (const m of room.members.values()) m.have = m.have.filter((id) => id !== fileId);
@@ -3202,7 +3239,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
 function ensureLocal(room: Room, file: RoomFile): void {
   if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't fetch it again
   const c = ensureClient(room);
-  if (c.get(file.infoHash)) return; // already adding/seeding
+  if (findTorrent(c, file.infoHash)) return; // already adding/seeding
   // The transfer may already know where the bytes live (a file shared from its
   // ORIGINAL location, or a sharer's ciphertext in a non-canonical cache dir) —
   // prefer those paths over the canonical slots so a reseed never re-downloads
@@ -3230,14 +3267,14 @@ function ensureLocal(room: Room, file: RoomFile): void {
       // Already have the ciphertext — re-seed it and (re)derive the plaintext.
       const havePlain = fs.existsSync(plain);
       setTransfer(room, file.fileId, { status: 'seeding', progress: 1, haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath: cachedCipher });
-      try { c.seed(cachedCipher, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
+      try { seedKnownTorrent(c, file.infoHash, cachedCipher, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
       catch (e) { log('e2e reseed failed: ' + String(e)); }
       if (room.secret && !havePlain) void decryptOne(room, file, cachedCipher);
       return;
     }
     setTransfer(room, file.fileId, { status: 'downloading', progress: 0, cipherPath: cachedCipher });
     try {
-      c.add(file.magnetURI, { path: cipherDir, announce: room.trackers } as any, (torrent: any) => {
+      addKnownTorrent(c, file.infoHash, file.magnetURI, { path: cipherDir, announce: room.trackers } as any, (torrent: any) => {
         wireTorrentStats(room, torrent);
         torrent.on('done', () => {
           const landedCipher = path.join(cipherDir, safeBaseName(torrent.name) || cipherName);
@@ -3262,14 +3299,14 @@ function ensureLocal(room: Room, file: RoomFile): void {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: onDisk });
     persistManifest(room, file, onDisk);
     try {
-      c.seed(onDisk, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t));
+      seedKnownTorrent(c, file.infoHash, onDisk, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t));
     } catch (e) { log('reseed failed: ' + String(e)); }
     return;
   }
 
   setTransfer(room, file.fileId, { status: 'downloading', progress: 0 });
   try {
-    c.add(file.magnetURI, { path: dir, announce: room.trackers } as any, (torrent: any) => {
+    addKnownTorrent(c, file.infoHash, file.magnetURI, { path: dir, announce: room.trackers } as any, (torrent: any) => {
       wireTorrentStats(room, torrent);
       torrent.on('done', () => {
         const landed = path.join(dir, file.name);
@@ -3304,7 +3341,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
   };
   room.files.set(file.fileId, file);
   const c = ensureClient(room);
-  if (c.get(file.infoHash)) return; // already seeding/adding
+  if (findTorrent(c, file.infoHash)) return; // already seeding/adding
 
   // E2E: re-seed the cached CIPHERTEXT (never the plaintext) and make sure the
   // plaintext exists in the folder for watch/open.
@@ -3332,7 +3369,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
       }
       const havePlain = fs.existsSync(plain);
       setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath });
-      try { c.seed(cipherPath, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
+      try { seedKnownTorrent(c, file.infoHash, cipherPath, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
       catch (e) { log('e2e manifest reseed failed: ' + String(e)); }
       if (room.secret && !havePlain) void decryptOne(room, file, cipherPath);
       return;
@@ -3343,7 +3380,7 @@ function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
 
   if (pf.localPath && fs.existsSync(pf.localPath)) {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: pf.localPath });
-    try { c.seed(pf.localPath, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t)); }
+    try { seedKnownTorrent(c, file.infoHash, pf.localPath, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t)); }
     catch (e) { log('manifest reseed failed: ' + String(e)); }
     return;
   }
@@ -4071,7 +4108,7 @@ function releaseFile(roomId: string, fileId: string): void {
   // Per-room clients: dropping the torrent here can't affect other rooms.
   const c = clients.get(roomId);
   if (c) {
-    const t = c.get(fileId);
+    const t = findTorrent(c, fileId);
     if (t) { try { c.remove(t); } catch (e) { log('release failed: ' + String(e)); } }
   }
   const tr = room.transfers.get(fileId);
@@ -4112,8 +4149,8 @@ async function watchStream(roomId: string, fileId: string): Promise<{ port: numb
   const existing = streamServers.get(key);
   if (existing) return { port: existing.port, index: 0 };
   const c = ensureClient(room);
-  let t = c.get(file.infoHash);
-  if (!t) { ensureLocal(room, file); t = c.get(file.infoHash); } // manual mode: kick off the fetch
+  let t = findTorrent(c, file.infoHash);
+  if (!t) { ensureLocal(room, file); t = findTorrent(c, file.infoHash); } // manual mode: kick off the fetch
   if (!t) throw new Error('Could not start streaming this file');
   // Serving /0 needs the torrent's file list, which arrives with metadata (a
   // magnet download fetches it from peers first). Wait, bounded, for a sleeping room.
@@ -4127,12 +4164,14 @@ async function watchStream(roomId: string, fileId: string): Promise<{ port: numb
   }
   // A room started/torn down while we awaited metadata — don't leak a server.
   if (netSuspended || !rooms.has(roomId)) throw new Error('The room session ended');
-  const server = t.createServer({ origin: 'th-room-stream', hostname: '127.0.0.1' }); // origin sentinel: no ACAO for real sites (see manager.getStreamUrl)
+  const server = createTorrentStreamServer(t);
   await new Promise<void>((resolve, reject) => {
     try { server.listen(0, '127.0.0.1', () => resolve()); server.on('error', reject); }
     catch (e) { reject(e); }
   });
-  const port = server.address().port;
+  const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Stream server did not bind TCP');
+      const port = address.port;
   streamServers.set(key, { server, port });
   log('room stream server started for ' + file.name + ' on 127.0.0.1:' + port);
   return { port, index: 0 };
@@ -4270,12 +4309,22 @@ function updateProfile(p: { name?: string; avatarSeed?: string; color?: string; 
   }
 }
 
+const pendingJoinEpochs = new Map<string, number>();
+let joinNetworkEpoch = 0;
+
 // ── IPC command router ───────────────────────────────────────────────────────
 ipcRenderer.on('room-cmd', async (_e, msg: any) => {
   const { type, reqId } = msg;
   try {
     let data: any;
-    if (type === 'join') data = startRoom(msg.payload);
+    if (type === 'join') {
+      const id = msg.payload.roomId;
+      const epoch = pendingJoinEpochs.get(id) ?? 0;
+      const networkEpoch = joinNetworkEpoch;
+      await loadNetworkingModules();
+      if ((pendingJoinEpochs.get(id) ?? 0) !== epoch || networkEpoch !== joinNetworkEpoch) throw new Error('Room join was cancelled');
+      data = startRoom(msg.payload);
+    }
     else if (type === 'addFiles') data = await addFiles(msg.roomId, msg.paths, msg.opts);
     else if (type === 'createFolder') data = createFolder(msg.roomId, msg.name, msg.icon, msg.color, msg.parentId ? String(msg.parentId) : undefined);
     else if (type === 'updateFolder') data = updateFolder(msg.roomId, msg.folderId, msg.patch || {});
@@ -4283,8 +4332,8 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'setTopic') data = setRoomTopic(msg.roomId, msg.text);
     else if (type === 'deleteFolder') data = deleteFolder(msg.roomId, msg.folderId);
     else if (type === 'assignFile') data = assignFile(msg.roomId, msg.fileId, msg.folderId ?? null);
-    else if (type === 'leave') { leaveRoom(msg.roomId); data = { ok: true }; }
-    else if (type === 'netSuspend') { netSuspended = true; suspendAllNetworking(); data = { ok: true }; }
+    else if (type === 'leave') { pendingJoinEpochs.set(msg.roomId, (pendingJoinEpochs.get(msg.roomId) ?? 0) + 1); leaveRoom(msg.roomId); data = { ok: true }; }
+    else if (type === 'netSuspend') { joinNetworkEpoch++; netSuspended = true; suspendAllNetworking(); data = { ok: true }; }
     else if (type === 'netResume') { netSuspended = false; data = { ok: true }; }
     else if (type === 'profile') { updateProfile(msg.payload || {}); data = { ok: true }; }
     else if (type === 'releaseFile') { releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }

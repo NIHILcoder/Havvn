@@ -1,4 +1,6 @@
-import WebTorrent, { Torrent } from 'webtorrent';
+import type WebTorrent from 'webtorrent';
+import type { Torrent } from 'webtorrent';
+import { createTorrentStreamServer } from './stream-server';
 import path from 'path';
 import { clearSelections, hasNoSelections } from './selections';
 import fs from 'fs';
@@ -150,7 +152,7 @@ type CompletionCallback = (info: { id: string; name: string }) => void;
 export class TorrentManager {
   // Created in initialize() so client options (DHT, max connections, listening
   // port, speed limits) can come from the persisted settings.
-  private client!: WebTorrent.Instance;
+  private client!: WebTorrent;
   private managedTorrents: Map<string, ManagedTorrent> = new Map();
   private infoHashIndex: Map<string, string> = new Map();
   // Creation options for "start seeding" entries, used the first time they seed
@@ -283,6 +285,7 @@ export class TorrentManager {
    * Initialize the manager - restore state from database
    */
   async initialize(): Promise<void> {
+    const { default: WebTorrent } = await import('webtorrent');
     log.info('Initializing TorrentManager');
 
     // Load settings
@@ -343,6 +346,7 @@ export class TorrentManager {
     this.constructedTransport = { utp: enableUtp, dht: settings.enableDHT !== false };
     this.configuredPort = settings.portMin > 0 ? settings.portMin : 0;
     this.client = new WebTorrent({
+      natUpnp: false, natPmp: false,
       peerId: this.generateEphemeralPeerId(),
       utp: enableUtp,
       dht: settings.enableDHT !== false,
@@ -616,6 +620,7 @@ export class TorrentManager {
     files: { path: string; size: number; index: number }[];
     totalSize: number;
   }> {
+    const { default: WebTorrent } = await import('webtorrent');
     log.info('Getting torrent info', params);
 
     return new Promise((resolve, reject) => {
@@ -2486,28 +2491,15 @@ export class TorrentManager {
       };
     }
 
-    // Direct streaming via WebTorrent's per-torrent server (with Range support).
+    // Direct streaming via the per-torrent Range server.
     // Reuse the server only if it belongs to the current torrent instance.
     if (managed.streamServer && managed.streamServer.torrent !== torrent) {
       this.closeStreamServer(managed);
     }
 
     if (!managed.streamServer) {
-      // Harden WebTorrent's stream server. It binds to 127.0.0.1, but any
-      // page in the user's browser can still reach localhost via fetch — and
-      // WebTorrent defaults to `origin: '*'` (CORS open to every site). With
-      // the path being just `/<fileIndex>`, a malicious site could read the
-      // streaming file cross-origin.
-      //   • hostname: '127.0.0.1' — rejects requests whose Host header isn't
-      //     our loopback address (blocks DNS-rebinding).
-      //   • origin: a sentinel string — NOTE webtorrent 1.9.7 coerces
-      //     `origin:false` back to '*' (`if (!opts.origin) opts.origin='*'`),
-      //     so `false` is useless here. A non-empty origin that no real site
-      //     sends means Access-Control-Allow-Origin is never emitted for a
-      //     cross-origin fetch, so the browser blocks JS from reading the body.
-      //     Our own <video>/<audio> load is a no-cors request (no Origin
-      //     header), so it still plays — same as before.
-      const server = (torrent as any).createServer({ origin: 'th-local-stream', hostname: '127.0.0.1' });
+      // Keep indexed per-torrent URLs; the local server enforces Host/Origin checks.
+      const server = createTorrentStreamServer(torrent);
       await new Promise<void>((resolve, reject) => {
         try {
           server.listen(0, '127.0.0.1', () => resolve());
@@ -2516,7 +2508,9 @@ export class TorrentManager {
           reject(e);
         }
       });
-      const port = server.address().port;
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Stream server did not bind TCP');
+      const port = address.port;
       managed.streamServer = { server, port, torrent };
       log.info('Stream server started', { id, port });
     }

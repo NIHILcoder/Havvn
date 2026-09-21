@@ -590,9 +590,8 @@ function restoredBounds(): { width: number; height: number; x?: number; y?: numb
 }
 
 async function createWindow(): Promise<void> {
-  // Check if we should start hidden (launched at login with openAsHidden)
-  const loginSettings = app.getLoginItemSettings();
-  const startHidden = loginSettings.wasOpenedAsHidden === true;
+  // The login launch explicitly requests tray mode.
+  const startHidden = process.argv.includes('--havvn-start-hidden');
 
   const appIconPath = getAppIconPath();
 
@@ -1185,7 +1184,7 @@ async function initializeApp(): Promise<void> {
   // Start the VPN kill-switch guard (no-op unless enabled in privacy settings)
   try {
     if (mainWindow) {
-      const { initVpnGuard } = await import('./utils/vpn-guard');
+      const { initVpnGuard } = await import('./utils/vpn-guard.js');
       initVpnGuard(mainWindow);
     }
   } catch (e) {
@@ -1195,7 +1194,7 @@ async function initializeApp(): Promise<void> {
   // Start the smart network-profile monitor (applies base settings unless enabled)
   try {
     if (mainWindow) {
-      const { startNetworkProfiles } = await import('./services/network-profiles');
+      const { startNetworkProfiles } = await import('./services/network-profiles.js');
       startNetworkProfiles(mainWindow);
     }
   } catch (e) {
@@ -1205,7 +1204,7 @@ async function initializeApp(): Promise<void> {
   // Start the disk-space guard (auto-pauses torrents when free space is low)
   try {
     if (mainWindow) {
-      const { initDiskGuard } = await import('./utils/disk-guard');
+      const { initDiskGuard } = await import('./utils/disk-guard.js');
       initDiskGuard(mainWindow);
     }
   } catch (e) {
@@ -1214,7 +1213,7 @@ async function initializeApp(): Promise<void> {
 
   // Start the clipboard magnet watcher (no-op unless enabled in settings)
   try {
-    const { initClipboardWatcher } = await import('./utils/clipboard-watcher');
+    const { initClipboardWatcher } = await import('./utils/clipboard-watcher.js');
     initClipboardWatcher({
       deliver: deliverOpenTorrent,
       // Hidden-in-tray still counts: the window exists, deliverOpenTorrent
@@ -1229,7 +1228,7 @@ async function initializeApp(): Promise<void> {
   // Forward the listening port via UPnP so peers can connect inbound (no-op if
   // disabled in settings or the router has no UPnP). Best-effort; never blocks.
   try {
-    const { restartPortForwardingFromConfig } = await import('./utils/port-forwarding');
+    const { restartPortForwardingFromConfig } = await import('./utils/port-forwarding.js');
     await restartPortForwardingFromConfig(() => torrentManager.getListeningPort());
   } catch (e) {
     logger.error('App', 'Failed to init port forwarding', { error: e });
@@ -1238,7 +1237,7 @@ async function initializeApp(): Promise<void> {
   // Initialize the auto-updater (no-op in dev; respects the autoUpdate setting)
   try {
     if (mainWindow) {
-      const { initAutoUpdater } = await import('./utils/auto-updater');
+      const { initAutoUpdater } = await import('./utils/auto-updater.js');
       await initAutoUpdater(mainWindow);
     }
   } catch (e) {
@@ -1249,8 +1248,8 @@ async function initializeApp(): Promise<void> {
   try {
     const s = store.get('settings') as any;
     if (s?.webRemoteEnabled) {
-      const { getWebRemoteServer } = await import('./torrent/web-remote');
-      const { getOrCreateWebRemoteToken } = await import('./db/store');
+      const { getWebRemoteServer } = await import('./torrent/web-remote.js');
+      const { getOrCreateWebRemoteToken } = await import('./db/store.js');
       const token = await getOrCreateWebRemoteToken();
       await getWebRemoteServer().start(s.webRemotePort || 8788, token);
       logger.info('App', 'Web remote started.');
@@ -1267,7 +1266,7 @@ async function initializeApp(): Promise<void> {
   if (settings?.autoLaunch !== undefined) {
     app.setLoginItemSettings({
       openAtLogin: settings.autoLaunch,
-      openAsHidden: settings.autoLaunch,
+      args: ['--havvn-start-hidden'],
       name: 'Havvn',
       path: process.execPath,
     });
@@ -1358,14 +1357,14 @@ async function initializeApp(): Promise<void> {
   // Detect (non-elevated) any orphaned 'Havvn LAN-*' adapters/firewall rules left
   // by a crash of BOTH processes — removal needs admin, so this only surfaces them.
   // Fire-and-forget so a slow WMI scan never blocks startup.
-  import('./lan/lan-manager').then((m) => m.startupOrphanSweep()).catch(() => { /* best-effort */ });
+  import('./lan/lan-manager.js').then((m) => m.startupOrphanSweep()).catch(() => { /* best-effort */ });
 }
 
 // The elevated relaunch runs ONLY the LAN helper — never the full app (no window,
 // tray, torrent engine, etc.). It reads its handshake from the argv path, sets up
 // the Wintun adapter under one UAC, and shovels ring↔pipe until main dies.
 app.whenReady().then(isLanHelper
-  ? () => import('./lan/helper-main').then((m) => m.runLanHelper()).catch((e) => { console.error('[lan-helper] fatal:', e); app.exit(1); })
+  ? () => import('./lan/helper-main.js').then((m) => m.runLanHelper()).catch((e) => { console.error('[lan-helper] fatal:', e); app.exit(1); })
   : initializeApp);
 
 app.on('window-all-closed', async () => {
@@ -1413,14 +1412,14 @@ async function cleanup(): Promise<void> {
   // Stop the global PTT key hook FIRST — its native thread would otherwise keep
   // the process alive past app.exit().
   try {
-    const { shutdownGlobalPtt } = await import('./utils/global-ptt');
+    const { shutdownGlobalPtt } = await import('./utils/global-ptt.js');
     shutdownGlobalPtt();
   } catch { /* never loaded — nothing to stop */ }
 
   // Revert any active virtual-LAN session (adapter/firewall/routes) cooperatively
   // within the quit budget — the helper self-reverts on its PID-watchdog too.
   try {
-    const { getLanManager } = await import('./lan/lan-manager');
+    const { getLanManager } = await import('./lan/lan-manager.js');
     await getLanManager().shutdown();
   } catch { /* never started — nothing to revert */ }
 
@@ -1465,7 +1464,7 @@ async function cleanup(): Promise<void> {
   }
 
   try {
-    const { getShareManager } = await import('./sharing/share-manager');
+    const { getShareManager } = await import('./sharing/share-manager.js');
     getShareManager().destroy();
     logger.info('App', 'Share manager destroyed.');
   } catch (e) {
@@ -1476,7 +1475,7 @@ async function cleanup(): Promise<void> {
   // keeps the world files locked and the port bound, so the next launch fails
   // with an "address already in use" that has no visible cause.
   try {
-    const { serverManager } = await import('./gameserver/server-manager');
+    const { serverManager } = await import('./gameserver/server-manager.js');
     serverManager.dispose();
     logger.info('App', 'Game servers stopped.');
   } catch (e) {
@@ -1484,7 +1483,7 @@ async function cleanup(): Promise<void> {
   }
 
   try {
-    const { getRoomManager } = await import('./sharing/room-manager');
+    const { getRoomManager } = await import('./sharing/room-manager.js');
     getRoomManager().destroy();
     logger.info('App', 'Room manager destroyed.');
   } catch (e) {
@@ -1495,7 +1494,7 @@ async function cleanup(): Promise<void> {
   // the torrent manager (proxy) is destroyed above, which kills the host.
 
   try {
-    const { getWebRemoteServer } = await import('./torrent/web-remote');
+    const { getWebRemoteServer } = await import('./torrent/web-remote.js');
     getWebRemoteServer().destroy();
     logger.info('App', 'Web remote destroyed.');
   } catch (e) {
@@ -1503,7 +1502,7 @@ async function cleanup(): Promise<void> {
   }
 
   try {
-    const { getRemoteCastManager } = await import('./sharing/remote-cast-manager');
+    const { getRemoteCastManager } = await import('./sharing/remote-cast-manager.js');
     getRemoteCastManager().destroy();
     logger.info('App', 'Remote-cast manager destroyed.');
   } catch (e) {
@@ -1511,7 +1510,7 @@ async function cleanup(): Promise<void> {
   }
 
   try {
-    const { getChromecastManager } = await import('./torrent/chromecast');
+    const { getChromecastManager } = await import('./torrent/chromecast.js');
     getChromecastManager().destroy();
     logger.info('App', 'Chromecast manager destroyed.');
   } catch (e) {
@@ -1547,19 +1546,19 @@ async function cleanup(): Promise<void> {
 
   // Stop the VPN guard timer
   try {
-    const { stopVpnGuard } = await import('./utils/vpn-guard');
+    const { stopVpnGuard } = await import('./utils/vpn-guard.js');
     stopVpnGuard();
   } catch { /* ignore */ }
 
   // Stop the disk-space guard timer
   try {
-    const { stopDiskGuard } = await import('./utils/disk-guard');
+    const { stopDiskGuard } = await import('./utils/disk-guard.js');
     stopDiskGuard();
   } catch { /* ignore */ }
 
   // Stop the clipboard watcher poll
   try {
-    const { stopClipboardWatcher } = await import('./utils/clipboard-watcher');
+    const { stopClipboardWatcher } = await import('./utils/clipboard-watcher.js');
     stopClipboardWatcher();
   } catch { /* ignore */ }
 
@@ -1568,7 +1567,7 @@ async function cleanup(): Promise<void> {
 
   // Remove the UPnP port mapping and stop renewing it
   try {
-    const { stopPortForwarding } = await import('./utils/port-forwarding');
+    const { stopPortForwarding } = await import('./utils/port-forwarding.js');
     await stopPortForwarding();
   } catch { /* ignore */ }
 

@@ -211,7 +211,7 @@ export class LanManager {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         require('koffi');
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { resolveWintunDll } = require('./wintun') as typeof import('./wintun');
+        const { resolveWintunDll } = require('./wintun') as typeof import('./wintun.js');
         resolveWintunDll(); // throws if the dll isn't shipped/fetched
         result = { ok: true };
       } catch (e) {

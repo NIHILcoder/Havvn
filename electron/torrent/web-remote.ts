@@ -23,7 +23,7 @@ import { CastServer } from './cast-server';
 
 const log = logger.child('WebRemote');
 
-type Mgr = import('./host/manager-proxy').TorrentManagerProxy;
+type Mgr = import('./host/manager-proxy.js').TorrentManagerProxy;
 
 export class WebRemoteServer {
   private server: http.Server | null = null;

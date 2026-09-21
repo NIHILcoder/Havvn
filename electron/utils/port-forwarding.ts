@@ -18,7 +18,7 @@
  */
 
 import * as natPmp from 'nat-pmp';
-import * as natUpnp from 'nat-upnp';
+import type UpnpClient from '@silentbot1/nat-api/lib/upnp/index.js';
 import { logger } from './logger';
 import * as db from '../db/store';
 import * as os from 'os';
@@ -60,6 +60,12 @@ function request<T>(start: (done: (error: Error | null, value?: T) => void) => v
   });
 }
 
+function bounded<T>(operation: Promise<T>): Promise<T> {
+  return request<T>(done => {
+    operation.then(value => done(null, value), error => done(error));
+  });
+}
+
 const DESCRIPTION = 'Havvn'; // shown in the router's port-forward table
 
 /**
@@ -90,13 +96,21 @@ function getDefaultGateway(): string | null {
 }
 
 class PortForwardingService {
-  private upnpClient: natUpnp.Client | null = null;
+  private upnpClient: UpnpClient | null = null;
   private pmpClient: natPmp.Client | null = null;
   private port: number | null = null;
   private renewTimer: NodeJS.Timeout | null = null;
   private inFlight = false;
   private status: PortForwardStatus = { state: 'disabled', port: null, method: null, updatedAt: Date.now() };
   private currentMethod: 'upnp' | 'nat-pmp' | null = null;
+  private lifecycle: Promise<void> = Promise.resolve();
+  private epoch = 0;
+
+  private enqueue(action: () => Promise<void>): Promise<void> {
+    const pending = this.lifecycle.then(action);
+    this.lifecycle = pending.catch(() => {});
+    return pending;
+  }
 
   getStatus(): PortForwardStatus {
     return this.status;
@@ -106,23 +120,52 @@ class PortForwardingService {
    * Begin (or restart) forwarding `port`. Safe to call repeatedly; if the same
    * port is already mapped it's a no-op. Always tears down a prior mapping first.
    */
-  async start(port: number): Promise<void> {
-    if (!port || port <= 0) {
+  start(port: number): Promise<void> {
+    const epoch = ++this.epoch;
+    return this.enqueue(() => this.startInternal(port, epoch));
+  }
+
+  private async startInternal(port: number, epoch: number): Promise<void> {
+    if (epoch !== this.epoch) return;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      await this.stopInternal();
       this.setStatus({ state: 'failed', port: null, method: null, error: 'No fixed listening port to forward' });
       return;
     }
-    if ((this.upnpClient || this.pmpClient) && this.port === port && this.status.state === 'mapped') return;
+    if ((this.upnpClient || this.pmpClient) && this.port === port && this.status.state === 'mapped') {
+      this.scheduleRenewal(epoch);
+      return;
+    }
 
-    await this.stop();
+    await this.stopInternal();
+    if (epoch !== this.epoch) return;
     this.port = port;
 
     await this.mapOnce();
+    if (epoch !== this.epoch) {
+      await this.stopInternal();
+      return;
+    }
+    this.scheduleRenewal(epoch);
+  }
+
+  private scheduleRenewal(epoch: number): void {
+    if (this.renewTimer) clearInterval(this.renewTimer);
     // Keep the lease alive and recover from transient router hiccups.
-    this.renewTimer = setInterval(() => { void this.mapOnce(); }, RENEW_INTERVAL_MS);
+    this.renewTimer = setInterval(() => {
+      void this.enqueue(async () => {
+        if (epoch === this.epoch) await this.mapOnce();
+      });
+    }, RENEW_INTERVAL_MS);
   }
 
   /** Remove the mapping, stop renewing, and release clients. */
-  async stop(): Promise<void> {
+  stop(): Promise<void> {
+    ++this.epoch;
+    return this.enqueue(() => this.stopInternal());
+  }
+
+  private async stopInternal(): Promise<void> {
     if (this.renewTimer) {
       clearInterval(this.renewTimer);
       this.renewTimer = null;
@@ -131,7 +174,7 @@ class PortForwardingService {
     // Remove UPnP mapping
     if (this.upnpClient && this.port && this.currentMethod === 'upnp') {
       try {
-        await request<void>(done => this.upnpClient!.portUnmapping({ public: this.port!, protocol: 'tcp' }, err => done(err)));
+        await bounded(this.upnpClient.portUnmapping({ public: this.port, protocol: 'tcp' }));
         log.info('Removed UPnP port mapping', { port: this.port });
       } catch {
         /* router may have already dropped it — ignore */
@@ -153,7 +196,7 @@ class PortForwardingService {
     }
 
     if (this.upnpClient) {
-      try { this.upnpClient.close(); } catch { /* ignore */ }
+      try { await this.upnpClient.destroy(); } catch { /* ignore */ }
       this.upnpClient = null;
     }
     if (this.pmpClient) {
@@ -205,30 +248,31 @@ class PortForwardingService {
   private async tryUPnP(port: number): Promise<boolean> {
     try {
       if (!this.upnpClient) {
-        this.upnpClient = natUpnp.createClient();
+        const { default: Client } = await import('@silentbot1/nat-api/lib/upnp/index.js');
+        this.upnpClient = new Client({ permanentFallback: false });
       }
 
       const client = this.upnpClient;
 
       // Probe for an IGD
       try {
-        await request<natUpnp.Device>(done => client.findGateway(done));
+        await bounded(client.findGateway());
       } catch {
         return false; // No UPnP router
       }
 
       this.setStatus({ state: 'mapping', port, method: 'upnp' });
 
-      await request<void>(done => client.portMapping({
+      await bounded(client.portMapping({
         public: port,
         private: port,
         protocol: 'tcp',
         ttl: LEASE_TTL_SECONDS,
         description: DESCRIPTION,
-      }, err => done(err)));
+      }));
 
       let externalIp: string | undefined;
-      try { externalIp = await request<string>(done => client.externalIp(done)); } catch { /* optional */ }
+      try { externalIp = await bounded(client.externalIp()); } catch { /* optional */ }
 
       this.setStatus({ state: 'mapped', port, method: 'upnp', externalIp });
       log.info('Port forwarded via UPnP', { port, externalIp });

@@ -47,14 +47,12 @@ module.exports = (env, argv) => ({
     }),
   ],
   devServer: {
+    host: 'localhost',
     port: 3000,
     hot: true,
     static: {
       directory: path.join(__dirname, 'dist/renderer'),
     },
     historyApiFallback: true,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-    },
   },
 });

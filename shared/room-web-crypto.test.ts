@@ -59,3 +59,23 @@ describe('room-web-crypto matches Node room-crypto', () => {
     expect(hexToBinary(hex).length).toBe(20);
   });
 });
+
+
+describe('room KDF protocol compatibility', () => {
+  it.each([
+    ['swift-amber-otter-comet-4821', 150_000],
+    ['swift-amber-otter-comet-4821-e2e', 150_000],
+    ['swift-amber-calm-otter-comet-48219', 600_000],
+    ['swift-amber-calm-otter-comet-48219-e2e', 600_000],
+  ] as const)('preserves keys and discovery for %s', async (code, iterations) => {
+    const expected = crypto.pbkdf2Sync(code, 'torrenthunt-room-v1', iterations, 32, 'sha256');
+    const node = deriveKey(code);
+    const web = await deriveKeyWeb(code);
+    expect(node).toEqual(expected);
+    expect(Buffer.from(web)).toEqual(expected);
+    expect(await rendezvousIdWeb(web)).toBe(rendezvousId(expected));
+    expect(await decryptWeb(web, encrypt(node, { n: 7 }))).toEqual({ n: 7 });
+    expect(decrypt(node, await encryptWeb(web, { n: 7 }))).toEqual({ n: 7 });
+    expect(deriveKey('  ' + code.toUpperCase() + '  ')).toEqual(expected);
+  });
+});
