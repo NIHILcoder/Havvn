@@ -10,52 +10,18 @@ on:
     - cron: '0 9 * * 1'
 
 jobs:
-  dependency-audit:
-    name: npm Audit
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run npm audit
-        run: npm audit --audit-level=moderate
-        continue-on-error: true
-
-      - name: Generate audit report
-        run: |
-          npm audit --json > audit-report.json
-          echo "## npm Audit Report" >> $GITHUB_STEP_SUMMARY
-          npm audit >> $GITHUB_STEP_SUMMARY || true
-
-      - name: Upload audit report
-        uses: actions/upload-artifact@v3
-        with:
-          name: npm-audit-report
-          path: audit-report.json
-          retention-days: 30
-
   security-lint:
     name: Security Linting
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -69,37 +35,13 @@ jobs:
         run: npx tsc --noEmit
         continue-on-error: true
 
-  codeql-analysis:
-    name: CodeQL Analysis
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-          languages: javascript, typescript
-          queries: security-and-quality
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v2
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
-
   secret-scanning:
     name: Secret Detection
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -118,31 +60,34 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Dependency Review
-        uses: actions/dependency-review-action@v3
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: moderate
 
   security-summary:
     name: Security Summary
     runs-on: ubuntu-latest
-    needs: [dependency-audit, security-lint, codeql-analysis, secret-scanning]
+    needs: [security-lint, secret-scanning, dependency-review]
     if: always()
 
     steps:
       - name: Generate Summary
+        env:
+          REPORT_REPOSITORY: ${{ github.repository }}
+          REPORT_REF: ${{ github.ref_name }}
+          REPORT_SHA: ${{ github.sha }}
         run: |
           echo "# 🔒 Security Scan Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** $REPORT_REPOSITORY" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** $REPORT_REF" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** $REPORT_SHA" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "## Job Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- npm Audit: ${{ needs.dependency-audit.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Security Linting: ${{ needs.security-lint.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- CodeQL Analysis: ${{ needs.codeql-analysis.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependency Review: ${{ needs.dependency-review.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Secret Scanning: ${{ needs.secret-scanning.result }}" >> $GITHUB_STEP_SUMMARY

@@ -16,11 +16,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -35,7 +35,7 @@ jobs:
           PKG_VERSION="$(node -p "require('./package.json').version")"
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "Tag $GITHUB_REF_NAME (version $TAG_VERSION) does not match package.json version $PKG_VERSION." >&2
-            echo "Bump package.json (and CHANGELOG.md) first, then re-tag." >&2
+            echo "Bump package.json first, then re-tag." >&2
             exit 1
           fi
           echo "APP_VERSION=$PKG_VERSION" >> "$GITHUB_ENV"
@@ -83,18 +83,14 @@ jobs:
           [ "$missing" = 0 ] || { echo "Refusing to publish a package with missing native resources." >&2; exit 1; }
           echo "native resources present."
 
-      - name: Extract release notes from CHANGELOG.md
-        shell: bash
-        run: node scripts/changelog-section.js > release-notes.md
-
       # DRAFT release — a human reviews it and presses Publish on GitHub
       - name: Create draft release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           prerelease: false
           name: Havvn ${{ env.APP_VERSION }}
-          body_path: release-notes.md
+          generate_release_notes: true
           files: |
             release/Havvn-Setup-*.exe
             release/Havvn-Setup-*.exe.blockmap
