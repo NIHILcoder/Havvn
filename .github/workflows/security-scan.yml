@@ -49,8 +49,8 @@ jobs:
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
+          # Let the action select the commit range for push/PR events and
+          # scan the full history on scheduled runs. main == HEAD on main.
           extra_args: --only-verified
 
   dependency-review:
