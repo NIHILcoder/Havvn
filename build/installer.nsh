@@ -19,6 +19,12 @@
   WriteRegStr HKCU "Software\Classes\magnet\shell" "" "open"
   WriteRegStr HKCU "Software\Classes\magnet\shell\open\command" "" '"$INSTDIR\Havvn.exe" "%1"'
 
+  ; App-specific ProgID referenced by Capabilities\URLAssociations below.
+  WriteRegStr HKCU "Software\Classes\Havvn.magnet" "" "URL:Havvn Magnet Protocol"
+  WriteRegStr HKCU "Software\Classes\Havvn.magnet" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\Havvn.magnet\DefaultIcon" "" "$INSTDIR\Havvn.exe,0"
+  WriteRegStr HKCU "Software\Classes\Havvn.magnet\shell\open\command" "" '"$INSTDIR\Havvn.exe" "%1"'
+
   ; ── Register .torrent file type ────────────────────────────
   WriteRegStr HKCU "Software\Classes\.torrent" "" "Havvn.file"
   WriteRegStr HKCU "Software\Classes\.torrent" "Content Type" "application/x-bittorrent"
@@ -62,8 +68,12 @@
 !macro customUnInstall
   DetailPrint "Removing Havvn file associations..."
 
-  ; Remove magnet: protocol handler
-  DeleteRegKey HKCU "Software\Classes\magnet"
+  ; Another application may have become the magnet handler after installation.
+  ; Only remove the shared registration if its command still points to us.
+  ReadRegStr $0 HKCU "Software\Classes\magnet\shell\open\command" ""
+  StrCmp $0 '"$INSTDIR\Havvn.exe" "%1"' 0 +2
+    DeleteRegKey HKCU "Software\Classes\magnet"
+  DeleteRegKey HKCU "Software\Classes\Havvn.magnet"
 
   ; Remove .torrent file association (only if we own it)
   ReadRegStr $0 HKCU "Software\Classes\.torrent" ""
