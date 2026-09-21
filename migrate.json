@@ -1,8 +1,0 @@
-{
-  "migrationsDir": "migrations",
-  "direction": "up",
-  "databaseUrl": {
-    "ENV": "DATABASE_URL"
-  },
-  "tsconfig": "tsconfig.electron.json"
-}
