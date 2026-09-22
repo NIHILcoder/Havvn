@@ -95,6 +95,19 @@ if (process.versions.electron) {
           socket.send(JSON.stringify({ id, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } }));
         });
       }
+      // The target URL can appear before its first navigation has committed.
+      // Poll without keeping a promise alive in a context being replaced.
+      let ready = false;
+      while (Date.now() < deadline && !exited) {
+        try {
+          ready = await evaluate(`document.readyState === 'complete' && !!window.api && !!document.getElementById('root')?.childElementCount`);
+          if (ready) break;
+        } catch (error) {
+          if (!/Execution context was destroyed|Cannot find context/.test(error.message)) throw error;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      assert.equal(ready, true, 'Packaged renderer did not finish loading');
       const result = await evaluate(`(async () => {
         const until = Date.now() + 30000;
         while ((!window.api || !document.getElementById('root')?.childElementCount) && Date.now() < until) await new Promise(r => setTimeout(r, 100));
