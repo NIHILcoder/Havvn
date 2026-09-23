@@ -47,7 +47,7 @@ let refreshTrayLanguage: (() => void) | null = null;
 let rendererReady = false;
 let pendingOpenUri: string | null = null;
 // A havvn://join/<invite> deep link handed to us by the OS. Same cold-start
-// buffering as pendingOpenUri — held until the renderer's listeners attach.
+// buffering as pendingOpenUris — held until the renderer's listeners attach.
 let pendingJoinInvite: string | null = null;
 
 /**
@@ -214,14 +214,11 @@ if (!gotTheLock) {
       return;
     }
     const arg = commandLine.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
-    if (arg) {
-      deliverOpenTorrent(arg);
-    }
+    if (arg) deliverOpenTorrent(arg);
   });
 }
 
-// macOS delivers custom-scheme URLs via 'open-url', never argv. (magnet on macOS
-// isn't wired; havvn is.) preventDefault + route to the prefilled Join dialog.
+// macOS delivers custom-scheme URLs via 'open-url', never argv.
 app.on('open-url', (event, url) => {
   if (!isHavvnUrl(url)) return;
   event.preventDefault();
@@ -968,6 +965,12 @@ async function createWindow(): Promise<void> {
   mainWindow.on('closed', () => {
     mainWindow = null;
     rendererReady = false;
+    // Hidden room/share/cast engine windows can outlive the UI, so
+    // window-all-closed may never fire. Close-to-tray cancels 'close'
+    // and never reaches here; an actual close must initiate shutdown.
+    if (process.platform !== 'darwin' && !isQuitting) {
+      app.quit();
+    }
   });
 
   // If the window is reloaded, the renderer must re-announce readiness
@@ -983,9 +986,7 @@ async function createWindow(): Promise<void> {
     pendingJoinInvite = parseHavvnInvite(havvnArg);
   } else {
     const startupArg = process.argv.find(a => a.startsWith('magnet:') || a.endsWith('.torrent'));
-    if (startupArg) {
-      pendingOpenUri = startupArg;
-    }
+    if (startupArg) pendingOpenUri = startupArg;
   }
 }
 
@@ -1367,9 +1368,9 @@ app.whenReady().then(isLanHelper
   ? () => import('./lan/helper-main.js').then((m) => m.runLanHelper()).catch((e) => { console.error('[lan-helper] fatal:', e); app.exit(1); })
   : initializeApp);
 
-app.on('window-all-closed', async () => {
+app.on('window-all-closed', () => {
   // On macOS, keep app running until explicitly quit
-  if (process.platform !== 'darwin') {
+  if (process.platform !== 'darwin' && !isQuitting) {
     // Don't quit if close-to-tray is enabled — app keeps running in tray
     const settings = store.get('settings') as any;
     if (settings?.closeToTray && !isQuitting) {
@@ -1377,7 +1378,8 @@ app.on('window-all-closed', async () => {
       logger.info('App', 'Window closed — continuing in system tray');
       return;
     }
-    await cleanup();
+    // before-quit owns cleanup and its timeout. Awaiting cleanup here first
+    // could hang forever before that timeout is even armed.
     app.quit();
   }
 });
@@ -1398,9 +1400,8 @@ app.on('before-quit', async (event) => {
   app.exit(0);
 });
 
-// cleanup() can be reached twice on quit (window-all-closed → app.quit() →
-// before-quit). Use a promise to ensure it only runs once and subsequent
-// calls wait for the same cleanup to complete.
+// Repeated quit requests share the same cleanup instead of tearing services
+// down concurrently.
 let cleanupPromise: Promise<void> | null = null;
 
 async function cleanup(): Promise<void> {
