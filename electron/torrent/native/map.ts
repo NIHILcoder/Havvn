@@ -23,7 +23,10 @@ export const ENGINE_STAT_FIELDS = [
  * wanted bytes exist, and a checking torrent keeps its seeding/downloading face.
  */
 export function mapStatus(t: TrTorrent, prev: DownloadStatus): DownloadStatus {
-  if (t.error !== 0) return 'error';
+  // Transmission's 1/2 are tracker warnings/errors, not local failures.
+  // Peers (including those found through other trackers/DHT) can still transfer.
+  // Keep unknown error codes fatal rather than hiding a future engine failure.
+  if (t.error !== 0 && t.error !== 1 && t.error !== 2) return 'error';
   switch (t.status) {
     case TrStatus.Stopped:
       return t.isFinished || t.percentDone >= 1 ? 'completed' : 'paused';

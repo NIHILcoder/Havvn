@@ -42,6 +42,21 @@ function fixture(linked = true) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('native manager controls', () => {
+  it('changes the download ceiling without pausing or restarting an active torrent', async () => {
+    const { manager, rpc, download } = fixture();
+    download.status = 'downloading';
+    for (const maxDownKbps of [10000, 2048, 0, 10000]) {
+      await manager.updateSettings({ maxDownKbps });
+      expect(rpc.sessionSet).toHaveBeenLastCalledWith(expect.objectContaining({
+        'speed-limit-down-enabled': maxDownKbps > 0,
+        ...(maxDownKbps > 0 ? { 'speed-limit-down': maxDownKbps } : {}),
+      }));
+      expect(download.status).toBe('downloading');
+    }
+    expect(rpc.torrentStop).not.toHaveBeenCalled();
+    expect(rpc.torrentStartNow).not.toHaveBeenCalled();
+    expect(rpc.torrentRemove).not.toHaveBeenCalled();
+  });
   it('stops and resumes a finished torrent without removing its files', async () => {
     const { manager, rpc, download } = fixture();
     download.progress = 1;

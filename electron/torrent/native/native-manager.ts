@@ -266,6 +266,9 @@ export class NativeTorrentManager {
 
   async updateSettings(partial: Partial<AppSettings>): Promise<void> {
     await this.whenReady();
+    const speedChanged = ['maxDownKbps', 'maxUpKbps', 'altDownKbps', 'altUpKbps', 'altSpeedEnabled'].some(
+      key => partial[key as keyof AppSettings] !== undefined && partial[key as keyof AppSettings] !== this.settings[key as keyof AppSettings]
+    );
     this.settings = { ...this.settings, ...partial };
     // Adaptive on/off takes effect live, like the webtorrent manager's does.
     // Checked BEFORE applySessionSettings so a just-stopped throttle has already
@@ -277,6 +280,11 @@ export class NativeTorrentManager {
       else this.stopAdaptiveThrottle();
     }
     await this.applySessionSettings(this.settings);
+    if (speedChanged) log.info('Speed limits applied without stopping torrents', {
+      maxDownKbps: this.settings.maxDownKbps ?? 0,
+      maxUpKbps: this.settings.maxUpKbps ?? DEFAULT_MAX_UP_KBPS,
+      altSpeedEnabled: this.altSpeedEnabled,
+    });
   }
 
   // ── Adaptive upload throttle (bufferbloat protection) ───────────────────────
@@ -434,7 +442,7 @@ export class NativeTorrentManager {
 
   private async setStatus(d: Download, status: Download['status'], lastError?: string): Promise<void> {
     d.status = status;
-    if (lastError !== undefined) d.lastError = lastError;
+    d.lastError = lastError ?? null;
     await db.updateDownloadStatus(d.id, status, lastError);
   }
 
@@ -600,6 +608,7 @@ export class NativeTorrentManager {
     const d = this.getRecord(id);
     const hash = this.idToHash.get(id);
     if (hash) await this.rpc!.torrentStop(hash);
+    log.info('Torrent pause requested by app', { id, previousStatus: d.status });
     await this.setStatus(d, 'paused');
   }
 
@@ -1266,6 +1275,12 @@ export class NativeTorrentManager {
 
     const mapped = mapStatus(t, d.status);
     if (mapped !== d.status) {
+      log.info('Torrent state changed in daemon', {
+        id: d.id, previousStatus: d.status, status: mapped,
+        daemonStatus: t.status, errorCode: t.error, progress: t.percentDone,
+        maxDownKbps: this.settings.maxDownKbps ?? 0,
+        altSpeedEnabled: this.altSpeedEnabled,
+      });
       const wasDownloading = d.status === 'downloading' || d.status === 'queued';
       if (mapped === 'error') {
         await this.setStatus(d, 'error', t.errorString || 'engine error');

@@ -53,6 +53,16 @@ describe('mapStats', () => {
     const s = mapStats(dl({}), tr({}));
     expect(s).toMatchObject({ id: 'id1', progress: 0.5, downSpeedBps: 1000, peers: 5, seeds: 0, etaSeconds: 60, status: 'downloading' });
   });
+  it('tracker warnings and errors preserve the daemon activity', () => {
+    for (const error of [1, 2]) {
+      const errorString = 'User not found';
+      expect(mapStatus(tr({ status: TrStatus.Downloading, error, errorString }), 'error')).toBe('downloading');
+      expect(mapStatus(tr({ status: TrStatus.Seeding, error, errorString }), 'error')).toBe('seeding');
+      expect(mapStatus(tr({ status: TrStatus.Stopped, error, errorString, percentDone: 0.2 }), 'error')).toBe('paused');
+      expect(mapStatus(tr({ status: TrStatus.Stopped, error, errorString, percentDone: 1 }), 'error')).toBe('completed');
+    }
+    expect(mapStatus(tr({ status: TrStatus.Downloading, error: 4 }), 'downloading')).toBe('error');
+  });
   it('counts complete connected peers, regardless of whether they send data', () => {
     const peers = [
       { progress: 1, rateToClient: 0 },
