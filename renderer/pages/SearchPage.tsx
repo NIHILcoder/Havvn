@@ -5,10 +5,14 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { SearchProvider, PythonStatus, ProviderStat, SearchCategory, PluginManifest } from '../../shared/types';
+import { SearchProvider, PythonStatus, ProviderStat, PluginManifest, Download } from '../../shared/types';
+import { downloadSearchState, indexSearchDownloads, searchResultHash } from '../../shared/search-download-state';
 import { ProviderConnectionSettings } from '../components/ProviderConnectionSettings';
 import { CODECS, RESOLUTIONS, VOICES, DEFAULT_RELEASE_FILTERS, matchesReleaseFilters, parseReleaseMetadata, releaseChips, sanitizeReleaseFilters } from '../../shared/release-metadata';
 import { MergedResult, mergeResults } from '../../shared/search-dedupe';
+import { groupReleases, type ReleaseGroup } from '../../shared/release-groups';
+import { DEFAULT_SEARCH_PREFERENCES, evaluateSearchPreferences, sanitizeSearchPreferences } from '../../shared/search-preferences';
+import { SearchPreferencesPanel } from '../components/SearchPreferencesPanel';
 import {
   Button,
   Icon,
@@ -75,6 +79,9 @@ const rememberQuery = (history: string[], query: string): string[] => {
 type SortKey = 'seeds' | 'size' | 'date' | 'name';
 
 const RELEASE_FILTERS_KEY = 'havvn.search.releaseFilters.v1';
+const GROUP_RESULTS_KEY = 'havvn.search.groupResults.v1';
+const PREFERENCES_KEY = 'havvn.search.preferences.v1';
+type DisplayRow = { key: string; group: ReleaseGroup } | { key: string; release: MergedResult; nested: boolean };
 
 const SearchPage: React.FC = () => {
   const { t } = useTranslation();
@@ -90,13 +97,56 @@ const SearchPage: React.FC = () => {
   }, [t]);
 
   const [query, setQuery] = useState('');
-  const [category, setCategory] = useState('');
   const [rows, setRows] = useState<MergedResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
-  const [addedKeys, setAddedKeys] = useState<Set<string>>(new Set());
+  const [downloads, setDownloads] = useState<Download[]>([]);
+  const [addedIds, setAddedIds] = useState<Map<string, string>>(new Map());
+  const downloadIndex = useMemo(() => indexSearchDownloads(downloads), [downloads]);
+  const downloadsById = useMemo(() => new Map(downloads.map(d => [d.id, d])), [downloads]);
+  const resultDownloadState = (result: MergedResult) => {
+    const hash = searchResultHash(result);
+    const known = hash ? downloadIndex.get(hash) : undefined;
+    if (known) return known;
+    // A result without a hash can be tracked after this window actually added
+    // it. Never infer persistent identity from its title or temporary URL.
+    const id = addedIds.get(rowKey(result));
+    const record = id ? downloadsById.get(id) : undefined;
+    return record ? downloadSearchState(record) : null;
+  };
+  useEffect(() => {
+    let disposed = false;
+    let pending = false;
+    const refresh = async () => {
+      if (pending || disposed) return;
+      pending = true;
+      try {
+        const list = await window.api.getDownloads();
+        if (!disposed) setDownloads(list);
+      } catch { /* Keep search usable when the engine is temporarily unavailable. */ }
+      finally { pending = false; }
+    };
+    void refresh();
+    const onFocus = () => { void refresh(); };
+    window.addEventListener('focus', onFocus);
+    const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 10000);
+    const unsubscribe = window.api.onDownloadStats(stats => {
+      const byId = new Map(stats.map(stat => [stat.id, stat]));
+      setDownloads(previous => {
+        let changed = false;
+        const next = previous.map(record => {
+          const stat = byId.get(record.id);
+          if (!stat || (stat.status === record.status && (stat.progress >= 1) === (record.progress >= 1))) return record;
+          changed = true;
+          return { ...record, status: stat.status, progress: stat.progress };
+        });
+        return changed ? next : previous;
+      });
+    });
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener('focus', onFocus); unsubscribe(); };
+  }, []);
   // Where the Download button on a result row files the torrent, and whether it
   // starts. Kept for the whole result list rather than per row — the choice is
   // almost always the same for everything a single search turned up.
@@ -106,16 +156,34 @@ const SearchPage: React.FC = () => {
   // In-flight search: providers report one at a time, so the id identifies which
   // run a progress message belongs to and lets a stale run be ignored.
   const searchIdRef = useRef<string | null>(null);
-  const lastSearch = useRef<{ term: string; category?: string }>({ term: '' });
+  const lastSearch = useRef<{ term: string }>({ term: '' });
   const [providerStats, setProviderStats] = useState<ProviderStat[]>([]);
 
   // Result filtering and ordering — all client-side over what has arrived so far.
   const [sortKey, setSortKey] = useState<SortKey>('seeds');
   const [sortDesc, setSortDesc] = useState(true);
+  const [preferenceSettings, setPreferenceSettings] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || 'null');
+      return { preferences: sanitizeSearchPreferences(saved?.preferences), ranked: saved?.ranked === true };
+    } catch { return { preferences: { ...DEFAULT_SEARCH_PREFERENCES }, ranked: false }; }
+  });
+  const preferencesActive = Object.values(preferenceSettings.preferences).some(Boolean);
+  useEffect(() => {
+    try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ ...preferenceSettings, preferences: sanitizeSearchPreferences(preferenceSettings.preferences) })); }
+    catch { /* Remain usable without persistent storage. */ }
+  }, [preferenceSettings]);
   const [refine, setRefine] = useState('');
   const [minSeeds, setMinSeeds] = useState(0);
   const [hideDead, setHideDead] = useState(false);
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [groupResults, setGroupResults] = useState(() => {
+    try { return localStorage.getItem(GROUP_RESULTS_KEY) !== 'false'; } catch { return true; }
+  });
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    try { localStorage.setItem(GROUP_RESULTS_KEY, String(groupResults)); } catch { /* Keep usable without storage. */ }
+  }, [groupResults]);
   const [releaseFilters, setReleaseFilters] = useState(() => {
     try { return sanitizeReleaseFilters(JSON.parse(localStorage.getItem(RELEASE_FILTERS_KEY) || 'null')); }
     catch { return { ...DEFAULT_RELEASE_FILTERS }; }
@@ -125,6 +193,7 @@ const SearchPage: React.FC = () => {
     catch { /* Storage can be unavailable; keep filters usable in memory. */ }
   }, [releaseFilters]);
   const releaseMetadata = useMemo(() => new Map(rows.map(r => [r.title, parseReleaseMetadata(r.title)])), [rows]);
+  const preferenceMatches = useMemo(() => new Map(rows.map(r => [r, evaluateSearchPreferences(r, releaseMetadata.get(r.title)!, sanitizeSearchPreferences(preferenceSettings.preferences))])), [rows, releaseMetadata, preferenceSettings.preferences]);
   const activeReleaseFilters = !!(releaseFilters.resolution || releaseFilters.codec || releaseFilters.voice || Number(releaseFilters.maxGiB) > 0);
 
   // Files-before-adding preview, opened from a row's menu.
@@ -132,27 +201,7 @@ const SearchPage: React.FC = () => {
 
   const [history, setHistory] = useState<string[]>(loadHistory);
 
-  // Categories the indexers actually support (t=caps), rather than a hardcoded
-  // newznab list that means nothing to a custom or script provider.
-  const [capsCategories, setCapsCategories] = useState<SearchCategory[]>([]);
   const scrollParentRef = useRef<HTMLDivElement>(null);
-
-  const CATEGORIES = useMemo(() => {
-    const all = { value: '', label: t('search.category.all') };
-    if (capsCategories.length > 0) {
-      return [all, ...capsCategories.map(c => ({ value: c.id, label: c.name }))];
-    }
-    // Nothing could answer caps — fall back to the standard newznab groups.
-    return [
-      all,
-      { value: '2000', label: t('search.category.movies') },
-      { value: '5000', label: t('search.category.tv') },
-      { value: '3000', label: t('search.category.music') },
-      { value: '4000', label: t('search.category.software') },
-      { value: '6000', label: t('search.category.xxx') },
-      { value: '8000', label: t('search.category.other') },
-    ];
-  }, [capsCategories, t]);
 
   // Providers tab state
   const [showProviders, setShowProviders] = useState(false);
@@ -197,18 +246,6 @@ const SearchPage: React.FC = () => {
 
   const hasEnabledProvider = providers.some(p => p.enabled);
 
-  // Ask the indexers what they carry. Cached in main for an hour, so this costs
-  // nothing on later mounts; failures just leave the fallback list in place.
-  useEffect(() => {
-    if (!hasEnabledProvider) return;
-    let cancelled = false;
-    window.api.search
-      .getCategories()
-      .then(list => { if (!cancelled) setCapsCategories(list); })
-      .catch(() => { /* fallback categories stay */ });
-    return () => { cancelled = true; };
-  }, [hasEnabledProvider]);
-
   // One subscription for the page's lifetime; messages for a superseded search
   // are dropped by id. Providers push as they finish rather than the whole
   // search waiting on its slowest member.
@@ -245,16 +282,17 @@ const SearchPage: React.FC = () => {
     setError(null);
     setHasSearched(true);
     setRows([]);
-    setAddedKeys(new Set());
+    setExpandedGroups(new Set());
+    setAddedIds(new Map());
     setProviderFilter(null);
     setProviderStats([]);
     setHistory(h => rememberQuery(h, term));
-    lastSearch.current = { term, category: category || undefined };
+    lastSearch.current = { term };
 
     try {
       const { searchId, providers: names } = await window.api.search.start(
         term,
-        category || undefined,
+        undefined,
         refresh
       );
       searchIdRef.current = searchId;
@@ -272,7 +310,7 @@ const SearchPage: React.FC = () => {
     setLoading(true);
     setProviderStats(prev => prev.map(s => s.providerId === stat.providerId ? { ...s, state: 'pending', error: undefined } : s));
     try {
-      const result = await window.api.search.start(lastSearch.current.term, lastSearch.current.category, true, stat.providerId);
+      const result = await window.api.search.start(lastSearch.current.term, undefined, true, stat.providerId);
       searchIdRef.current = result.searchId;
       if (!result.providers.length) setLoading(false);
     } catch (e) { setLoading(false); setError(cleanError(e)); }
@@ -312,7 +350,7 @@ const SearchPage: React.FC = () => {
       const uri = resolved?.sourceUri || result.magnetUri || result.torrentUrl;
       if (!uri) throw new Error(t('search.noLink'));
 
-      await window.api.addDownload({
+      const added = await window.api.addDownload({
         sourceType: resolved?.sourceType ?? (result.magnetUri ? 'magnet' : 'torrent_file'),
         sourceUri: uri,
         name: result.title,
@@ -322,7 +360,8 @@ const SearchPage: React.FC = () => {
         savePath,
       });
 
-      setAddedKeys(prev => new Set(prev).add(key));
+      setDownloads(prev => [...prev.filter(d => d.id !== added.id), added]);
+      setAddedIds(prev => new Map(prev).set(key, added.id));
     } catch (err) {
       await alert({ title: t('search.failedTitle'), message: `${t('search.failedToAdd')} ${cleanError(err)}` });
     } finally {
@@ -402,6 +441,10 @@ const SearchPage: React.FC = () => {
 
     const dir = sortDesc ? -1 : 1;
     return filtered.sort((a, b) => {
+      if (preferenceSettings.ranked && preferencesActive) {
+        const difference = preferenceMatches.get(b)!.score - preferenceMatches.get(a)!.score;
+        if (difference) return difference;
+      }
       switch (sortKey) {
         case 'size': return (a.size - b.size) * dir;
         case 'name': return a.title.localeCompare(b.title) * dir;
@@ -413,9 +456,28 @@ const SearchPage: React.FC = () => {
         default: return (a.seeds - b.seeds) * dir;
       }
     });
-  }, [rows, refine, hideDead, minSeeds, providerFilter, sortKey, sortDesc, releaseMetadata, releaseFilters]);
+  }, [rows, refine, hideDead, minSeeds, providerFilter, sortKey, sortDesc, releaseMetadata, releaseFilters, preferenceSettings.ranked, preferencesActive, preferenceMatches]);
+
+  // Filter releases before grouping: a collapsed card cannot conceal a
+  // release excluded by the user's filters. Keys survive progressive results.
+  const releaseGroups = useMemo(() => groupReleases(visibleRows), [visibleRows]);
+  const displayRows = useMemo<DisplayRow[]>(() => {
+    if (!groupResults) return visibleRows.map(release => ({ key: rowKey(release), release, nested: false }));
+    return releaseGroups.flatMap<DisplayRow>(group => {
+      if (group.releases.length === 1) return [{ key: rowKey(group.releases[0]), release: group.releases[0], nested: false }];
+      const header: DisplayRow = { key: group.key, group };
+      return [header, ...(expandedGroups.has(group.key) ? group.releases.map(release => ({ key: rowKey(release), release, nested: true })) : [])];
+    });
+  }, [visibleRows, releaseGroups, groupResults, expandedGroups]);
+
+  const toggleGroup = (key: string) => setExpandedGroups(previous => {
+    const next = new Set(previous);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const toggleSort = (key: SortKey) => {
+    setPreferenceSettings(previous => ({ ...previous, ranked: false }));
     if (key === sortKey) {
       setSortDesc(d => !d);
     } else {
@@ -428,10 +490,10 @@ const SearchPage: React.FC = () => {
   // Only the rows in view are mounted — a broad query across several indexers
   // easily runs to a few thousand.
   const rowVirtualizer = useVirtualizer({
-    count: visibleRows.length,
+    count: displayRows.length,
     getScrollElement: () => scrollParentRef.current,
     estimateSize: () => 52,
-    getItemKey: index => rowKey(visibleRows[index]),
+    getItemKey: index => displayRows[index].key,
     overscan: 10,
   });
 
@@ -543,15 +605,6 @@ const SearchPage: React.FC = () => {
                   {history.map(q => <option key={q} value={q} />)}
                 </datalist>
               </div>
-              <select
-                className="search-category"
-                value={category}
-                onChange={e => setCategory(e.target.value)}
-              >
-                {CATEGORIES.map(c => (
-                  <option key={c.value} value={c.value}>{c.label}</option>
-                ))}
-              </select>
               {loading ? (
                 <Button
                   variant="secondary"
@@ -647,7 +700,7 @@ const SearchPage: React.FC = () => {
                 </span>
                 {/* Governs what the Download button on every row below does. */}
                 <div className="results-add-options">
-                  <span className="add-options-label">{t('search.addTo')}</span>
+                  <span className="add-options-label" title={t('search.addToHint')}>{t('search.addTo')}</span>
                   <CategorySelect
                     value={addCategoryId}
                     onChange={setAddCategoryId}
@@ -669,6 +722,10 @@ const SearchPage: React.FC = () => {
 
               {/* Narrowing the list that arrived, without asking the indexers again. */}
               <div className="results-filters">
+                <button type="button" className={`filter-toggle ${groupResults ? 'active' : ''}`}
+                  aria-pressed={groupResults} title={t('search.group.hint')} onClick={() => setGroupResults(value => !value)}>
+                  {t('search.group.toggle')}
+                </button>
                 <div className="refine-wrap">
                   <Icon name="filter" size={14} />
                   <input
@@ -710,6 +767,9 @@ const SearchPage: React.FC = () => {
                 )}
               </div>
 
+              <SearchPreferencesPanel value={preferenceSettings.preferences} ranked={preferenceSettings.ranked}
+                onChange={preferences => setPreferenceSettings(previous => ({ ...previous, preferences }))}
+                onRankedChange={ranked => setPreferenceSettings(previous => ({ ...previous, ranked }))} />
               <details className="release-filters" open={activeReleaseFilters || undefined}>
                 <summary>{t('search.media.title')}{activeReleaseFilters && <span className="release-filter-status">{t('search.media.active')}</span>}</summary>
                 <div className="release-filter-fields">
@@ -743,6 +803,10 @@ const SearchPage: React.FC = () => {
                 <p>{t('search.media.hint')}</p>
               </details>
 
+              {groupResults && <p className="release-groups-hint">
+                {t('search.group.count')}: {releaseGroups.length} · {t('search.group.hint')}
+              </p>}
+
               <div className="results-table">
                 <div className="results-thead">
                   <button type="button" className="results-th name-col sortable" onClick={() => toggleSort('name')}>
@@ -769,13 +833,39 @@ const SearchPage: React.FC = () => {
                 <div className="results-scroll" ref={scrollParentRef}>
                   <div className="results-virtual" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
                     {rowVirtualizer.getVirtualItems().map(virtualRow => {
-                      const r = visibleRows[virtualRow.index];
+                      const item = displayRows[virtualRow.index];
+                      if ('group' in item) {
+                        const group = item.group;
+                        const qualities = RESOLUTIONS.filter(quality => group.releases.some(release => releaseMetadata.get(release.title)?.resolutions.includes(quality)));
+                        const expanded = expandedGroups.has(group.key);
+                        return <button type="button" key={virtualRow.key} className="release-group-row"
+                          aria-expanded={expanded} aria-label={`${group.title}, ${t('search.group.variants')}: ${group.releases.length}`}
+                          onClick={() => toggleGroup(group.key)}
+                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}>
+                          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} size={16} />
+                          <span className="release-group-name">
+                            <span className="result-title" title={group.title}>{group.title}</span>
+                            <span className="release-group-meta">{[group.year, group.episode, ...qualities].filter(Boolean).join(' · ')}</span>
+                          </span>
+                          <span className="release-group-count">{t('search.group.variants')}: {group.releases.length}</span>
+                        </button>;
+                      }
+                      const r = item.release;
                       const key = rowKey(r);
+                      const downloadState = resultDownloadState(r);
+                      const preferenceMatch = preferenceMatches.get(r)!;
+                      const preferenceReason = preferenceMatch.matched.map(criterion => ({
+                        resolution: `${t('search.media.resolution')}: ${preferenceSettings.preferences.resolution}`,
+                        voice: `${t('search.media.voice')}: ${preferenceSettings.preferences.voice}`,
+                        language: `${t('search.preferences.language')}: ${t(preferenceSettings.preferences.language === 'ru' ? 'search.preferences.ru' : 'search.preferences.en')}`,
+                        maxGiB: `${t('search.media.maxSize')}: ≤ ${preferenceSettings.preferences.maxGiB}`,
+                        minSeeds: `${t('search.minSeeds')}: ≥ ${preferenceSettings.preferences.minSeeds}`,
+                      })[criterion]).join(' · ');
                       const chips = releaseChips(releaseMetadata.get(r.title)!);
                       return (
                         <div
                           key={virtualRow.key}
-                          className={`results-row ${addedKeys.has(key) ? 'added' : ''}`}
+                          className={`results-row ${item.nested ? 'release-variant' : ''} ${downloadState ? 'added' : ''}`}
                           style={{
                             position: 'absolute',
                             top: 0,
@@ -787,11 +877,17 @@ const SearchPage: React.FC = () => {
                           <div className="results-td name-col">
                             <span className="result-title" title={r.title}>{r.title}</span>
                             <span className="result-tags">
+                              {preferencesActive && preferenceMatch.score > 0 && <span className="result-chip preference-match" title={`${preferenceReason}. ${t('search.preferences.unknown')}: ${preferenceMatch.unknown.length}. ${t('search.preferences.metadataHint')}`}>
+                                {t('search.preferences.matches')} {preferenceMatch.score}/{preferenceMatch.total}
+                              </span>}
                               {r.freeleech && <span className="result-chip freeleech">FL</span>}
                               {chips.map(chip => (
                                 <span key={chip} className="result-chip" title={t('search.media.fromTitle')}>{chip}</span>
                               ))}
                               {r.category && <span className="result-category">{r.category}</span>}
+                            </span>
+                            <span className="release-mobile-details">
+                              {formatBytes(r.size)} · S/L {r.seeds}/{r.leechers} · {r.indexers[0] || r.providers[0]}
                             </span>
                           </div>
                           <div className="results-td size-col">{formatBytes(r.size)}</div>
@@ -814,9 +910,10 @@ const SearchPage: React.FC = () => {
                             )}
                           </div>
                           <div className="results-td action-col">
-                            {addedKeys.has(key) ? (
-                              <span className="added-badge">
-                                <Icon name="check" size={14} /> {t('search.added')}
+                            {downloadState ? (
+                              <span className="added-badge" title={t(downloadState === 'downloaded' ? 'search.state.downloadedHint' : 'search.state.inDownloadsHint')}>
+                                <Icon name={downloadState === 'downloaded' ? 'check' : 'download'} size={14} />
+                                {t(downloadState === 'downloaded' ? 'search.state.downloaded' : 'search.state.inDownloads')}
                               </span>
                             ) : (
                               <>
