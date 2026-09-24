@@ -41,6 +41,7 @@ import * as db from './host/db-bridge';
 import { logger, checkDiskSpace, formatBytes } from '../utils';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { extractInfoHashFromMagnet } from '../../shared/magnet';
+import { DEFAULT_MAX_UP_KBPS } from '../../shared/upload-limits';
 import { shouldStopSeeding } from '../../shared/seeding-limits';
 import { planRestore } from '../../shared/restore-plan';
 import { EMPTY_PIECES, haveFromBitfield, summarizeHave } from '../../shared/piece-bitfield';
@@ -183,7 +184,7 @@ export class TorrentManager {
   private listeningCallbacks: Set<() => void> = new Set();
   private maxActiveDownloads = 3;
   private maxDownKbps = 0;
-  private maxUpKbps = 0;
+  private maxUpKbps = DEFAULT_MAX_UP_KBPS;
   // Connection limits. maxConnections is the per-torrent ceiling; maxConnectionsGlobal
   // is the total budget across all live torrents. The effective per-torrent limit
   // (client.maxConns, read live by WebTorrent on every connect) is scaled down as
@@ -292,7 +293,7 @@ export class TorrentManager {
     const settings = await db.getSettings();
     this.maxActiveDownloads = settings.maxActiveDownloads;
     this.maxDownKbps = settings.maxDownKbps;
-    this.maxUpKbps = settings.maxUpKbps;
+    this.maxUpKbps = settings.maxUpKbps ?? DEFAULT_MAX_UP_KBPS;
     this.altSpeedEnabled = settings.altSpeedEnabled ?? false;
     this.altDownKbps = settings.altDownKbps ?? 0;
     this.altUpKbps = settings.altUpKbps ?? 0;

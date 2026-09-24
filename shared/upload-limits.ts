@@ -1,3 +1,6 @@
+/* Fresh profiles share a 1 MiB/s upload budget across ordinary torrents. */
+export const DEFAULT_MAX_UP_KBPS = 1024;
+
 /**
  * Upload ceilings for the native (transmission) engine — pure composition of the
  * manual caps with the adaptive bufferbloat cap. No Node/Electron imports, so

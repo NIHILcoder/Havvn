@@ -19,6 +19,7 @@ function fixture(linked = true) {
   // spawning a daemon or touching the user's profile.
   const state = manager as any;
   const rpc = {
+    torrentStop: vi.fn().mockResolvedValue(undefined),
     torrentRemove: vi.fn().mockResolvedValue(undefined),
     torrentSet: vi.fn().mockResolvedValue(undefined),
     torrentGet: vi.fn().mockResolvedValue([{ metadataPercentComplete: 1 }]),
@@ -41,6 +42,39 @@ function fixture(linked = true) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('native manager controls', () => {
+  it('stops and resumes a finished torrent without removing its files', async () => {
+    const { manager, rpc, download } = fixture();
+    download.progress = 1;
+    download.status = 'seeding';
+    await manager.stopSeeding('test');
+    expect(rpc.torrentStop).toHaveBeenCalledWith('abc');
+    expect(download.status).toBe('completed');
+    await manager.resumeDownload('test');
+    expect(rpc.torrentStartNow).toHaveBeenCalledWith('abc');
+    expect(download.status).toBe('seeding');
+    expect(rpc.torrentRemove).not.toHaveBeenCalled();
+  });
+
+  it('resumes a completed torrent after restarting the app', async () => {
+    const { manager, rpc, download } = fixture(false);
+    download.progress = 1;
+    download.status = 'completed';
+    await manager.resumeDownload('test');
+    expect(rpc.torrentAdd).toHaveBeenCalledWith(expect.objectContaining({ paused: true, downloadDir: 'D:/downloads' }));
+    expect(rpc.torrentStartNow).toHaveBeenCalledWith('abc');
+    expect(download.status).toBe('seeding');
+  });
+
+  it('caps uploads by default and preserves an explicit unlimited choice', async () => {
+    const { manager, rpc } = fixture();
+    await manager.updateSettings({ maxDownKbps: 0 });
+    expect(rpc.sessionSet).toHaveBeenLastCalledWith(expect.objectContaining({ 'speed-limit-up': 1024, 'speed-limit-up-enabled': true }));
+    await manager.updateSettings({ maxUpKbps: 0 });
+    expect(rpc.sessionSet).toHaveBeenLastCalledWith(expect.objectContaining({ 'speed-limit-up-enabled': false }));
+    await manager.updateSettings({ maxUpKbps: 256 });
+    expect(rpc.sessionSet).toHaveBeenLastCalledWith(expect.objectContaining({ 'speed-limit-up': 256, 'speed-limit-up-enabled': true }));
+  });
+
   it('retains the record and daemon identity when removal fails so it can be retried', async () => {
     const { manager, state, rpc, download } = fixture();
     rpc.torrentRemove.mockRejectedValueOnce(new Error('RPC unavailable'));

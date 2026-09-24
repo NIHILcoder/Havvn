@@ -99,7 +99,7 @@ export const ACTIVE_STATES: readonly DownloadStatus[] = ['downloading'] as const
 /**
  * States that can be resumed
  */
-export const RESUMABLE_STATES: readonly DownloadStatus[] = ['paused', 'queued', 'error'] as const;
+export const RESUMABLE_STATES: readonly DownloadStatus[] = ['paused', 'queued', 'error', 'completed'] as const;
 
 /**
  * States that can be paused

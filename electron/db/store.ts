@@ -19,6 +19,7 @@
  */
 
 import Store from 'electron-store';
+import { DEFAULT_MAX_UP_KBPS } from '../../shared/upload-limits';
 import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, RSSRule, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
@@ -166,7 +167,7 @@ const configStore = new Store<ConfigSchema>({
       // whatever defaultDownloadDir they had persisted (often .../TorrentHunt).
       defaultDownloadDir: path.join(app.getPath('downloads'), 'Havvn'),
       maxDownKbps: 0,
-      maxUpKbps: 0,
+      maxUpKbps: DEFAULT_MAX_UP_KBPS,
       altSpeedEnabled: false,
       altDownKbps: 0,
       altUpKbps: 0,

@@ -204,9 +204,9 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
               {t('downloads.stop')}
             </Button>
           )}
-          {status === 'paused' && (
+          {(status === 'paused' || status === 'completed') && (
             <Button variant="ghost" size="sm" onClick={() => onResume(download.id)}>
-              {t('downloads.resume')}
+              {t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}
             </Button>
           )}
           {status === 'error' && (
@@ -303,14 +303,14 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             </Button>
           )}
 
-          {status === 'paused' && (
+          {(status === 'paused' || status === 'completed') && (
             <Button
               variant="ghost"
               size="sm"
               icon={<Icon name="play" size={16} />}
               onClick={() => onResume(download.id)}
             >
-              {t('downloads.resume')}
+              {t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}
             </Button>
           )}
 

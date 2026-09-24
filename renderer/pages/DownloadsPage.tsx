@@ -1319,7 +1319,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               }
             },
             {
-              label: t('downloads.resume'),
+              label: t(downloads.find(d => d.id === contextMenu.downloadId)?.progress === 1
+                ? 'downloads.resumeSeeding' : 'downloads.resume'),
               icon: 'play',
               disabled: !canResume(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {

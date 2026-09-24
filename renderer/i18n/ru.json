@@ -1,4 +1,5 @@
 {
+  "downloads.resumeSeeding": "Возобновить раздачу",
   "nav.downloads": "Загрузки",
   "filePicker.title": "Выберите файлы для загрузки",
   "filePicker.savePath": "Сохранить этот торрент в",
@@ -1351,7 +1352,7 @@
   "settings.downSpeed": "Скорость загрузки",
   "settings.downSpeed.desc": "Макс. скорость загрузки (0 = без ограничений)",
   "settings.upSpeed": "Скорость отдачи",
-  "settings.upSpeed.desc": "Макс. скорость отдачи (0 = без ограничений)",
+  "settings.upSpeed.desc": "Общий лимит отдачи торрентов. По умолчанию 1024 КБ/с (1 МиБ/с); 0 — без ограничений.",
   "settings.speedNote": "Ограничение скорости работает приблизительно из-за ограничений WebTorrent",
   "settings.grp.smartLimit": "УМНЫЙ ЛИМИТ ОТДАЧИ",
   "settings.adaptiveUpload": "Адаптивная отдача (беречь мой интернет)",

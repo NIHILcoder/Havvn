@@ -39,7 +39,7 @@ import { extractInfoHashFromMagnet } from '../../../shared/magnet';
 import { classifyMediaKind, isDirectlyPlayable } from '../../../shared/media';
 import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
 import { selectVpnIPv4, resolveBindOverrides } from '../../../shared/vpn-bind';
-import { composeUploadLimits } from '../../../shared/upload-limits';
+import { composeUploadLimits, DEFAULT_MAX_UP_KBPS } from '../../../shared/upload-limits';
 import { AdaptiveThrottle } from '../adaptive-throttle';
 import { daemonProxyEnv } from '../../../shared/tracker-proxy';
 import { encryptionToSettingsInt, normalizeProtocolEncryption } from '../../../shared/protocol-encryption';
@@ -248,7 +248,7 @@ export class NativeTorrentManager {
   /** Both upload ceilings, manual ∪ adaptive, in the shape session-set wants. */
   private uploadLimitArgs(s: AppSettings): Record<string, unknown> {
     return composeUploadLimits({
-      maxUpKbps: s.maxUpKbps ?? 0,
+      maxUpKbps: s.maxUpKbps ?? DEFAULT_MAX_UP_KBPS,
       altUpKbps: s.altUpKbps ?? 0,
       adaptiveUpBytes: this.adaptiveUpBytes,
     }) as unknown as Record<string, unknown>;

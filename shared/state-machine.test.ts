@@ -40,6 +40,10 @@ describe('state-machine guards', () => {
     expect(canPause('queued')).toBe(true);
     expect(canPause('paused')).toBe(false);
     expect(canResume('paused')).toBe(true);
+    expect(canResume('completed')).toBe(true);
+    expect(canResume('seeding')).toBe(false);
+    expect(isValidTransition('completed', 'queued')).toBe(true);
+    expect(isValidTransition('completed', 'seeding')).toBe(true);
     expect(canResume('error')).toBe(true);
     expect(canResume('downloading')).toBe(false);
   });

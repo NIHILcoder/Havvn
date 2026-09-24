@@ -1,4 +1,5 @@
 {
+  "downloads.resumeSeeding": "Resume seeding",
   "nav.downloads": "Downloads",
   "filePicker.title": "Select Files to Download",
   "filePicker.savePath": "Save this torrent to",
@@ -1351,7 +1352,7 @@
   "settings.downSpeed": "Download Speed",
   "settings.downSpeed.desc": "Set maximum download speed (0 = unlimited)",
   "settings.upSpeed": "Upload Speed",
-  "settings.upSpeed.desc": "Set maximum upload speed (0 = unlimited)",
+  "settings.upSpeed.desc": "Total torrent upload limit. Default: 1024 KB/s (1 MiB/s); 0 means unlimited.",
   "settings.speedNote": "Speed limiting is best-effort due to WebTorrent limitations",
   "settings.grp.smartLimit": "SMART UPLOAD LIMIT",
   "settings.adaptiveUpload": "Adaptive upload (protect my internet)",
