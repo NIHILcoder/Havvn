@@ -244,6 +244,7 @@ class TorrentManagerProxy {
   addTracker(...a: Parameters<TM['addTracker']>): Fwd<TM['addTracker']> { return this.rpc('addTracker', a); }
   removeTracker(...a: Parameters<TM['removeTracker']>): Fwd<TM['removeTracker']> { return this.rpc('removeTracker', a); }
   getDownloads(...a: Parameters<TM['getDownloads']>): Fwd<TM['getDownloads']> { return this.rpc('getDownloads', a); }
+  getHistoryFiles(...a: Parameters<TM['getHistoryFiles']>): Fwd<TM['getHistoryFiles']> { return this.rpc('getHistoryFiles', a); }
   getFiles(...a: Parameters<TM['getFiles']>): Fwd<TM['getFiles']> { return this.rpc('getFiles', a); }
   getPeers(...a: Parameters<TM['getPeers']>): Fwd<TM['getPeers']> { return this.rpc('getPeers', a); }
   getSwarmGeo(...a: Parameters<TM['getSwarmGeo']>): Fwd<TM['getSwarmGeo']> { return this.rpc('getSwarmGeo', a); }
@@ -254,6 +255,9 @@ class TorrentManagerProxy {
   getCastFileInfo(...a: Parameters<TM['getCastFileInfo']>): Fwd<TM['getCastFileInfo']> { return this.rpc('getCastFileInfo', a); }
   getStreamUrl(...a: Parameters<TM['getStreamUrl']>): Fwd<TM['getStreamUrl']> { return this.rpc('getStreamUrl', a); }
   stopStream(...a: Parameters<TM['stopStream']>): Fwd<TM['stopStream']> { return this.rpc('stopStream', a); }
+  getEpisodePrefetchSupport(...a: Parameters<TM['getEpisodePrefetchSupport']>): Fwd<TM['getEpisodePrefetchSupport']> { return this.rpc('getEpisodePrefetchSupport', a); }
+  prefetchEpisode(...a: Parameters<TM['prefetchEpisode']>): Fwd<TM['prefetchEpisode']> { return this.rpc('prefetchEpisode', a); }
+  stopEpisodePrefetch(...a: Parameters<TM['stopEpisodePrefetch']>): Fwd<TM['stopEpisodePrefetch']> { return this.rpc('stopEpisodePrefetch', a); }
   getSubtitleTracks(...a: Parameters<TM['getSubtitleTracks']>): Fwd<TM['getSubtitleTracks']> { return this.rpc('getSubtitleTracks', a); }
   getAudioTracks(...a: Parameters<TM['getAudioTracks']>): Fwd<TM['getAudioTracks']> { return this.rpc('getAudioTracks', a); }
   getSubtitleVtt(...a: Parameters<TM['getSubtitleVtt']>): Fwd<TM['getSubtitleVtt']> { return this.rpc('getSubtitleVtt', a); }

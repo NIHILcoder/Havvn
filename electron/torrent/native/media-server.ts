@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import { Writable } from 'node:stream';
 import { spawn, ChildProcess } from 'node:child_process';
 import { parseAudioTrackParam, transcodeMapArgs } from '../audio-probe';
+import { parseStreamStart, transcodeInputArgs } from '../../../shared/stream-position';
 
 export interface MediaFileInfo {
   diskPath: string;
@@ -106,7 +107,9 @@ export class NativeMediaServer {
     if (!info) { res.writeHead(404); res.end(); return; }
     if (parts[0] === 'direct') { void this.serveDirect(req, res, info, id, fileIndex); return; }
     if (parts[0] === 'transcode') {
-      this.serveTranscode(res, info, id, fileIndex, parseAudioTrackParam(url.searchParams.get('a')));
+      let startTime: number;
+      try { startTime = parseStreamStart(url.searchParams.get('s')); } catch { res.writeHead(400); res.end(); return; }
+      void this.serveTranscode(res, info, id, fileIndex, parseAudioTrackParam(url.searchParams.get('a')), startTime).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); });
       return;
     }
     res.writeHead(404); res.end();
@@ -198,16 +201,18 @@ export class NativeMediaServer {
   }
 
   /** ffmpeg → fmp4/mp3, fed from a tailing read of the (possibly incomplete) file. */
-  private serveTranscode(res: http.ServerResponse, info: MediaFileInfo, id: string, fileIndex: number, audioTrack?: number): void {
+  private async serveTranscode(res: http.ServerResponse, info: MediaFileInfo, id: string, fileIndex: number, audioTrack?: number, startTime = 0): Promise<void> {
     const ffmpeg = this.ffmpeg();
     if (!ffmpeg) { res.writeHead(503); res.end('ffmpeg unavailable'); return; }
-    // transcodeMapArgs is empty unless a track was explicitly chosen, so
-    // default playback keeps the exact historical args byte-for-byte.
+    // Preserve automatic stream selection unless an audio track was requested.
     const maps = transcodeMapArgs(info.kind, audioTrack);
+    const complete = await this.bytesAvailable(id, fileIndex) >= info.length;
+    if (res.destroyed) return;
+    const inputArgs = transcodeInputArgs(info.diskPath, startTime, complete);
     const args = info.kind === 'audio'
-      ? ['-i', 'pipe:0', ...maps, '-c:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
+      ? [...inputArgs, ...maps, '-c:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', 'pipe:1']
       : [
-          '-i', 'pipe:0',
+          ...inputArgs,
           ...maps,
           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
           '-c:a', 'aac', '-b:a', '160k', '-ac', '2',
@@ -219,7 +224,8 @@ export class NativeMediaServer {
     this.transcodes.add(proc);
     const cleanup = () => { this.transcodes.delete(proc); try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
     proc.stdin.on('error', () => { /* EPIPE when ffmpeg/client ends — ignore */ });
-    void this.pumpFile(info.diskPath, info.length, id, fileIndex, proc.stdin).catch(cleanup);
+    if (!complete) void this.pumpFile(info.diskPath, info.length, id, fileIndex, proc.stdin).catch(cleanup);
+    else proc.stdin.end();
     proc.stdout.pipe(res);
     proc.stderr.on('data', () => { /* discard ffmpeg progress chatter */ });
     proc.on('error', () => { cleanup(); try { res.destroy(); } catch { /* ignore */ } });

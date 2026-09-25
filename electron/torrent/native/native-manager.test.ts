@@ -42,6 +42,31 @@ function fixture(linked = true) {
 beforeEach(() => vi.clearAllMocks());
 
 describe('native manager controls', () => {
+  it('history reads do not restore daemon torrents and refuse paused streaming', async () => {
+    const { manager, rpc, download } = fixture(false);
+    expect(await manager.getHistoryFiles('test')).toEqual([]);
+    await expect(manager.getStreamUrl('test', 0, { noResume: true })).rejects.toThrow('resume');
+    download.status = 'downloading';
+    await expect(manager.getStreamUrl('test', 0, { noResume: true })).rejects.toThrow('resume');
+    expect(rpc.torrentAdd).not.toHaveBeenCalled(); expect(rpc.torrentStartNow).not.toHaveBeenCalled(); expect(rpc.torrentSet).not.toHaveBeenCalled();
+  });
+  it('history streams from an existing active daemon record without starting it', async () => {
+    const { manager, state, rpc, download } = fixture(); download.status = 'downloading';
+    rpc.torrentGet.mockResolvedValue([{ files: [{ name: 'film.mp4', length: 100, bytesCompleted: 10 }], fileStats: [{ wanted: true, priority: 0 }] }]);
+    state.ensureMediaServer = vi.fn().mockResolvedValue(1234);
+    const url = await manager.getStreamUrl('test', 0, { noResume: true });
+    expect(url.transcoded).toBe(false); expect(rpc.torrentAdd).not.toHaveBeenCalled(); expect(rpc.torrentStartNow).not.toHaveBeenCalled();
+    expect(rpc.torrentSet).toHaveBeenCalled();
+  });
+  it('reports bounded prefetch as unsupported without changing daemon selections or pause', async () => {
+    const { manager, rpc } = fixture();
+    expect(manager.getEpisodePrefetchSupport()).toEqual({ supported: false });
+    expect(await manager.prefetchEpisode('test', { currentFile: 0, nextFile: 1, budgetBytes: 64 * 1024 * 1024, allowExcluded: true, lease: 'owner-test' })).toEqual({ state: 'unsupported', bytes: 0 });
+    await manager.stopEpisodePrefetch('test', 'owner-test');
+    expect(rpc.torrentSet).not.toHaveBeenCalled();
+    expect(rpc.torrentStartNow).not.toHaveBeenCalled();
+    expect(rpc.torrentStop).not.toHaveBeenCalled();
+  });
   it('changes the download ceiling without pausing or restarting an active torrent', async () => {
     const { manager, rpc, download } = fixture();
     download.status = 'downloading';

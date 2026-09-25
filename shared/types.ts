@@ -1110,8 +1110,11 @@ export interface IpcApi {
   recheckDownload: (id: string) => Promise<void>;
   getDownloads: () => Promise<Download[]>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
-  getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }>;
+  getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number; startTime?: number }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }>;
   stopStream: (id: string, fileIndex?: number) => Promise<void>;
+  getEpisodePrefetchSupport: () => Promise<{ supported: boolean }>;
+  prefetchEpisode: (id: string, request: import('./episode-prefetch').EpisodePrefetchRequest) => Promise<import('./episode-prefetch').EpisodePrefetchResult>;
+  stopEpisodePrefetch: (id: string, lease: string) => Promise<void>;
   shareStart: (downloadId: string) => Promise<ShareInfo>;
   shareStop: (downloadId: string) => Promise<{ ok: boolean }>;
   shareGet: (downloadId: string) => Promise<(ShareInfo & { peers: number }) | null>;
@@ -1382,12 +1385,12 @@ export interface IpcApi {
 
   // Audio tracks for the player (multi-audio MKV; switching restarts the transcode)
   audioTracks: {
-    list: (id: string, fileIndex: number) => Promise<Array<{ index: number; label: string; lang?: string; isDefault?: boolean }>>;
+    list: (id: string, fileIndex: number) => Promise<import('./player-preferences').AudioTrack[]>;
   };
 
   // Subtitles for the player (embedded text tracks + sidecar files → WebVTT)
   subtitles: {
-    list: (id: string, fileIndex: number) => Promise<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>>;
+    list: (id: string, fileIndex: number) => Promise<import('./player-preferences').SubtitleTrack[]>;
     get: (id: string, fileIndex: number, key: string) => Promise<string>;
   };
 

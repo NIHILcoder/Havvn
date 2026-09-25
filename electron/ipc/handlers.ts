@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
+import { validateEpisodePrefetch, type EpisodePrefetchRequest } from '../../shared/episode-prefetch';
 import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent';
 import * as db from '../db/store';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority, RoomState } from '../../shared/types';
@@ -451,7 +452,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('downloads:getStreamUrl', wrapHandler('downloads:getStreamUrl',
-    async (_event, id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number }) => {
+    async (_event, id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number; startTime?: number }) => {
       return torrentManager.getStreamUrl(id, fileIndex, opts);
     }
   ));
@@ -461,6 +462,17 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       return torrentManager.stopStream(id, fileIndex);
     }
   ));
+  ipcMain.handle('downloads:prefetchSupport', wrapHandler('downloads:prefetchSupport', async () => torrentManager.getEpisodePrefetchSupport()));
+  ipcMain.handle('downloads:prefetchEpisode', wrapHandler('downloads:prefetchEpisode', async (_event, id: string, request: EpisodePrefetchRequest) => {
+    validateDownloadId(id);
+    validateEpisodePrefetch(request);
+    return torrentManager.prefetchEpisode(id, request);
+  }));
+  ipcMain.handle('downloads:stopEpisodePrefetch', wrapHandler('downloads:stopEpisodePrefetch', async (_event, id: string, lease: string) => {
+    validateDownloadId(id);
+    if (typeof lease !== 'string' || !/^[a-z0-9-]{8,80}$/i.test(lease)) throw new Error('Invalid prefetch lease');
+    return torrentManager.stopEpisodePrefetch(id, lease);
+  }));
 
   // ── Share links (torrent → browser via WebRTC) ──────────────────────────
   ipcMain.handle('share:start', wrapHandler('share:start',

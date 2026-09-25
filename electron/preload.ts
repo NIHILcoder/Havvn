@@ -80,13 +80,16 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:getFiles', id);
   },
 
-  getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }> => {
+  getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number; startTime?: number }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }> => {
     return ipcRenderer.invoke('downloads:getStreamUrl', id, fileIndex, opts);
   },
 
   stopStream: (id: string, fileIndex?: number): Promise<void> => {
     return ipcRenderer.invoke('downloads:stopStream', id, fileIndex);
   },
+  getEpisodePrefetchSupport: () => ipcRenderer.invoke('downloads:prefetchSupport'),
+  prefetchEpisode: (id: string, request: import('../shared/episode-prefetch').EpisodePrefetchRequest) => ipcRenderer.invoke('downloads:prefetchEpisode', id, request),
+  stopEpisodePrefetch: (id: string, lease: string) => ipcRenderer.invoke('downloads:stopEpisodePrefetch', id, lease),
 
   shareStart: (downloadId: string): Promise<ShareInfo> => {
     return ipcRenderer.invoke('share:start', downloadId);
@@ -1040,4 +1043,3 @@ const api: IpcApi = {
 
 // Expose the API to the renderer process
 contextBridge.exposeInMainWorld('api', api);
-

@@ -1,3 +1,4 @@
+
 /**
  * NativeTorrentManager — the transmission-daemon-backed download engine behind
  * the SAME host contract as the webtorrent TorrentManager (see
@@ -21,11 +22,11 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
 import * as db from '../host/db-bridge';
 import { getHostEnv } from '../host/env';
 import { TorrentError } from '../errors';
 import { logger } from '../../utils';
+import { validateEpisodePrefetch, type EpisodePrefetchRequest, type EpisodePrefetchResult } from '../../../shared/episode-prefetch';
 import { TransmissionSidecar } from './transmission-sidecar';
 import { TransmissionRpc, TrTorrent, TrStatus, TrFile } from './transmission-rpc';
 import {
@@ -35,6 +36,9 @@ import {
 } from './map';
 import { NativeMediaServer } from './media-server';
 import { probeAudioStreams, audioTrackList, audioTrackParam, AudioTrackListItem } from '../audio-probe';
+import { streamStartSeconds, streamStartParam } from '../../../shared/stream-position';
+import { listSubtitleTracks, getSubtitleVtt as extractSubtitleVtt } from '../subtitle-probe';
+import type { SubtitleTrack } from '../../../shared/player-preferences';
 import { extractInfoHashFromMagnet } from '../../../shared/magnet';
 import { classifyMediaKind, isDirectlyPlayable } from '../../../shared/media';
 import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
@@ -692,6 +696,15 @@ export class NativeTorrentManager {
   getDownloads(): Promise<Download[]> { return db.getAllDownloads(); }
   getStats(): DownloadStats[] { return this.lastStats; }
 
+  async getHistoryFiles(id: string): Promise<TorrentFile[]> {
+    await this.whenReady();
+    const hash = this.idToHash.get(id);
+    if (!hash || !this.rpc) return [];
+    const [t] = await this.rpc.torrentGet(['files', 'fileStats'], hash);
+    if (t?.files?.length) this.metaCache.set(id, t.files);
+    return t ? mapFiles(t) : [];
+  }
+
   async getFiles(id: string): Promise<TorrentFile[]> {
     await this.whenReady();
     const d = this.getRecord(id);
@@ -1008,15 +1021,17 @@ export class NativeTorrentManager {
   }
 
   // ── In-app streaming ─────────────────────────────────────────────────────────
-  async getStreamUrl(id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean }> {
+  async getStreamUrl(id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number; startTime?: number; noResume?: boolean }): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }> {
+    const requestedStart = streamStartSeconds(opts?.startTime);
     await this.whenReady();
     const d = this.getRecord(id);
-    const hash = await this.ensureInDaemon(d);
+    if (opts?.noResume && (d.status !== 'downloading' && d.status !== 'seeding' || !this.idToHash.has(id))) throw new TorrentError('Media unavailable: resume the download manually', 'NOT_ACTIVE', id);
+    const hash = opts?.noResume ? this.idToHash.get(id)! : await this.ensureInDaemon(d);
     // ensureInDaemon re-adds a non-live record PAUSED — a stream needs it running
     // or the head never downloads.
-    await this.rpc!.torrentStartNow(hash).catch(() => undefined);
+    if (!opts?.noResume) await this.rpc!.torrentStartNow(hash).catch(() => undefined);
     if (d.status === 'paused' || d.status === 'queued') await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading');
-    if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id); // warm resolver + head math
+    if (!this.metaCache.get(id)?.[fileIndex]) await (opts?.noResume ? this.getHistoryFiles(id) : this.getFiles(id)); // read-only history must never re-add a daemon record
     const info = this.getCastFileInfo(id, fileIndex);
     if (!info) throw new TorrentError('Invalid file index', 'INVALID_INPUT', id);
     await this.prioritizeStreamHead(hash, id, fileIndex);
@@ -1030,11 +1045,13 @@ export class NativeTorrentManager {
     // ffmpeg — the same restart mechanism forceTranscode already uses). Only
     // meaningful for transcode; the guard only checks k=, extra params are safe.
     const audio = mode === 'transcode' ? audioTrackParam(opts?.audioTrack) : '';
+    const startTime = mode === 'transcode' ? requestedStart : 0;
     return {
-      url: `http://127.0.0.1:${port}/${mode}/${encodeURIComponent(id)}/${fileIndex}?${q}${audio}`,
+      url: `http://127.0.0.1:${port}/${mode}/${encodeURIComponent(id)}/${fileIndex}?${q}${audio}${streamStartParam(startTime)}`,
       name: info.name,
       kind: info.kind,
       transcoded: mode === 'transcode',
+      startTime,
     };
   }
 
@@ -1087,6 +1104,13 @@ export class NativeTorrentManager {
     set.add(fileIndex);
   }
 
+  getEpisodePrefetchSupport(): { supported: boolean } { return { supported: false }; }
+  async prefetchEpisode(_id: string, request: EpisodePrefetchRequest): Promise<EpisodePrefetchResult> {
+    validateEpisodePrefetch(request);
+    return { state: 'unsupported', bytes: 0 };
+  }
+  async stopEpisodePrefetch(_id: string, _lease: string): Promise<void> { /* no bounded selection API */ }
+
   private ensureMediaServer(): Promise<number> {
     if (!this.mediaServer) {
       this.mediaServer = new NativeMediaServer(
@@ -1126,26 +1150,11 @@ export class NativeTorrentManager {
   }
 
   // ── Subtitles (disk + ffmpeg — engine-agnostic, ported from the webtorrent manager) ──
-  async getSubtitleTracks(id: string, fileIndex: number): Promise<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>> {
+  async getSubtitleTracks(id: string, fileIndex: number): Promise<SubtitleTrack[]> {
     await this.whenReady();
     if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id).catch(() => undefined);
     const info = this.getCastFileInfo(id, fileIndex);
-    if (!info) return [];
-    const tracks: Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }> = [];
-    try {
-      const streams = await this.probeSubtitleStreams(info.diskPath);
-      streams.forEach((s, i) => {
-        tracks.push({ key: `embedded:${s.sIndex}`, label: s.lang ? `${s.lang.toUpperCase()} (embedded)` : `Embedded #${i + 1}`, lang: s.lang, source: 'embedded' });
-      });
-    } catch { /* ignore */ }
-    try {
-      const dir = path.dirname(info.diskPath);
-      for (const f of fs.readdirSync(dir)) {
-        if (!/\.(srt|ass|ssa|vtt|sub)$/i.test(f)) continue;
-        tracks.push({ key: `external:${f}`, label: f, source: 'external' });
-      }
-    } catch { /* ignore */ }
-    return tracks;
+    return info ? listSubtitleTracks(this.ffmpegPath, info.diskPath) : [];
   }
 
   async getSubtitleVtt(id: string, fileIndex: number, key: string): Promise<string> {
@@ -1153,54 +1162,7 @@ export class NativeTorrentManager {
     if (!this.metaCache.get(id)?.[fileIndex]) await this.getFiles(id).catch(() => undefined);
     const info = this.getCastFileInfo(id, fileIndex);
     if (!info) throw new TorrentError('File not found', 'NOT_FOUND', id);
-    if (key.startsWith('embedded:')) {
-      const sIndex = Number(key.slice('embedded:'.length));
-      return this.ffmpegCapture(['-i', info.diskPath, '-map', `0:s:${sIndex}`, '-f', 'webvtt', 'pipe:1']);
-    }
-    if (key.startsWith('external:')) {
-      const name = key.slice('external:'.length);
-      const full = path.join(path.dirname(info.diskPath), name);
-      if (!fs.existsSync(full)) throw new Error('Subtitle file not found');
-      if (/\.vtt$/i.test(full)) return fs.readFileSync(full, 'utf8');
-      return this.ffmpegCapture(['-i', full, '-f', 'webvtt', 'pipe:1']);
-    }
-    throw new Error('Unknown subtitle track');
-  }
-
-  private ffmpegCapture(args: string[]): Promise<string> {
-    if (!this.ffmpegPath) return Promise.reject(new Error('ffmpeg unavailable'));
-    return new Promise((resolve, reject) => {
-      const proc = spawn(this.ffmpegPath as string, args, { windowsHide: true });
-      const out: Buffer[] = [];
-      proc.stdout.on('data', (d: Buffer) => out.push(d));
-      proc.stderr.on('data', () => { /* discard */ });
-      proc.on('error', reject);
-      proc.on('close', () => resolve(Buffer.concat(out).toString('utf8')));
-    });
-  }
-
-  /** Parse `ffmpeg -i` stderr for embedded TEXT subtitle streams (skip image subs). */
-  private probeSubtitleStreams(file: string): Promise<Array<{ sIndex: number; lang?: string; codec: string }>> {
-    if (!this.ffmpegPath) return Promise.resolve([]);
-    return new Promise((resolve) => {
-      const proc = spawn(this.ffmpegPath as string, ['-i', file], { windowsHide: true });
-      let err = '';
-      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-      proc.on('error', () => resolve([]));
-      proc.on('close', () => {
-        const out: Array<{ sIndex: number; lang?: string; codec: string }> = [];
-        let sIndex = 0;
-        const re = /Stream #\d+:\d+(?:\(([a-zA-Z]+)\))?: Subtitle: (\w+)/g;
-        let m: RegExpExecArray | null;
-        const textCodecs = new Set(['subrip', 'ass', 'ssa', 'mov_text', 'webvtt', 'text', 'srt']);
-        while ((m = re.exec(err)) !== null) {
-          const codec = m[2].toLowerCase();
-          if (textCodecs.has(codec)) out.push({ sIndex, lang: m[1], codec });
-          sIndex++; // count all subtitle streams so -map 0:s:<n> stays aligned
-        }
-        resolve(out);
-      });
-    });
+    return extractSubtitleVtt(this.ffmpegPath, info.diskPath, key);
   }
 
   /**

@@ -31,6 +31,9 @@ export interface AudioTrackListItem {
   label: string;
   lang?: string;
   isDefault?: boolean;
+  title?: string;
+  codec?: string;
+  channels?: string;
 }
 
 export function probeAudioStreams(ffmpegPath: string | null, filePath: string): Promise<AudioTrackInfo[]> {
@@ -87,6 +90,9 @@ export function audioTrackList(streams: AudioTrackInfo[]): AudioTrackListItem[] 
     label: s.title || [s.lang ? s.lang.toUpperCase() : `Track ${i + 1}`, s.codec, s.channels].filter(Boolean).join(' · '),
     lang: s.lang,
     isDefault: s.isDefault,
+    title: s.title,
+    codec: s.codec,
+    channels: s.channels,
   }));
 }
 
