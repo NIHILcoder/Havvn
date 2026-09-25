@@ -28,7 +28,8 @@
     "security:snyk": "snyk test --severity-threshold=high",
     "spike:engine": "npm run build:electron && node dist/electron/electron/torrent/native/spike-harness.js",
     "spike:lan": "npm run build:electron && node dist/electron/electron/lan/spike-harness.js",
-    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js"
+    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js",
+    "test:native-prebuilds": "node scripts/test-native-prebuilds.cjs"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",
@@ -211,7 +212,8 @@
         "ru_RU"
       ],
       "multiLanguageInstaller": true
-    }
+    },
+    "beforeBuild": "scripts/prepare-native-prebuilds.cjs"
   },
   "author": {
     "name": "NIHILcoder"

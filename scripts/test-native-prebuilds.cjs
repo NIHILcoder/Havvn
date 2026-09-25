@@ -1,0 +1,25 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const prepare = require('./prepare-native-prebuilds.cjs');
+(async () => {
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-prebuild-test-'));
+  const root = path.join(appDir, 'node_modules', 'bufferutil');
+  const dir = path.join(root, 'prebuilds', 'win32-x64');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { prebuild: 'prebuildify --napi --strip' } }));
+  const bytes = Buffer.from('fixture prebuilt binary');
+  fs.writeFileSync(path.join(dir, 'bufferutil.node'), bytes);
+  const target = path.join(dir, 'node.napi.node');
+  assert.equal(await prepare({ appDir, platform: { nodeName: 'linux' }, arch: 'x64' }), true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(await prepare({ appDir, platform: { nodeName: 'win32' }, arch: 'x64' }), true);
+  assert.deepEqual(fs.readFileSync(target), bytes);
+  fs.writeFileSync(path.join(dir, 'bufferutil.node'), Buffer.from('updated version'));
+  await prepare({ appDir, platform: 'win32', arch: 'x64' });
+  assert.equal(fs.readFileSync(target).toString(), 'updated version');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ scripts: { prebuild: 'prebuildify' } }));
+  await assert.rejects(prepare({ appDir, platform: 'win32', arch: 'x64' }), /expected a Node-API prebuild/);
+  console.log('PASS: platform guard, rebuild remains enabled, exact bytes, refresh on package change, non-Node-API rejection');
+})().catch(error => { console.error(error); process.exitCode = 1; });
