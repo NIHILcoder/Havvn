@@ -16,6 +16,7 @@ const SearchPage = lazy(() => import('./pages/SearchPage'));
 const RSSPage = lazy(() => import('./pages/RSSPage'));
 const RoomsPage = lazy(() => import('./pages/RoomsPage'));
 const SwarmPage = lazy(() => import('./pages/SwarmPage'));
+const WatchHistoryPage = lazy(() => import('./pages/WatchHistoryPage'));
 import { formatBytes } from './utils/format-helpers';
 import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
 import { restoreThemePrefs } from './utils/theme-prefs';
@@ -483,6 +484,8 @@ const AppContent: React.FC = () => {
         return <CreateTorrentPage onNavigateBack={() => setCurrentPage('downloads')} />;
       case 'downloads':
         return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
+      case 'watch-history':
+        return <WatchHistoryPage />;
       case 'settings':
         return <SettingsPage />;
       case 'search':

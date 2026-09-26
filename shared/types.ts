@@ -1100,6 +1100,15 @@ export interface IPBlocklist {
 
 
 export interface IpcApi {
+  historyPlayback: {
+    files: (id: string) => Promise<import('./history-playback').HistoryPlaybackFile[]>;
+    stream: (id: string, index: number, opts?: import('./history-playback').HistoryPlaybackOptions) => ReturnType<IpcApi['getStreamUrl']>;
+    audio: (id: string, index: number) => Promise<import('./player-preferences').AudioTrack[]>;
+    subtitles: (id: string, index: number) => Promise<import('./player-preferences').SubtitleTrack[]>;
+    vtt: (id: string, index: number, key: string) => Promise<string>;
+    duration: (id: string, index: number) => Promise<number | null>;
+    stop: (id: string) => Promise<void>;
+  };
   // Downloads
   addDownload: (request: AddDownloadRequest) => Promise<Download>;
   pauseDownload: (id: string) => Promise<void>;

@@ -13,7 +13,7 @@ import { Icon, IconName, LogoMark, Wordmark, Identicon } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import type { RoomSummary } from '../../shared/types';
 
-export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss' | 'rooms' | 'swarm';
+export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss' | 'rooms' | 'swarm' | 'watch-history';
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
 /** A friend currently online in one of your rooms (fed from room pushes). */
@@ -156,6 +156,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </span>
               </button>
             ))}
+            <button className={`nav-subitem ${currentPage === 'watch-history' ? 'active' : ''}`} onClick={() => onNavigate('watch-history')}>
+              <span className="nav-subitem-icon"><Icon name="film" size={14} /></span><span>{t('history.title')}</span>
+            </button>
           </div>
         ) : (
           <div className="nav-section">

@@ -11,13 +11,21 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { Icon } from './Icon';
 import { QRCode } from './QRCode';
-import { PlayerControls, fmtTime } from './PlayerControls';
+import { PlayerControls } from './PlayerControls';
+import { MediaBufferStatus } from './MediaBufferStatus';
+import { EpisodePrefetchControl } from './EpisodePrefetchControl';
+import { PlayerPreferencesPanel } from './PlayerPreferencesPanel';
+import { preferredAudio, preferredSubtitle, effectiveAudioLanguage, playerFileKey, trackIdentity, type AudioTrack, type SubtitleTrack, type PlayerPreferences } from '../../shared/player-preferences';
+import { PLAYER_PREFS_KEY, loadPlayerPreferences, savePlayerPreferences, loadFileTrackChoice, saveFileTrackChoice, clearFileTrackChoice } from '../utils/playerPreferences';
+import { useSubtitlePresentation } from '../utils/useSubtitlePresentation';
 import { useTranslation } from '../utils/i18nContext';
 import { classifyMediaKind, MediaKind } from '../../shared/media';
 import { playerFrameName } from '../../shared/player-windows';
 import { usePopout } from '../utils/popout';
 import { WindowControls } from '../layout/WindowControls';
 import { useDockWindowMaximized, minimizeDockWindow, toggleMaximizeDockWindow } from '../pages/rooms/dock/dockWindowChrome';
+import { beginWatch, beginPlaybackWatch, getWatchEntry, saveWatch, migrateWatchHistory } from '../utils/watchHistory';
+import { resumablePosition, type WatchEntry } from '../../shared/watch-history';
 import './StreamPlayerModal.css';
 
 interface StreamFile {
@@ -32,6 +40,8 @@ interface StreamPlayerModalProps {
   downloadId: string;
   downloadName: string;
   onClose: () => void;
+  initialFilePath?: string;
+  historyPlayback?: boolean;
 }
 
 const formatBytes = (bytes: number): string => {
@@ -42,71 +52,10 @@ const formatBytes = (bytes: number): string => {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 };
 
-// --- Playback-position memory -----------------------------------------------
-// A single localStorage JSON map remembers where the user stopped watching, so
-// reopening a film resumes instead of starting over. Keyed by
-// `${infoHash||downloadId}:${fileIndex}` — the infoHash survives remove+re-add.
-// Purely cosmetic: every touch of the store is wrapped so a corrupt map or a
-// full quota can never break playback.
-
-const PLAY_POSITIONS_KEY = 'playPositions';
-const PLAY_POSITIONS_MAX = 200;
-/** Don't remember short clips, near-starts, or near-ends. */
-const PLAY_POS_MIN_DURATION = 120;
-const PLAY_POS_MIN_TIME = 30;
 const PLAY_POS_FINISHED_FRAC = 0.95;
-const PLAY_POS_RESTORE_MAX_FRAC = 0.92;
 const PLAY_POS_SAVE_INTERVAL_MS = 5000;
 
-interface PlayPosition { t: number; d: number; at: number }
-type PlayPositionMap = Record<string, PlayPosition>;
-
-const readPlayPositions = (): PlayPositionMap => {
-  try {
-    const raw = localStorage.getItem(PLAY_POSITIONS_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as PlayPositionMap) : {};
-  } catch { return {}; }
-};
-
-const writePlayPositions = (map: PlayPositionMap): void => {
-  try {
-    const keys = Object.keys(map);
-    if (keys.length > PLAY_POSITIONS_MAX) {
-      keys.sort((a, b) => (map[a]?.at ?? 0) - (map[b]?.at ?? 0));
-      for (const k of keys.slice(0, keys.length - PLAY_POSITIONS_MAX)) delete map[k];
-    }
-    localStorage.setItem(PLAY_POSITIONS_KEY, JSON.stringify(map));
-  } catch { /* cosmetic — quota/serialization failures are ignored */ }
-};
-
-const savePlayPosition = (key: string, t: number, d: number): void => {
-  try {
-    const map = readPlayPositions();
-    map[key] = { t, d, at: Date.now() };
-    writePlayPositions(map);
-  } catch { /* cosmetic */ }
-};
-
-const clearPlayPosition = (key: string): void => {
-  try {
-    const map = readPlayPositions();
-    if (key in map) {
-      delete map[key];
-      writePlayPositions(map);
-    }
-  } catch { /* cosmetic */ }
-};
-
-const getPlayPosition = (key: string): PlayPosition | null => {
-  try {
-    const entry = readPlayPositions()[key];
-    return entry && typeof entry.t === 'number' && typeof entry.d === 'number' ? entry : null;
-  } catch { return null; }
-};
-
-export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId, downloadName, onClose }) => {
+export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId, downloadName, onClose, initialFilePath, historyPlayback = false }) => {
   const { t } = useTranslation();
   const [files, setFiles] = useState<StreamFile[]>([]);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -133,13 +82,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [tvPlaying, setTvPlaying] = useState<{ host: string; name: string } | null>(null);
   const [tvPaused, setTvPaused] = useState(false);
   // Subtitles
-  const [subTracks, setSubTracks] = useState<Array<{ key: string; label: string; lang?: string; source: 'embedded' | 'external' }>>([]);
+  const [subTracks, setSubTracks] = useState<SubtitleTrack[]>([]);
   const [subOpen, setSubOpen] = useState(false);
   const [subActiveKey, setSubActiveKey] = useState<string | null>(null);
   const [subUrl, setSubUrl] = useState<string | null>(null);
   // Audio tracks (multi-audio MKV): null = ffmpeg's default; picking a track
   // forces transcode (browsers can't switch embedded tracks on a plain <video>).
-  const [audioTracks, setAudioTracks] = useState<Array<{ index: number; label: string; lang?: string; isDefault?: boolean }>>([]);
+  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
+  const [catalogFile, setCatalogFile] = useState<number | null>(null);
   const [audioOpen, setAudioOpen] = useState(false);
   const [audioTrackIndex, setAudioTrackIndex] = useState<number | null>(null);
   // Serial mode: playlist panel + auto-advance to the next episode on 'ended'.
@@ -152,58 +102,67 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   // captured via a callback ref; the stage wrapper is the fullscreen target.
   const [mediaEl, setMediaEl] = useState<HTMLVideoElement | HTMLAudioElement | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const [preferences, setPreferences] = useState(loadPlayerPreferences);
+  const [choiceRevision, setChoiceRevision] = useState(0);
+  const [streamStart, setStreamStart] = useState(0);
+  const [streamOffset, setStreamOffset] = useState(0);
+  const timelineOffsetRef = useRef(0);
+  const resumeRef = useRef<{ time: number; paused: boolean; muted: boolean; volume: number; rate: number; file: number | null } | null>(null);
+  const mediaResumeTargets = useRef(new WeakMap<HTMLMediaElement, NonNullable<typeof resumeRef.current>>());
+  useSubtitlePresentation(mediaEl, preferences, streamOffset, subUrl);
+  const updatePreferences = useCallback((next: PlayerPreferences) => { savePlayerPreferences(next); setPreferences(next); }, []);
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => { if (event.key === PLAYER_PREFS_KEY) setPreferences(loadPlayerPreferences()); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
 
-  // Playback-position memory. The store key prefers the download's infoHash
-  // (survives remove+re-add); `ready` gates restore so an early loadedmetadata
-  // can't look the position up under the wrong (downloadId) key.
+  // Stable torrent identity is resolved before choosing and restoring a file.
   const [posKeyBase, setPosKeyBase] = useState<{ base: string; ready: boolean }>({ base: downloadId, ready: false });
   // File index the currently mounted media element actually plays (activeIndex
   // may already point at the next file while the old element is flushing).
   const streamIndexRef = useRef<number | null>(null);
-  const posRestoredRef = useRef(false);   // restore attempted for this file-open
-  const posUserSeekedRef = useRef(false); // manual seek began — never restore after
   const posLastSaveRef = useRef(0);       // throttle timestamp for timeupdate saves
 
+  const watchSessions = useRef(new Map<string, ReturnType<typeof beginWatch>>());
+  const mediaPositions = useRef(new WeakMap<HTMLMediaElement, { index: number; offset: number }>());
+  const durations = useRef(new Map<number, number>());
+  const openPosition = (base: string, file: StreamFile, knownFiles = files) => {
+    const key = playerFileKey(base, file.path), existing = getWatchEntry(base, file.path), time = resumablePosition(existing);
+    if (existing?.tracks && !loadFileTrackChoice(key)) {
+      if (existing.tracks.audio !== undefined) saveFileTrackChoice(key, { audio: existing.tracks.audio });
+      if (existing.tracks.subtitle !== undefined) saveFileTrackChoice(key, { subtitle: existing.tracks.subtitle });
+    }
+    const session = beginPlaybackWatch(base, file.path) || beginWatch(base, file.path); watchSessions.current.set(key, session);
+    const ordered = knownFiles.filter(f => f.kind === 'video').sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+    saveWatch({ identity: base, downloadId, title: downloadName, path: file.path, fileIndex: file.index, position: time,
+      duration: existing?.duration || null, completed: false, lastOpened: Date.now(), updatedAt: Date.now(), tracks: loadFileTrackChoice(key),
+      nextPath: ordered[ordered.findIndex(f => f.index === file.index) + 1]?.path }, session);
+    resumeRef.current = { time, paused: false, muted: false, volume: 1, rate: 1, file: file.index };
+    setStreamStart(time);
+  };
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let base = downloadId;
       try {
-        const dl = (await window.api.getDownloads()).find((d) => d.id === downloadId);
-        if (dl?.infoHash) base = dl.infoHash;
-      } catch { /* cosmetic — fall back to downloadId */ }
-      if (!cancelled) setPosKeyBase({ base, ready: true });
-    })();
-    return () => { cancelled = true; };
-  }, [downloadId]);
-
-  // Load the streamable files in this torrent once.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const all = await window.api.getTorrentFiles(downloadId);
-        const streamable: StreamFile[] = all
-          .map((f, index) => ({ index, name: f.name, path: f.path || f.name, length: f.length, kind: classifyMediaKind(f.name) }))
-          .filter((f) => f.kind !== 'other')
-          .sort((a, b) => b.length - a.length);
+        const [downloads, all] = await Promise.all([window.api.getDownloads(), historyPlayback ? window.api.historyPlayback.files(downloadId) : window.api.getTorrentFiles(downloadId)]);
+        const base = downloads.find(d => d.id === downloadId)?.infoHash || downloadId;
+        await migrateWatchHistory(downloads.filter(d => d.id === downloadId), id => window.api.historyPlayback?.files(id) || Promise.resolve(all));
+        const streamable: StreamFile[] = all.map((f, index) => ({ index: f.index ?? index, name: f.name, path: f.path || f.name, length: f.length, kind: classifyMediaKind(f.name) }))
+          .filter(f => f.kind !== 'other').sort((a, b) => b.length - a.length);
         if (cancelled) return;
-        setFiles(streamable);
-        if (streamable.length === 0) {
-          setError(t('player.noMedia'));
-          setLoading(false);
-        } else {
-          setActiveIndex(streamable[0].index);
-        }
-      } catch (err: any) {
-        if (!cancelled) {
-          setError(err?.message || String(err));
-          setLoading(false);
-        }
+        setFiles(streamable); setPosKeyBase({ base, ready: true });
+        const chosen = initialFilePath ? streamable.find(f => f.path.replace(/\\/g, '/') === initialFilePath.replace(/\\/g, '/')) : streamable[0];
+        if (!chosen) { setError(t('player.noMedia')); setLoading(false); return; }
+        openPosition(base, chosen, streamable); setActiveIndex(chosen.index);
+      } catch (err: unknown) {
+        if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setLoading(false); }
       }
     })();
     return () => { cancelled = true; };
-  }, [downloadId, t]);
+    // Initialization owns the requested file; subsequent playlist selections stay local.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [downloadId, initialFilePath, historyPlayback]);
 
   // Resolve a stream URL whenever the active file (or transcode mode, or the
   // chosen audio track) changes. A non-default audio track forces transcode —
@@ -216,12 +175,16 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     setStreamUrl(null);
     (async () => {
       try {
-        const info = await window.api.getStreamUrl(downloadId, activeIndex, {
+        const info = await (historyPlayback ? window.api.historyPlayback.stream : window.api.getStreamUrl)(downloadId, activeIndex, {
           transcode: forceTranscode || audioTrackIndex !== null,
           audioTrack: audioTrackIndex ?? undefined,
+          startTime: streamStart,
         });
         if (cancelled) return;
         streamIndexRef.current = activeIndex;
+        const offset = info.startTime || 0;
+        timelineOffsetRef.current = offset;
+        setStreamOffset(offset);
         setStreamUrl(info.url);
         setKind(info.kind === 'other' ? 'video' : info.kind);
         setTranscoded(info.transcoded);
@@ -234,7 +197,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       }
     })();
     return () => { cancelled = true; };
-  }, [downloadId, activeIndex, forceTranscode, audioTrackIndex]);
+  }, [downloadId, activeIndex, forceTranscode, audioTrackIndex, streamStart, historyPlayback]);
 
   // Close on Escape.
   useEffect(() => {
@@ -254,15 +217,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       // closing never strands a floating frame on Chromium's auto-close timing.
       if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
       const idx = activeIndexRef.current;
+      if (historyPlayback) void window.api.historyPlayback.stop(downloadId);
       void window.api.stopStream(downloadId, idx === null ? undefined : idx);
     };
-  }, [downloadId]);
+  }, [downloadId, historyPlayback]);
 
   // Reset the position-memory guards whenever a new media element mounts (the
   // element remounts per stream URL, so this is exactly "per file-open").
   useEffect(() => {
-    posRestoredRef.current = false;
-    posUserSeekedRef.current = false;
     posLastSaveRef.current = 0;
     advancedRef.current = false;
   }, [mediaEl]);
@@ -293,100 +255,80 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     return () => mediaEl.removeEventListener('loadedmetadata', tryEnter);
   }, [mediaEl]);
 
-  // Playback-position memory: throttled saves on timeupdate, clear on finish,
-  // one-shot restore on open, and a final flush in the effect cleanup — which
-  // runs on file switch (element remount), modal close and unmount alike.
+  // Bind every flush to the file and offset of THIS element, including old elements
+  // during source switches and portal moves. Never save a new file with the old clock.
   useEffect(() => {
-    const fileIdx = streamIndexRef.current;
-    if (!mediaEl || fileIdx === null || !posKeyBase.ready) return;
-    const key = `${posKeyBase.base}:${fileIdx}`;
-
-    // Save the position, or clear it once the film is (nearly) finished.
-    const saveOrClear = (final: boolean) => {
-      try {
-        // A live transcode restarts at 0:00 and isn't seekable — saving from
-        // it would overwrite the direct-play position that tryRestore below
-        // deliberately preserves "for a future direct play".
-        if (transcoded) return;
-        const d = mediaEl.duration;
-        if (!Number.isFinite(d) || d <= PLAY_POS_MIN_DURATION) return;
-        const cur = mediaEl.currentTime;
-        if (mediaEl.ended || cur / d >= PLAY_POS_FINISHED_FRAC) { clearPlayPosition(key); return; }
-        if (cur <= PLAY_POS_MIN_TIME) return;
-        if (!final && Date.now() - posLastSaveRef.current < PLAY_POS_SAVE_INTERVAL_MS) return;
-        posLastSaveRef.current = Date.now();
-        savePlayPosition(key, cur, d);
-      } catch { /* cosmetic — never break playback */ }
+    const mounted = mediaEl && mediaPositions.current.get(mediaEl);
+    if (!mediaEl || !mounted || !posKeyBase.ready) return;
+    const file = files.find(f => f.index === mounted.index); if (!file) return;
+    const key = playerFileKey(posKeyBase.base, file.path), session = watchSessions.current.get(key);
+    if (!session) return;
+    let duration = getWatchEntry(posKeyBase.base, file.path)?.duration || durations.current.get(file.index) || null;
+    let disposed = false;
+    if (!duration && window.api.historyPlayback) void window.api.historyPlayback.duration(downloadId, file.index).then(d => {
+      if (d && Number.isFinite(d)) { durations.current.set(file.index, d); if (!disposed) duration = d; }
+    }).catch(() => {});
+    const ordered = files.filter(f => f.kind === 'video').sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+    const nextPath = ordered[ordered.findIndex(f => f.index === file.index) + 1]?.path;
+    const save = (final: boolean) => {
+      if (!Number.isFinite(mediaEl.currentTime) || mediaEl.readyState < 1) return;
+      if (!final && Date.now() - posLastSaveRef.current < PLAY_POS_SAVE_INTERVAL_MS) return;
+      posLastSaveRef.current = Date.now();
+      const d = mounted.offset === 0 && Number.isFinite(mediaEl.duration) && mediaEl.duration > 0 && !transcoded ? mediaEl.duration :
+        duration || (Number.isFinite(mediaEl.duration) && mediaEl.duration > 0 ? mediaEl.duration + mounted.offset : null);
+      const position = mediaResumeTargets.current.get(mediaEl)?.time ?? Math.max(0, mediaEl.currentTime + mounted.offset);
+      // For unknown-duration live transcodes, a broken stream cannot mark an episode watched.
+      const completed = !!d && position >= d * PLAY_POS_FINISHED_FRAC;
+      const previous = getWatchEntry(posKeyBase.base, file.path);
+      const entry: WatchEntry = { identity: posKeyBase.base, downloadId, title: downloadName, path: file.path, fileIndex: file.index,
+        position, duration: d, lastOpened: previous?.lastOpened || Date.now(), updatedAt: Date.now(), completed,
+        tracks: loadFileTrackChoice(key), nextPath };
+      saveWatch(entry, session);
     };
-
-    // A 'seeking' before our own restore ran can only be a manual seek — from
-    // then on the user owns the playhead and restore must stay out of the way.
-    const onSeeking = () => { if (!posRestoredRef.current) posUserSeekedRef.current = true; };
-    const onTimeUpdate = () => saveOrClear(false);
-    const onEnded = () => { try { clearPlayPosition(key); } catch { /* cosmetic */ } };
-
-    // One restore attempt per file-open. Fired on loadedmetadata and retried on
-    // canplay only while the seekable ranges haven't been reported yet.
-    const tryRestore = () => {
-      if (posRestoredRef.current || posUserSeekedRef.current) return;
-      try {
-        const d = mediaEl.duration;
-        if (!Number.isFinite(d)) return;
-        const entry = getPlayPosition(key);
-        if (!entry || entry.t <= PLAY_POS_MIN_TIME || entry.t >= PLAY_POS_RESTORE_MAX_FRAC * d) {
-          posRestoredRef.current = true;
-          return;
-        }
-        // Live transcodes aren't seekable — keep the entry for a future direct play.
-        if (transcoded) { posRestoredRef.current = true; return; }
-        let seekableNow = false;
-        try {
-          seekableNow = mediaEl.seekable.length > 0 && entry.t <= mediaEl.seekable.end(mediaEl.seekable.length - 1);
-        } catch { seekableNow = false; }
-        if (!seekableNow) return; // ranges not reported yet — retry on canplay
-        posRestoredRef.current = true;
-        mediaEl.currentTime = entry.t;
-        toast(`${t('player.resumedFrom')} ${fmtTime(entry.t)}`, { id: 'player-resume' });
-      } catch { posRestoredRef.current = true; }
-    };
-
-    const events: Array<[string, () => void]> = [
-      ['timeupdate', onTimeUpdate],
-      ['ended', onEnded],
-      ['seeking', onSeeking],
-      ['loadedmetadata', tryRestore],
-      ['canplay', tryRestore],
-    ];
-    for (const [ev, fn] of events) mediaEl.addEventListener(ev, fn);
-    if (mediaEl.readyState >= 1) tryRestore(); // metadata beat this effect
-
+    const update = () => save(false), flush = () => save(true);
+    mediaEl.addEventListener('timeupdate', update); mediaEl.addEventListener('pause', flush); mediaEl.addEventListener('ended', flush);
+    window.addEventListener('pagehide', flush);
     return () => {
-      for (const [ev, fn] of events) mediaEl.removeEventListener(ev, fn);
-      saveOrClear(true); // final flush — file switch, close and unmount all land here
+      disposed = true; mediaEl.removeEventListener('timeupdate', update); mediaEl.removeEventListener('pause', flush); mediaEl.removeEventListener('ended', flush);
+      window.removeEventListener('pagehide', flush); save(true);
     };
-    // activeIndex is deliberately NOT a dep: the key is bound to the file the
-    // mounted element plays (streamIndexRef), so the flush-on-switch uses the
-    // OLD file's key even though activeIndex already points at the new one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mediaEl, transcoded, posKeyBase, t]);
+  }, [mediaEl, posKeyBase, files, downloadId, downloadName, transcoded]);
 
-  const selectFile = useCallback((index: number, opts?: { keepAudioTrack?: boolean }) => {
+  const selectFile = useCallback((index: number) => {
+    if (index === activeIndex) return;
+    resumeRef.current = null;
     setActiveIndex(index);
     setForceTranscode(false);
-    // Manual switches reset the track choice (a different film has different
-    // tracks); serial auto-advance/Next keeps it — season packs share layouts,
-    // and the probe validates the ordinal against the new file's track list.
-    if (!opts?.keepAudioTrack) setAudioTrackIndex(null);
+    setAudioTrackIndex(null);
+    setSubActiveKey(null);
+    const file = files.find(f => f.index === index);
+    if (file && posKeyBase.ready) openPosition(posKeyBase.base, file); else setStreamStart(0);
     setError(null);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeIndex, files, posKeyBase]);
+
+  const snapshotMedia = useCallback((el: HTMLMediaElement) => {
+    const pending = mediaResumeTargets.current.get(el);
+    if (pending) return pending;
+    const time = Number.isFinite(el.currentTime) ? Math.max(0, el.currentTime + timelineOffsetRef.current) : 0;
+    return { time, paused: el.paused, muted: el.muted, volume: el.volume, rate: el.playbackRate, file: activeIndex };
+  }, [activeIndex]);
+  const captureForSourceChange = useCallback((el: HTMLMediaElement | null = mediaEl) => {
+    if (!el) return;
+    const snapshot = snapshotMedia(el);
+    resumeRef.current = snapshot; setStreamStart(snapshot.time);
+  }, [mediaEl, snapshotMedia]);
 
   // Direct playback failed — retry through the transcoder once.
-  const handleMediaError = useCallback(() => {
-    if (!transcoded) setForceTranscode(true);
-    else setError(t('player.unsupported'));
-  }, [transcoded, t]);
+  const handleMediaError = useCallback((event: React.SyntheticEvent<HTMLMediaElement>) => {
+    const code = event.currentTarget.error?.code;
+    if (code === 1 || code === 2) setError(t('player.phase.networkError'));
+    else if (!transcoded && !forceTranscode) { captureForSourceChange(event.currentTarget); setForceTranscode(true); }
+    else setError(t('player.phase.decodeError'));
+  }, [transcoded, forceTranscode, t, captureForSourceChange]);
 
   const activeFile = files.find((f) => f.index === activeIndex) || null;
+  const fileChoiceKey = posKeyBase.ready && activeFile ? playerFileKey(posKeyBase.base, activeFile.path) : null;
 
   // ── detached window ────────────────────────────────────────────────────────
   // Its own window rather than a dock panel: this is about a FILE, not about a
@@ -409,7 +351,6 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
    * a new one for the new container, and a fresh media element starts at zero with
    * its resource selection re-run. Without this, detaching a film restarts it.
    */
-  const resumeRef = useRef<{ time: number; paused: boolean; muted: boolean; volume: number } | null>(null);
 
   // ── Serial mode ─────────────────────────────────────────────────────────────
   // Episode order = natural sort over the torrent-relative PATH ("E2" before
@@ -436,7 +377,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const nextFile = playlistPos >= 0 && playlistPos < playlist.length - 1 ? playlist[playlistPos + 1] : null;
 
   const playNext = useCallback(() => {
-    if (nextFile) selectFile(nextFile.index, { keepAudioTrack: true });
+    if (nextFile) selectFile(nextFile.index);
   }, [nextFile, selectFile]);
 
   const toggleAutoNext = useCallback(() => {
@@ -447,9 +388,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     });
   }, []);
 
-  // Auto-advance on 'ended' — a SEPARATE effect from the position-memory one
-  // (whose flush/clear semantics must stay keyed on streamIndexRef): that
-  // handler clears the finished file's position, this one moves to the next.
+  // Auto-advance only after a known full duration, never on an interrupted live transcode.
   useEffect(() => {
     if (!mediaEl || kind !== 'video') return;
     const onEnded = () => {
@@ -459,56 +398,57 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       if (activeIndexRef.current !== streamIndexRef.current) return;
       // A stream that produced nothing can't chain-skip episodes…
       if (!(mediaEl.currentTime > 0)) return;
-      // …and a finite-duration stream that "ended" far from the end was
-      // truncated (dead transcode / dropped source) — surface it, don't skip.
-      // Live transcodes report a non-finite duration, so a mid-episode ffmpeg
-      // death there still advances: known limitation, documented in the plan.
-      const d = mediaEl.duration;
-      if (Number.isFinite(d) && d > 0 && mediaEl.currentTime / d < PLAY_POS_FINISHED_FRAC) return;
+      const mounted = mediaPositions.current.get(mediaEl);
+      if (!mounted) return;
+      const historyDuration = activeFile ? getWatchEntry(posKeyBase.base, activeFile.path)?.duration : null;
+      const d = durations.current.get(mounted.index) || historyDuration || (Number.isFinite(mediaEl.duration) ? mediaEl.duration + mounted.offset : 0);
+      if (!d || (mediaEl.currentTime + mounted.offset) / d < PLAY_POS_FINISHED_FRAC) return;
       advancedRef.current = true;
       playNext();
     };
     mediaEl.addEventListener('ended', onEnded);
     return () => mediaEl.removeEventListener('ended', onEnded);
-  }, [mediaEl, kind, autoNext, nextFile, playNext]);
+  }, [mediaEl, kind, autoNext, nextFile, playNext, activeFile, posKeyBase.base]);
 
   // ── Audio tracks ────────────────────────────────────────────────────────────
-  // The chosen track, mirrored for async probe callbacks.
-  const audioTrackIndexRef = useRef<number | null>(null);
-  useEffect(() => { audioTrackIndexRef.current = audioTrackIndex; }, [audioTrackIndex]);
-
-  // Probe the active VIDEO file's audio tracks: once at open, and once more on
-  // loadedmetadata if the first probe found nothing (the container header may
-  // not be on disk yet when the modal opens). Local flags per effect run — a
-  // cancelled probe can't clobber the next file's list.
+  // A fresh file gets its own catalog. Reordered audio ordinals never carry over.
   useEffect(() => {
     setAudioOpen(false);
     setAudioTracks([]);
+    setCatalogFile(null);
+    setSubOpen(false);
+    setSubTracks([]);
     if (activeIndex === null || activeFile?.kind !== 'video') return;
     let cancelled = false;
-    let probed = false;
-    const probe = () => {
-      window.api.audioTracks.list(downloadId, activeIndex)
-        .then((list) => {
-          if (cancelled || list.length === 0) return;
-          probed = true;
-          setAudioTracks(list);
-          // A track choice preserved across an episode boundary must exist in
-          // THIS file too, or -map would point at a missing stream.
-          const chosen = audioTrackIndexRef.current;
-          if (chosen !== null && !list.some((tr) => tr.index === chosen)) setAudioTrackIndex(null);
-        })
-        .catch(() => {});
+    void (historyPlayback ? window.api.historyPlayback.audio : window.api.audioTracks.list)(downloadId, activeIndex).then(list => { if (!cancelled) { setAudioTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
+    void (historyPlayback ? window.api.historyPlayback.subtitles : window.api.subtitles.list)(downloadId, activeIndex).then(list => { if (!cancelled) { setSubTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [downloadId, activeIndex, activeFile?.kind, historyPlayback]);
+  useEffect(() => {
+    if (!mediaEl || activeIndex === null || activeFile?.kind !== 'video') return;
+    let cancelled = false;
+    const retry = () => {
+      if (!audioTracks.length) void (historyPlayback ? window.api.historyPlayback.audio : window.api.audioTracks.list)(downloadId, activeIndex).then(list => { if (!cancelled && list.length) { setAudioTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
+      if (!subTracks.length) void (historyPlayback ? window.api.historyPlayback.subtitles : window.api.subtitles.list)(downloadId, activeIndex).then(list => { if (!cancelled && list.length) { setSubTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
     };
-    probe();
-    const el = mediaEl;
-    const onMeta = () => { if (!probed) { probed = true; probe(); } };
-    el?.addEventListener('loadedmetadata', onMeta);
-    return () => {
-      cancelled = true;
-      el?.removeEventListener('loadedmetadata', onMeta);
-    };
-  }, [mediaEl, downloadId, activeIndex, activeFile?.kind]);
+    if (mediaEl.readyState >= 1) retry();
+    else mediaEl.addEventListener('loadedmetadata', retry, { once: true });
+    return () => { cancelled = true; mediaEl.removeEventListener('loadedmetadata', retry); };
+  }, [mediaEl, downloadId, activeIndex, activeFile?.kind, audioTracks.length, subTracks.length, historyPlayback]);
+  const switchAudio = useCallback((next: number | null) => {
+    if (audioTrackIndex === next) return;
+    captureForSourceChange(); setAudioTrackIndex(next);
+  }, [audioTrackIndex, captureForSourceChange]);
+  useEffect(() => {
+    if (!fileChoiceKey || !audioTracks.length || catalogFile !== activeIndex) return;
+    const chosen = preferredAudio(audioTracks, preferences, loadFileTrackChoice(fileChoiceKey));
+    switchAudio(chosen?.index ?? null);
+  }, [fileChoiceKey, audioTracks, preferences, choiceRevision, switchAudio, catalogFile, activeIndex]);
+  const selectAudio = (track: AudioTrack | null) => {
+    setAudioOpen(false);
+    if (fileChoiceKey) saveFileTrackChoice(fileChoiceKey, { audio: track ? trackIdentity(track) : 'default' });
+    setChoiceRevision(value => value + 1); switchAudio(track?.index ?? null);
+  };
 
   // Publish the current file on the LAN and show a QR + URL to open elsewhere.
   const handleCast = useCallback(async () => {
@@ -600,32 +540,31 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   // Reset TV state when switching files.
   useEffect(() => { setTvPlaying(null); setTvDevices([]); setTvError(null); }, [activeIndex]);
 
-  // Load available subtitle tracks for the active file.
+  // Automatic selection respects per-file choices and leaves unknown languages manual.
   useEffect(() => {
+    if (!fileChoiceKey || catalogFile !== activeIndex) return;
+    const chosen = preferredSubtitle(subTracks, preferences, effectiveAudioLanguage(audioTracks, audioTrackIndex), loadFileTrackChoice(fileChoiceKey));
+    setSubActiveKey(chosen?.key ?? null);
+  }, [fileChoiceKey, subTracks, audioTracks, audioTrackIndex, preferences, choiceRevision, catalogFile, activeIndex]);
+  const selectSubtitle = (key: string | null) => {
     setSubOpen(false);
-    setSubActiveKey(null);
-    setSubUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
-    setSubTracks([]);
-    if (activeIndex === null) return;
-    let alive = true;
-    window.api.subtitles.list(downloadId, activeIndex)
-      .then((list) => { if (alive) setSubTracks(list); })
-      .catch(() => {});
-    return () => { alive = false; };
-  }, [downloadId, activeIndex]);
-
-  const selectSubtitle = useCallback(async (key: string | null) => {
-    setSubOpen(false);
-    setSubUrl((prev) => { if (prev) URL.revokeObjectURL(prev); return null; });
-    if (!key || activeIndex === null) { setSubActiveKey(null); return; }
+    const track = subTracks.find(item => item.key === key);
+    if (fileChoiceKey) saveFileTrackChoice(fileChoiceKey, { subtitle: track ? trackIdentity(track) : 'off' });
+    setChoiceRevision(value => value + 1);
     setSubActiveKey(key);
-    try {
-      const vtt = await window.api.subtitles.get(downloadId, activeIndex, key);
-      if (!vtt || !vtt.trim()) return;
-      const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
-      setSubUrl(url);
-    } catch { /* ignore */ }
-  }, [downloadId, activeIndex]);
+  };
+  useEffect(() => {
+    setSubUrl(null);
+    if (!subActiveKey || activeIndex === null) return;
+    let disposed = false;
+    let url: string | null = null;
+    void (historyPlayback ? window.api.historyPlayback.vtt : window.api.subtitles.get)(downloadId, activeIndex, subActiveKey).then(vtt => {
+      if (disposed) return;
+      if (!vtt.trim()) throw new Error('Empty subtitles');
+      url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' })); setSubUrl(url);
+    }).catch(() => { if (!disposed) toast.error(t('player.preferences.subError')); });
+    return () => { disposed = true; if (url) URL.revokeObjectURL(url); };
+  }, [downloadId, activeIndex, subActiveKey, t, historyPlayback]);
 
   const activeCastUrl = castMode === 'remote' ? remoteInfo?.url : castInfo?.url;
   const copyCastUrl = useCallback(() => {
@@ -645,17 +584,25 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
    */
   const attachMedia = useCallback((el: HTMLMediaElement | null) => {
     setMediaEl(el);
+    const offset = timelineOffsetRef.current;
+    if (el && streamIndexRef.current !== null) mediaPositions.current.set(el, { index: streamIndexRef.current, offset });
     const want = resumeRef.current;
     if (!el || !want) return;
     resumeRef.current = null;
+    if (want.file !== streamIndexRef.current) return;
+    mediaResumeTargets.current.set(el, want);
+    el.autoplay = !want.paused;
     const apply = () => {
       // Seeking before metadata is ignored by the element, so wait for it when the
       // fresh copy has not read the stream yet.
-      try { el.currentTime = want.time; } catch { /* not seekable */ }
+      const relativeTime = Math.max(0, want.time - offset);
+      if (relativeTime > 0) { try { el.currentTime = relativeTime; } catch { /* not seekable */ } }
       // The sound state is part of the move: a new element in another document is
       // born at the defaults, and Chromium may mute it to permit autoplay.
       el.muted = want.muted;
       el.volume = want.volume;
+      el.playbackRate = want.rate;
+      mediaResumeTargets.current.delete(el);
       if (want.paused) el.pause();
       else void el.play().catch(() => { /* autoplay refused — the controls still work */ });
     };
@@ -663,27 +610,24 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     else el.addEventListener('loadedmetadata', apply, { once: true });
   }, []);
 
-  /** A new source cancels a pending resume: the position belonged to the old one. */
-  useEffect(() => { resumeRef.current = null; }, [streamUrl]);
-
   /** Detach / bring home. Playback is captured HERE, before React tears the old
    *  element down, so both directions of the move keep their place. */
   const toggleDetach = useCallback(() => {
-    if (mediaEl) resumeRef.current = { time: mediaEl.currentTime, paused: mediaEl.paused, muted: mediaEl.muted, volume: mediaEl.volume };
+    if (mediaEl) resumeRef.current = snapshotMedia(mediaEl);
     if (detached) closePopout();
     else if (!openPopout()) resumeRef.current = null; // denied — nothing moved
-  }, [mediaEl, detached, closePopout, openPopout]);
+  }, [mediaEl, detached, closePopout, openPopout, snapshotMedia]);
 
   /** The window's own X bypasses the button, and the element then remounts
    *  inline — capture the position there too, or the film restarts from zero. */
   useEffect(() => {
     if (!popout) return;
     const capture = () => {
-      if (mediaEl) resumeRef.current = { time: mediaEl.currentTime, paused: mediaEl.paused, muted: mediaEl.muted, volume: mediaEl.volume };
+      if (mediaEl) resumeRef.current = snapshotMedia(mediaEl);
     };
     popout.addEventListener('beforeunload', capture);
     return () => popout.removeEventListener('beforeunload', capture);
-  }, [popout, mediaEl]);
+  }, [popout, mediaEl, snapshotMedia]);
 
   /** The window is named after what is playing, and playlists move on. */
   useEffect(() => {
@@ -715,8 +659,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     if (loading || !streamUrl) {
       return (
         <div className="player-message">
-          <span className="spinner spinner-lg" />
-          <p>{transcoded ? t('player.converting') : t('player.buffering')}</p>
+          <MediaBufferStatus media={null} downloadId={downloadId} resolving />
         </div>
       );
     }
@@ -732,7 +675,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             autoPlay
             onError={handleMediaError}
           />
-          <PlayerControls media={mediaEl} seekable={!transcoded}>{detachButton}</PlayerControls>
+          <PlayerControls media={mediaEl} seekable={!transcoded} timeOffset={streamOffset}>{detachButton}</PlayerControls>
+          <MediaBufferStatus media={mediaEl} downloadId={downloadId} transcoded={transcoded} />
         </div>
       );
     }
@@ -747,9 +691,9 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
           onClick={() => { if (mediaEl) { if (mediaEl.paused) void mediaEl.play().catch(() => {}); else mediaEl.pause(); } }}
           onError={handleMediaError}
         >
-          {subUrl && <track kind="subtitles" src={subUrl} srcLang="und" label={t('player.subtitles')} default />}
+          {subUrl && <track key={subUrl} kind="subtitles" src={subUrl} srcLang="und" label={t('player.subtitles')} default />}
         </video>
-        <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded}>
+        <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded} timeOffset={streamOffset}>
           {detachButton}
           {nextFile && (
             <button className="pc-btn" onClick={playNext} title={t('player.nextEpisode')}>
@@ -757,9 +701,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             </button>
           )}
         </PlayerControls>
+        <MediaBufferStatus media={mediaEl} downloadId={downloadId} transcoded={transcoded} />
       </div>
     );
-  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext, detachButton]);
+  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext, detachButton, downloadId, attachMedia, streamOffset]);
 
   const shell = (
     <div
@@ -814,7 +759,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
               )}
             </div>
           )}
-          {activeFile?.kind === 'video' && audioTracks.length > 1 && (
+          {activeFile?.kind === 'video' && catalogFile === activeIndex && audioTracks.length > 1 && (
             <div className="player-sub-wrap">
               <button
                 className={`player-cast-btn ${audioOpen ? 'active' : ''}`}
@@ -828,7 +773,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
                 <div className="player-sub-panel">
                   <button
                     className={`player-sub-item ${audioTrackIndex === null ? 'active' : ''}`}
-                    onClick={() => { setAudioOpen(false); setAudioTrackIndex(null); }}
+                    onClick={() => selectAudio(null)}
                   >
                     {t('player.audioDefault')}
                   </button>
@@ -836,7 +781,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
                     <button
                       key={tr.index}
                       className={`player-sub-item ${audioTrackIndex === tr.index ? 'active' : ''}`}
-                      onClick={() => { setAudioOpen(false); setAudioTrackIndex(tr.index); }}
+                      onClick={() => selectAudio(tr)}
                     >
                       <Icon name="music" size={13} />
                       <span>{tr.label}{tr.isDefault ? ' ●' : ''}</span>
@@ -991,6 +936,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
         )}
 
         <div className="player-body">{renderBody()}</div>
+        {activeFile?.kind === 'video' && <PlayerPreferencesPanel prefs={preferences} onChange={updatePreferences} onResetFile={() => {
+          if (fileChoiceKey) clearFileTrackChoice(fileChoiceKey); setChoiceRevision(value => value + 1);
+        }} />}
+        {!historyPlayback && playlist.length > 1 && activeIndex !== null && <EpisodePrefetchControl media={loading || error ? null : mediaEl}
+          downloadId={downloadId} currentFile={activeIndex} nextFile={nextFile?.index ?? null} nextName={nextFile?.label} />}
 
         {files.length > 1 && (
           <div className="player-files">

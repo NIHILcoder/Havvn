@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import { readBufferedRanges, type BufferedRange } from '../../shared/playback-buffer';
 import './PlayerControls.css';
 
 // Exported for reuse (StreamPlayerModal's "resuming from …" toast).
@@ -30,6 +31,8 @@ interface PlayerControlsProps {
   fullscreenTarget?: React.RefObject<HTMLElement | null>;
   /** Live transcodes aren't Range-seekable — the scrubber turns display-only. */
   seekable?: boolean;
+  /** Original timeline offset when a transcode restarts partway through a file. */
+  timeOffset?: number;
   /** Extra buttons rendered between volume and fullscreen (subtitles, …). */
   children?: React.ReactNode;
 }
@@ -43,13 +46,14 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   media,
   fullscreenTarget,
   seekable = true,
+  timeOffset = 0,
   children,
 }) => {
   const { t } = useTranslation();
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(NaN);
-  const [buffered, setBuffered] = useState(0);
+  const [buffered, setBuffered] = useState<BufferedRange[]>([]);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [fs, setFs] = useState(false);
@@ -69,21 +73,19 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   // Mirror the element's state — the element is the source of truth, so remote
   // watch-together commands and codec fallbacks reflect here automatically.
   useEffect(() => {
-    if (!media) return;
+    if (!media) { setBuffered([]); return; }
     const sync = () => {
       setPlaying(!media.paused);
       setTime(media.currentTime);
       setDuration(media.duration);
-      try {
-        setBuffered(media.buffered.length ? media.buffered.end(media.buffered.length - 1) : 0);
-      } catch { /* transient buffered ranges */ }
+      setBuffered(readBufferedRanges(media.buffered));
       setVolume(media.volume);
       setMuted(media.muted);
       setRate(media.playbackRate);
       setHasVideo(media instanceof HTMLVideoElement && media.videoWidth > 0);
     };
     sync();
-    const evs = ['play', 'pause', 'timeupdate', 'durationchange', 'progress', 'volumechange', 'loadedmetadata', 'ended', 'ratechange'];
+    const evs = ['play', 'pause', 'timeupdate', 'durationchange', 'progress', 'volumechange', 'loadedmetadata', 'ended', 'ratechange', 'seeking', 'seeked', 'emptied'];
     for (const ev of evs) media.addEventListener(ev, sync);
     return () => { for (const ev of evs) media.removeEventListener(ev, sync); };
   }, [media]);
@@ -195,14 +197,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   }, [media, toggle, toggleMute, toggleFullscreen, canSeek, duration, fullscreenTarget, canPip, togglePip]);
 
   const pct = canSeek ? Math.min(100, (time / duration) * 100) : 100;
-  const bufPct = canSeek ? Math.min(100, (buffered / duration) * 100) : 0;
 
   return (
     <div className="pc">
       <button className="pc-btn pc-play" onClick={toggle} title={playing ? t('player.pause') : t('player.play')}>
         <Icon name={playing ? 'pause' : 'play'} size={15} />
       </button>
-      <span className="pc-time">{fmtTime(time)}</span>
+      <span className="pc-time">{fmtTime(time + timeOffset)}</span>
       <div
         ref={barRef}
         className={`pc-bar ${canSeek ? '' : 'pc-bar-static'}`}
@@ -215,7 +216,11 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
         aria-valuemax={Number.isFinite(duration) ? Math.floor(duration) : 0}
         aria-valuenow={Math.floor(time)}
       >
-        <span className="pc-buffer" style={{ width: `${bufPct}%` }} />
+        {canSeek && buffered.map((range, index) => {
+          const start = Math.min(100, Math.max(0, range.start / duration * 100));
+          const end = Math.min(100, range.end / duration * 100);
+          return <span key={index} className="pc-buffer" style={{ left: `${start}%`, width: `${Math.max(0, end - start)}%` }} />;
+        })}
         <span className="pc-fill" style={{ width: `${pct}%` }} />
       </div>
       <span className="pc-time pc-duration">{canSeek ? fmtTime(duration) : '· · ·'}</span>

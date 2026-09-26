@@ -43,6 +43,15 @@ import type {
 } from '../shared/gameserver-types';
 
 const api: IpcApi = {
+  historyPlayback: {
+    files: id => ipcRenderer.invoke('historyPlayback:files', id),
+    stream: (id, index, opts) => ipcRenderer.invoke('historyPlayback:stream', id, index, opts),
+    audio: (id, index) => ipcRenderer.invoke('historyPlayback:audio', id, index),
+    subtitles: (id, index) => ipcRenderer.invoke('historyPlayback:subtitles', id, index),
+    vtt: (id, index, key) => ipcRenderer.invoke('historyPlayback:vtt', id, index, key),
+    duration: (id, index) => ipcRenderer.invoke('historyPlayback:duration', id, index),
+    stop: id => ipcRenderer.invoke('historyPlayback:stop', id),
+  },
   // Downloads
   addDownload: (request: AddDownloadRequest): Promise<Download> => {
     return ipcRenderer.invoke('downloads:add', request);

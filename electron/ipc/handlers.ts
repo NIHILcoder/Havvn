@@ -8,6 +8,9 @@ import { peerHostToIPv4 } from '../../shared/ip-range';
 import { buildOPML, parseOPML } from '../../shared/opml';
 import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
+import Store from 'electron-store';
+import { HistoryPlayback } from '../services/history-playback';
+import type { TorrentFile } from '../../shared/types';
 import fsSync from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
@@ -444,6 +447,21 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       return torrentManager.getDownloads();
     }
   ));
+
+  const playbackCache = new Store<{ files: Record<string, TorrentFile[]> }>({ name: 'playback-files', clearInvalidConfig: true, defaults: { files: {} } });
+  const historyPlayback = new HistoryPlayback({
+    download: db.getDownloadById, files: id => torrentManager.getHistoryFiles(id),
+    stream: (id, index, opts) => torrentManager.getStreamUrl(id, index, opts), ffmpeg: () => torrentManager.ffmpegBinary,
+    cached: key => playbackCache.get('files')[key] || [],
+    cache: (key, files) => { const cached = playbackCache.get('files'); if (JSON.stringify(cached[key]) === JSON.stringify(files)) return; delete cached[key]; cached[key] = files; playbackCache.set('files', Object.fromEntries(Object.entries(cached).slice(-200))); },
+  });
+  app.once('before-quit', () => historyPlayback.close());
+  const historyMethods = ['files', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop'] as const;
+  for (const method of historyMethods) ipcMain.handle('historyPlayback:' + method, wrapHandler('historyPlayback:' + method, async (_event, id: string, ...args: unknown[]) => {
+    validateDownloadId(id);
+    const invoke = historyPlayback[method].bind(historyPlayback) as (id: string, ...args: unknown[]) => unknown;
+    return invoke(id, ...args);
+  }));
 
   ipcMain.handle('downloads:getFiles', wrapHandler('downloads:getFiles',
     async (_event, id: string) => {

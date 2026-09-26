@@ -1,0 +1,13 @@
+.player-preferences { padding: 10px 14px; border-top: 1px solid var(--color-border); background: var(--color-bg-secondary); font-size: 0.75rem; flex-shrink: 0; color: var(--color-text-secondary); }
+.player-preferences summary { font-weight: 600; cursor: pointer; }
+.player-preferences[open] { max-height: min(40vh, 290px); overflow-y: auto; }
+.player-preferences-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px 16px; margin-top: 12px; }
+.player-preferences-grid label { display: flex; flex-direction: column; justify-content: space-between; gap: 6px; min-width: 0; }
+.player-preferences-grid select, .player-preferences-grid input { min-width: 0; width: 100%; height: 32px; background: var(--color-bg-primary); color: var(--color-text-primary); border: 1px solid var(--color-border); padding: 4px 8px; }
+.player-preferences-grid input[type=color] { padding: 3px; }
+.player-preferences p { margin: 12px 0 0; line-height: 1.5; color: var(--color-text-muted); }
+.player-preferences-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.player-preferences-actions button { padding: 6px 10px; color: var(--color-text-primary); background: var(--color-bg-primary); border: 1px solid var(--color-border); cursor: pointer; }
+.player-modal:has(.player-preferences) .player-stage { align-self: stretch; height: auto; }
+.player-modal:has(.player-preferences) .player-video { flex: 1; min-height: 0; object-fit: contain; }
+@container player (max-width: 560px) { .player-modal:has(.player-preferences) .player-badge { display: none; } }
