@@ -47,7 +47,7 @@ module.exports = (env, argv) => ({
     }),
   ],
   devServer: {
-    host: 'localhost',
+    host: '127.0.0.1',
     port: 3000,
     hot: true,
     static: {

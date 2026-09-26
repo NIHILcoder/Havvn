@@ -10,7 +10,7 @@ if (!process.versions.electron) {
     const net = require('node:net');
     // Refuse to interfere with an existing dev server.
     await new Promise((resolve, reject) => {
-      const socket = net.connect(3000, 'localhost');
+      const socket = net.connect(3000, '127.0.0.1');
       socket.once('connect', () => { socket.destroy(); reject(new Error('Port 3000 is already occupied')); });
       socket.once('error', error => error.code === 'ECONNREFUSED' ? resolve() : reject(error));
     });
@@ -57,7 +57,7 @@ if (!process.versions.electron) {
   ipcMain.once('app:rendererReady', async event => {
     try {
       const renderer = await event.sender.executeJavaScript('({url:location.href, mounted:!!document.getElementById("root")?.childElementCount})');
-      if (!renderer.mounted || renderer.url !== 'http://localhost:3000/') throw new Error('Development renderer did not mount');
+      if (!renderer.mounted || renderer.url !== 'http://127.0.0.1:3000/') throw new Error('Development renderer did not mount');
       const { getTorrentManager } = require(path.join(root, 'dist/electron/electron/torrent/index.js'));
       const downloads = await getTorrentManager().getDownloads();
       if (downloads.length !== 0) throw new Error('Temporary profile unexpectedly contains downloads');
@@ -71,7 +71,7 @@ if (!process.versions.electron) {
     let ready = false;
     while (Date.now() < until) {
       try {
-        const response = await fetch('http://localhost:3000', { signal: AbortSignal.timeout(90000) });
+        const response = await fetch('http://127.0.0.1:3000', { signal: AbortSignal.timeout(90000) });
         if (response.ok) { ready = true; break; }
       } catch {}
       await new Promise(resolve => setTimeout(resolve, 250));

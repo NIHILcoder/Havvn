@@ -4,8 +4,8 @@
   "description": "A modern, privacy-focused BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
-    "dev": "concurrently \"npm run dev:electron\" \"npm run dev:renderer\"",
-    "dev:electron": "tsc -p tsconfig.electron.json && cross-env NODE_ENV=development electron .",
+    "dev": "concurrently --kill-others \"npm run dev:electron\" \"npm run dev:renderer\"",
+    "dev:electron": "tsc -p tsconfig.electron.json && node scripts/dev-electron.cjs",
     "dev:renderer": "webpack serve --config webpack.renderer.config.js --mode development",
     "build": "npm run build:electron && npm run build:renderer && npm run build:guest",
     "build:electron": "tsc -p tsconfig.electron.json",

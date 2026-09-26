@@ -661,7 +661,7 @@ async function createWindow(): Promise<void> {
   // the UI. Prevent the window from ever navigating away from the app, and route
   // any external link to the user's default browser instead of opening it in-app.
   const isDev = process.env.NODE_ENV === 'development';
-  const allowedOrigin = isDev ? 'http://localhost:3000' : 'file://';
+  const allowedOrigin = isDev ? 'http://127.0.0.1:3000' : 'file://';
 
   // Pop-out panels: about:blank child windows the renderer scripts directly
   // (same-origin DOM portal — no navigation, no remote content), so the user can
@@ -904,7 +904,7 @@ async function createWindow(): Promise<void> {
   // In development, load from webpack dev server
   
   if (isDev) {
-    await mainWindow.loadURL('http://localhost:3000');
+    await mainWindow.loadURL('http://127.0.0.1:3000');
     // DevTools no longer auto-open — use View → Toggle Developer Tools, or set
     // HAVVN_DEVTOOLS=1 when you want them from the start.
     if (process.env.HAVVN_DEVTOOLS === '1') mainWindow.webContents.openDevTools();
