@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Icon } from '../components/Icon';
 import { StreamPlayerModal } from '../components/StreamPlayerModal';
+import { ExternalPlayerModal } from '../components/ExternalPlayerModal';
 import { useConfirm } from '../components/ConfirmDialog';
 import { fmtTime } from '../components/PlayerControls';
 import { useTranslation } from '../utils/i18nContext';
@@ -21,6 +22,7 @@ export default function WatchHistoryPage() {
   const [failed, setFailed] = useState(false);
   const [view, setView] = useState<'continue' | 'all'>('continue');
   const [player, setPlayer] = useState<{ id: string; title: string; path: string } | null>(null);
+  const [external, setExternal] = useState<{ id: string; path: string; position: number } | null>(null);
   useEffect(() => subscribeWatchHistory(() => { setEntries(watchEntries()); setPending(pendingWatchPositions()); }), []);
   useEffect(() => {
     let disposed = false, running = false;
@@ -79,6 +81,7 @@ export default function WatchHistoryPage() {
             <time dateTime={new Date(entry.lastOpened).toISOString()}>{new Date(entry.lastOpened).toLocaleDateString(language)}</time></div>
           {!playable && <p className="watch-history-unavailable">{checking ? t('history.checking') : file?.availability === 'paused' ? t('history.paused') : t('history.unavailable')}</p>}
           <div className="watch-history-actions">
+            <button className="btn btn-secondary" disabled={!a || !file} title={t('external.title')} onClick={() => a && setExternal({ id: a.download.id, path: entry.path, position: resumablePosition(entry) })}><Icon name="external-link" size={14} />{t('external.short')}</button>
             <button className="btn btn-primary" disabled={!playable} onClick={() => open(entry)}><Icon name="play" size={14} />{t(entry.completed ? 'history.replay' : 'history.resume')}</button>
             {entry.nextPath && <button className="btn btn-secondary" disabled={!next?.playable} onClick={() => open(entry, entry.nextPath)}>{t('history.next')}</button>}
           </div>
@@ -90,5 +93,6 @@ export default function WatchHistoryPage() {
       })}
     </div>
     {player && <StreamPlayerModal downloadId={player.id} downloadName={player.title} initialFilePath={player.path} historyPlayback onClose={closePlayer} />}
+    {external && <ExternalPlayerModal downloadId={external.id} relativePath={external.path} position={external.position} onClose={() => setExternal(null)} />}
   </div>;
 }

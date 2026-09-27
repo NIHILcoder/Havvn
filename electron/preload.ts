@@ -43,6 +43,15 @@ import type {
 } from '../shared/gameserver-types';
 
 const api: IpcApi = {
+  externalPlayer: {
+    getConfig: () => ipcRenderer.invoke('externalPlayer:getConfig'),
+    inspect: (id, rel) => ipcRenderer.invoke('externalPlayer:inspect', id, rel),
+    sessions: () => ipcRenderer.invoke('externalPlayer:sessions'),
+    stop: id => ipcRenderer.invoke('externalPlayer:stop', id),
+    useDefault: () => ipcRenderer.invoke('externalPlayer:useDefault'),
+    choose: () => ipcRenderer.invoke('externalPlayer:choose'),
+    open: (id, relativePath, startTime) => ipcRenderer.invoke('externalPlayer:open', id, relativePath, startTime),
+  },
   historyPlayback: {
     files: id => ipcRenderer.invoke('historyPlayback:files', id),
     stream: (id, index, opts) => ipcRenderer.invoke('historyPlayback:stream', id, index, opts),

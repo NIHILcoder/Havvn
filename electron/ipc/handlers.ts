@@ -10,6 +10,8 @@ import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
 import Store from 'electron-store';
 import { HistoryPlayback } from '../services/history-playback';
+import { ExternalPlayer } from '../services/external-player';
+import type { ExternalPlayerPreferences } from '../../shared/external-player';
 import type { TorrentFile } from '../../shared/types';
 import fsSync from 'fs';
 import path from 'path';
@@ -456,6 +458,29 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     cache: (key, files) => { const cached = playbackCache.get('files'); if (JSON.stringify(cached[key]) === JSON.stringify(files)) return; delete cached[key]; cached[key] = files; playbackCache.set('files', Object.fromEntries(Object.entries(cached).slice(-200))); },
   });
   app.once('before-quit', () => historyPlayback.close());
+  const externalStore = new Store<{ preferences: ExternalPlayerPreferences }>({ name: 'external-player', clearInvalidConfig: true, defaults: { preferences: { kind: 'default', executable: null } } });
+  const externalPlayer = new ExternalPlayer({ read: () => externalStore.get('preferences'), write: prefs => externalStore.set('preferences', prefs),
+    resolve: (id, relativePath) => historyPlayback.localFile(id, relativePath),
+    openPath: file => shell.openPath(file) });
+  // Popouts use the main renderer's bridge; provider login pages have no access.
+  const externalSender = (event: Electron.IpcMainInvokeEvent) => {
+    if (event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted player request');
+  };
+  ipcMain.handle('externalPlayer:getConfig', wrapHandler('externalPlayer:getConfig', async event => { externalSender(event); return externalPlayer.getConfig(); }));
+  ipcMain.handle('externalPlayer:useDefault', wrapHandler('externalPlayer:useDefault', async event => { externalSender(event); return externalPlayer.useDefault(); }));
+  ipcMain.handle('externalPlayer:choose', wrapHandler('externalPlayer:choose', async event => {
+    externalSender(event);
+    const choice = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, { properties: ['openFile'],
+      ...(process.platform === 'win32' ? { filters: [{ name: 'VLC / mpv', extensions: ['exe'] }] } : {}) });
+    return choice.canceled || !choice.filePaths[0] ? { ok: true, config: null } : externalPlayer.select(choice.filePaths[0]);
+  }));
+  ipcMain.handle('externalPlayer:open', wrapHandler('externalPlayer:open', async (event, id: string, relativePath: string, startTime?: number) => {
+    externalSender(event); validateDownloadId(id); return externalPlayer.open(id, relativePath, startTime);
+  }));
+  app.once('before-quit', () => externalPlayer.close());
+  ipcMain.handle('externalPlayer:inspect', wrapHandler('externalPlayer:inspect', async (event, id: string, rel: string) => { externalSender(event); validateDownloadId(id); return externalPlayer.inspect(id, rel); }));
+  ipcMain.handle('externalPlayer:sessions', wrapHandler('externalPlayer:sessions', async event => { externalSender(event); return externalPlayer.sessions(); }));
+  ipcMain.handle('externalPlayer:stop', wrapHandler('externalPlayer:stop', async (event, id: string) => { externalSender(event); if (typeof id !== 'string' || id.length > 80) throw new Error('Invalid stream'); externalPlayer.stop(id); }));
   const historyMethods = ['files', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop'] as const;
   for (const method of historyMethods) ipcMain.handle('historyPlayback:' + method, wrapHandler('historyPlayback:' + method, async (_event, id: string, ...args: unknown[]) => {
     validateDownloadId(id);

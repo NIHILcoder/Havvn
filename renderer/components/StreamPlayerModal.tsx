@@ -15,6 +15,7 @@ import { PlayerControls } from './PlayerControls';
 import { MediaBufferStatus } from './MediaBufferStatus';
 import { EpisodePrefetchControl } from './EpisodePrefetchControl';
 import { PlayerPreferencesPanel } from './PlayerPreferencesPanel';
+import { ExternalPlayerModal } from './ExternalPlayerModal';
 import { preferredAudio, preferredSubtitle, effectiveAudioLanguage, playerFileKey, trackIdentity, type AudioTrack, type SubtitleTrack, type PlayerPreferences } from '../../shared/player-preferences';
 import { PLAYER_PREFS_KEY, loadPlayerPreferences, savePlayerPreferences, loadFileTrackChoice, saveFileTrackChoice, clearFileTrackChoice } from '../utils/playerPreferences';
 import { useSubtitlePresentation } from '../utils/useSubtitlePresentation';
@@ -65,6 +66,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [transcoded, setTranscoded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [external, setExternal] = useState<{ path: string; position: number; wasPlaying: boolean } | null>(null);
+  const externalLaunched = useRef(false);
 
   // "Watch on another device" (LAN cast)
   const [castInfo, setCastInfo] = useState<{ url: string; lan: string; port: number } | null>(null);
@@ -201,10 +204,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
 
   // Close on Escape.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !external) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, external]);
 
   // When the player closes, tell the engine to undo instant-play prioritization
   // (forced-sequential strategy + priority-10 head selection) and re-deselect the
@@ -829,6 +832,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             <Icon name="tv" size={16} />
             <span className="player-cast-label">{t('player.cast')}</span>
           </button>
+          <button className="player-cast-btn" title={t('external.title')} disabled={activeIndex === null} onClick={() => {
+            const file = files.find(f => f.index === activeIndex);
+            if (file) {
+              externalLaunched.current = false;
+              const wasPlaying = !!mediaEl && !mediaEl.paused, position = mediaEl ? snapshotMedia(mediaEl).time : streamStart;
+              mediaEl?.pause(); setExternal({ path: file.path, position, wasPlaying });
+            }
+          }}><Icon name="external-link" size={16} /><span className="player-cast-label">{t('external.short')}</span></button>
           {/* Detached, this row IS the window's title bar — the window is frameless,
               so the app's own controls replace the caption buttons. Close still means
               close the PLAYER; the button beside it is what brings it back inline. */}
@@ -963,6 +974,9 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
           <Icon name="info" size={12} />
           <span>{transcoded ? t('player.transcodingNote') : t('player.note')}</span>
         </div>
+        {external && <ExternalPlayerModal downloadId={downloadId} relativePath={external.path} position={external.position}
+          onClose={() => { if (!externalLaunched.current && external.wasPlaying) void mediaEl?.play().catch(() => {}); setExternal(null); }}
+          onOpened={() => { externalLaunched.current = true; mediaEl?.pause(); onClose(); }} />}
     </div>
   );
 

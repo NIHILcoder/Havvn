@@ -1100,6 +1100,7 @@ export interface IPBlocklist {
 
 
 export interface IpcApi {
+  externalPlayer: import('./external-player').ExternalPlayerApi;
   historyPlayback: {
     files: (id: string) => Promise<import('./history-playback').HistoryPlaybackFile[]>;
     stream: (id: string, index: number, opts?: import('./history-playback').HistoryPlaybackOptions) => ReturnType<IpcApi['getStreamUrl']>;

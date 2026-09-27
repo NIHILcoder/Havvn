@@ -119,7 +119,7 @@ export function resolveTrapMove(s: TrapState, shiftKey: boolean): 'first' | 'las
 }
 
 /** Move focus into the dialog on open, trap Tab inside it, restore focus on close. */
-export function useModalFocus(): React.RefObject<HTMLDivElement> {
+export function useModalFocus(token?: object): React.RefObject<HTMLDivElement> {
   const ref = useRef<HTMLDivElement>(null);
   const host = useHostWindow();
   useEffect(() => {
@@ -135,6 +135,8 @@ export function useModalFocus(): React.RefObject<HTMLDivElement> {
     (initial || dialog)?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || !dialog) return;
+      // Only the top dialog owns focus while a picker/confirmation covers another.
+      if (token && modalStack[modalStack.length - 1] !== token) return;
       const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
       )).filter((el) => el.offsetParent !== null); // skip display:none
@@ -160,7 +162,7 @@ export function useModalFocus(): React.RefObject<HTMLDivElement> {
       // over the child on Windows.
       prev?.focus?.();
     };
-  }, [host]);
+  }, [host, token]);
   return ref;
 }
 
@@ -205,8 +207,8 @@ export const Modal: React.FC<ModalProps> = ({
   closeOnBackdrop = true, className = '', backdropClassName = '', bodyClassName = '', ariaLabel, children,
 }) => {
   const { t } = useTranslation();
-  const ref = useModalFocus();
   const token = useRef({});
+  const ref = useModalFocus(token.current);
   useModalEscape(token.current, onClose, !busy);
 
   const onBackdrop = (e: React.MouseEvent) => {

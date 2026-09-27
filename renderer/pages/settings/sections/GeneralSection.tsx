@@ -8,6 +8,7 @@ import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, RestartPendingNotice } from '../controls';
 import { Icon, Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
+import { ExternalPlayerPreferences } from '../../../components/ExternalPlayerPreferences';
 
 export const GeneralSection: React.FC = () => {
   const ctx = useSettings();
@@ -52,6 +53,9 @@ export const GeneralSection: React.FC = () => {
         )}
       </SettingsCard>
 
+      <SettingsCard title={t('external.player')} icon="monitor">
+        <ExternalPlayerPreferences />
+      </SettingsCard>
       <SettingsCard title={t('settings.grp.application')} icon="power">
         <SettingRow
           label={t('settings.autoLaunch')}

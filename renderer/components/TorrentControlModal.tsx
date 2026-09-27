@@ -13,6 +13,8 @@ import { ContextMenu } from './ContextMenu';
 import { useConfirm } from './ConfirmDialog';
 import { useTranslation } from '../utils/i18nContext';
 import { cleanError } from '../utils/format-helpers';
+import { classifyMediaKind } from '../../shared/media';
+import { ExternalPlayerModal } from './ExternalPlayerModal';
 import './TorrentControlModal.css';
 
 interface TorrentControlModalProps {
@@ -82,6 +84,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
 
   // Files tab state
   const [files, setFiles] = useState<TorrentFile[]>([]);
+  const [externalFile, setExternalFile] = useState<string | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [savingPriority, setSavingPriority] = useState<number | null>(null);
 
@@ -146,7 +149,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   const loadFiles = async () => {
     setLoadingFiles(true);
     try {
-      const result = await window.api.getTorrentFiles(download.id);
+      const result = await window.api.historyPlayback.files(download.id);
       setFiles(result || []);
     } catch (err) {
       console.error('Failed to load files:', err);
@@ -483,6 +486,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                             </div>
                           </div>
                           <div className="tcm-priority-btns">
+                            {classifyMediaKind(file.path) !== 'other' && <button className="btn btn-ghost tcm-file-external" title={t('external.title')} aria-label={t('external.title')} onClick={() => setExternalFile(file.path)}><Icon name="external-link" size={14} /></button>}
                             {(['skip', 'low', 'normal', 'high'] as FilePriority[]).map(p => (
                               <button
                                 key={p}
@@ -690,6 +694,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
           )}
         </div>
     </Modal>
+    {externalFile && <ExternalPlayerModal downloadId={download.id} relativePath={externalFile} onClose={() => setExternalFile(null)} />}
     {peerMenu && (
       <ContextMenu
         x={peerMenu.x}

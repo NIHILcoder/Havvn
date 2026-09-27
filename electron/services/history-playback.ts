@@ -10,6 +10,7 @@ import { streamStartSeconds, streamStartParam } from '../../shared/stream-positi
 import { NativeMediaServer, type MediaFileInfo } from '../torrent/native/media-server';
 import { audioTrackList, audioTrackParam, probeAudioStreams } from '../torrent/audio-probe';
 import { getSubtitleVtt, listSubtitleTracks } from '../torrent/subtitle-probe';
+import type { LocalMedia } from './external-player';
 
 interface Dependencies {
   download: (id: string) => Promise<Download | null>;
@@ -75,6 +76,19 @@ export class HistoryPlayback {
     if (!d || !file || classifyMediaKind(file.name) === 'other') throw new Error('Media unavailable');
     const disk = this.diskPath(d, file); if (!disk) throw new Error('Media unavailable');
     return { file, disk };
+  }
+  async localFile(id: string, relativePath: string): Promise<LocalMedia> {
+    if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0') || classifyMediaKind(relativePath) === 'other') return { ok: false, reason: 'invalid-file' };
+    const rel = relativePath.replace(/\\/g, '/');
+    if (path.isAbsolute(rel) || rel.includes(':') || rel.split('/').some(p => p === '..' || p === '.')) return { ok: false, reason: 'invalid-file' };
+    const files = await this.files(id), d = await this.deps.download(id);
+    if (!d || d.status === 'removed') return { ok: false, reason: 'missing-file' };
+    const file = files.find(f => f.path.replace(/\\/g, '/') === rel);
+    if (!file || classifyMediaKind(file.name) === 'other') return { ok: false, reason: 'invalid-file' };
+    const disk = this.diskPath(d, file);
+    if (!disk) return { ok: false, reason: file.downloaded < file.length ? 'incomplete-file' : 'missing-file' };
+    if (file.availability !== 'local') return { ok: false, reason: 'incomplete-file' };
+    return { ok: true, disk, length: file.length };
   }
   async stream(id: string, index: number, opts: HistoryPlaybackOptions = {}) {
     const { file, disk } = await this.resolve(id, index);
