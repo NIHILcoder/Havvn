@@ -461,7 +461,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   const externalStore = new Store<{ preferences: ExternalPlayerPreferences }>({ name: 'external-player', clearInvalidConfig: true, defaults: { preferences: { kind: 'default', executable: null } } });
   const externalPlayer = new ExternalPlayer({ read: () => externalStore.get('preferences'), write: prefs => externalStore.set('preferences', prefs),
     resolve: (id, relativePath) => historyPlayback.localFile(id, relativePath),
-    openPath: file => shell.openPath(file) });
+    snapshot: (id, rel) => torrentManager.getExternalMedia(id, rel), readMedia: (id, rel, key, start, max) => torrentManager.readExternalMedia(id, rel, key, start, max), openPath: file => shell.openPath(file) });
   // Popouts use the main renderer's bridge; provider login pages have no access.
   const externalSender = (event: Electron.IpcMainInvokeEvent) => {
     if (event.sender !== mainWindow.webContents || event.senderFrame !== event.sender.mainFrame) throw new Error('Untrusted player request');

@@ -1,4 +1,5 @@
-
+import { mediaPath, hasPiece, VerifiedDiskMedia } from '../verified-media';
+import type { ExternalMedia, ExternalMediaRead } from '../../../shared/external-player';
 /**
  * NativeTorrentManager — the transmission-daemon-backed download engine behind
  * the SAME host contract as the webtorrent TorrentManager (see
@@ -86,6 +87,10 @@ function resolveFfmpeg(): string | null {
 const ACTIVE: ReadonlySet<Download['status']> = new Set(['downloading', 'seeding', 'queued']);
 
 export class NativeTorrentManager {
+  private readonly externalEpoch = crypto.randomBytes(16).toString('hex');
+  private readonly externalDisk = new VerifiedDiskMedia();
+  private readonly externalSnapshots = new Map<string, { at: number; value: TrTorrent | undefined }>();
+  private readonly externalPending = new Map<string, Promise<TrTorrent | undefined>>();
   private sidecar: TransmissionSidecar | null = null;
   private rpc: TransmissionRpc | null = null;
   private ready: Promise<void> | null = null;
@@ -695,6 +700,52 @@ export class NativeTorrentManager {
   // ── Reads ───────────────────────────────────────────────────────────────────
   getDownloads(): Promise<Download[]> { return db.getAllDownloads(); }
   getStats(): DownloadStats[] { return this.lastStats; }
+
+  private async externalTorrent(hash: string): Promise<TrTorrent | undefined> {
+    const cached = this.externalSnapshots.get(hash);
+    if (cached && Date.now() - cached.at < 250) return cached.value;
+    const pending = this.externalPending.get(hash); if (pending) return pending;
+    const request = this.rpc!.torrentGet(['files', 'fileStats', 'pieceSize', 'pieceCount', 'pieces', 'status'], hash).then(([value]) => {
+      this.externalSnapshots.set(hash, { at: Date.now(), value });
+      if (this.externalSnapshots.size > 16) this.externalSnapshots.delete(this.externalSnapshots.keys().next().value!);
+      return value;
+    }).finally(() => this.externalPending.delete(hash));
+    this.externalPending.set(hash, request); return request;
+  }
+  async getExternalMedia(id: string, relativePath: string): Promise<ExternalMedia> {
+    const rel = mediaPath(relativePath); if (!rel) return { ok: false, reason: 'invalid-file' };
+    await this.whenReady();
+    const d = this.records.get(id), hash = this.idToHash.get(id);
+    if (!d || !hash || d.status === 'removed') return { ok: false, reason: 'missing-file' };
+    if (d.status !== 'downloading' && d.status !== 'seeding') return { ok: false, reason: 'paused-file' };
+    const t = await this.externalTorrent(hash);
+    const current = this.records.get(id);
+    if (!current || current !== d || this.idToHash.get(id) !== hash || current.status === 'removed') return { ok: false, reason: 'missing-file' };
+    if (current.status !== 'downloading' && current.status !== 'seeding') return { ok: false, reason: 'paused-file' };
+    if (!t || (t.status !== TrStatus.Downloading && t.status !== TrStatus.Seeding)) return { ok: false, reason: 'paused-file' };
+    const index = t.files?.findIndex(f => f.name.replace(/\\/g, '/') === rel) ?? -1;
+    if (index < 0) return { ok: false, reason: 'missing-file' };
+    if (d.filePriorities?.[index] === 'skip' || (d.selectedFiles?.length && !d.selectedFiles.includes(index)) || t.fileStats?.[index]?.wanted === false) return { ok: false, reason: 'excluded-file' };
+    const meta = this.externalDisk.load(hash, d.torrentFilePath, getHostEnv().engineStateDir);
+    if (!meta || !t.files || meta.files.length !== t.files.length || meta.pieceLength !== t.pieceSize || meta.pieces.length !== t.pieceCount || meta.files.some((f, i) => f.path.replace(/\\/g, '/') !== t.files![i].name.replace(/\\/g, '/') || f.length !== t.files![i].length)) return { ok: false, reason: 'unavailable' };
+    return { ok: true, key: this.externalEpoch + ':' + hash + ':' + d.savePath, name: path.basename(rel), length: meta.files[index].length };
+  }
+  async readExternalMedia(id: string, relativePath: string, key: string, start: number, max: number): Promise<ExternalMediaRead> {
+    const info = await this.getExternalMedia(id, relativePath);
+    if (!info.ok) return { reason: info.reason };
+    if (key !== info.key) return { reason: 'unavailable' };
+    if (!Number.isSafeInteger(start) || start < 0 || start >= info.length || !Number.isSafeInteger(max) || max < 1 || max > 256 * 1024) return { reason: 'invalid-file' };
+    const d = this.records.get(id), hash = this.idToHash.get(id);
+    if (!d || !hash || d.status === 'removed') return { reason: 'missing-file' };
+    const t = await this.externalTorrent(hash), meta = this.externalDisk.load(hash, d.torrentFilePath, getHostEnv().engineStateDir);
+    if (!meta || this.idToHash.get(id) !== hash) return { reason: 'unavailable' };
+    if (d.status !== 'downloading' && d.status !== 'seeding') return { reason: 'paused-file' };
+    const index = meta.files.findIndex(f => f.path.replace(/\\/g, '/') === mediaPath(relativePath));
+    const piece = Math.floor((meta.files[index].offset + start) / meta.pieceLength);
+    if (!hasPiece(t?.pieces || '', piece)) return { wait: true };
+    const data = await this.externalDisk.read(meta, d.savePath, index, start, max);
+    return data ? { data: data.toString('base64') } : { wait: true };
+  }
 
   async getHistoryFiles(id: string): Promise<TorrentFile[]> {
     await this.whenReady();

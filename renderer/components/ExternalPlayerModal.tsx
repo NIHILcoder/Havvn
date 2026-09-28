@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Modal } from './Modal';
 import { Icon } from './Icon';
 import { ExternalPlayerPreferences } from './ExternalPlayerPreferences';
+import { ExternalPlayerSessions } from './ExternalPlayerSessions';
 import { useTranslation } from '../utils/i18nContext';
 import { externalStartTime, type ExternalPlayerConfig, type ExternalPlayerFailure } from '../../shared/external-player';
 import { fmtTime } from './PlayerControls';
@@ -50,6 +51,7 @@ export function ExternalPlayerModal({ downloadId, relativePath, position = 0, on
     {time >= 5 && config && config.kind !== 'default' && <label className="external-player-resume"><input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} />{t('external.resume')} {fmtTime(time)}</label>}
     {time >= 5 && config?.kind === 'default' && <p className="external-player-hint">{t('external.defaultPosition')}</p>}
     <p className="external-player-hint">{t('external.historyHint')}</p>
+    <ExternalPlayerSessions />
     {error && <p className="external-player-error" role="alert">{t(`external.error.${error}`)}</p>}
   </Modal>;
   return host.document?.body ? createPortal(dialog, host.document.body) : dialog;

@@ -1,4 +1,5 @@
-
+import { mediaPath } from './verified-media';
+import type { ExternalMedia, ExternalMediaRead } from '../../shared/external-player';
 import type WebTorrent from 'webtorrent';
 import type { Torrent } from 'webtorrent';
 import { createTorrentStreamServer } from './stream-server';
@@ -161,6 +162,7 @@ export class TorrentManager {
   // Created in initialize() so client options (DHT, max connections, listening
   // port, speed limits) can come from the persisted settings.
   private client!: WebTorrent;
+  private readonly externalEpoch = crypto.randomBytes(16).toString('hex');
   private managedTorrents: Map<string, ManagedTorrent> = new Map();
   private infoHashIndex: Map<string, string> = new Map();
   // Creation options for "start seeding" entries, used the first time they seed
@@ -2299,6 +2301,39 @@ export class TorrentManager {
     }
     log.info('Resumed all paused torrents', { count: resumed });
     return resumed;
+  }
+
+  /**
+   * Get files for a specific download
+   */
+  async getExternalMedia(id: string, relativePath: string): Promise<ExternalMedia> {
+    const rel = mediaPath(relativePath); if (!rel) return { ok: false, reason: 'invalid-file' };
+    const m = this.managedTorrents.get(id);
+    if (!m || m.download.status === 'removed') return { ok: false, reason: 'missing-file' };
+    if (m.download.status !== 'downloading' && m.download.status !== 'seeding') return { ok: false, reason: 'paused-file' };
+    const t = m.torrent;
+    const index = t?.files.findIndex(f => f.path.replace(/\\/g, '/') === rel) ?? -1;
+    if (!t || index < 0) return { ok: false, reason: 'missing-file' };
+    if (!this.fileShouldDownload(m, index)) return { ok: false, reason: 'excluded-file' };
+    const f = t.files[index];
+    return { ok: true, key: this.externalEpoch + ':' + t.infoHash + ':' + m.download.savePath, name: f.name, length: f.length };
+  }
+  async readExternalMedia(id: string, relativePath: string, key: string, start: number, max: number): Promise<ExternalMediaRead> {
+    const info = await this.getExternalMedia(id, relativePath);
+    if (!info.ok) return { reason: info.reason };
+    if (key !== info.key) return { reason: 'unavailable' };
+    if (!Number.isSafeInteger(start) || start < 0 || start >= info.length || !Number.isSafeInteger(max) || max < 1 || max > 256 * 1024) return { reason: 'invalid-file' };
+    const torrent = this.managedTorrents.get(id)!.torrent!;
+    const file = torrent.files.find(f => f.path.replace(/\\/g, '/') === mediaPath(relativePath))!;
+    const t = torrent as unknown as { pieceLength: number; bitfield: { get: (i: number) => boolean }; store: { get: (i: number, cb: (error: Error | null, data: Uint8Array) => void) => void } };
+    const absolute = file.offset + start, piece = Math.floor(absolute / t.pieceLength);
+    if (!t.bitfield?.get(piece)) return { wait: true };
+    // Read through the engine's store (including its cache), never a sparse disk prefix.
+    const data = await new Promise<Uint8Array | null>(resolve => { try { t.store.get(piece, (error, buffer) => resolve(error ? null : buffer)); } catch { resolve(null); } });
+    if (!data) return { wait: true };
+    const offset = absolute - piece * t.pieceLength;
+    const chunk = Buffer.from(data.buffer, data.byteOffset, data.byteLength).subarray(offset, offset + Math.min(max, info.length - start));
+    return chunk.length ? { data: chunk.toString('base64') } : { wait: true };
   }
 
   async getHistoryFiles(id: string): Promise<TorrentFile[]> { return this.getFiles(id); }

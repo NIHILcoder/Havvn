@@ -2452,12 +2452,14 @@
   "external.error.unsupported-player": "Select the VLC or mpv executable. Other programs are not supported here.",
   "external.error.launch-failed": "Could not open the file. Check the selected player or the system application for this file type.",
   "external.error.unavailable": "Could not open the player or load its settings. Please try again.",
-  "external.error.paused-file": "The download is stopped. Resume it manually or wait until the file is complete.",
-  "external.error.excluded-file": "This file is excluded from downloading. Select it in the torrent’s files first.",
-  "external.stopHint": "Stopping disconnects the player. The torrent will keep downloading.",
-  "external.sessionsError": "Could not refresh or stop streams. Please try again.",
-  "external.error.too-many-players": "Too many mpv windows are tracking playback. Close one and try again.",
   "external.streaming": "This file is still downloading. Keep Havvn running: the player receives verified pieces as they arrive. Seeking to a missing part will wait for data. Sequential download can be enabled in the torrent’s files.",
   "external.error.stream-player": "Choose VLC or mpv for an incomplete file. The default application is available for fully downloaded files.",
-  "external.error.too-many-streams": "Four streams are already open. Close a player or stop one of the streams below."
+  "external.error.paused-file": "The download is stopped. Resume it manually or wait until the file is complete.",
+  "external.error.excluded-file": "This file is excluded from downloading. Select it in the torrent’s files first.",
+  "external.error.too-many-streams": "Four streams are already open. Close a player or stop one of the streams below.",
+  "external.sessions": "Open streams",
+  "external.stop": "Stop stream",
+  "external.stopHint": "Stopping disconnects the player. The torrent will keep downloading.",
+  "external.sessionsError": "Could not refresh or stop streams. Please try again.",
+  "external.error.too-many-players": "Too many mpv windows are tracking playback. Close one and try again."
 }

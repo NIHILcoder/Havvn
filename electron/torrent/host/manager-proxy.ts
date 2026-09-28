@@ -244,6 +244,8 @@ class TorrentManagerProxy {
   addTracker(...a: Parameters<TM['addTracker']>): Fwd<TM['addTracker']> { return this.rpc('addTracker', a); }
   removeTracker(...a: Parameters<TM['removeTracker']>): Fwd<TM['removeTracker']> { return this.rpc('removeTracker', a); }
   getDownloads(...a: Parameters<TM['getDownloads']>): Fwd<TM['getDownloads']> { return this.rpc('getDownloads', a); }
+  getExternalMedia(...a: Parameters<TM['getExternalMedia']>): Fwd<TM['getExternalMedia']> { return this.rpc('getExternalMedia', a); }
+  readExternalMedia(...a: Parameters<TM['readExternalMedia']>): Fwd<TM['readExternalMedia']> { return this.rpc('readExternalMedia', a); }
   getHistoryFiles(...a: Parameters<TM['getHistoryFiles']>): Fwd<TM['getHistoryFiles']> { return this.rpc('getHistoryFiles', a); }
   getFiles(...a: Parameters<TM['getFiles']>): Fwd<TM['getFiles']> { return this.rpc('getFiles', a); }
   getPeers(...a: Parameters<TM['getPeers']>): Fwd<TM['getPeers']> { return this.rpc('getPeers', a); }
