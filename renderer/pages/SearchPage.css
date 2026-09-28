@@ -175,6 +175,8 @@
 
 .search-results-header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
 }
@@ -210,6 +212,7 @@
 /* Where a result goes when its Download button is pressed. */
 .results-add-options {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
 }
@@ -598,8 +601,43 @@
 }
 
 /* Providers panel */
+.release-filters { border: 1px solid var(--color-border); padding: 12px 14px; background: var(--color-bg-secondary); margin-bottom: 12px; flex-shrink: 0; }
+.release-filters summary { cursor: pointer; font-size: 0.8125rem; font-weight: 600; }
+.release-filter-status { margin-left: 12px; font-size: 0.75rem; color: var(--color-accent-primary); }
+.release-filter-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 12px; margin-top: 14px; }
+.release-filter-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 0.75rem; color: var(--color-text-secondary); }
+.release-filter-fields .form-select, .release-filter-fields .form-input { width: 100%; min-width: 0; }
+.release-filter-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.release-filter-footer label { display: flex; align-items: center; gap: 8px; font-size: 0.75rem; }
+.release-filters p { color: var(--color-text-muted); font-size: 0.75rem; margin: 8px 0 0; line-height: 1.5; }
+
 .providers-panel {
-  max-width: 760px;
+  width: 100%;
+  container-type: inline-size;
+  container-name: providers;
+}
+
+.providers-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.providers-existing,
+.providers-setup { min-width: 0; }
+.providers-setup { display: grid; gap: 16px; }
+.providers-desc { max-width: 80ch; }
+.providers-setup .form-row { flex-wrap: wrap; }
+.providers-setup .form-row > .form-input { flex: 1 1 200px; width: 100%; }
+.providers-setup .form-row > .form-select { flex: 1 1 160px; min-width: 0; max-width: 100%; }
+.providers-setup .api-key-input { max-width: none; }
+.providers-setup .provider-help summary { cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+.providers-setup .provider-help[open] summary { margin-bottom: 12px; }
+.providers-setup .provider-help { overflow-wrap: anywhere; }
+
+@container providers (max-width: 940px) {
+  .providers-layout { grid-template-columns: minmax(0, 1fr); }
 }
 
 .providers-section {

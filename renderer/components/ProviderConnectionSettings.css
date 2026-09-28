@@ -1,0 +1,100 @@
+.provider-connection {
+  flex: 0 0 100%;
+  min-width: 0;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  container-type: inline-size;
+}
+
+.provider-connection summary {
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  padding: 12px 0;
+  font-weight: 500;
+}
+
+.provider-connection summary:hover,
+.provider-connection[open] > summary {
+  color: var(--color-text-primary);
+}
+
+.provider-connection summary:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 3px;
+}
+
+.provider-connection-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  padding: 0 0 4px;
+  margin: 0;
+  border: 0;
+}
+
+.provider-connection p { margin: 0; }
+
+.connection-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.provider-connection .form-input,
+.provider-connection .form-select {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 38px;
+  flex: none;
+}
+
+.provider-connection textarea.form-input {
+  resize: vertical;
+  min-height: 82px;
+  line-height: 1.6;
+  font-family: var(--font-family-mono);
+  font-size: 0.8125rem;
+}
+
+.connection-hint {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.connection-proxy {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.connection-proxy > .connection-hint { grid-column: 1 / -1; }
+.connection-advanced { border-top: 1px solid var(--color-border); }
+.connection-footer,
+.connection-account { display: grid; gap: 12px; }
+.connection-footer { border-top: 1px solid var(--color-border); padding-top: 16px; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.connection-actions .btn { white-space: normal; min-height: 34px; }
+.connection-feedback { padding: 10px 12px; border-radius: var(--radius-sm); }
+.connection-feedback.success { color: var(--color-success); background: var(--color-success-bg); }
+.connection-feedback.error { color: var(--color-error); background: var(--color-error-bg); }
+
+@container (max-width: 380px) {
+  .connection-proxy { grid-template-columns: minmax(0, 1fr); }
+  .connection-actions { flex-direction: column; }
+  .connection-actions .btn { width: 100%; }
+}

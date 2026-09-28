@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# havvn-network: 1
 """
 RuTracker search plugin for Havvn.
 
@@ -19,8 +20,9 @@ CREDENTIALS — set in Havvn, NOT in this file:
 
 NOTES:
     - RuTracker pages are windows-1251 encoded and often gzipped — handled here.
-    - It's blocked by some ISPs; Havvn's DNS-over-HTTPS option helps reach
-      it, and the plugin tries the .org / .net / .nl mirrors in turn.
+    - It's blocked by some ISPs; the plugin tries .org / .net / .nl in turn.
+      Havvn's DNS-over-HTTPS does NOT apply to this separate Python process.
+      Python needs working system connectivity (or an HTTPS_PROXY environment).
     - The search results page has no infohash, so the plugin fetches the top
       results' topic pages (concurrently) to extract their magnet links. Result
       count is capped to stay within Havvn's 25 s / 8 MB script limits.
@@ -34,19 +36,19 @@ import json
 import gzip
 import io
 import html
+import subprocess
 import http.cookiejar
 import urllib.request
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 MIRRORS = [
-    "https://rutracker.org/forum",
     "https://rutracker.net/forum",
-    "https://rutracker.nl/forum",
 ]
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 MAX_RESULTS = 20          # topic pages we'll fetch for magnets (cost vs. timeout)
-REQ_TIMEOUT = 12          # seconds per HTTP request
+REQ_TIMEOUT = 4           # leave time to try mirrors within Havvn's limit
+SEARCH_TIMEOUT = 21       # hard deadline, including DNS/TLS and worker shutdown
 MAGNET_WORKERS = 10
 
 MAGNET_RE = re.compile(r'href="(magnet:\?xt=urn:btih:[^"]+)"', re.IGNORECASE)
@@ -58,6 +60,10 @@ def _err(msg):
 
 def _build_opener():
     jar = http.cookiejar.CookieJar()
+    if os.environ.get("HAVVN_NETWORK_URL"):
+        opener = urllib.request.OpenerDirector()
+        opener.add_handler(urllib.request.HTTPCookieProcessor(jar))
+        return opener, jar
     return urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar)), jar
 
 
@@ -73,6 +79,16 @@ def _request(opener, url, data=None):
         body = urllib.parse.urlencode(data, encoding="cp1251").encode("cp1251")
         headers["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=body, headers=headers)
+    if os.environ.get("HAVVN_NETWORK_URL"):
+        from havvn_network import request, browser_html
+        if body is None:
+            return browser_html(url)
+        # Preserve explicitly supplied cookie:<value> without exporting the jar.
+        for handler in opener.handlers:
+            if isinstance(handler, urllib.request.HTTPCookieProcessor):
+                handler.cookiejar.add_cookie_header(req)
+        raw = request(url, data=body, headers=dict(req.header_items()))
+        return raw.decode("cp1251", "replace")
     with opener.open(req, timeout=REQ_TIMEOUT) as resp:
         raw = resp.read()
         if (resp.headers.get("Content-Encoding") or "").lower() == "gzip":
@@ -88,7 +104,7 @@ def _is_login_page(html):
 
 
 def _has_captcha(html):
-    return "cap_sid" in html or "captcha" in html.lower()
+    return "cap_sid" in html or bool(re.search(r"<(?:input|img|iframe|div)\b[^>]*(?:captcha|recaptcha)", html, re.I))
 
 
 def _login(opener, base, username, password):
@@ -168,7 +184,7 @@ def parse_search_rows(page):
 
 def parse_magnet(page):
     m = MAGNET_RE.search(page)
-    return m.group(1) if m else None
+    return html.unescape(m.group(1)) if m else None
 
 
 def _clean(s):
@@ -196,28 +212,48 @@ def _human_to_bytes(num, unit):
 # --------------------------------------------------------------------------
 # Main search
 # --------------------------------------------------------------------------
+LAST_WORKING_MIRROR = None
+
+
+class SourceError(RuntimeError):
+    def __init__(self, code, message):
+        self.code = code
+        super().__init__(message)
+
+
 def search(query):
+    global LAST_WORKING_MIRROR
+    LAST_WORKING_MIRROR = None
     username = os.environ.get("TH_USERNAME", "").strip()
     password = os.environ.get("TH_PASSWORD", "")
-    if not username and not password.startswith("cookie:"):
+    shared_session = bool(os.environ.get("HAVVN_NETWORK_URL"))
+    if not shared_session and not username and not password.startswith("cookie:"):
         raise RuntimeError("Set your RuTracker Login and Password in the provider settings.")
 
     last_err = None
-    for base in MIRRORS:
+    configured = json.loads(os.environ.get("HAVVN_SOURCE_MIRRORS", "[]"))
+    for base in (configured or MIRRORS):
         try:
             opener, jar = _build_opener()
-            if password.startswith("cookie:"):
+            if shared_session:
+                pass  # The user signs in manually in the isolated source window.
+            elif password.startswith("cookie:"):
                 _set_session_cookie(jar, base, password[len("cookie:"):].strip())
             elif not _login(opener, base, username, password):
-                last_err = RuntimeError("Login failed (wrong username/password?)")
-                continue
+                raise RuntimeError("Login failed (wrong username/password?)")
 
             url = base + "/tracker.php?nm=" + urllib.parse.quote(query, encoding="cp1251")
             html = _request(opener, url)
+            if _has_captcha(html):
+                raise SourceError('captcha', "Captcha required. Open Sign in in the source connection settings.")
             if _is_login_page(html):
-                last_err = RuntimeError("Session not accepted — login may have failed")
-                continue
+                raise SourceError('auth', "Session expired or missing. Open Sign in in the source connection settings.")
+            if shared_session and not re.search(r"(?:tracker\.php\?logout|login\.php\?logout|name=[\"\']logout|id=[\"\']tor-tbl|id=[\"\']search-results)", html, re.I):
+                raise SourceError('invalid-response', "Source returned an unrecognized page. Open Sign in and check access.")
 
+            LAST_WORKING_MIRROR = base
+            if os.environ.get('HAVVN_CHECK_ONLY') == '1':
+                return []  # Validate search access without fetching topic pages.
             rows = parse_search_rows(html)[:MAX_RESULTS]
             if not rows:
                 return []  # logged in fine, just no hits
@@ -226,7 +262,13 @@ def search(query):
             def fetch_magnet(row):
                 try:
                     page = _request(opener, base + "/viewtopic.php?t=" + row["id"])
+                    if _has_captcha(page):
+                        raise SourceError('captcha', 'Captcha required on the topic page')
+                    if _is_login_page(page):
+                        raise SourceError('auth', 'Session expired on the topic page')
                     return row, parse_magnet(page)
+                except RuntimeError:
+                    raise
                 except Exception:
                     return row, None
 
@@ -238,11 +280,17 @@ def search(query):
                     results.append({
                         "title": row["title"],
                         "magnetUri": magnet,
+                        "detailsUrl": base + "/viewtopic.php?t=" + row["id"],
                         "size": row["size"],
                         "seeds": row["seeds"],
                         "leechers": row["leech"],
                         "category": row["category"] or "RuTracker",
                     })
+            if not results:
+                raise SourceError('invalid-response',
+                    "Topic pages returned no magnet links. Check connectivity, "
+                    "session cookie and whether RuTracker requires a captcha."
+                )
             return results
         except RuntimeError:
             raise  # credential/captcha problems are not mirror-specific
@@ -250,7 +298,12 @@ def search(query):
             last_err = exc
             continue
 
-    raise last_err or RuntimeError("All RuTracker mirrors failed")
+    if shared_session and last_err is not None:
+        raise SourceError(getattr(last_err, 'code', 'network'), 'All configured mirrors failed') from last_err
+    raise RuntimeError(
+        "All RuTracker mirrors failed. Check system/VPN or HTTPS_PROXY connectivity; "
+        "Havvn DNS-over-HTTPS does not apply to Python plugins."
+    ) from last_err
 
 
 def _selftest():
@@ -287,15 +340,37 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
         _selftest()
         return
+    # A separate process gives the whole search a real deadline, even if DNS,
+    # TLS or ThreadPoolExecutor shutdown outlives individual socket timeouts.
+    if len(sys.argv) > 1 and sys.argv[1] == "--search-worker":
+        try:
+            rows = search(sys.argv[2] if len(sys.argv) > 2 else "")
+            output = {'results': rows, 'mirror': LAST_WORKING_MIRROR} if os.environ.get('HAVVN_NETWORK_URL') else rows
+            json.dump(output, sys.stdout, ensure_ascii=False)
+            return 0
+        except Exception as exc:
+            if getattr(exc, 'code', None):
+                print('HAVVN_DIAGNOSTIC ' + json.dumps({'code': exc.code}), file=sys.stderr)
+            _err(str(exc))
+            return 1
     query = sys.argv[1] if len(sys.argv) > 1 else ""
     # argv[2] is the category (Newznab id) — RuTracker search is global, so unused.
     try:
-        rows = search(query)
-    except Exception as exc:
-        _err(str(exc))
-        rows = []
-    json.dump(rows, sys.stdout, ensure_ascii=False)
+        result = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--search-worker", query],
+            capture_output=True, encoding="utf-8", timeout=SEARCH_TIMEOUT,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except subprocess.TimeoutExpired:
+        print('HAVVN_DIAGNOSTIC ' + json.dumps({'code': 'timeout'}), file=sys.stderr)
+        _err("Search exceeded 21 seconds. Check system/VPN or HTTPS_PROXY connectivity; "
+             "Havvn DNS-over-HTTPS does not apply to Python plugins.")
+        return 1
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

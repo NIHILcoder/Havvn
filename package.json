@@ -26,10 +26,11 @@
     "security:audit": "npm audit --audit-level=high",
     "security:fix": "npm audit fix",
     "security:snyk": "snyk test --severity-threshold=high",
+    "test:native-prebuilds": "node scripts/test-native-prebuilds.cjs",
+    "test:provider-network": "npm run build:electron && node scripts/smoke-provider-network-electron.cjs",
     "spike:engine": "npm run build:electron && node dist/electron/electron/torrent/native/spike-harness.js",
     "spike:lan": "npm run build:electron && node dist/electron/electron/lan/spike-harness.js",
-    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js",
-    "test:native-prebuilds": "node scripts/test-native-prebuilds.cjs"
+    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",
@@ -104,6 +105,7 @@
   },
   "build": {
     "appId": "com.torrenthunt.app",
+    "beforeBuild": "scripts/prepare-native-prebuilds.cjs",
     "productName": "Havvn",
     "copyright": "Copyright © 2026 Havvn",
     "directories": {
@@ -178,6 +180,7 @@
       }
     ],
     "extraResources": [
+      { "from": "docs/search-plugins/havvn_network.py", "to": "search-sdk/havvn_network.py" },
       {
         "from": "build/icon.ico",
         "to": "icon.ico"
@@ -212,8 +215,7 @@
         "ru_RU"
       ],
       "multiLanguageInstaller": true
-    },
-    "beforeBuild": "scripts/prepare-native-prebuilds.cjs"
+    }
   },
   "author": {
     "name": "NIHILcoder"

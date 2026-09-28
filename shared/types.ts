@@ -1027,6 +1027,8 @@ export interface PythonStatus {
 }
 
 export interface SearchResult {
+  /** Opaque source identities registered by main; retained when merging results. */
+  sourceRefs?: string[];
   title: string;
   magnetUri?: string;
   torrentUrl?: string;
@@ -1066,6 +1068,7 @@ export interface SearchCaps {
 
 /** How one provider fared during a search — rendered as a status strip. */
 export interface ProviderStat {
+  providerId?: string;
   name: string;
   count: number;
   ms: number;
@@ -1340,10 +1343,16 @@ export interface IpcApi {
     // Kicks off a search and returns immediately with the providers that will
     // report; results arrive over onProgress until `done`. A recent identical
     // search is replayed from cache unless `refresh` is set.
-    start: (query: string, category?: string, refresh?: boolean)
+    start: (query: string, category?: string, refresh?: boolean, providerId?: string)
       => Promise<{ searchId: string; providers: string[]; cached?: boolean }>;
     cancel: (searchId: string) => Promise<void>;
     onProgress: (callback: (progress: SearchProgress) => void) => () => void;
+    getNetworkSettings: () => Promise<import('./provider-network').SearchNetworkSettings>;
+    saveNetworkProfile: (profile: Omit<import('./provider-network').SearchNetworkProfile, 'id'> & { id?: string }) => Promise<import('./provider-network').SearchNetworkProfile>;
+    setNetworkAccess: (id: string, access: import('./provider-network').ProviderAccess | null) => Promise<void>;
+    login: (id: string) => Promise<{ success: boolean; message: string }>;
+    logout: (id: string) => Promise<void>;
+    resolveSource: (refs: string[]) => Promise<{ sourceType: 'magnet' | 'torrent_file'; sourceUri: string }>;
     getProviders: () => Promise<SearchProvider[]>;
     addProvider: (provider: Omit<SearchProvider, 'id'>) => Promise<SearchProvider>;
     updateProvider: (id: string, updates: Partial<SearchProvider>) => Promise<SearchProvider>;

@@ -74,6 +74,7 @@ function pushUnique(list: string[], value: string | undefined): void {
 
 /** Fold one result into an existing merged row. */
 function absorb(target: MergedResult, incoming: SearchResult): void {
+  target.sourceRefs = [...new Set([...(target.sourceRefs || []), ...(incoming.sourceRefs || [])])];
   pushUnique(target.providers, incoming.provider);
   pushUnique(target.indexers, incoming.indexer);
   target.sourceCount += 1;

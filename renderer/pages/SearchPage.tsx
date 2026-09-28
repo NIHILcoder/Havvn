@@ -6,6 +6,8 @@
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { SearchProvider, PythonStatus, ProviderStat, SearchCategory, PluginManifest } from '../../shared/types';
+import { ProviderConnectionSettings } from '../components/ProviderConnectionSettings';
+import { CODECS, RESOLUTIONS, VOICES, DEFAULT_RELEASE_FILTERS, matchesReleaseFilters, parseReleaseMetadata, releaseChips, sanitizeReleaseFilters } from '../../shared/release-metadata';
 import { MergedResult, mergeResults } from '../../shared/search-dedupe';
 import {
   Button,
@@ -72,22 +74,7 @@ const rememberQuery = (history: string[], query: string): string[] => {
 
 type SortKey = 'seeds' | 'size' | 'date' | 'name';
 
-/** Quality tags worth pulling out of a release title and showing as chips. */
-const QUALITY_TAGS = /\b(2160p|1080p|720p|480p|4k|hdr|dolby\s?vision|dv|x265|h\.?265|hevc|x264|h\.?264|av1|remux|bluray|blu-ray|web-?dl|webrip|hdtv|dvdrip|cam)\b/gi;
-
-const qualityChips = (title: string): string[] => {
-  const found = title.match(QUALITY_TAGS);
-  if (!found) return [];
-  const seen = new Set<string>();
-  const chips: string[] = [];
-  for (const tag of found) {
-    const key = tag.toLowerCase().replace(/[\s.]/g, '');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    chips.push(tag.toUpperCase());
-  }
-  return chips.slice(0, 4);
-};
+const RELEASE_FILTERS_KEY = 'havvn.search.releaseFilters.v1';
 
 const SearchPage: React.FC = () => {
   const { t } = useTranslation();
@@ -119,6 +106,7 @@ const SearchPage: React.FC = () => {
   // In-flight search: providers report one at a time, so the id identifies which
   // run a progress message belongs to and lets a stale run be ignored.
   const searchIdRef = useRef<string | null>(null);
+  const lastSearch = useRef<{ term: string; category?: string }>({ term: '' });
   const [providerStats, setProviderStats] = useState<ProviderStat[]>([]);
 
   // Result filtering and ordering — all client-side over what has arrived so far.
@@ -128,6 +116,16 @@ const SearchPage: React.FC = () => {
   const [minSeeds, setMinSeeds] = useState(0);
   const [hideDead, setHideDead] = useState(false);
   const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [releaseFilters, setReleaseFilters] = useState(() => {
+    try { return sanitizeReleaseFilters(JSON.parse(localStorage.getItem(RELEASE_FILTERS_KEY) || 'null')); }
+    catch { return { ...DEFAULT_RELEASE_FILTERS }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(RELEASE_FILTERS_KEY, JSON.stringify(sanitizeReleaseFilters(releaseFilters))); }
+    catch { /* Storage can be unavailable; keep filters usable in memory. */ }
+  }, [releaseFilters]);
+  const releaseMetadata = useMemo(() => new Map(rows.map(r => [r.title, parseReleaseMetadata(r.title)])), [rows]);
+  const activeReleaseFilters = !!(releaseFilters.resolution || releaseFilters.codec || releaseFilters.voice || Number(releaseFilters.maxGiB) > 0);
 
   // Files-before-adding preview, opened from a row's menu.
   const [previewTarget, setPreviewTarget] = useState<MergedResult | null>(null);
@@ -251,6 +249,7 @@ const SearchPage: React.FC = () => {
     setProviderFilter(null);
     setProviderStats([]);
     setHistory(h => rememberQuery(h, term));
+    lastSearch.current = { term, category: category || undefined };
 
     try {
       const { searchId, providers: names } = await window.api.search.start(
@@ -266,6 +265,17 @@ const SearchPage: React.FC = () => {
       setError(err?.message || t('search.failed'));
       setLoading(false);
     }
+  };
+
+  const retryProvider = async (stat: ProviderStat) => {
+    if (loading || !stat.providerId) return;
+    setLoading(true);
+    setProviderStats(prev => prev.map(s => s.providerId === stat.providerId ? { ...s, state: 'pending', error: undefined } : s));
+    try {
+      const result = await window.api.search.start(lastSearch.current.term, lastSearch.current.category, true, stat.providerId);
+      searchIdRef.current = result.searchId;
+      if (!result.providers.length) setLoading(false);
+    } catch (e) { setLoading(false); setError(cleanError(e)); }
   };
 
   const handleSearch = (e?: React.FormEvent) => {
@@ -298,11 +308,12 @@ const SearchPage: React.FC = () => {
     setDownloading(prev => new Set(prev).add(key));
 
     try {
-      const uri = result.magnetUri || result.torrentUrl;
+      const resolved = result.sourceRefs?.length ? await window.api.search.resolveSource(result.sourceRefs) : null;
+      const uri = resolved?.sourceUri || result.magnetUri || result.torrentUrl;
       if (!uri) throw new Error(t('search.noLink'));
 
       await window.api.addDownload({
-        sourceType: result.magnetUri ? 'magnet' : 'torrent_file',
+        sourceType: resolved?.sourceType ?? (result.magnetUri ? 'magnet' : 'torrent_file'),
         sourceUri: uri,
         name: result.title,
         categoryId: addCategoryId || undefined,
@@ -346,7 +357,13 @@ const SearchPage: React.FC = () => {
         key: 'files',
         label: t('search.row.selectFiles'),
         icon: <Icon name="list" size={14} />,
-        onSelect: () => setPreviewTarget(r),
+        onSelect: () => {
+          if (!r.sourceRefs?.length) { setPreviewTarget(r); return; }
+          void window.api.search.resolveSource(r.sourceRefs).then(source => {
+            setPreviewTarget({ ...r, magnetUri: source.sourceType === 'magnet' ? source.sourceUri : undefined,
+              torrentUrl: source.sourceType === 'torrent_file' ? source.sourceUri : undefined });
+          }).catch(err => alert({ title: t('search.failedTitle'), message: cleanError(err) }));
+        },
       },
       {
         key: 'magnet',
@@ -379,6 +396,7 @@ const SearchPage: React.FC = () => {
       if (hideDead && r.seeds === 0) return false;
       if (minSeeds > 0 && r.seeds < minSeeds) return false;
       if (providerFilter && !r.providers.includes(providerFilter)) return false;
+      if (!matchesReleaseFilters(releaseMetadata.get(r.title)!, r.size, releaseFilters)) return false;
       return true;
     });
 
@@ -395,7 +413,7 @@ const SearchPage: React.FC = () => {
         default: return (a.seeds - b.seeds) * dir;
       }
     });
-  }, [rows, refine, hideDead, minSeeds, providerFilter, sortKey, sortDesc]);
+  }, [rows, refine, hideDead, minSeeds, providerFilter, sortKey, sortDesc, releaseMetadata, releaseFilters]);
 
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -566,12 +584,12 @@ const SearchPage: React.FC = () => {
                   type="button"
                   className={`provider-stat ${s.state} ${providerFilter === s.name ? 'filtered' : ''}`}
                   title={s.error || (s.state === 'ok' ? `${s.count} · ${s.ms}ms` : undefined)}
-                  disabled={s.state !== 'ok' || s.count === 0}
-                  onClick={() => setProviderFilter(f => (f === s.name ? null : s.name))}
+                  disabled={s.state === 'failed' ? loading || !s.providerId : s.state !== 'ok' || s.count === 0}
+                  onClick={() => s.state === 'failed' ? void retryProvider(s) : setProviderFilter(f => (f === s.name ? null : s.name))}
                 >
                   {s.state === 'pending' && <span className="spinner spinner-xs" />}
                   {s.state === 'ok' && <Icon name="check" size={12} />}
-                  {s.state === 'failed' && <Icon name="alert-circle" size={12} />}
+                  {s.state === 'failed' && <><Icon name="refresh" size={12} /><span>{t('search.connection.retry')}</span></>}
                   <span className="provider-stat-name">{s.name}</span>
                   {s.state === 'ok' && <span className="provider-stat-count">{s.count}</span>}
                 </button>
@@ -692,6 +710,39 @@ const SearchPage: React.FC = () => {
                 )}
               </div>
 
+              <details className="release-filters" open={activeReleaseFilters || undefined}>
+                <summary>{t('search.media.title')}{activeReleaseFilters && <span className="release-filter-status">{t('search.media.active')}</span>}</summary>
+                <div className="release-filter-fields">
+                  <label>{t('search.media.resolution')}
+                    <select className="form-select" value={releaseFilters.resolution} onChange={e => setReleaseFilters(f => ({...f, resolution:e.target.value}))}>
+                      <option value="">{t('search.media.any')}</option>
+                      {RESOLUTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </label>
+                  <label>{t('search.media.codec')}
+                    <select className="form-select" value={releaseFilters.codec} onChange={e => setReleaseFilters(f => ({...f, codec:e.target.value}))}>
+                      <option value="">{t('search.media.any')}</option>
+                      {CODECS.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </label>
+                  <label>{t('search.media.voice')}
+                    <select className="form-select" value={releaseFilters.voice} onChange={e => setReleaseFilters(f => ({...f, voice:e.target.value}))}>
+                      <option value="">{t('search.media.any')}</option>
+                      {VOICES.map(v => <option key={v} value={v}>{t(`search.media.voice${v}`)}</option>)}
+                    </select>
+                  </label>
+                  <label>{t('search.media.maxSize')}
+                    <input className="form-input" type="number" min="0" step="0.1" placeholder={t('search.media.unlimited')} value={releaseFilters.maxGiB}
+                      onChange={e => setReleaseFilters(f => ({...f,maxGiB:e.target.value}))} />
+                  </label>
+                </div>
+                <div className="release-filter-footer">
+                  <label><input type="checkbox" checked={releaseFilters.includeUnknown} onChange={e => setReleaseFilters(f => ({...f,includeUnknown:e.target.checked}))} />{t('search.media.unknown')}</label>
+                  <button className="btn btn-ghost btn-sm" type="button" onClick={() => setReleaseFilters({...DEFAULT_RELEASE_FILTERS})}>{t('search.media.reset')}</button>
+                </div>
+                <p>{t('search.media.hint')}</p>
+              </details>
+
               <div className="results-table">
                 <div className="results-thead">
                   <button type="button" className="results-th name-col sortable" onClick={() => toggleSort('name')}>
@@ -720,7 +771,7 @@ const SearchPage: React.FC = () => {
                     {rowVirtualizer.getVirtualItems().map(virtualRow => {
                       const r = visibleRows[virtualRow.index];
                       const key = rowKey(r);
-                      const chips = qualityChips(r.title);
+                      const chips = releaseChips(releaseMetadata.get(r.title)!);
                       return (
                         <div
                           key={virtualRow.key}
@@ -738,7 +789,7 @@ const SearchPage: React.FC = () => {
                             <span className="result-tags">
                               {r.freeleech && <span className="result-chip freeleech">FL</span>}
                               {chips.map(chip => (
-                                <span key={chip} className="result-chip">{chip}</span>
+                                <span key={chip} className="result-chip" title={t('search.media.fromTitle')}>{chip}</span>
                               ))}
                               {r.category && <span className="result-category">{r.category}</span>}
                             </span>
@@ -773,7 +824,7 @@ const SearchPage: React.FC = () => {
                                   variant="primary"
                                   size="sm"
                                   loading={downloading.has(key)}
-                                  disabled={downloading.has(key) || (!r.magnetUri && !r.torrentUrl)}
+                                  disabled={downloading.has(key) || (!r.magnetUri && !r.torrentUrl && !r.sourceRefs?.length)}
                                   onClick={() => handleDownload(r)}
                                   icon={<Icon name="download" size={14} />}
                                 >
@@ -817,6 +868,8 @@ const SearchPage: React.FC = () => {
             <h2>{t('search.providers.title')}</h2>
             <p className="providers-desc">{t('search.providers.desc')}</p>
 
+            <div className="providers-layout">
+            <div className="providers-existing">
             {/* Provider list */}
             {providers.length === 0 ? (
               <div className="providers-empty">{t('search.providers.empty')}</div>
@@ -861,11 +914,14 @@ const SearchPage: React.FC = () => {
                         />
                       )}
                     </div>
+                    <ProviderConnectionSettings provider={p} onConnectionChange={() => setTestResult(current => current?.id === p.id ? null : current)} />
                   </div>
                 ))}
               </div>
             )}
 
+            </div>
+            <div className="providers-setup">
             {/* Add new provider */}
             <div className="add-provider-form">
               <h3>{t('search.addProvider')}</h3>
@@ -1001,14 +1057,16 @@ const SearchPage: React.FC = () => {
             </div>
 
             {/* Help box */}
-            <div className="provider-help">
-              <h4><Icon name="help-circle" size={16} /> {t('search.guide.title')}</h4>
+            <details className="provider-help">
+              <summary>{t('search.guide.title')}</summary>
               <ul>
                 <li><strong>Jackett:</strong> {t('search.guide.jackett')}</li>
                 <li><strong>Prowlarr:</strong> {t('search.guide.prowlarr')}</li>
                 <li><strong>{t('search.guide.customLabel')}:</strong> {t('search.guide.custom')}</li>
                 <li><strong>{t('search.type.script')}:</strong> {t('search.guide.script')}</li>
               </ul>
+            </details>
+            </div>
             </div>
           </div>
         </div>

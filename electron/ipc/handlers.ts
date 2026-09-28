@@ -18,6 +18,9 @@ import { customTurnToIce, resolveTrackers } from '../sharing/ice-servers';
 import { getRoomManager } from '../sharing/room-manager';
 import { serverManager } from '../gameserver/server-manager';
 import type { MinecraftPlayerEntry } from '../../shared/gameserver-types';
+import { openProviderLogin } from '../services/provider-login';
+import { providerNetwork } from '../services/provider-network';
+import { getSearchNetworkSettings, saveSearchNetworkProfile, setProviderAccess } from '../services/provider-network-store';
 import { getSearchService } from '../services/search-service';
 import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
@@ -42,6 +45,10 @@ import {
 import { globalRateLimiter, RATE_LIMITS, createWebContentsKey } from '../utils/rate-limiter';
 
 const log = logger.child('IPC');
+const publicSearchProvider = (provider: import('../../shared/types').SearchProvider) => {
+  const { password: _password, apiKey: _apiKey, ...publicFields } = provider;
+  return publicFields;
+};
 
 // ── Game-server console tail ─────────────────────────────────────────────────
 // One subscription per renderer, to one instance. Lines are batched on a short
@@ -2511,7 +2518,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // ============================================================
 
   ipcMain.handle('search:start', wrapHandler('search:start',
-    async (event, query: string, category?: string, refresh?: boolean) => {
+    async (event, query: string, category?: string, refresh?: boolean, providerId?: string) => {
       const searchSvc = getSearchService();
       // Reply to the window that asked — the app has pop-out windows, so the
       // main window is not necessarily the one running the search.
@@ -2520,7 +2527,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         query,
         category,
         progress => { if (!sender.isDestroyed()) sender.send('search:progress', progress); },
-        { refresh: !!refresh }
+        { refresh: !!refresh, providerId }
       );
     }
   ));
@@ -2531,8 +2538,37 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  ipcMain.handle('search:getNetworkSettings', wrapHandler('search:getNetworkSettings', async () => getSearchNetworkSettings()));
+  ipcMain.handle('search:saveNetworkProfile', wrapHandler('search:saveNetworkProfile', async (_e, input) => {
+    const profile = saveSearchNetworkProfile(input);
+    getSearchService().clearResultCache();
+    for (const [id, access] of Object.entries(getSearchNetworkSettings().access)) {
+      if (access.profileId === profile.id) await providerNetwork.reset(id);
+    }
+    return profile;
+  }));
+  ipcMain.handle('search:setNetworkAccess', wrapHandler('search:setNetworkAccess', async (_e, id, access) => {
+    if (!(await db.getSearchProviders()).some(p => p.id === id)) throw new Error('Provider not found');
+    setProviderAccess(id, access);
+    getSearchService().clearResultCache();
+    await providerNetwork.reset(id);
+  }));
+  ipcMain.handle('search:login', wrapHandler('search:login', async (_e, id: string) => {
+    const provider = (await db.getSearchProviders()).find(p => p.id === id);
+    if (!provider) throw new Error('Provider not found');
+    await openProviderLogin(provider, window);
+    getSearchService().clearResultCache();
+    return getSearchService().testProvider(id);
+  }));
+  ipcMain.handle('search:logout', wrapHandler('search:logout', async (_e, id: string) => {
+    if (!(await db.getSearchProviders()).some(p => p.id === id)) throw new Error('Provider not found');
+    getSearchService().clearResultCache();
+    await providerNetwork.reset(id, true);
+  }));
+  ipcMain.handle('search:resolveSource', wrapHandler('search:resolveSource', async (_e, refs) => getSearchService().resolveSource(refs)));
+
   ipcMain.handle('search:getProviders', wrapHandler('search:getProviders',
-    async () => db.getSearchProviders()
+    async () => (await db.getSearchProviders()).map(publicSearchProvider)
   ));
 
   // Any change to the provider set invalidates cached results — otherwise
@@ -2540,20 +2576,25 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('search:addProvider', wrapHandler('search:addProvider',
     async (_event, provider) => {
       getSearchService().clearResultCache();
-      return db.addSearchProvider(provider);
+      const created = await db.addSearchProvider(provider);
+      if (created.type !== 'script') setProviderAccess(created.id, { profileId: 'system', origins: [] });
+      return publicSearchProvider(created);
     }
   ));
 
   ipcMain.handle('search:updateProvider', wrapHandler('search:updateProvider',
     async (_event, id: string, updates) => {
       getSearchService().clearResultCache();
-      return db.updateSearchProvider(id, updates);
+      await providerNetwork.reset(id);
+      return publicSearchProvider(await db.updateSearchProvider(id, updates));
     }
   ));
 
   ipcMain.handle('search:removeProvider', wrapHandler('search:removeProvider',
     async (_event, id: string) => {
       getSearchService().clearResultCache();
+      setProviderAccess(id, null);
+      await providerNetwork.reset(id, true);
       return db.removeSearchProvider(id);
     }
   ));

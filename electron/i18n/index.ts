@@ -25,6 +25,24 @@ export type MainLang = 'en' | 'ru';
 type Dict = Record<string, string>;
 
 const en: Dict = {
+  "search.network.cancelled": "Request cancelled. Retry the search.",
+  "search.plugin.pythonMissing": "Python 3 is required for this source. Install it and restart Havvn.",
+  "search.plugin.updateRequired": "This plugin does not support shared connections. Update the source plugin or select Legacy connection.",
+  "search.network.timeout": "Source timed out. Check its connection or mirror.",
+  "search.network.dns": "Could not resolve the site. Check DNS or select a proxy.",
+  "search.network.proxy": "Proxy unavailable or requires authentication. Check the connection settings.",
+  "search.network.tls": "Secure connection failed. Check the site address and certificate.",
+  "search.network.auth": "Session expired or login required. Open Sign in in the source connection settings.",
+  "search.network.captcha": "The site requires a browser check for this request. Complete it in Sign in. If you are already signed in, check whether search works inside that window: background requests may still be rejected.",
+  "search.network.invalid-response": "The source returned an unrecognized page. Check its mirror and sign-in page; the plugin may need an update.",
+  "search.network.forbidden": "Site refused access (403). Access restrictions or a browser check may apply.",
+  "search.network.rate-limit": "Too many requests. Wait before retrying.",
+  "search.network.server": "Source server failed. Try again later.",
+  "search.network.http": "Source returned an HTTP error. Check its address.",
+  "search.network.redirect": "Redirect is not allowed. Check the source trusted origins.",
+  "search.network.too-large": "Source response exceeds the size limit.",
+  "search.network.invalid-url": "Invalid source URL.",
+  "search.network.network": "Connection failed; cause unknown. Check source access.",
   // Tray icon
   'tray.tooltip.running': 'Havvn — Running in background',
   'tray.tooltip': 'Havvn',
@@ -122,6 +140,24 @@ const en: Dict = {
 };
 
 const ru: Dict = {
+  "search.network.cancelled": "Запрос отменён. Повтори поиск.",
+  "search.plugin.pythonMissing": "Для этого источника нужен Python 3. Установи его и перезапусти Havvn.",
+  "search.plugin.updateRequired": "Этот плагин не поддерживает общее подключение. Обнови плагин источника или выбери «Прежнее подключение».",
+  "search.network.timeout": "Источник не ответил вовремя. Проверь подключение или зеркало.",
+  "search.network.dns": "Не удалось определить адрес сайта. Проверь DNS или выбери прокси.",
+  "search.network.proxy": "Прокси недоступен или требует авторизации. Проверь настройки подключения.",
+  "search.network.tls": "Ошибка защищённого соединения. Проверь адрес и сертификат сайта.",
+  "search.network.auth": "Сессия истекла или требуется вход. Нажми «Войти на сайт» в подключении источника.",
+  "search.network.captcha": "Сайт требует проверку браузера для этого запроса. Пройди её в окне входа. Если ты уже вошёл, проверь поиск внутри этого окна: сайт может отдельно отклонять фоновые запросы.",
+  "search.network.invalid-response": "Источник вернул неизвестную страницу. Проверь зеркало и страницу входа; возможно, плагин нужно обновить.",
+  "search.network.forbidden": "Сайт отказал в доступе (403). Возможны ограничения доступа или проверка браузера.",
+  "search.network.rate-limit": "Слишком много запросов. Подожди перед повтором.",
+  "search.network.server": "Ошибка на стороне источника. Повтори позже.",
+  "search.network.http": "Источник вернул ошибку HTTP. Проверь его адрес.",
+  "search.network.redirect": "Переход на другой адрес не разрешён. Проверь доверенные адреса источника.",
+  "search.network.too-large": "Ответ источника превышает допустимый размер.",
+  "search.network.invalid-url": "Некорректный адрес источника.",
+  "search.network.network": "Ошибка подключения. Причину определить не удалось. Проверь доступ к источнику.",
   // Tray icon
   'tray.tooltip.running': 'Havvn — работает в фоне',
   'tray.tooltip': 'Havvn',

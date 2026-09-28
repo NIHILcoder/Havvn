@@ -1485,6 +1485,10 @@ export async function updatePrivacyConfig(updates: Partial<PrivacyConfig>): Prom
 
 export async function clearAllData(): Promise<void> {
   // .clear() resets each store to its defaults.
+  const { clearSearchNetworkSettings } = await import('../services/provider-network-store.js');
+  const { providerNetwork } = await import('../services/provider-network.js');
+  for (const provider of await getSearchProviders()) await providerNetwork.reset(provider.id, true);
+  clearSearchNetworkSettings();
   configStore.clear();
   downloadsStore.clear();
   rssStore.clear();

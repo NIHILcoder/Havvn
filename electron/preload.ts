@@ -670,14 +670,20 @@ const api: IpcApi = {
 
   // Priority 2: Search
   search: {
-    start: (query: string, category?: string, refresh?: boolean) =>
-      ipcRenderer.invoke('search:start', query, category, refresh),
+    start: (query: string, category?: string, refresh?: boolean, providerId?: string) =>
+      ipcRenderer.invoke('search:start', query, category, refresh, providerId),
     cancel: (searchId: string) => ipcRenderer.invoke('search:cancel', searchId),
     onProgress: (callback: (progress: SearchProgress) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, progress: SearchProgress) => callback(progress);
       ipcRenderer.on('search:progress', handler);
       return () => { ipcRenderer.removeListener('search:progress', handler); };
     },
+    login: (id: string) => ipcRenderer.invoke('search:login', id),
+    logout: (id: string) => ipcRenderer.invoke('search:logout', id),
+    getNetworkSettings: () => ipcRenderer.invoke('search:getNetworkSettings'),
+    saveNetworkProfile: (profile: any) => ipcRenderer.invoke('search:saveNetworkProfile', profile),
+    setNetworkAccess: (id: string, access: any) => ipcRenderer.invoke('search:setNetworkAccess', id, access),
+    resolveSource: (refs: string[]) => ipcRenderer.invoke('search:resolveSource', refs),
     getProviders: () => ipcRenderer.invoke('search:getProviders'),
     addProvider: (provider: any) => ipcRenderer.invoke('search:addProvider', provider),
     updateProvider: (id: string, updates: any) => ipcRenderer.invoke('search:updateProvider', id, updates),
