@@ -9,6 +9,8 @@ import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { Button, Icon, EmptyState, CategorySelect, DropdownMenu, useConfirm } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import './RSSPage.css';
+import '../components/Toggle.css';
+import { Modal } from '../components/Modal';
 
 const formatDate = (dateStr?: string): string => {
   if (!dateStr) return '—';
@@ -34,7 +36,7 @@ const feedStatusColor = (feed: RSSFeed): string => {
   return '#22c55e';
 };
 
-type Tab = 'feeds' | 'items' | 'add' | 'rules' | 'ruleEdit';
+type Tab = 'feeds' | 'items' | 'rules';
 
 /** A fresh rule: wildcard mode and the smart episode filter on, which is what
  *  most people want and what regex-first defaults made hard to discover. */
@@ -449,7 +451,7 @@ const RSSPage: React.FC = () => {
             <Button
               variant="primary"
               size="sm"
-              onClick={() => { setEditingFeed({ enabled: true, autoDownload: false, intervalMinutes: 30 }); setTab('add'); }}
+              onClick={() => { setEditingFeed({ enabled: true, autoDownload: false, intervalMinutes: 30 }); }}
               icon={<Icon name="plus" size={14} />}
             >
               {t('rss.addFeed')}
@@ -466,16 +468,6 @@ const RSSPage: React.FC = () => {
           <button className={`rss-tab ${tab === 'rules' ? 'active' : ''}`} onClick={() => { setTab('rules'); loadRules(); }}>
             {t('rss.tab.rules')} {rules.length > 0 && `(${rules.length})`}
           </button>
-          {editingFeed !== null && (
-            <button className={`rss-tab ${tab === 'add' ? 'active' : ''}`} onClick={() => setTab('add')}>
-              {editingFeed.id ? t('rss.tab.edit') : t('rss.tab.add')}
-            </button>
-          )}
-          {editingRule !== null && (
-            <button className={`rss-tab ${tab === 'ruleEdit' ? 'active' : ''}`} onClick={() => setTab('ruleEdit')}>
-              {editingRule.id ? t('rss.rule.editTitle') : t('rss.rule.addTitle')}
-            </button>
-          )}
         </div>
       </div>
 
@@ -558,7 +550,7 @@ const RSSPage: React.FC = () => {
                       </button>
                       <button
                         className="feed-edit-btn"
-                        onClick={() => { setEditingFeed({ ...feed }); setTab('add'); }}
+                        onClick={() => { setEditingFeed({ ...feed }); }}
                         title={t('rss.edit')}
                       >
                         <Icon name="edit-2" size={14} />
@@ -746,7 +738,7 @@ const RSSPage: React.FC = () => {
               <Button
                 variant="primary"
                 size="sm"
-                onClick={() => { setEditingRule(newRule()); setTab('ruleEdit'); }}
+                onClick={() => { setEditingRule(newRule()); }}
                 icon={<Icon name="plus" size={14} />}
               >
                 {t('rss.rule.add')}
@@ -813,7 +805,7 @@ const RSSPage: React.FC = () => {
                       </Button>
                       <button
                         className="feed-edit-btn"
-                        onClick={() => { setEditingRule({ ...rule }); setTab('ruleEdit'); }}
+                        onClick={() => { setEditingRule({ ...rule }); }}
                         title={t('rss.edit')}
                       >
                         <Icon name="edit-2" size={14} />
@@ -841,9 +833,26 @@ const RSSPage: React.FC = () => {
         )}
 
         {/* RULE EDITOR */}
-        {tab === 'ruleEdit' && editingRule !== null && (
-          <div className="feed-form">
-            <h2>{editingRule.id ? t('rss.rule.editTitle') : t('rss.rule.addTitle')}</h2>
+        {editingRule !== null && (
+          <Modal
+            title={editingRule.id ? t('rss.rule.editTitle') : t('rss.rule.addTitle')}
+            icon="filter"
+            size="xl"
+            className="rss-rule-modal"
+            busy={savingRule}
+            closeOnBackdrop={false}
+            onClose={() => setEditingRule(null)}
+            footer={<>
+              <Button variant="ghost" disabled={savingRule} onClick={() => setEditingRule(null)}>
+                {t('rss.form.cancel')}
+              </Button>
+              <Button variant="primary" loading={savingRule} disabled={!editingRule.name}
+                onClick={handleSaveRule} icon={<Icon name="check" size={16} />}>
+                {editingRule.id ? t('rss.form.save') : t('rss.rule.add')}
+              </Button>
+            </>}
+          >
+          <fieldset className="feed-form rule-editor" disabled={savingRule}>
 
             <div className="form-field">
               <label>{t('rss.rule.name')}</label>
@@ -851,11 +860,15 @@ const RSSPage: React.FC = () => {
                 type="text"
                 className="field-input"
                 placeholder={t('rss.rule.namePlaceholder')}
+                aria-label={t('rss.rule.name')}
                 value={editingRule.name || ''}
                 onChange={e => setEditingRule(r => ({ ...r, name: e.target.value }))}
               />
             </div>
 
+            <div className="rule-editor-columns">
+            <section className="rule-editor-section">
+            <h4>{t('rss.rule.conditionsTitle')}</h4>
             <div className="form-row-2">
               <div className="form-field">
                 <label>
@@ -996,6 +1009,9 @@ const RSSPage: React.FC = () => {
               </div>
             </div>
 
+            </section>
+            <section className="rule-editor-section">
+            <h4>{t('rss.rule.downloadTitle')}</h4>
             <div className="form-row-2">
               <div className="form-field">
                 <label>{t('rss.form.savePath')}</label>
@@ -1011,6 +1027,7 @@ const RSSPage: React.FC = () => {
                 <label>{t('rss.form.category')}</label>
                 <CategorySelect
                   value={editingRule.categoryId || ''}
+                  disabled={savingRule}
                   onChange={id => setEditingRule(r => ({ ...r, categoryId: id || undefined }))}
                 />
               </div>
@@ -1038,7 +1055,8 @@ const RSSPage: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  className={`toggle-switch ${editingRule.smartEpisode ? 'active' : ''}`}
+                  className={`toggle-switch small ${editingRule.smartEpisode ? 'active' : ''}`}
+                  aria-label={t('rss.rule.smart')}
                   role="switch"
                   aria-checked={!!editingRule.smartEpisode}
                   onClick={() => setEditingRule(r => ({ ...r, smartEpisode: !r?.smartEpisode }))}
@@ -1053,7 +1071,8 @@ const RSSPage: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  className={`toggle-switch ${editingRule.addPaused ? 'active' : ''}`}
+                  className={`toggle-switch small ${editingRule.addPaused ? 'active' : ''}`}
+                  aria-label={t('rss.form.addPaused')}
                   role="switch"
                   aria-checked={!!editingRule.addPaused}
                   onClick={() => setEditingRule(r => ({ ...r, addPaused: !r?.addPaused }))}
@@ -1089,27 +1108,33 @@ const RSSPage: React.FC = () => {
               )}
             </div>
 
-            <div className="form-actions">
-              <Button variant="ghost" onClick={() => { setEditingRule(null); setTab('rules'); }}>
-                {t('rss.form.cancel')}
-              </Button>
-              <Button
-                variant="primary"
-                loading={savingRule}
-                disabled={!editingRule.name}
-                onClick={handleSaveRule}
-                icon={<Icon name="check" size={16} />}
-              >
-                {editingRule.id ? t('rss.form.save') : t('rss.rule.add')}
-              </Button>
-            </div>
+            </section>
           </div>
+          </fieldset>
+          </Modal>
         )}
 
-        {/* ADD/EDIT TAB */}
-        {tab === 'add' && editingFeed !== null && (
-          <div className="feed-form">
-            <h2>{editingFeed.id ? t('rss.form.editTitle') : t('rss.form.addTitle')}</h2>
+        {/* Keep the current list visible behind the feed editor. */}
+        {editingFeed !== null && (
+          <Modal
+            title={editingFeed.id ? t('rss.form.editTitle') : t('rss.form.addTitle')}
+            icon="rss"
+            size="lg"
+            className="rss-feed-modal"
+            busy={savingFeed}
+            closeOnBackdrop={false}
+            onClose={() => setEditingFeed(null)}
+            footer={<>
+              <Button variant="ghost" disabled={savingFeed} onClick={() => setEditingFeed(null)}>
+                {t('rss.form.cancel')}
+              </Button>
+              <Button variant="primary" loading={savingFeed} disabled={!editingFeed.name || !editingFeed.url}
+                onClick={handleSaveFeed} icon={<Icon name="check" size={16} />}>
+                {editingFeed.id ? t('rss.form.save') : t('rss.form.add')}
+              </Button>
+            </>}
+          >
+          <fieldset className="feed-form" disabled={savingFeed}>
 
             <div className="form-field">
               <label>{t('rss.form.name')}</label>
@@ -1164,6 +1189,7 @@ const RSSPage: React.FC = () => {
               </label>
               <CategorySelect
                 value={editingFeed.categoryId || ''}
+                disabled={savingFeed}
                 onChange={id => setEditingFeed(f => ({ ...f, categoryId: id || undefined }))}
               />
             </div>
@@ -1187,7 +1213,8 @@ const RSSPage: React.FC = () => {
                 <span>{t('rss.form.enabled')}</span>
                 <button
                   type="button"
-                  className={`toggle-switch ${editingFeed.enabled ? 'active' : ''}`}
+                  className={`toggle-switch small ${editingFeed.enabled ? 'active' : ''}`}
+                  aria-label={t('rss.form.enabled')}
                   role="switch"
                   aria-checked={!!editingFeed.enabled}
                   onClick={() => setEditingFeed(f => ({ ...f, enabled: !f?.enabled }))}
@@ -1202,7 +1229,8 @@ const RSSPage: React.FC = () => {
                 </div>
                 <button
                   type="button"
-                  className={`toggle-switch ${editingFeed.addPaused ? 'active' : ''}`}
+                  className={`toggle-switch small ${editingFeed.addPaused ? 'active' : ''}`}
+                  aria-label={t('rss.form.addPaused')}
                   role="switch"
                   aria-checked={!!editingFeed.addPaused}
                   onClick={() => setEditingFeed(f => ({ ...f, addPaused: !f?.addPaused }))}
@@ -1212,24 +1240,8 @@ const RSSPage: React.FC = () => {
               </label>
             </div>
 
-            <div className="form-actions">
-              <Button
-                variant="ghost"
-                onClick={() => { setEditingFeed(null); setTab('feeds'); }}
-              >
-                {t('rss.form.cancel')}
-              </Button>
-              <Button
-                variant="primary"
-                loading={savingFeed}
-                disabled={!editingFeed.name || !editingFeed.url}
-                onClick={handleSaveFeed}
-                icon={<Icon name="check" size={16} />}
-              >
-                {editingFeed.id ? t('rss.form.save') : t('rss.form.add')}
-              </Button>
-            </div>
-          </div>
+          </fieldset>
+          </Modal>
         )}
       </div>
     </div>

@@ -15,6 +15,8 @@
   "search.media.reset": "Reset video filters",
   "search.media.hint": "Details come from titles and have not been verified against files. Voice-over type does not identify the language. Filters are saved automatically.",
   "search.media.fromTitle": "From the release title; not verified against the file",
+  "rss.rule.conditionsTitle": "Matching conditions",
+  "rss.rule.downloadTitle": "Download settings",
   "search.connection.addressRequired": "Enter a mirror or source origin before saving the connection.",
   "search.connection.invalidAddress": "Use http:// or https:// addresses without credentials, query parameters or fragments. Additional origins must contain only the domain; mirror URLs may include the forum path.",
   "search.connection.systemHelp": "Uses the system proxy or an active VPN. Browser extension settings are not automatically applied to Havvn.",
