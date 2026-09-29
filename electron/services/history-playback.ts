@@ -11,6 +11,8 @@ import { NativeMediaServer, type MediaFileInfo } from '../torrent/native/media-s
 import { audioTrackList, audioTrackParam, probeAudioStreams } from '../torrent/audio-probe';
 import { getSubtitleVtt, listSubtitleTracks } from '../torrent/subtitle-probe';
 import type { LocalMedia } from './external-player';
+import type { WatchTarget } from '../../shared/watch-history';
+import { mediaPath } from '../torrent/verified-media';
 
 interface Dependencies {
   download: (id: string) => Promise<Download | null>;
@@ -76,6 +78,13 @@ export class HistoryPlayback {
     if (!d || !file || classifyMediaKind(file.name) === 'other') throw new Error('Media unavailable');
     const disk = this.diskPath(d, file); if (!disk) throw new Error('Media unavailable');
     return { file, disk };
+  }
+  async watchTarget(id: string, relativePath: string): Promise<WatchTarget | null> {
+    const rel = mediaPath(relativePath); if (!rel) return null;
+    const files = await this.files(id), d = await this.deps.download(id);
+    const file = files.find(f => f.path.replace(/\\/g, '/') === rel);
+    if (!d || d.status === 'removed' || !file) return null;
+    return { identity: d.infoHash || d.id, downloadId: d.id, title: d.name, path: rel, fileIndex: file.index ?? files.indexOf(file) };
   }
   async localFile(id: string, relativePath: string): Promise<LocalMedia> {
     if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0') || classifyMediaKind(relativePath) === 'other') return { ok: false, reason: 'invalid-file' };

@@ -30,6 +30,7 @@ const ThemeEditor = lazy(() => import('./components/ThemeEditor'));
 import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
 import { dismissSplash } from './utils/splash';
+import { receiveExternalWatch } from './utils/externalWatch';
 
 
 /** Dismissible warning strip above the page content (VPN / bind / disk guards). */
@@ -46,6 +47,7 @@ const AlertBanner: React.FC<{
 );
 
 const AppContent: React.FC = () => {
+  useEffect(() => receiveExternalWatch(window.api.externalPlayer), []);
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   // The theme editor is a top-level dock (not a Settings modal) so it stays open

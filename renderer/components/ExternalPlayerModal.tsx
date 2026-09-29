@@ -8,6 +8,7 @@ import { useTranslation } from '../utils/i18nContext';
 import { externalStartTime, type ExternalPlayerConfig, type ExternalPlayerFailure } from '../../shared/external-player';
 import { fmtTime } from './PlayerControls';
 import { useHostWindow } from '../utils/hostWindow';
+import { beginPlaybackWatch, cancelPlaybackWatch } from '../utils/watchHistory';
 
 interface Props { downloadId: string; relativePath: string; position?: number; onClose: () => void; onOpened?: () => void }
 export function ExternalPlayerModal({ downloadId, relativePath, position = 0, onClose, onOpened }: Props) {
@@ -34,12 +35,17 @@ export function ExternalPlayerModal({ downloadId, relativePath, position = 0, on
   }, [downloadId, relativePath]);
   const open = async () => {
     setBusy(true); setError(null);
+    let session: ReturnType<typeof beginPlaybackWatch> = null, launched = false;
     try {
-      const result = await window.api.externalPlayer.open(downloadId, relativePath, resume ? time : 0);
-      if (result.ok) { onOpened?.(); onClose(); }
+      if (config?.kind === 'mpv') {
+        const target = await window.api.externalPlayer.watchTarget(downloadId, relativePath);
+        if (target) session = beginPlaybackWatch(target.identity, target.path);
+      }
+      const result = await window.api.externalPlayer.open(downloadId, relativePath, resume ? time : 0, session || undefined);
+      if (result.ok) { launched = true; onOpened?.(); onClose(); }
       else setError(result.reason);
     } catch { setError('unavailable'); }
-    finally { setBusy(false); }
+    finally { if (session && !launched) cancelPlaybackWatch(session); setBusy(false); }
   };
   const dialog = <Modal size="lg" title={t('external.title')} icon="external-link" onClose={onClose} busy={busy || choosing} backdropClassName="external-player-backdrop"
     footer={<><button className="btn btn-secondary" disabled={busy || choosing} onClick={onClose}>{t('common.cancel')}</button>
@@ -50,7 +56,7 @@ export function ExternalPlayerModal({ downloadId, relativePath, position = 0, on
     {availability === 'stream' && config?.kind === 'default' && <p className="external-player-hint">{t('external.error.stream-player')}</p>}
     {time >= 5 && config && config.kind !== 'default' && <label className="external-player-resume"><input type="checkbox" checked={resume} onChange={e => setResume(e.target.checked)} />{t('external.resume')} {fmtTime(time)}</label>}
     {time >= 5 && config?.kind === 'default' && <p className="external-player-hint">{t('external.defaultPosition')}</p>}
-    <p className="external-player-hint">{t('external.historyHint')}</p>
+    <p className="external-player-hint">{t(config?.kind === 'mpv' ? 'external.mpvHistoryHint' : 'external.historyHint')}</p>
     <ExternalPlayerSessions />
     {error && <p className="external-player-error" role="alert">{t(`external.error.${error}`)}</p>}
   </Modal>;

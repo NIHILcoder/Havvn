@@ -3,6 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { mediaPath } from '../torrent/verified-media';
 import { ExternalStream } from './external-stream';
+import { MpvWatch } from './mpv-watch';
+import { validWatchSession, watchKey, type WatchSession, type WatchTarget, type WatchEntry } from '../../shared/watch-history';
 import type { ExternalMedia, ExternalMediaRead, ExternalPlayerSession } from '../../shared/external-player';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { classifyMediaKind } from '../../shared/media';
@@ -17,6 +19,8 @@ interface Dependencies {
   snapshot?: (id: string, relativePath: string) => Promise<ExternalMedia>;
   readMedia?: (id: string, relativePath: string, key: string, start: number, max: number) => Promise<ExternalMediaRead>;
   spawn?: (exe: string, args: string[]) => ChildProcess;
+  watchTarget?: (id: string, relativePath: string) => Promise<WatchTarget | null>;
+  saveWatch?: (launch: string, entry: WatchEntry, session: WatchSession) => void;
 }
 const defaults: ExternalPlayerPreferences = { kind: 'default', executable: null };
 function playerKind(executable: string): 'vlc' | 'mpv' | null {
@@ -33,6 +37,7 @@ function executableExists(file: string): boolean {
 /** The only executable setter is called with a native picker result in main. */
 export class ExternalPlayer {
   private readonly streams = new Map<string, { details: ExternalPlayerSession; server: ExternalStream; key: string }>();
+  private readonly watches = new Map<string, MpvWatch>();
   private monitor: ReturnType<typeof setInterval> | null = null;
   private checking = false;
   private closed = false;
@@ -61,11 +66,13 @@ export class ExternalPlayer {
   }
   sessions(): ExternalPlayerSession[] { return [...this.streams.values()].map(s => ({ ...s.details })); }
   stop(id: string): void {
+    this.stopWatch(id);
     const session = this.streams.get(id); if (!session) return;
     this.streams.delete(id); session.server.close();
     if (!this.streams.size && this.monitor) { clearInterval(this.monitor); this.monitor = null; }
   }
-  close(): void { this.closed = true; for (const id of this.streams.keys()) this.stop(id); }
+  private stopWatch(id: string): void { const watch = this.watches.get(id); this.watches.delete(id); watch?.close(); }
+  close(): void { this.closed = true; for (const id of this.streams.keys()) this.stop(id); for (const id of this.watches.keys()) this.stopWatch(id); }
   private watch(): void {
     if (this.monitor) return;
     this.monitor = setInterval(() => {
@@ -77,9 +84,10 @@ export class ExternalPlayer {
     }, 2000);
     this.monitor.unref();
   }
-  async open(id: string, relativePath: string, position?: number): Promise<ExternalPlayerResult> {
+  async open(id: string, relativePath: string, position?: number, watchSession?: WatchSession): Promise<ExternalPlayerResult> {
     const rel = mediaPath(relativePath); if (!rel) return { ok: false, reason: 'invalid-file' };
     let lease: string | null = null;
+    let watchId: string | null = null;
     try {
       if (this.closed) return { ok: false, reason: 'unavailable' };
       const resolved = await this.deps.resolve(id, rel);
@@ -109,25 +117,37 @@ export class ExternalPlayer {
         const error = await this.deps.openPath(source).catch(() => 'Failed');
         if (error) return { ok: false, reason: 'launch-failed' };
       } else {
+        let watch: MpvWatch | null = null;
+        if (config.kind === 'mpv' && watchSession && this.deps.watchTarget && this.deps.saveWatch) {
+          const target = await this.deps.watchTarget(id, rel);
+          if (!target || !validWatchSession(watchSession) || watchSession.key !== watchKey(target)) throw new Error('Invalid history target');
+          if (this.watches.size >= 8) { if (lease) this.stop(lease); return { ok: false, reason: 'too-many-players' }; }
+          watchId = lease || crypto.randomUUID(); const launch = watchId, opened = Date.now();
+          const session = { ...watchSession };
+          watch = new MpvWatch(source, sample => this.deps.saveWatch!(launch, { ...target, ...sample,
+            lastOpened: opened, updatedAt: Date.now(), completed: sample.duration !== null && sample.position >= sample.duration * 0.95 }, session));
+          this.watches.set(launch, watch);
+        }
         if (this.closed) throw new Error('Player service closed');
         // Fixed templates only; URLs remain in main and are never sent to renderer.
         // A separate VLC instance lets its process lifetime own this stream.
-        const args = config.kind === 'mpv' ? [...(startTime ? [`--start=${startTime}`] : []), '--', source] :
+        const args = config.kind === 'mpv' ? [...(watch ? [`--input-ipc-server=${watch.endpoint}`] : []), ...(startTime ? [`--start=${startTime}`] : []), '--', source] :
           [...(lease ? ['--no-one-instance', '--no-one-instance-when-started-from-file'] : []), ...(startTime ? [`--start-time=${startTime}`] : []), source];
         const sessionId = lease;
+        const trackingId = watchId;
         const launched = await new Promise<boolean>(resolve => {
           const child = this.deps.spawn ? this.deps.spawn(config.executable!, args) :
             spawn(config.executable!, args, { shell: false, windowsHide: true, detached: true, stdio: 'ignore' });
           let timer: ReturnType<typeof setTimeout> | undefined, settled = false;
-          const release = () => { if (sessionId) this.stop(sessionId); };
+          const release = () => { if (trackingId) this.stopWatch(trackingId); if (sessionId) this.stop(sessionId); };
           const finish = (ok: boolean) => { if (settled) return; settled = true; clearTimeout(timer); child.unref(); resolve(ok); };
           child.once('error', () => { release(); finish(false); });
           child.once('exit', (code, signal) => { release(); finish(!sessionId && code === 0 && !signal); });
-          child.once('spawn', () => { timer = setTimeout(() => finish(!this.closed && (!sessionId || this.streams.has(sessionId))), 500); });
+          child.once('spawn', () => { watch?.start(); timer = setTimeout(() => finish(!this.closed && (!sessionId || this.streams.has(sessionId))), 500); });
         }).catch(() => false);
-        if (!launched) { if (lease) this.stop(lease); return { ok: false, reason: 'launch-failed' }; }
+        if (!launched) { if (watchId) this.stopWatch(watchId); if (lease) this.stop(lease); return { ok: false, reason: 'launch-failed' }; }
       }
       return { ok: true, kind: config.kind, startTime };
-    } catch { if (lease) this.stop(lease); return { ok: false, reason: 'unavailable' }; }
+    } catch { if (watchId) this.stopWatch(watchId); if (lease) this.stop(lease); return { ok: false, reason: 'unavailable' }; }
   }
 }

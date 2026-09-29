@@ -11,6 +11,8 @@ import fs from 'fs/promises';
 import Store from 'electron-store';
 import { HistoryPlayback } from '../services/history-playback';
 import { ExternalPlayer } from '../services/external-player';
+import { ExternalWatchQueue } from '../services/external-watch-queue';
+import type { ExternalWatchUpdate, WatchSession } from '../../shared/watch-history';
 import type { ExternalPlayerPreferences } from '../../shared/external-player';
 import type { TorrentFile } from '../../shared/types';
 import fsSync from 'fs';
@@ -458,9 +460,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     cache: (key, files) => { const cached = playbackCache.get('files'); if (JSON.stringify(cached[key]) === JSON.stringify(files)) return; delete cached[key]; cached[key] = files; playbackCache.set('files', Object.fromEntries(Object.entries(cached).slice(-200))); },
   });
   app.once('before-quit', () => historyPlayback.close());
-  const externalStore = new Store<{ preferences: ExternalPlayerPreferences }>({ name: 'external-player', clearInvalidConfig: true, defaults: { preferences: { kind: 'default', executable: null } } });
+  const externalStore = new Store<{ preferences: ExternalPlayerPreferences; watchUpdates: ExternalWatchUpdate[] }>({ name: 'external-player', clearInvalidConfig: true, defaults: { preferences: { kind: 'default', executable: null }, watchUpdates: [] } });
+  const externalWatch = new ExternalWatchQueue(() => externalStore.get('watchUpdates'), updates => externalStore.set('watchUpdates', updates));
   const externalPlayer = new ExternalPlayer({ read: () => externalStore.get('preferences'), write: prefs => externalStore.set('preferences', prefs),
     resolve: (id, relativePath) => historyPlayback.localFile(id, relativePath),
+    watchTarget: (id, rel) => historyPlayback.watchTarget(id, rel), saveWatch: (launch, entry, session) => externalWatch.push(launch, entry, session),
     snapshot: (id, rel) => torrentManager.getExternalMedia(id, rel), readMedia: (id, rel, key, start, max) => torrentManager.readExternalMedia(id, rel, key, start, max), openPath: file => shell.openPath(file) });
   // Popouts use the main renderer's bridge; provider login pages have no access.
   const externalSender = (event: Electron.IpcMainInvokeEvent) => {
@@ -474,9 +478,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       ...(process.platform === 'win32' ? { filters: [{ name: 'VLC / mpv', extensions: ['exe'] }] } : {}) });
     return choice.canceled || !choice.filePaths[0] ? { ok: true, config: null } : externalPlayer.select(choice.filePaths[0]);
   }));
-  ipcMain.handle('externalPlayer:open', wrapHandler('externalPlayer:open', async (event, id: string, relativePath: string, startTime?: number) => {
-    externalSender(event); validateDownloadId(id); return externalPlayer.open(id, relativePath, startTime);
+  ipcMain.handle('externalPlayer:open', wrapHandler('externalPlayer:open', async (event, id: string, relativePath: string, startTime?: number, watch?: WatchSession) => {
+    externalSender(event); validateDownloadId(id); return externalPlayer.open(id, relativePath, startTime, watch);
   }));
+  ipcMain.handle('externalPlayer:watchTarget', wrapHandler('externalPlayer:watchTarget', async (event, id: string, rel: string) => { externalSender(event); validateDownloadId(id); return historyPlayback.watchTarget(id, rel); }));
+  ipcMain.handle('externalPlayer:watchUpdates', wrapHandler('externalPlayer:watchUpdates', async event => { externalSender(event); return externalWatch.list(); }));
+  ipcMain.handle('externalPlayer:acknowledgeWatch', wrapHandler('externalPlayer:acknowledgeWatch', async (event, ids: string[]) => { externalSender(event); externalWatch.acknowledge(ids); }));
   app.once('before-quit', () => externalPlayer.close());
   ipcMain.handle('externalPlayer:inspect', wrapHandler('externalPlayer:inspect', async (event, id: string, rel: string) => { externalSender(event); validateDownloadId(id); return externalPlayer.inspect(id, rel); }));
   ipcMain.handle('externalPlayer:sessions', wrapHandler('externalPlayer:sessions', async event => { externalSender(event); return externalPlayer.sessions(); }));

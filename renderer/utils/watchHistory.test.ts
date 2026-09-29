@@ -2,6 +2,8 @@ import { beforeEach, afterEach, it, expect, vi } from 'vitest';
 import { beginWatch, beginPlaybackWatch, cancelPlaybackWatch, applyExternalWatch, saveWatch, watchEntries, changeWatch, clearWatchHistory, migrateWatchHistory, subscribeWatchHistory, WATCH_HISTORY_KEY } from './watchHistory';
 import { watchKey, resumablePosition, normalizeWatchEntry, type WatchEntry } from '../../shared/watch-history';
 import type { Download } from '../../shared/types';
+import { receiveExternalWatch } from './externalWatch';
+import type { ExternalPlayerApi } from '../../shared/external-player';
 let storage: Map<string, string>;
 const entry = (path = 'Series/S01E01.mp4'): WatchEntry => ({ identity: 'hash', downloadId: 'one', title: 'Series', path, fileIndex: 0,
   position: 42, duration: 1000, lastOpened: 100, updatedAt: 100, completed: false, tracks: { audio: 'descriptor', subtitle: 'off', at: 100 } });
@@ -33,6 +35,16 @@ it('failed handoff restores the builtin session; quota errors keep updates pendi
   expect(applyExternalWatch({ id: 'retry', session: next, entry: { ...a, updatedAt: 200 } })).toBe(false);
   vi.stubGlobal('localStorage', { getItem: () => { throw Error('disabled'); } });
   expect(applyExternalWatch({ id: 'unreadable', session: next, entry: a })).toBe(false);
+});
+it('the app receiver persists updates after navigation/reload and stops polling on unmount', async () => {
+  const a = entry(), session = beginPlaybackWatch(a.identity, a.path)!;
+  const updates = vi.fn(async () => [{ id: 'snapshot', entry: a, session }]), ack = vi.fn(async () => {});
+  const stop = receiveExternalWatch({ watchUpdates: updates, acknowledgeWatch: ack } as unknown as ExternalPlayerApi);
+  await vi.waitFor(() => expect(ack).toHaveBeenCalledWith(['snapshot'])); expect(watchEntries()[0].position).toBe(42); stop();
+  const count = updates.mock.calls.length; await new Promise(r => setTimeout(r, 1100)); expect(updates).toHaveBeenCalledTimes(count);
+  // Reload of the consumer acknowledges already persisted samples without dropping newer ones.
+  const stopAgain = receiveExternalWatch({ watchUpdates: updates, acknowledgeWatch: ack } as unknown as ExternalPlayerApi);
+  await vi.waitFor(() => expect(ack).toHaveBeenCalledTimes(2)); stopAgain(); expect(watchEntries()).toHaveLength(1);
 });
 it('keeps identity across a new download id, display name, file index and directory', () => {
   const a = entry(), session = beginWatch(a.identity, a.path); saveWatch(a, session);

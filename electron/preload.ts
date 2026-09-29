@@ -50,7 +50,10 @@ const api: IpcApi = {
     stop: id => ipcRenderer.invoke('externalPlayer:stop', id),
     useDefault: () => ipcRenderer.invoke('externalPlayer:useDefault'),
     choose: () => ipcRenderer.invoke('externalPlayer:choose'),
-    open: (id, relativePath, startTime) => ipcRenderer.invoke('externalPlayer:open', id, relativePath, startTime),
+    open: (id, relativePath, startTime, watch) => ipcRenderer.invoke('externalPlayer:open', id, relativePath, startTime, watch),
+    watchTarget: (id, rel) => ipcRenderer.invoke('externalPlayer:watchTarget', id, rel),
+    watchUpdates: () => ipcRenderer.invoke('externalPlayer:watchUpdates'),
+    acknowledgeWatch: ids => ipcRenderer.invoke('externalPlayer:acknowledgeWatch', ids),
   },
   historyPlayback: {
     files: id => ipcRenderer.invoke('historyPlayback:files', id),

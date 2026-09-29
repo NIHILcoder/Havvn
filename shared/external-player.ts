@@ -1,4 +1,4 @@
-
+import type { WatchSession, WatchTarget, ExternalWatchUpdate } from './watch-history';
 export type ExternalPlayerKind = 'default' | 'vlc' | 'mpv';
 export interface ExternalPlayerPreferences { kind: ExternalPlayerKind; executable: string | null }
 export interface ExternalPlayerConfig extends ExternalPlayerPreferences { available: boolean }
@@ -12,7 +12,10 @@ export interface ExternalPlayerApi {
   getConfig: () => Promise<ExternalPlayerConfig>;
   useDefault: () => Promise<ExternalPlayerConfig>;
   choose: () => Promise<ExternalPlayerChoice>;
-  open: (id: string, relativePath: string, startTime?: number) => Promise<ExternalPlayerResult>;
+  open: (id: string, relativePath: string, startTime?: number, watch?: WatchSession) => Promise<ExternalPlayerResult>;
+  watchTarget: (id: string, relativePath: string) => Promise<WatchTarget | null>;
+  watchUpdates: () => Promise<ExternalWatchUpdate[]>;
+  acknowledgeWatch: (ids: string[]) => Promise<void>;
   inspect: (id: string, relativePath: string) => Promise<'local' | 'stream' | ExternalPlayerFailure>;
   sessions: () => Promise<ExternalPlayerSession[]>;
   stop: (id: string) => Promise<void>;
