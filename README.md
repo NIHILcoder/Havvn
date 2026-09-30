@@ -1,4 +1,10 @@
 <p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-e25117?style=for-the-badge" alt="English" /></a>
+  <a href="README.ru.md"><img src="https://img.shields.io/badge/Русский-30343b?style=for-the-badge" alt="Русский" /></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/简体中文-30343b?style=for-the-badge" alt="简体中文" /></a>
+</p>
+
+<p align="center">
   <img src="assets/havvn-cover.png" alt="Havvn — a private, serverless P2P hub" width="720" />
 </p>
 
@@ -34,10 +40,11 @@ point. Its real job is the things classic clients *can't* do, all peer-to-peer w
 
 You bring your own indexers and feeds — Havvn bundles none. Everything runs on
 your machine and directly between you and your peers: **the developer runs no servers,
-and the app costs nothing to operate.** The one external dependency is a set of public
-WebRTC **rendezvous trackers** that broker the initial handshake — they never carry file
-bytes or plaintext, three independent operators are used so none is load-bearing, and
-you can point Havvn at **your own trackers** in Settings → Sharing. Built with Electron,
+and the app costs nothing to operate.** Public WebRTC **rendezvous trackers** broker the
+initial handshake — they never carry file bytes or plaintext, and you can point Havvn
+at **your own trackers** in Settings → Sharing. Network discovery also uses STUN;
+search contacts the providers you configure, and optional features such as IP/ISP
+lookups contact their respective services. Built with Electron,
 React, a bundled native Transmission engine and WebTorrent.
 
 > **Legal use only.** Havvn does not bundle indexers for copyrighted material.
@@ -51,6 +58,9 @@ React, a bundled native Transmission engine and WebTorrent.
 
 Grab the latest Windows installer from the
 **[Releases page](https://github.com/NIHILcoder/Havvn/releases/latest)**.
+
+This README describes the current `main` branch. The latest packaged release may
+not include all of these features yet; check its release notes.
 
 ### Verify your download
 
@@ -77,20 +87,39 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   the add flow
 - Pause / resume / remove (with optional file deletion), retry failed downloads
 - **Per-file selection & priority**, sequential download, global speed limit
+- **Upload capped by default** — fresh profiles share a **1024 KB/s (1 MiB/s)**
+  upload budget across regular torrents. Change it in Settings → Connection;
+  existing profiles keep their saved limit. Optional adaptive upload backs off
+  when network latency rises
 - **Seed ratio / seed time limits**, tracker add/remove per torrent
+- **Stop / resume seeding** independently of pausing an unfinished download —
+  completed files stay in the list and can be shared again
+- **Tracker warnings** stay separate from transfer failures, so a rejected tracker
+  does not label an otherwise working download as failed
 - **Category and paused** on add — from the dialog, from search, and from RSS — so a
-  week of grabs does not land in one pile already transferring
+  week of grabs does not land in one pile already transferring. These are your
+  download groups, not search filters for the source site's content
 - Categories, search/filter/sort, list & detailed views
 - Open the OS "open with" dialog when you double-click a `.torrent` — no silent adds
 
 ### Discover content
 - **Pluggable search** — bring your own **Jackett**, **Prowlarr (Torznab)**, a custom
   JSON API, or a **local Python script**. No indexers are bundled. Results arrive as
-  each provider answers (and can be cancelled), collapse into **one row per torrent**,
-  and carry the actions that matter: pick files, copy the magnet, open the release
-  page, add paused into a category. Categories come from the indexer (`t=caps`). A
-  script can describe itself in a `th-plugin` comment so you see its name and required
+  each provider answers (and can be cancelled), with duplicate torrents merged.
+  Pick files, copy the magnet, open the release page or add paused into a download
+  category. Retry a failed provider while keeping the other results. A script can
+  describe itself in a `th-plugin` comment so you see its name and required
   credentials before a search fails — see [search plugins](docs/search-plugins/)
+- **Compare release variants** — group matching films and episodes, expand their
+  variants, refine results by release details, and see torrents already added or
+  completed. Save preferences for resolution, audio language, voice/dub type,
+  maximum size and minimum seeds, then rank matching releases first. Media labels
+  are inferred from release names; unknown details remain unknown
+- **Per-source connections** — System (system proxy/VPN), Direct, or a reusable
+  HTTP/SOCKS5 proxy profile, plus trusted mirrors. Compatible Python plugins use
+  the Havvn Network SDK. **Sign in** opens an isolated source browser; log in and
+  complete any browser check there, then close it to keep the session for search
+  and `.torrent` retrieval. Browser extensions in Chrome/Edge are not inherited
 - **RSS as a rule engine** — a rule watches any set of feeds (or all of them), matches
   on words or a regex with include and exclude, bounds size, seeds and age, and files
   what it grabs with its own path, category and paused choice. Smart episode matching
@@ -110,6 +139,24 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   repeat/shuffle and an output device, remembered across tracks, windows and sessions
 - **Subtitles** — embedded text tracks (mkv, etc.) and sidecar `.srt` / `.ass` / `.vtt`
   files are converted to WebVTT on the fly and overlaid on playback
+- **Remembered player preferences** — preferred audio/subtitle languages, subtitle
+  mode, size, colour, background and timing offset, with per-file track choices
+- **Playback diagnostics** — see startup/conversion/buffering state, continuous
+  media buffered ahead, torrent speed and peers. Seeking into an incomplete area
+  waits for data; torrent progress is not the same as playable buffer
+- **Continue watching** — local watch history with resume, start over, next episode,
+  mark watched and remove/clear actions. Positions survive seeks, transcoding,
+  audio-track changes and switching between the main and pop-out player. History
+  does not restore deleted files or automatically resume stopped downloads
+- **Next episode prefetch (Classic/WebTorrent)** — opt in to download a bounded
+  beginning of the next file near the end of playback. It yields to the current
+  video and stops on pause, seek or low buffer. Native/Transmission does not yet
+  support this feature; excluded files require explicit consent
+- **External players** — open complete local media in the system-associated player,
+  or choose your installed **VLC / mpv**. VLC and mpv can also play incomplete files
+  from a verified local stream while Havvn stays open. VLC / mpv can start from the
+  saved position; **mpv sends progress back to watch history** while Havvn runs. VLC and
+  the system player do not send playback positions back
 - **On-the-fly transcoding** — formats the browser can't decode (mkv, HEVC, AVI…) are
   converted live via the bundled ffmpeg, no external player needed
 - **Watch on another device (LAN)** — one click shows a QR code + link; open it on a phone,
@@ -216,8 +263,8 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **Pause All / Resume All** from the toolbar or the system-tray menu
 
 ### Desktop experience
-- **Background mode** — closing the window minimizes to the **system tray** so torrents
-  keep running; uses your `icon.ico`
+- **Optional background mode** — enable close-to-tray to keep torrents running after
+  closing the window; reopen it from the shortcut or tray. By default, closing quits
 - Run at login, close/minimize-to-tray, native completion notifications
 - **Two-pillar layout** — a **Transfers | Rooms** switch keeps downloading and
   shared-listening as distinct spaces, bridged by a persistent status strip that surfaces
@@ -270,43 +317,47 @@ it than not.
 |--------------|----------------------------------------------|
 | UI           | React 18, TypeScript, d3-geo (swarm map)      |
 | State        | Zustand                                      |
-| Desktop      | Electron 42, Node.js                          |
+| Desktop      | Electron 44, Node.js                          |
 | Torrents     | Transmission (bundled native engine) with a WebTorrent fallback; WebTorrent + WebRTC for rooms & share links |
 | Voice        | WebRTC mesh, RNNoise noise suppression (WASM AudioWorklet), global hotkeys via uiohook |
-| Persistence  | electron-store (local JSON)                   |
-| Tests        | Vitest                                        |
-| Build        | webpack (renderer), tsc (main), electron-builder |
+| Persistence  | electron-store (local JSON), renderer localStorage for watch history and player/search preferences |
+| Tests        | Vitest, Node.js test runner, isolated playback smoke scripts |
+| Build        | webpack (renderer + browser guest), tsc (main), electron-builder |
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-- **Node.js 18+** and npm
-- Windows 10+, macOS 10.14+, or a modern Linux distribution
+- **Node.js 24** and npm (the version used in CI)
+- **Windows 10+ x64** for the current packaged target. macOS / Linux ports are planned
+- **Python 3** only if you use Python search providers; VLC / mpv only if you choose
+  those external players
 
 ### Install
 ```bash
-npm install
+npm ci
 ```
 
 ### Run in development
-Starts the webpack dev server and Electron with hot reload:
+Starts the webpack dev server and Electron. The launcher waits for the renderer
+at `http://127.0.0.1:3000/` before opening the app; the first compilation takes longer
+than subsequent rebuilds:
 ```bash
 npm run dev
 ```
 
 ### Build
 ```bash
-npm run build        # compile main + renderer
-npm run typecheck    # type-check both projects
-npm test             # unit tests (vitest)
+npm run build        # compile main + renderer + browser guest
+npm run typecheck    # type-check all three projects
+npm test             # Vitest suites + Node.js dev-launcher tests
 npm run lint         # lint
 ```
 
 ### Package a desktop installer
 ```bash
-npm run dist         # builds and packages (Windows NSIS by default)
+npm run dist         # build Windows x64 NSIS installer + portable ZIP
 ```
 Packaged output is written to `release/`.
 
@@ -317,7 +368,7 @@ Packaged output is written to `release/`.
 ```
 electron/            Main process (TypeScript)
   torrent/           Torrent engines, creator, watch folder, LAN cast/HLS server
-  services/          RSS, search, IP blocklist
+  services/          RSS, search/source sessions, external players, mpv IPC, IP blocklist
   sharing/           Share Links + Rooms (WebRTC seeder/engine in a hidden window)
   lan/               Virtual LAN (Windows)
   gameserver/        In-room dedicated servers
@@ -328,8 +379,11 @@ electron/            Main process (TypeScript)
   main.ts            App lifecycle, tray, window, security
   preload.ts         contextBridge IPC API
 renderer/            React UI (pages, components, stores, i18n)
-shared/              Types, parsers, rule matching, the download state machine
-vendor/              Bundled native engine (Transmission)
+guest/               Browser room guest (TypeScript)
+shared/              Types, parsers, rule matching, playback contracts, download state machine
+scripts/             Dev launcher, native prebuild setup, isolated smoke checks
+docs/search-plugins/ Python provider examples + Havvn Network SDK
+vendor/              Bundled native engine (Transmission) and Windows LAN driver (Wintun)
 build/               App icons & installer resources
 ```
 
@@ -341,11 +395,12 @@ build/               App icons & installer resources
 Downloads follow a validated lifecycle (`shared/state-machine.ts`):
 
 ```
-QUEUED → DOWNLOADING → COMPLETED → SEEDING
-   ↓         ↓            ↓           ↓
-   └──────→ PAUSED ←──────┴───────────┘
-             ↓
-          ERROR → REMOVED
+QUEUED → DOWNLOADING → SEEDING ⇄ COMPLETED
+   ↓         ⇅           ⇅
+   └──────→ PAUSED ─────→ COMPLETED
+
+Transfer failures → ERROR → QUEUED / DOWNLOADING (retry)
+Any state → REMOVED
 ```
 Invalid transitions are rejected to keep state consistent.
 
@@ -354,12 +409,18 @@ Downloads, settings, feeds, rules and providers are stored locally via
 **electron-store** (JSON). Progress is written on a debounced interval (batched into a
 single write) to keep disk I/O low while torrents are active, so downloads resume after a
 restart.
+Watch history, playback positions and player/search preferences stay on this
+computer in renderer localStorage. Source logins use separate persistent browser
+sessions; they do not import cookies or passwords from your everyday browser.
 
 ### Process & security model
 - Renderer runs context-isolated and sandboxed; Node integration is disabled
 - A minimal, type-safe preload bridge exposes only the IPC surface the UI needs
 - Production builds apply a Content-Security-Policy and block in-app navigation to
   external origins (external links open in the default browser)
+- Source sign-in windows have their own sandboxed sessions and restrict top-level
+  navigation to configured origins. HTTPS page resources and Cloudflare challenge
+  resources are allowed inside the window; it exposes no application preload API
 
 ### Logging
 Structured logs are written to the app's `logs/` directory with daily rotation,
@@ -378,7 +439,17 @@ multiple severity levels, and automatic cleanup of old files.
   strong safety net, not a guarantee. A VPN with its own kill-switch remains the real
   protection.
 - **Proxy**: there is no SOCKS/HTTP proxy option for peer traffic — use a VPN for
-  network privacy.
+  network privacy. Per-source proxies cover search and `.torrent` retrieval only;
+  authenticated proxy profiles are not supported yet.
+- **Site access**: browser sign-in can reuse a source session, but does not guarantee
+  access through site restrictions or browser checks. An older Python plugin needs
+  updating to use the shared connection; Legacy mode keeps its own network/login path.
+- **External playback**: install VLC / mpv yourself. Incomplete streams require an
+  active, selected file and Havvn running; opening history or an external player does
+  not resume paused/excluded downloads. Stopping an external stream leaves the torrent
+  running. Only mpv reports playback position back to Havvn.
+- **Episode prefetch** currently works only in Classic/WebTorrent, for files in the
+  same torrent and playback with a known duration.
 - **Watch anywhere (remote WebRTC streaming)** is experimental and depends on NAT
   traversal; it may not connect on every network.
 - **Room connectivity across strict NAT**: rooms connect for the large majority of
@@ -400,11 +471,14 @@ multiple severity levels, and automatic cleanup of old files.
 
 ## Contributing
 
-CI runs on every push / PR (`.github/workflows/ci.yml`): type-check and build are required
+CI runs on every push to `main` / PR (`.github/workflows/ci.yml`): type-check, tests and build are required
 gates; lint runs as advisory. Please run `npm run typecheck`, `npm test` and `npm run build`
 before opening a PR. The guest page (`docs/room/guest.js`) is produced by
 `npm run build:guest` (also part of `npm run build`) and must be committed so
 GitHub Pages can serve it.
+
+When updating this README, keep the English, Russian (`README.ru.md`) and
+Simplified Chinese (`README.zh-CN.md`) versions aligned.
 
 ---
 

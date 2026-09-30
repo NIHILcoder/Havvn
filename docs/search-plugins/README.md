@@ -1,8 +1,8 @@
 # Havvn search plugins
 
 A **script provider** lets Havvn search any source by running a small local
-program you point it at. Havvn ships no scrapers itself — you bring the
-script. This keeps the app neutral and lets you (or the community) add indexers
+program you point it at. No script provider is enabled by default — you choose
+and add a script, including the examples in this directory. This lets you add indexers
 without hosting a Jackett/Prowlarr server.
 
 ## How it works
@@ -17,10 +17,12 @@ When you run a search, Havvn invokes your script like this:
 - `"<query>"` is what you typed in the search box.
 - `"<category>"` is a [Newznab category id](https://newznab.readthedocs.io/en/latest/misc/api/#predefined-categories)
   (`2000` movies, `5000` TV, `3000` music, `4000` software, `6000` XXX) or an
-  **empty string** when "All categories" is selected.
+  **empty string** for searches from the current UI. The argument is retained for
+  plugin compatibility; the old source-category selector was removed. The
+  **Add to category** control assigns downloads to your own groups instead.
 
 Your script must **print a JSON array of results to stdout** and exit. Anything on
-stderr is ignored (use it for your own debug logging).
+stderr is reserved for diagnostics, not search results.
 
 On failure, exit with a non-zero status and write a short diagnostic to stderr;
 Havvn displays that diagnostic. Do not include passwords or session cookies.
@@ -52,7 +54,7 @@ Field rules:
 | `torrentUrl`  | one of these three | Direct `.torrent` URL.                            |
 | `infoHash`    | one of these three | 40-char hex (Havvn rebuilds the magnet).          |
 | `size`        | no       | Bytes (integer). Defaults to 0.                             |
-| `seeds`       | no       | Integer. Defaults to 0. Results are sorted by this.        |
+| `seeds`       | no       | Integer. Defaults to 0; used in sorting and preferences.     |
 | `leechers`    | no       | Integer. Defaults to 0.                                      |
 | `publishDate` | no       | Any string.                                                 |
 | `category`    | no       | Free-text label shown in the results table.                 |
@@ -65,7 +67,7 @@ serve both this provider and the "Custom JSON" HTTP provider.
 
 ## Credentials (for indexers that need a login)
 
-Some indexers (e.g. RuTracker) require an account. Put the login in the provider's
+Some scripts require an account. Put the login in the provider's
 **Login** / **Password** fields in Havvn instead of hard-coding it in the
 script — the password is stored **encrypted** by the OS keychain (DPAPI / Keychain
 / libsecret), never in plaintext. Havvn passes them to the script as
@@ -76,9 +78,13 @@ environment variables:
 | `TH_USERNAME`     | Login                   |
 | `TH_PASSWORD`     | Password                |
 | `TH_APIKEY`       | API Key                 |
-| `TH_PROVIDER_URL` | URL                     |
+| `TH_PROVIDER_URL` | Provider URL/path (the `.py` path for script providers) |
 
 Read them with `os.environ.get("TH_USERNAME")` etc.
+
+For the current RuTracker example with a saved shared connection, use **Sign in**
+in the source card instead. Login/password fields and `cookie:` are used only in
+Legacy/standalone mode; they are not filled into the source browser automatically.
 
 ## Limits & safety
 
@@ -95,21 +101,28 @@ Read them with `os.environ.get("TH_USERNAME")` etc.
 - [`qbittorrent_adapter.py`](qbittorrent_adapter.py) — run your existing
   **qBittorrent search plugins** through this provider (see its header).
 - [`rutracker.py`](rutracker.py) — **RuTracker** search. Add a Python Script
-  provider pointing at it and fill in your RuTracker Login/Password. Stdlib-only;
-  supports configured mirror base URLs and a `cookie:<bb_session>` captcha fallback.
+  provider pointing at it, save a shared connection and mirror, then sign in through
+  Havvn's source browser. Stdlib-only, with the bundled Havvn Network SDK for shared
+  connections; Legacy/standalone mode supports Login/Password and `cookie:<bb_session>`.
   Verify the parser offline with `python rutracker.py --selftest`.
 
 ### RuTracker connection troubleshooting
 
-RuTracker runs in a separate Python process: Havvn's DNS-over-HTTPS setting does
-not change its DNS or proxy configuration. If all mirrors time out, check access
-through the system network/VPN or configure Python's `HTTPS_PROXY` environment
-before launching Havvn. Do not disable TLS certificate verification.
+With a saved shared connection, check the source card's System/Direct/proxy route,
+configured mirrors and **Sign in** session. For RuTracker, the mirror must include
+`/forum`. Havvn does not import your everyday browser's login or extension settings.
+Do not disable TLS certificate verification.
 
-The plugin limits each request to 4 seconds and the complete worker process to
-21 seconds, below Havvn's 25-second limit. Network and authentication errors now
-produce a non-zero exit status instead of a successful empty result. A valid
+In Legacy/standalone mode, RuTracker uses Python's network stack: Havvn's
+DNS-over-HTTPS setting does not change it. Check the system network/VPN or configure
+Python's `HTTPS_PROXY` environment before launching Havvn. A valid
 `cookie:<bb_session>` can avoid the login captcha, but cannot fix connectivity.
+
+The complete plugin worker has a 21-second deadline, below Havvn's 25-second limit.
+Ordinary HTTP requests have a 4-second deadline; shared browser HTML navigation has
+a 12-second deadline per page. Network and authentication errors produce a non-zero
+exit status instead of a successful empty result. If a browser check appears, solve
+it manually in **Sign in**. The plugin does not automatically solve challenges.
 
 Offline regression checks: `python -m unittest discover -s docs/search-plugins -p test_rutracker.py`.
 
@@ -127,13 +140,27 @@ The bridge supports GET and POST, only configured origins, 4-second request dead
 Legacy mode retains the existing Python/HTTPS_PROXY behavior. A script without the SDK marker cannot use the new connection settings and receives an explicit error. Havvn ships the SDK with the packaged app; standalone use of this plugin without HAVVN_NETWORK_URL needs no SDK and retains its previous network path.
 
 
-### Вход через окно Havvn
+### Sign in through Havvn
 
-Обновлённый RuTracker передаёт Havvn код ошибки и адрес рабочего зеркала, в том числе при пустой выдаче. Если используется ранее импортированная копия скрипта, обновите её для этих возможностей. В настройках подключения нажмите «Сохранить и проверить»; при необходимости войдите через «Войти на сайт».
+The current RuTracker example reports structured errors and its working mirror,
+including when a search has no results. If you imported an older copy, replace it
+with the current script from this directory.
 
-Для обновлённого rutracker.py выберите и сохраните подключение источника, укажите зеркало с путём форума (например, https://rutracker.org/forum). Нажмите «Войти на сайт», выполните вход и решите капчу вручную, затем закройте окно. Поиск и получение .torrent используют ту же сессию. Если сайт обращается к другому домену для входа или капчи, добавьте его origin в разрешённые адреса.
+1. Select and save the source connection and a mirror such as
+   `https://rutracker.org/forum`.
+2. Click **Sign in**, log in on the site and complete any browser check manually.
+   Then close the window. Search and `.torrent` retrieval reuse that source session.
+3. Click **Check access** or run a search in Havvn. If necessary, test the site's
+   search inside the sign-in window too; a working homepage alone does not prove
+   that the search endpoint is accessible.
 
-В этом режиме RuTracker не использует сохранённый пароль или поле cookie: для автоматического повторного входа. «Выйти из аккаунта» очищает сессию; следующий поиск потребует ручного входа. Старый режим Python без общего подключения сохраняет прежнюю авторизацию. Если плагин был импортирован раньше, обновите его копию из этого каталога.
+If login navigates to another trusted domain, add its origin to the allowed
+addresses. The sign-in window permits HTTPS page resources and Cloudflare's
+challenge resources without granting the Python SDK access to those origins.
+
+This mode does not use the saved password or `cookie:` field to log in again.
+**Sign out** clears the source session; the next authenticated search needs manual
+sign-in. Legacy mode keeps its previous Python-based authentication.
 
 ### Browser HTML transport
 
