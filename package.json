@@ -15,7 +15,7 @@
     "typecheck:electron": "tsc -p tsconfig.electron.json --noEmit",
     "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
     "typecheck:guest": "tsc -p tsconfig.guest.json --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/dev-electron.test.cjs",
     "test:watch": "vitest",
     "lint": "eslint \"electron/**/*.ts\" \"renderer/**/*.{ts,tsx}\" \"shared/**/*.ts\" \"guest/**/*.ts\"",
     "lint:fix": "eslint \"electron/**/*.ts\" \"renderer/**/*.{ts,tsx}\" \"shared/**/*.ts\" \"guest/**/*.ts\" --fix",
