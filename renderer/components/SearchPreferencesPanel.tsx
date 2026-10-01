@@ -2,6 +2,7 @@ import React from 'react';
 import { RESOLUTIONS, VOICES } from '../../shared/release-metadata';
 import { DEFAULT_SEARCH_PREFERENCES, SEARCH_PREFERENCE_PRESETS, type SearchPreferences } from '../../shared/search-preferences';
 import { useTranslation } from '../utils/i18nContext';
+import { NumberInput } from './NumberInput';
 
 interface Props {
   value: SearchPreferences;
@@ -41,8 +42,8 @@ export function SearchPreferencesPanel({ value, ranked, onChange, onRankedChange
       <label>{t('search.preferences.language')}<select className="form-select" value={value.language} onChange={e => update('language', e.target.value)}>
         <option value="">{t('search.media.any')}</option><option value="ru">{t('search.preferences.ru')}</option><option value="en">{t('search.preferences.en')}</option>
       </select></label>
-      <label>{t('search.media.maxSize')}<input className="form-input" type="number" min="0" step="0.5" value={value.maxGiB} onChange={e => update('maxGiB', e.target.value)} placeholder={t('search.preferences.unlimited')} /></label>
-      <label>{t('search.minSeeds')}<input className="form-input" type="number" min="0" step="1" value={value.minSeeds} onChange={e => update('minSeeds', e.target.value)} placeholder={t('search.preferences.unlimited')} /></label>
+      <label>{t('search.media.maxSize')}<NumberInput className="form-input" min="0" step="0.5" value={value.maxGiB} onValueChange={value => update('maxGiB', value)} placeholder={t('search.preferences.unlimited')} /></label>
+      <label>{t('search.minSeeds')}<NumberInput className="form-input" min="0" step="1" value={value.minSeeds} onValueChange={value => update('minSeeds', value)} placeholder={t('search.preferences.unlimited')} /></label>
     </div>
     <div className="search-preference-footer">
       <label><input type="checkbox" checked={ranked} disabled={!active} onChange={e => onRankedChange(e.target.checked)} />{t('search.preferences.rank')}</label>

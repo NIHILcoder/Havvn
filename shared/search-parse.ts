@@ -7,6 +7,7 @@
  */
 
 import { SearchResult } from './types';
+import { sanitizeReleaseMedia } from './release-languages';
 
 /** Upper bound on rows accepted from a single script run. */
 export const SCRIPT_MAX_RESULTS = 500;
@@ -87,6 +88,7 @@ export function parseScriptOutput(stdout: string, providerName: string): SearchR
       publishDate: sanitizeString(r.publishDate ?? r.date) || undefined,
       category: sanitizeString(r.category) || undefined,
       infoHash: infoHash || undefined,
+      media: sanitizeReleaseMedia(r.media),
     });
   }
   return out;

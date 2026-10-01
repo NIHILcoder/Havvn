@@ -1,5 +1,6 @@
 import type { SearchResult } from './types';
 import { RESOLUTIONS, VOICES, type ReleaseMetadata } from './release-metadata';
+import { releaseLanguageHints } from './release-languages';
 
 export interface SearchPreferences {
   resolution: string;
@@ -28,12 +29,7 @@ export function sanitizeSearchPreferences(input: unknown): SearchPreferences {
 
 /** Only explicit audio labels, never the title language or a subtitle label. */
 export function audioLanguageHints(title: string): string[] {
-  const hints: string[] = [];
-  const labels = [...title.slice(0, 2000).matchAll(/(?:audio|аудио|звук|язык\s+аудио)\s*[:=]\s*([^;|\n[\]]{1,80})/giu)].map(match => match[1].split(/subtitles?|субтитры/iu)[0]);
-  const text = labels.join(' ');
-  if (/(?:^|[^\p{L}])(?:rus|russian|русский|рус)(?=$|[^\p{L}])/iu.test(text)) hints.push('ru');
-  if (/(?:^|[^\p{L}])(?:eng|english|английский|англ)(?=$|[^\p{L}])/iu.test(text)) hints.push('en');
-  return hints;
+  return releaseLanguageHints(title).audioLanguages ?? [];
 }
 
 export type PreferenceCriterion = 'resolution' | 'voice' | 'language' | 'maxGiB' | 'minSeeds';
@@ -49,7 +45,7 @@ export function evaluateSearchPreferences(result: Pick<SearchResult, 'title' | '
     if (!known) unknown.push(criterion);
     else if (matches) matched.push(criterion);
   };
-  const languages = preferences.language ? audioLanguageHints(result.title) : [];
+  const languages = metadata.audioLanguages ?? audioLanguageHints(result.title);
   check('resolution', !!preferences.resolution, metadata.resolutions.length > 0, metadata.resolutions.includes(preferences.resolution));
   check('voice', !!preferences.voice, metadata.voices.length > 0, metadata.voices.includes(preferences.voice));
   check('language', !!preferences.language, languages.length > 0, languages.includes(preferences.language));

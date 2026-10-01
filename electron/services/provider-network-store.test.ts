@@ -8,6 +8,12 @@ vi.mock('electron-store', () => ({ default: class {
 import { saveSearchNetworkProfile, setProviderAccess, getProviderRoute, getSearchNetworkSettings, rememberProviderMirror, clearSearchNetworkSettings } from './provider-network-store';
 beforeEach(clearSearchNetworkSettings);
 describe('search connection settings', () => {
+  it('clears a stale mirror preference after recovery of the primary', () => {
+    setProviderAccess('source', { profileId: 'system', origins: [], mirrors: ['https://copy.test'] });
+    rememberProviderMirror('source', 'https://copy.test');
+    rememberProviderMirror('source', null);
+    expect(getSearchNetworkSettings().access.source.lastWorkingMirror).toBeUndefined();
+  });
   it('keeps a working mirror across saves and forgets a removed mirror', () => {
     const input = { profileId: 'system', origins: [], mirrors: ['https://one.test/forum', 'https://two.test/forum'] };
     setProviderAccess('source', input);

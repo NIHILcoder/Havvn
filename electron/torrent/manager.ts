@@ -1975,7 +1975,7 @@ export class TorrentManager {
     }
     
     // Permanently delete from database — prevents resurrection on next launch
-    await db.deleteDownload(id);
+    await db.deleteDownload(id, true);
     log.debug('Download deleted from store', { id });
     
     // Remove from managed map

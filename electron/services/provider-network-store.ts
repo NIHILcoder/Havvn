@@ -56,11 +56,15 @@ export function getProviderRoute(providerId: string) {
   if (access.lastWorkingMirror && mirrors.includes(access.lastWorkingMirror)) {
     mirrors.splice(mirrors.indexOf(access.lastWorkingMirror), 1); mirrors.unshift(access.lastWorkingMirror);
   }
-  return { connection, origins: access.origins, mirrors };
+  return { connection, origins: access.origins, mirrors, lastWorkingMirror: access.lastWorkingMirror };
 }
 
-export function rememberProviderMirror(providerId: string, mirror: string): void {
+export function rememberProviderMirror(providerId: string, mirror: string | null): void {
   const access = settings.get('access');
+  if (mirror === null) {
+    if (access[providerId]?.lastWorkingMirror) { delete access[providerId].lastWorkingMirror; settings.set('access', access); }
+    return;
+  }
   if (!access[providerId]?.mirrors?.includes(mirror) || access[providerId].lastWorkingMirror === mirror) return;
   access[providerId].lastWorkingMirror = mirror;
   settings.set('access', access);

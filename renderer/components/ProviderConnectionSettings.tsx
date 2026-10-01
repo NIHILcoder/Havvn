@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import type { SearchProvider } from '../../shared/types';
 import type { SearchNetworkSettings } from '../../shared/provider-network';
 import { useTranslation } from '../utils/i18nContext';
+import { NumberInput } from './NumberInput';
 import './ProviderConnectionSettings.css';
 
 export function ProviderConnectionSettings({ provider, onConnectionChange }: { provider: SearchProvider; onConnectionChange?: () => void }) {
@@ -53,6 +54,9 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
             try { url = new URL(value); } catch { throw new Error(t('search.connection.invalidAddress')); }
             if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || (originOnly && url.pathname !== '/')) {
               throw new Error(t('search.connection.invalidAddress'));
+            }
+            if (!originOnly && provider.type !== 'script' && new URL(provider.url).protocol === 'https:' && url.protocol !== 'https:') {
+              throw new Error(t('search.connection.httpsMirrors'));
             }
           }
         }
@@ -113,12 +117,12 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
       <label className="connection-field">{t('search.connection.name')}<input className="form-input" placeholder={t('search.connection.name')} value={name} onChange={e => setName(e.target.value)} /></label>
       <label className="connection-field">{t('search.connection.protocol')}<select className="form-select" value={protocol} onChange={e => setProtocol(e.target.value as 'http' | 'socks5')}><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></label>
       <label className="connection-field">{t('search.connection.host')}<input className="form-input" placeholder="127.0.0.1" value={host} onChange={e => setHost(e.target.value)} /></label>
-      <label className="connection-field">{t('search.connection.port')}<input className="form-input" type="number" min={1} max={65535} value={port} onChange={e => setPort(e.target.value)} /></label>
+      <label className="connection-field">{t('search.connection.port')}<NumberInput className="form-input" min={1} max={65535} value={port} onValueChange={setPort} /></label>
       <p className="connection-hint">{t('search.connection.noAuth')}</p>
     </div>}
-    {provider.type === 'script' && profileId !== 'legacy' && <label className="connection-field">{t('search.connection.mirrors')}
-      <textarea className="form-input" disabled={busy} value={mirrors} onChange={e => setMirrors(e.target.value)} placeholder="https://rutracker.org/forum" rows={3} />
-      <span className="connection-hint">{t('search.connection.mirrorsHelp')}</span>
+    {profileId !== 'legacy' && <label className="connection-field">{t('search.connection.mirrors')}
+      <textarea name="mirrors" className="form-input" disabled={busy} value={mirrors} onChange={e => setMirrors(e.target.value)} placeholder={provider.type === 'script' ? 'https://rutracker.org/forum' : 'https://mirror.example.org'} rows={3} />
+      <span className="connection-hint">{t(provider.type === 'script' ? 'search.connection.mirrorsHelp' : provider.type === 'custom' ? 'search.connection.customMirrorsHelp' : 'search.connection.apiMirrorsHelp')}</span>
     </label>}
     {profileId !== 'legacy' && <details className="connection-advanced"><summary>{t('search.connection.advanced')}</summary><label className="connection-field">{t('search.connection.origins')}
       <textarea className="form-input" value={origins} onChange={e => setOrigins(e.target.value)} placeholder="https://example.org" rows={3} />

@@ -8,11 +8,14 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
+import { createRequire } from 'module';
 import { app } from 'electron';
 import { openProviderNetworkBridge } from './provider-network-bridge';
 import { providerNetwork } from './provider-network';
 import { getProviderRoute, rememberProviderMirror } from './provider-network-store';
 import { ProviderNetworkError, pluginNetworkError } from '../../shared/provider-network';
+import { httpProviderBase, httpResultUrl, rebaseProviderUrl, type HttpProviderAddress } from '../../shared/provider-mirrors';
+import { readHttpMirrors, HTTP_MIRROR_BUDGET_MS } from './provider-mirrors';
 import { logger, httpFetchText, httpFetch } from '../utils';
 import { t } from '../i18n';
 import * as db from '../db/store';
@@ -22,6 +25,8 @@ import { decodeEntities } from '../../shared/feed-parse';
 import { parseCaps, mergeCategories } from '../../shared/torznab-caps';
 import { parsePluginManifest, PluginManifest, MANIFEST_SCAN_BYTES } from '../../shared/plugin-manifest';
 import { detectPython } from './python-detector';
+import { searchSourceHistoryKeys } from './search-source-history';
+import { sanitizeReleaseMedia } from '../../shared/release-languages';
 
 const log = logger.child('SearchService');
 
@@ -77,7 +82,8 @@ interface SearchRun {
 export type SearchProgressSink = (progress: SearchProgress) => void;
 
 export class SearchService {
-  private sources = new Map<string, { provider: SearchProvider; result: SearchResult }>();
+  private sources = new Map<string, { provider: SearchProvider; result: SearchResult; mirrorBase?: string }>();
+  private resultBases = new WeakMap<SearchResult, string>();
   private runs = new Map<string, SearchRun>();
   private capsCache = new Map<string, { caps: SearchCaps; at: number }>();
   private resultCache = new Map<string, CachedSearch>();
@@ -197,9 +203,16 @@ export class SearchService {
         const startedAt = Date.now();
         try {
           const results = await this.searchProvider(provider, query, category, controller.signal);
+          const checkedAt = Date.now();
           for (const result of results) {
+            result.checkedAt = checkedAt;
             const key = randomUUID();
-            this.sources.set(key, { provider, result: { ...result } });
+            const mirrorBase = this.resultBases.get(result);
+            const primary = mirrorBase ? httpProviderBase(provider as HttpProviderAddress) : undefined;
+            // Mirror changes must not turn one hashless source into new history.
+            const canonical = (value?: string) => value && mirrorBase && primary ? rebaseProviderUrl(value, mirrorBase, primary) ?? value : value;
+            result.historyKeys = searchSourceHistoryKeys(provider.id, { ...result, torrentUrl: canonical(result.torrentUrl), detailsUrl: canonical(result.detailsUrl) });
+            this.sources.set(key, { provider, result: { ...result }, mirrorBase });
             // Download URLs may embed an API key/passkey. Main resolves the capability.
             result.torrentUrl = undefined;
             result.sourceRefs = [key];
@@ -342,7 +355,7 @@ export class SearchService {
       ? `${baseUrl}/api/v2.0/indexers/all/results/torznab/api?${params}`
       : `${baseUrl}/api?${params}`;
 
-    return parseCaps(await this.fetchText(provider, url));
+    return this.readHTTP(provider, url, text => parseCaps(text));
   }
 
   private async searchProvider(
@@ -385,32 +398,34 @@ export class SearchService {
     if (category) params.append('Category[]', category);
 
     const url = `${baseUrl}/api/v2.0/indexers/all/results?${params}`;
-    const response = await this.fetchJSON(provider, url, signal);
+    return this.readHTTP(provider, url, (text, base, responseUrl) => {
+      const response = JSON.parse(text);
 
-    if (!response || !Array.isArray(response.Results)) {
-      throw new Error('Unexpected Jackett response (missing Results array)');
-    }
+      if (!response || !Array.isArray(response.Results)) {
+        throw new Error('Unexpected Jackett response (missing Results array)');
+      }
 
-    return response.Results.map((r: any): SearchResult => ({
-      title: r.Title || '',
-      magnetUri: r.MagnetUri || undefined,
-      torrentUrl: r.Link || undefined,
-      size: r.Size || 0,
-      seeds: r.Seeders || 0,
-      leechers: r.Peers || 0,
-      provider: provider.name,
-      // Jackett fans one query out over every configured tracker, so the row's
-      // real origin is r.Tracker — labelling them all "Jackett" threw away the
-      // one thing that distinguishes them.
-      indexer: r.Tracker || undefined,
-      publishDate: r.PublishDate || undefined,
-      category: r.CategoryDesc || undefined,
-      infoHash: r.InfoHash || undefined,
-      detailsUrl: r.Details || r.Guid || undefined,
-      grabs: typeof r.Grabs === 'number' ? r.Grabs : undefined,
-      freeleech: r.DownloadVolumeFactor === 0 || undefined,
-      imdbId: r.Imdb ? `tt${String(r.Imdb).padStart(7, '0')}` : undefined,
-    }));
+      return this.bindHttpResults(provider, response.Results.map((r: any): SearchResult => ({
+        title: r.Title || '',
+        magnetUri: r.MagnetUri || undefined,
+        torrentUrl: r.Link || undefined,
+        size: r.Size || 0,
+        seeds: r.Seeders || 0,
+        leechers: r.Peers || 0,
+        provider: provider.name,
+        // Jackett fans one query out over every configured tracker, so the row's
+        // real origin is r.Tracker — labelling them all "Jackett" threw away the
+        // one thing that distinguishes them.
+        indexer: r.Tracker || undefined,
+        publishDate: r.PublishDate || undefined,
+        category: r.CategoryDesc || undefined,
+        infoHash: r.InfoHash || undefined,
+        detailsUrl: r.Details || r.Guid || undefined,
+        grabs: typeof r.Grabs === 'number' ? r.Grabs : undefined,
+        freeleech: r.DownloadVolumeFactor === 0 || undefined,
+        imdbId: r.Imdb ? `tt${String(r.Imdb).padStart(7, '0')}` : undefined,
+      })), base, responseUrl);
+    }, signal, { Accept: 'application/json' });
   }
 
   /**
@@ -432,9 +447,12 @@ export class SearchService {
     if (category) params.append('cat', category);
 
     const url = `${baseUrl}/api?${params}`;
-    const xml = await this.fetchText(provider, url, {}, signal);
-
-    return this.parseTorznabXML(xml, provider.name);
+    return this.readHTTP(provider, url, (xml, base, responseUrl) => {
+      if (!/<rss[\s>]/i.test(xml) || !/<channel[\s>]/i.test(xml) || !/<\/channel\s*>/i.test(xml) || !/<\/rss\s*>/i.test(xml)) {
+        throw new ProviderNetworkError('invalid-response');
+      }
+      return this.bindHttpResults(provider, this.parseTorznabXML(xml, provider.name), base, responseUrl);
+    }, signal);
   }
 
   private parseTorznabXML(xml: string, providerName: string): SearchResult[] {
@@ -528,24 +546,28 @@ export class SearchService {
       .replace('{query}', encodeURIComponent(query))
       .replace('{apikey}', provider.apiKey || '');
 
-    const response = await this.fetchJSON(provider, url, signal);
+    return this.readHTTP(provider, url, (text, base, responseUrl) => {
+      const response = JSON.parse(text);
 
-    if (!response || !Array.isArray(response.results)) {
-      throw new Error('Unexpected response (missing results array)');
-    }
+      if (!response || !Array.isArray(response.results)) {
+        throw new Error('Unexpected response (missing results array)');
+      }
 
-    return response.results.map((r: any): SearchResult => ({
-      title: r.title || '',
-      magnetUri: r.magnetUri || r.magnet || undefined,
-      torrentUrl: r.torrentUrl || r.url || undefined,
-      size: r.size || 0,
-      seeds: r.seeds || r.seeders || 0,
-      leechers: r.leechers || r.peers || 0,
-      provider: provider.name,
-      publishDate: r.publishDate || r.date || undefined,
-      category: r.category || undefined,
-      infoHash: r.infoHash || r.hash || undefined,
-    }));
+      return this.bindHttpResults(provider, response.results.map((r: any): SearchResult => ({
+        title: r.title || '',
+        magnetUri: r.magnetUri || r.magnet || undefined,
+        torrentUrl: r.torrentUrl || r.url || undefined,
+        size: r.size || 0,
+        seeds: r.seeds || r.seeders || 0,
+        leechers: r.leechers || r.peers || 0,
+        provider: provider.name,
+        publishDate: r.publishDate || r.date || undefined,
+        category: r.category || undefined,
+        infoHash: r.infoHash || r.hash || undefined,
+        detailsUrl: r.detailsUrl || r.details || undefined,
+        media: sanitizeReleaseMedia(r.media),
+      })), base, responseUrl);
+    }, signal, { Accept: 'application/json' });
   }
 
   /**
@@ -668,12 +690,22 @@ export class SearchService {
     } finally { await bridge?.close(); }
   }
 
+  /** Only main's registered fingerprints may be associated with an added download. */
+  historyKeysForSources(refs: string[]): string[] {
+    if (!Array.isArray(refs) || !refs.length || refs.length > 20 || refs.some(ref => typeof ref !== 'string' || ref.length > 128)) {
+      throw new Error('Invalid search source');
+    }
+    return [...new Set(refs.flatMap(ref => this.sources.get(ref)?.result.historyKeys ?? []))].slice(0, 20);
+  }
+
   /** Resolve a result using its registered source, never a renderer-supplied URL. */
   async resolveSource(refs: string[]): Promise<{ sourceType: 'magnet' | 'torrent_file'; sourceUri: string }> {
     if (!Array.isArray(refs) || !refs.length || refs.length > 20 || refs.some(r => typeof r !== 'string')) throw new Error('Invalid search source');
     const providers = await db.getSearchProviders();
     let lastError: unknown = new Error('Search result expired; search again');
+    const deadline = Date.now() + HTTP_MIRROR_BUDGET_MS;
     for (const ref of refs) {
+      if (Date.now() >= deadline) throw new ProviderNetworkError('timeout');
       const item = this.sources.get(ref);
       if (!item) continue;
       const provider = providers.find(p => p.id === item.provider.id);
@@ -683,17 +715,25 @@ export class SearchService {
       if (!url) continue;
       try {
         const route = getProviderRoute(provider.id);
+        const parseTorrent = createRequire(__filename)('parse-torrent') as (buffer: Buffer) => { infoHash?: string };
+        const validate = (bytes: Buffer) => {
+          try {
+            const hash = parseTorrent(bytes).infoHash;
+            if (!hash || (item.result.infoHash && /^[a-f\d]{40}$/i.test(item.result.infoHash) && hash.toLowerCase() !== item.result.infoHash.toLowerCase())) throw new Error();
+            return bytes;
+          } catch { throw new Error('Invalid torrent metadata'); }
+        };
         let body: Buffer;
-        if (route) {
+        if (route && provider.type !== 'script') {
+          body = await readHttpMirrors(provider, url, response => validate(response.body), {
+            maxBytes: 8 * 1024 * 1024, timeoutMs: deadline - Date.now(),
+          }, item.mirrorBase);
+        } else if (route) {
           const origins = [...route.origins];
-          if (provider.type !== 'script') origins.push(new URL(provider.url).origin);
-          body = (await providerNetwork.request(provider.id, route.connection, url, { allowedOrigins: origins, maxBytes: 8 * 1024 * 1024 })).body;
+          body = validate((await providerNetwork.request(provider.id, route.connection, url, { allowedOrigins: origins, maxBytes: 8 * 1024 * 1024, timeoutMs: deadline - Date.now() })).body);
         } else {
-          body = (await httpFetch(url, { maxBytes: 8 * 1024 * 1024, what: 'torrent metadata' })).body;
+          body = validate((await httpFetch(url, { maxBytes: 8 * 1024 * 1024, timeoutMs: deadline - Date.now(), what: 'torrent metadata' })).body);
         }
-        // Reject login pages and malformed data before writing a local torrent.
-        const parseTorrent = require('parse-torrent') as (buffer: Buffer) => { infoHash?: string };
-        if (!parseTorrent(body).infoHash) throw new Error('Invalid torrent metadata');
         const dir = path.join(app.getPath('temp'), 'havvn-search-torrents');
         await fs.promises.mkdir(dir, { recursive: true });
         const file = path.join(dir, randomUUID() + '.torrent');
@@ -719,42 +759,35 @@ export class SearchService {
     return null;
   }
 
-  private async fetchJSON(provider: SearchProvider, url: string, signal?: AbortSignal): Promise<any> {
-    const text = await this.fetchText(provider, url, { 'Accept': 'application/json' }, signal);
-    return JSON.parse(text);
+  private bindHttpResults(provider: SearchProvider, results: SearchResult[], base: string, responseUrl: string): SearchResult[] {
+    const primary = httpProviderBase(provider as HttpProviderAddress);
+    for (const result of results) {
+      result.torrentUrl = httpResultUrl(result.torrentUrl, responseUrl, primary, base);
+      result.detailsUrl = httpResultUrl(result.detailsUrl, responseUrl, primary, base);
+      this.resultBases.set(result, base);
+    }
+    return results;
   }
 
-  /**
-   * Fetch a provider response as text. Redirect hops are capped and resolved
-   * against the current URL, the body is size-capped, and the bytes are decoded
-   * with the declared charset — trackers that answer in windows-1251 used to
-   * come back as mojibake. See `utils/http-fetch`.
-   */
-  private async fetchText(
-    provider: SearchProvider,
-    url: string,
-    extraHeaders: Record<string, string> = {},
-    signal?: AbortSignal
-  ): Promise<string> {
+  /** Validate before remembering a mirror; legacy sources retain their client. */
+  private async readHTTP<T>(provider: SearchProvider, url: string,
+    read: (text: string, base: string, responseUrl: string) => T, signal?: AbortSignal,
+    extraHeaders: Record<string, string> = {}): Promise<T> {
+    const primary = httpProviderBase(provider as HttpProviderAddress);
+    const parse = (text: string, base: string, responseUrl: string) => {
+      try { return read(text, base, responseUrl); }
+      catch (error) { throw error instanceof ProviderNetworkError ? error : new ProviderNetworkError('invalid-response'); }
+    };
+    const options = {
+      headers: { 'User-Agent': 'Havvn/' + app.getVersion() + ' Search', ...extraHeaders },
+      signal, timeoutMs: FETCH_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES,
+    };
     const route = getProviderRoute(provider.id);
     if (route) {
-      const result = await providerNetwork.request(provider.id, route.connection, url, {
-        allowedOrigins: [...route.origins, new URL(provider.url).origin],
-        headers: { 'User-Agent': 'Havvn/' + app.getVersion() + ' Search', ...extraHeaders },
-        signal, timeoutMs: FETCH_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES,
-      });
-      return result.text();
+      return readHttpMirrors(provider, url, (response, base) => parse(response.text(), base ?? primary,
+        response.url ?? rebaseProviderUrl(url, primary, base ?? primary) ?? url), options);
     }
-    return httpFetchText(url, {
-      headers: {
-        'User-Agent': `Havvn/${app.getVersion()} Search`,
-        ...extraHeaders,
-      },
-      timeoutMs: FETCH_TIMEOUT_MS,
-      maxBytes: MAX_RESPONSE_BYTES,
-      what: 'search provider',
-      signal,
-    });
+    return parse(await httpFetchText(url, { ...options, what: 'search provider' }), primary, url);
   }
 }
 

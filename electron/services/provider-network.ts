@@ -92,17 +92,27 @@ export class ProviderNetworkService {
     return entry;
   }
 
-  async acquireSession(providerId: string, connection: ProviderConnection) {
+  async acquireSession(providerId: string, connection: ProviderConnection, options: { signal?: AbortSignal; timeoutMs?: number } = {}) {
     const entry = this.entry(providerId, connection);
     const signature = entry.signature;
     const controller = new AbortController();
     entry.active.add(controller);
-    const release = () => entry.active.delete(controller);
+    const abort = () => controller.abort();
+    options.signal?.addEventListener('abort', abort, { once: true });
+    let timedOut = false;
+    const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs);
+    const release = () => { options.signal?.removeEventListener('abort', abort); entry.active.delete(controller); };
     try {
-      await entry.ready;
-      if (controller.signal.aborted || entry.signature !== signature) throw new ProviderNetworkError('cancelled');
+      await new Promise<void>((resolve, reject) => {
+        const interrupted = () => reject(new ProviderNetworkError(timedOut ? 'timeout' : 'cancelled'));
+        controller.signal.addEventListener('abort', interrupted, { once: true });
+        entry.ready.then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', interrupted));
+        if (controller.signal.aborted || options.signal?.aborted) interrupted();
+      });
+      if (controller.signal.aborted || options.signal?.aborted || entry.signature !== signature) throw new ProviderNetworkError(timedOut ? 'timeout' : 'cancelled');
       return { session: entry.session, signal: controller.signal, release };
     } catch (error) { release(); throw error; }
+    finally { clearTimeout(timer); }
   }
 
   async request(providerId: string, connection: ProviderConnection, target: string, options: ProviderRequest) {

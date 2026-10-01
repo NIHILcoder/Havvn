@@ -137,4 +137,21 @@ describe('provider transport on loopback', () => {
     await expect(service.request('source-a', { mode: 'system' }, base, { allowedOrigins: [base], timeoutMs: 60 })).rejects.toMatchObject({ code: 'timeout' });
     expect(entry.fetch).toHaveBeenCalledTimes(1);
   });
+  it('bounds acquiring a session while its route is being configured', async () => {
+    const { request, service } = fixture(); await request('/text');
+    const entry = [...mock.partitions.values()][0];
+    entry.setProxy.mockImplementationOnce(() => new Promise(() => {}));
+    await expect(service.acquireSession('source-a', { mode: 'system' }, { timeoutMs: 30 })).rejects.toMatchObject({ code: 'timeout' });
+    expect(entry.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('cancels session acquisition without waiting for proxy configuration', async () => {
+    const { request, service } = fixture(); await request('/text');
+    const entry = [...mock.partitions.values()][0];
+    entry.setProxy.mockImplementationOnce(() => new Promise(() => {}));
+    const controller = new AbortController();
+    const task = service.acquireSession('source-a', { mode: 'system' }, { signal: controller.signal });
+    controller.abort();
+    await expect(task).rejects.toMatchObject({ code: 'cancelled' });
+    expect(entry.fetch).toHaveBeenCalledTimes(1);
+  });
 });

@@ -40,7 +40,12 @@ Havvn displays that diagnostic. Do not include passwords or session cookies.
     "seeds": 42,
     "leechers": 3,
     "publishDate": "2026-06-17",
-    "category": "Movies/HD"
+    "category": "Movies/HD",
+    "media": {
+      "audioLanguages": ["ru", "en"],
+      "subtitleLanguages": ["en"],
+      "hasSubtitles": true
+    }
   }
 ]
 ```
@@ -64,6 +69,29 @@ is dropped.
 
 A `{ "results": [ ... ] }` wrapper object is also accepted, so the same script can
 serve both this provider and the "Custom JSON" HTTP provider.
+
+### Optional media labels and comparison
+
+Script results and Custom JSON results may include `media.audioLanguages` and
+`media.subtitleLanguages` as bounded lists of language codes/names, and
+`media.hasSubtitles` as an actual JSON boolean. Use codes such as `ru`, `en`,
+`de`, `fr`, `es`, `it`, `pt`, `uk`, `pl`, `zh`, `ja`, `ko`, `hi`, `ar` or `tr`.
+Recognized ISO-639-3 aliases and regional forms such as `en-US` are normalized;
+unknown values are ignored. Omit fields whose values you do not know. Missing
+subtitle labels mean **unknown**, not absent. Report `hasSubtitles: false` only
+when your source explicitly says so; contradictory language labels remain visible
+as conflicting information in the comparison.
+
+Havvn labels these values as **Source API**, separately from title hints. It does
+not inspect the torrent's media files or fetch every release page to enrich the
+results. Explicit API audio languages take priority over title audio labels in
+preference ranking; subtitle languages do not count as audio. The original release
+title remains visible.
+
+`checkedAt` is assigned by Havvn's main process when it receives the source result;
+plugins cannot set it. Cache replay keeps the original time. Merged torrents keep
+each provider/indexer's seed count and receipt time together. This is an observation
+time, not the publication date or a guarantee of present swarm availability.
 
 ## Credentials (for indexers that need a login)
 

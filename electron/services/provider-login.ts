@@ -17,7 +17,7 @@ export function openProviderLogin(provider: SearchProvider, parent: BrowserWindo
 async function open(provider: SearchProvider, parent: BrowserWindow): Promise<void> {
   const route = getProviderRoute(provider.id);
   if (!route) throw new Error('Save a connection before signing in');
-  const target = route.mirrors[0] || (provider.type !== 'script' ? new URL(provider.url).origin : route.origins[0]);
+  const target = route.lastWorkingMirror || (provider.type === 'script' ? route.mirrors[0] || route.origins[0] : new URL(provider.url).origin);
   if (!target) throw new Error('Configure a source mirror before signing in');
   const origins = [...route.origins];
   if (provider.type !== 'script') origins.push(new URL(provider.url).origin);

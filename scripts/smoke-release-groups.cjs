@@ -12,10 +12,11 @@ const out=fs.mkdtempSync(path.join(require('os').tmpdir(),'havvn-groups-'));
 app.setPath('userData',path.join(out,'profile'));
 app.disableHardwareAcceleration();
 app.on('window-all-closed',()=>{});
-const deadline=setTimeout(()=>{console.error('UI deadline');app.exit(1)},50000);
+const deadline=setTimeout(()=>{console.error('UI deadline');app.exit(1)},90000);
 app.whenReady().then(async()=>{
  const win=new BrowserWindow({show:false,width:1500,height:950,webPreferences:{nodeIntegration:true,contextIsolation:false,backgroundThrottling:false,offscreen:true}});
- const css=['renderer/styles/variables.css','renderer/styles/base.css','renderer/styles/layout.css','renderer/styles/components.css','renderer/styles/hud.css','renderer/pages/SearchPage.css','renderer/components/ProviderConnectionSettings.css'].map(p=>fs.readFileSync(path.join(root,p),'utf8').replace(/^@import[^;]+;/gm,'')).join('\n');
+ win.webContents.on('console-message',details=>{if(details.level==='error')console.error('Renderer:',details.message)});
+ const css=['renderer/styles/variables.css','renderer/styles/base.css','renderer/styles/layout.css','renderer/styles/components.css','renderer/styles/hud.css','renderer/pages/SearchPage.css','renderer/pages/DownloadsPage.css','renderer/components/ProviderConnectionSettings.css','renderer/components/SearchQueryInput.css','renderer/components/NumberInput.css','renderer/components/Modal.css','renderer/components/ReleaseComparison.css','renderer/pages/SettingsPage.css','renderer/pages/settings/controls.css'].map(p=>fs.readFileSync(path.join(root,p),'utf8').replace(/^@import[^;]+;/gm,'')).join('\n');
  for(const width of [1500,700,400]){
   win.setContentSize(width,900);
   const file=path.join(out,'preview.html');
@@ -24,40 +25,105 @@ app.whenReady().then(async()=>{
   await win.webContents.executeJavaScript(`
    var root=${JSON.stringify(root)},fs=require('fs'),path=require('path'),ts=require(path.join(root,'node_modules/typescript'));
    var React=require(path.join(root,'node_modules/react')),ReactDOM=require(path.join(root,'node_modules/react-dom/client'));
-   var dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/ru.json'),'utf8')),cache={};
-   window.added=[];window.resolved=[];
+   var dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/ru.json'),'utf8')),cache={},translate=k=>dict[k]||k,locale='ru';
+   window.added=[];window.resolved=[];window.downloadHistory=[];
    window.downloads=[{id:'existing',infoHash:'a'.repeat(40),status:'completed',progress:1}];
-   window.api={getDownloads:async()=>downloads,onDownloadStats:fn=>{window.emitStats=fn;return ()=>{}},addDownload:async value=>{added.push(value);const record={...value,id:'new-'+added.length,status:'downloading',progress:0};downloads.push(record);return record;},search:{cancel:async()=>{},getProviders:async()=>[{id:'one',name:'Test',type:'script',url:'test.py',enabled:true}],getCategories:async()=>[],onProgress:fn=>{window.progress=fn;return ()=>{}},start:async()=>({searchId:'sample',providers:['Test']}),resolveSource:async refs=>{resolved.push(refs);return {sourceType:'magnet',sourceUri:'magnet:'+refs[0]}},getNetworkSettings:async()=>({profiles:[],access:{}})}};
+   window.api={getDownloads:async()=>downloads,onDownloadStats:fn=>{window.emitStats=fn;return ()=>{}},addDownload:async value=>{added.push(value);const record={...value,id:'new-'+added.length,status:'downloading',progress:0};downloads.push(record);return record;},search:{getDownloadHistory:async()=>structuredClone(downloadHistory),clearDownloadHistory:async()=>{downloadHistory=[]},cancel:async()=>{},getProviders:async()=>[{id:'one',name:'Test',type:'script',url:'test.py',enabled:true}],getCategories:async()=>[],onProgress:fn=>{window.progress=fn;return ()=>{}},start:async()=>({searchId:'sample',providers:['Test']}),resolveSource:async refs=>{resolved.push(refs);return {sourceType:'magnet',sourceUri:'magnet:'+refs[0]}},getNetworkSettings:async()=>({profiles:[],access:{}})}};
    function load(p){
     if(cache[p])return cache[p].exports;const m={exports:{}};cache[p]=m;
     const src=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
     new Function('require','module','exports',src)(s=>{
      if(s.endsWith('.css'))return {};
-     if(s.includes('i18nContext'))return {useTranslation:()=>({t:k=>dict[k]||k})};
-     if(s==='../components')return {Button:load(path.join(root,'renderer/components/Button.tsx')).Button,Icon:load(path.join(root,'renderer/components/Icon.tsx')).default,EmptyState:()=>null,CategorySelect:()=>React.createElement('select'),DropdownMenu:()=>null,TorrentFileSelector:()=>null,useConfirm:()=>({confirm:async()=>true,alert:async v=>{throw Error(JSON.stringify(v))}})};
+     if(s.includes('i18nContext'))return {useTranslation:()=>({t:translate,language:locale})};
+     if(s.endsWith('/components'))return {Button:load(path.join(root,'renderer/components/Button.tsx')).Button,Icon:load(path.join(root,'renderer/components/Icon.tsx')).default,ProgressBar:load(path.join(root,'renderer/components/ProgressBar.tsx')).ProgressBar,StatusBadge:load(path.join(root,'renderer/components/Badge.tsx')).StatusBadge,HealthBadge:load(path.join(root,'renderer/components/HealthBadge.tsx')).HealthBadge,EmptyState:()=>null,CategorySelect:()=>React.createElement('select'),DropdownMenu:()=>null,TorrentFileSelector:()=>null,useConfirm:()=>({confirm:async()=>true,alert:async v=>{throw Error(JSON.stringify(v))}})};
      if(s.startsWith('.')){let q=path.resolve(path.dirname(p),s);for(const ext of ['.tsx','.ts'])if(fs.existsSync(q+ext))return load(q+ext);throw Error(q)}
      return require(path.join(root,'node_modules',s));
     },m,m.exports);return m.exports;
    }
-   localStorage.clear();window.mountSearch=()=>{window.searchRoot=ReactDOM.createRoot(document.getElementById('root'));searchRoot.render(React.createElement(load(path.join(root,'renderer/pages/SearchPage.tsx')).default));};mountSearch();
+   localStorage.clear();localStorage.setItem('searchHistory',JSON.stringify(['Film','Film (2024)','Фильм','Series S01E01']));window.mountSearch=()=>{window.searchRoot=ReactDOM.createRoot(document.getElementById('root'));require(path.join(root,'node_modules/react-dom')).flushSync(()=>searchRoot.render(React.createElement(load(path.join(root,'renderer/pages/SearchPage.tsx')).default)));};mountSearch();
+   window.setQuery=value=>{const input=document.querySelector('.search-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
+   window.queryKey=key=>document.querySelector('.search-input').dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
    window.makeRow=(title,id,seeds)=>({title,infoHash:id,size:seeds*1024**3,seeds,leechers:1,provider:'Test',sourceRefs:[id]});
    void 0;
   `);
   const wait=()=>new Promise(r=>setTimeout(r,120));
   await wait();
-  const run=async code=>{try{return await win.webContents.executeJavaScript(code)}catch(error){console.error('Failed UI step:',code);throw error}};
-  await run(`{const input=document.querySelector('.search-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Film');input.dispatchEvent(new Event('input',{bubbles:true}));}`);await wait();
+  const run=async code=>{try{return await win.webContents.executeJavaScript(code)}catch(error){console.error('Failed UI step:',code);console.error(await win.webContents.executeJavaScript('document.body.innerText'));throw error}};
+  assert.equal(await run(`document.querySelector('datalist')===null&&!document.querySelector('.search-input').hasAttribute('list')`),true);
+  await run(`setQuery('film')`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.query-history-option').length`),2);
+  assert.equal(await run(`document.querySelector('.search-input').getAttribute('aria-expanded')`),'true');
+  assert.equal(await run(`queryKey('ArrowDown')`),false);await wait();
+  assert.equal(await run(`document.getElementById(document.querySelector('.search-input').getAttribute('aria-activedescendant')).textContent`),'Film');
+  await run(`queryKey('ArrowDown')`);await wait();
+  assert.equal(await run(`document.querySelector('.search-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}))`),true);
+  assert.equal(await run(`document.querySelector('.search-input').value`),'film');
+  assert.equal(await run(`queryKey('Enter')`),false);await wait();
+  assert.equal(await run(`document.querySelector('.search-input').value`),'Film (2024)');
+  assert.equal(await run(`document.querySelector('.query-history-menu')===null`),true);
+  assert.equal(await run(`added.length`),0);
+  await run(`document.querySelector('.query-history-toggle').click()`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.query-history-option').length`),4);
+  assert.equal(await run(`queryKey('Escape')`),false);await wait();
+  assert.equal(await run(`document.querySelector('.search-input').value`),'Film (2024)');
+  await run(`document.querySelector('.query-history-toggle').click()`);await wait();
+  await run(`[...document.querySelectorAll('.query-history-option')].find(e=>e.textContent==='Фильм').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.search-input').value`),'Фильм');
+  await run(`setQuery('film')`);await wait();
+  assert.equal(await run(`queryKey('Tab')`),true);await wait();
+  assert.equal(await run(`document.querySelector('.query-history-menu')===null`),true);
+  await run(`setQuery('nothing-matches-this')`);await wait();
+  assert.equal(await run(`document.querySelector('.search-input').getAttribute('aria-expanded')`),'false');
+  await run(`setQuery('film');document.querySelector('.search-input').focus();`);await wait();
+  const menuRect=await run(`(()=>{const r=document.querySelector('.query-history-menu').getBoundingClientRect(),input=document.querySelector('.search-input').getBoundingClientRect();return {left:r.left,right:r.right,bottom:r.bottom,width:r.width,inputWidth:input.width}})()`);
+  assert.ok(menuRect.left>=8&&menuRect.right<=width-8&&menuRect.bottom<=900-8);
+  assert.equal(menuRect.width,menuRect.inputWidth);
+  const darkBackground=await run(`getComputedStyle(document.querySelector('.query-history-menu')).backgroundColor`);
+  assert.equal(darkBackground,await run(`getComputedStyle(document.querySelector('.search-input')).backgroundColor`));
+  fs.writeFileSync(path.join(out,'query-history-dark-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`document.documentElement.setAttribute('data-theme','light');`);await wait();
+  assert.notEqual(await run(`getComputedStyle(document.querySelector('.query-history-menu')).backgroundColor`),darkBackground);
+  fs.writeFileSync(path.join(out,'query-history-light-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`(()=>{const themeFile=path.join(root,'themes/nihil-frutiger-aero.havvn-theme.json');if(fs.existsSync(themeFile))load(path.join(root,'shared/theme.ts')).applyTheme(document.documentElement,JSON.parse(fs.readFileSync(themeFile,'utf8')),'dark')})()`);await wait();
+  assert.equal(await run(`getComputedStyle(document.querySelector('.query-history-menu')).backgroundColor`),await run(`getComputedStyle(document.querySelector('.search-input')).backgroundColor`));
+  fs.writeFileSync(path.join(out,'query-history-custom-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`load(path.join(root,'shared/theme.ts')).clearAppliedTheme(document.documentElement);document.documentElement.setAttribute('data-theme','dark');document.body.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));`);await wait();
+  assert.equal(await run(`document.querySelector('.query-history-menu')===null`),true);
+  await run(`setQuery('Film')`);await wait();
   await run(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Найти').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.query-history-menu')===null`),true);
   await run(`progress({searchId:'sample',results:[makeRow('Film (2024) 1080p HEVC DUB WEB-DL','one',10),makeRow('Film (2024) 720p H.264','two',5),makeRow('Film (1984) 1080p','remake',3)]})`);await wait();
   assert.equal(await run(`document.querySelectorAll('.release-group-row').length`),1);
   assert.equal(await run(`document.querySelectorAll('.results-row').length`),1);
-  await run(`document.querySelector('.release-group-row').click()`);await wait();
+  await run(`document.querySelector('.release-group-toggle').click()`);await wait();
   assert.equal(await run(`document.querySelectorAll('.release-variant').length`),2);
   await run(`progress({searchId:'sample',results:[makeRow('Film (2024) 2160p HEVC','three',8)]})`);await wait();
-  assert.equal(await run(`document.querySelector('.release-group-row').getAttribute('aria-expanded')`),'true');
+  assert.equal(await run(`document.querySelector('.release-group-toggle').getAttribute('aria-expanded')`),'true');
   assert.equal(await run(`document.querySelectorAll('.release-variant').length`),3);
+  await run(`document.querySelector('.release-compare-button').focus();document.querySelector('.release-compare-button').click()`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.comparison-card').length`),3);
+  assert.equal(await run(`resolved.length`),0);
+  assert.equal(await run(`document.querySelector('.release-comparison').contains(document.activeElement)`),true);
+  assert.equal(await run(`[...document.querySelectorAll('.comparison-subtitles dd')].every(e=>e.textContent==='Неизвестно')`),true);
+  assert.equal(await run(`document.querySelector('.comparison-check').textContent`),'Получено: Неизвестно');
+  await run(`progress({searchId:'sample',results:[{...makeRow('Film (2024) 1080p HEVC DUB WEB-DL','one',10),checkedAt:1700000000000,media:{audioLanguages:['ru','en'],subtitleLanguages:['en'],hasSubtitles:true}},{...makeRow('Film (2024) 720p H.264','two',5),checkedAt:1700000005000,media:{hasSubtitles:false,subtitleLanguages:['ru']}}]})`);await wait();
+  assert.equal(await run(`[...document.querySelectorAll('.comparison-audio dd')].some(e=>e.textContent.includes('русский, английскийAPI источника'))`),true);
+  assert.equal(await run(`[...document.querySelectorAll('.comparison-subtitles dd')].some(e=>e.textContent.includes('Противоречивые сведения'))`),true);
+  assert.equal(await run(`[...document.querySelectorAll('.comparison-check')].some(e=>!e.textContent.includes('Неизвестно'))`),true);
+  assert.equal(await run(`CSS.supports('grid-template-rows','subgrid')`),true);
+  if(width===1500){
+    const positions=await run(`[...document.querySelectorAll('.comparison-subtitles')].map(e=>e.getBoundingClientRect().top)`);
+    assert.ok(positions.every(top=>top===positions[0]),JSON.stringify(positions));
+  }
+  fs.writeFileSync(path.join(out,'release-comparison-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  assert.equal(await run(`document.querySelector('.release-comparison').scrollWidth>document.querySelector('.release-comparison').clientWidth`),false);
+  assert.equal(await run(`document.querySelector('.comparison-grid').scrollWidth>document.querySelector('.comparison-grid').clientWidth`),false);
+  await run(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);await wait();
+  assert.equal(await run(`document.querySelector('.release-comparison')===null`),true);
+  assert.equal(await run(`document.activeElement.classList.contains('release-compare-button')`),true);
   await run(`document.querySelector('.release-variant .action-col button').click()`);await wait();
   assert.deepEqual(await run(`resolved`),[['one']]);
+  assert.deepEqual(await run(`added[0].searchSourceRefs`),['one']);
   assert.equal(await run(`added[0].name`),'Film (2024) 1080p HEVC DUB WEB-DL');
   assert.equal(await run(`document.querySelector('.release-variant .added-badge').textContent.trim()`),'В загрузках');
   await run(`downloads[1].progress=1;emitStats([{id:downloads[1].id,status:'seeding',progress:1}])`);await wait();
@@ -95,7 +161,140 @@ app.whenReady().then(async()=>{
   await run(`progress({searchId:'sample',results:[makeRow('Film (2024) 1080p','restore',10)]})`);await wait();
   assert.equal(await run(`document.querySelector('.preference-preset').value`),'hd');
   assert.equal(await run(`document.querySelector('.search-preference-footer input').checked`),true);
-  console.log('PASS',width,'grouping, progressive results, source resolution, filtering, list toggle, layout');
+  // Persisted removal and hashless source association survive a renderer reload.
+  await run(`downloads=[];downloadHistory=[{downloadId:'deleted',infoHash:'b'.repeat(40),name:'Removed release',totalSize:100,sourceKeys:['c'.repeat(64)],updatedAt:123,removedAt:123}];window.dispatchEvent(new Event('focus'));`);await wait();
+  await run(`progress({searchId:'sample',results:[makeRow('Removed release','b'.repeat(40),1),{...makeRow('Hashless release','hashless',2),infoHash:undefined,historyKeys:['c'.repeat(64)]}]})`);await wait();
+  assert.equal(await run(`document.querySelector('.search-history-badge.removed').textContent`),'Удалено из списка');
+  assert.equal(await run(`document.querySelector('.search-history-badge.possible').textContent`),'Возможно, уже есть');
+  assert.equal(await run(`[...document.querySelectorAll('.results-row')].filter(row=>row.querySelector('.search-history-badge')).every(row=>row.querySelector('.action-col button:not([disabled])'))`),true);
+  assert.equal(await run(`document.querySelector('.page-header').scrollWidth>document.querySelector('.page-header').clientWidth`),false);
+  await run(`searchRoot.unmount();mountSearch();`);await wait();
+  await run(`{const input=document.querySelector('.search-input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Film');input.dispatchEvent(new Event('input',{bubbles:true}));}`);await wait();
+  await run(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Найти').click()`);await wait();
+  await run(`progress({searchId:'sample',results:[makeRow('Removed release','b'.repeat(40),1),{...makeRow('Hashless release','hashless',2),infoHash:undefined,historyKeys:['c'.repeat(64)]}]})`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.search-history-badge').length`),2);
+  fs.writeFileSync(path.join(out,'download-history-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Очистить историю загрузок').click()`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.search-history-badge').length`),0);
+  assert.equal(await run(`downloads.length`),0);
+  assert.equal(await run(`document.querySelectorAll('.results-row').length`),2);
+  // Re-adding a removed result acknowledges the returned id immediately, even
+  // before the engine has filled in its infoHash metadata.
+  await run(`[...document.querySelectorAll('.results-row')].find(row=>row.querySelector('.result-title').textContent==='Removed release').querySelector('.action-col button').click()`);await wait();
+  assert.equal(await run(`[...document.querySelectorAll('.results-row')].find(row=>row.querySelector('.result-title').textContent==='Removed release').querySelector('.added-badge').textContent.trim()`),'В загрузках');
+  await run(`downloads=[];window.dispatchEvent(new Event('focus'))`);await wait();
+  // A stale refresh begun before clear must not bring archived badges back.
+  await run(`downloadHistory=[{downloadId:'deleted',infoHash:'b'.repeat(40),name:'Removed release',totalSize:100,sourceKeys:[],updatedAt:123,removedAt:123}];window.dispatchEvent(new Event('focus'));`);await wait();
+  await run(`api.search.getDownloadHistory=(()=>{const stale=structuredClone(downloadHistory);return ()=>new Promise(resolve=>window.finishStaleRefresh=()=>resolve(stale))})();window.dispatchEvent(new Event('focus'));`);await wait();
+  await run(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Очистить историю загрузок').click()`);await wait();
+  await run(`finishStaleRefresh();api.search.getDownloadHistory=async()=>structuredClone(downloadHistory);void 0;`);await wait();
+  assert.equal(await run(`document.querySelectorAll('.search-history-badge').length`),0);
+  // Theme inheritance and real numeric stepping, including empty values/minimum.
+  await run(`{const themeFile=path.join(root,'themes/nihil-frutiger-aero.havvn-theme.json');if(fs.existsSync(themeFile))load(path.join(root,'shared/theme.ts')).applyTheme(document.documentElement,JSON.parse(fs.readFileSync(themeFile,'utf8')),'dark');document.documentElement.style.setProperty('--radius-md','14px');}`);
+  assert.equal(await run(`getComputedStyle(document.querySelector('.search-preferences')).borderRadius`),'14px');
+  assert.equal(await run(`getComputedStyle(document.querySelector('.release-filters')).borderRadius`),'14px');
+  await run(`document.querySelector('.min-seeds .number-input-controls button').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.min-seeds-input').value`),'1');
+  await run(`document.querySelector('.min-seeds .number-input-controls button:last-child').click()`);await wait();
+  await run(`document.querySelector('.min-seeds .number-input-controls button:last-child').click()`);await wait();
+  assert.equal(await run(`Number(document.querySelector('.min-seeds-input').value)`),0);
+  assert.equal(await run(`getComputedStyle(document.querySelector('.min-seeds-input')).appearance`),'textfield');
+  await run(`document.querySelector('.search-preferences').open=true;document.querySelector('.search-preference-fields input[step="0.5"]').parentElement.querySelector('button').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.search-preference-fields input[step="0.5"]').value`),'15.5');
+  fs.writeFileSync(path.join(out,'themed-search-controls-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`searchRoot.unmount();window.api.getCategories=async()=>[];
+    // Extend the existing component fixture with real compact-row components.
+    window.mountDownloads=()=>{window.searchRoot=ReactDOM.createRoot(document.getElementById('root'));
+      const Item=load(path.join(root,'renderer/pages/DownloadItem.tsx')).DownloadItem;
+      require(path.join(root,'node_modules/react-dom')).flushSync(()=>searchRoot.render(React.createElement('div',{className:'downloads-scroll',style:{height:240}},
+        ['completed','downloading','error'].map((status,index)=>React.createElement(Item,{key:status,viewMode:'compact',download:{id:status,name:index===0?'Big Buck Bunny (2008) 4K HDR':'Example torrent with a long title',category:'movies',sourceType:'torrent',savePath:'D:/torrents',status,progress:index===0?1:.36,totalSize:1024**3,downloadedBytes:1024**3,uploadedBytes:1024,lastError:'Tracker unavailable'},onSelect:()=>{},onPause:()=>{},onResume:()=>window.rowAction='resume',onRemove:()=>{},onStopSeeding:()=>{},onRetry:()=>{},onOpenFolder:()=>{},onShowFiles:()=>{},onStream:()=>{},onShare:()=>window.rowAction='share'})))));};mountDownloads();`);await wait();
+  for(const listWidth of [...new Set([width,Math.min(width,580)])]){
+    await run(`document.querySelector('.downloads-scroll').style.width='${listWidth}px';document.querySelector('.trow-actions button').focus()`);await new Promise(resolve=>setTimeout(resolve,250));
+    const layout=await run(`(()=>{const row=document.querySelector('.download-item'),actions=row.querySelector('.trow-actions').getBoundingClientRect(),bar=row.querySelector('.trow-prog').getBoundingClientRect(),name=row.querySelector('.trow-name').getBoundingClientRect();return {overflow:row.scrollWidth>row.clientWidth,actionsRight:actions.right,rowRight:row.getBoundingClientRect().right,barRight:bar.right,barWidth:bar.width,actionsLeft:actions.left,nameRight:name.right,nameWidth:name.width,opacity:getComputedStyle(row.querySelector('.trow-actions')).opacity}})()`);
+    assert.equal(layout.overflow,false);assert.ok(layout.actionsRight<=layout.rowRight);
+    assert.ok(layout.nameWidth>40&&layout.nameRight<=layout.actionsLeft);
+    if(layout.barWidth)assert.ok(layout.barRight<layout.actionsLeft);
+    assert.equal(layout.opacity,'1');
+    const progressColumns=await run(`[...document.querySelectorAll('.trow-prog')].map(element=>element.getBoundingClientRect()).filter(rect=>rect.width).map(rect=>rect.left)`);
+    assert.ok(progressColumns.every(left=>left===progressColumns[0]),JSON.stringify(progressColumns));
+    await run(`document.activeElement.blur()`);
+    win.webContents.sendInputEvent({type:'mouseMove',x:80,y:30});await new Promise(resolve=>setTimeout(resolve,250));
+    assert.equal(await run(`getComputedStyle(document.querySelector('.trow-actions')).opacity`),'1');
+    fs.writeFileSync(path.join(out,'download-actions-'+width+'-list-'+listWidth+'.png'),(await win.webContents.capturePage()).toPNG());
+  }
+  await run(`document.querySelector('.trow-actions button:nth-child(2)').click()`);await wait();
+  assert.equal(await run(`window.rowAction`),'resume');
+  // The settings KB/s field is a separate primitive; exercise it explicitly.
+  await run(`searchRoot.unmount();window.settingChanges=[];
+    const controls=load(path.join(root,'renderer/pages/settings/controls.tsx'));
+    function SpeedSetting(){const [value,setValue]=React.useState(1000);return React.createElement(controls.SettingsCard,{title:'Лимиты скорости'},React.createElement(controls.SettingRow,{label:'Загрузка',control:React.createElement(controls.NumberField,{value,min:0,max:65535,unit:'KB/s',ariaLabel:'Лимит загрузки',onChange:value=>{settingChanges.push(value);setValue(value)}})}));}
+    window.searchRoot=ReactDOM.createRoot(document.getElementById('root'));require(path.join(root,'node_modules/react-dom')).flushSync(()=>searchRoot.render(React.createElement('div',{style:{padding:20}},React.createElement(SpeedSetting))));`);await wait();
+  assert.equal(await run(`document.querySelector('.stg-num .number-input-controls button')!==null`),true);
+  assert.equal(await run(`getComputedStyle(document.querySelector('.stg-num input')).appearance`),'textfield');
+  assert.equal(await run(`getComputedStyle(document.querySelector('.stg-num input')).paddingRight`),'28px');
+  await run(`document.querySelector('.stg-num .number-input-controls button').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.stg-num input').value`),'1001');
+  assert.deepEqual(await run(`settingChanges`),[1001]);
+  await run(`document.querySelector('.stg-num .number-input-controls button:last-child').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.stg-num input').value`),'1000');
+  await run(`{const input=document.querySelector('.stg-num input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'10000');input.dispatchEvent(new Event('input',{bubbles:true}));}`);await wait();
+  assert.equal(await run(`settingChanges.at(-1)`),10000);
+  await run(`document.querySelector('.stg-num .number-input-controls button').click()`);await wait();
+  assert.equal(await run(`document.querySelector('.stg-num input').value`),'10001');
+  assert.equal(await run(`document.querySelector('.stg-num').scrollWidth>document.querySelector('.stg-num').clientWidth`),false);
+  assert.equal(await run(`document.querySelector('.stg-row').scrollWidth>document.querySelector('.stg-row').clientWidth`),false);
+  fs.writeFileSync(path.join(out,'settings-speed-controls-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  // Save/check HTTP aliases through the actual form, including HTTPS validation.
+  await run(`searchRoot.unmount();window.connectionSaves=[];window.connectionChecks=[];
+    window.networkSettings={profiles:[],access:{http:{profileId:'system',mirrors:[],origins:[]}}};
+    api.search.getNetworkSettings=async()=>structuredClone(networkSettings);
+    api.search.setNetworkAccess=async(id,value)=>{connectionSaves.push(structuredClone(value));networkSettings.access[id]=structuredClone(value);};
+    api.search.testProvider=async id=>{connectionChecks.push(id);networkSettings.access[id].lastWorkingMirror=networkSettings.access[id].mirrors[0];return {success:true};};
+    window.mountConnection=type=>{window.searchRoot=ReactDOM.createRoot(document.getElementById('root'));require(path.join(root,'node_modules/react-dom')).flushSync(()=>searchRoot.render(React.createElement('div',{className:'provider-card',style:{margin:16}},React.createElement(load(path.join(root,'renderer/components/ProviderConnectionSettings.tsx')).ProviderConnectionSettings,{provider:{id:'http',name:'Example API',url:'https://primary.example/api/search',type,enabled:true}}))));};
+    mountConnection('custom');`);await wait();
+  await run(`document.querySelector('.provider-connection').open=true`);await wait();
+  assert.equal(await run(`document.querySelector('textarea[name="mirrors"]')!==null`),true);
+  await run(`document.querySelector('textarea[name="mirrors"]').focus();document.querySelector('textarea[name="mirrors"]').select()`);
+  await win.webContents.insertText('https://mirror.example/copy');await wait();
+  await run(`document.querySelector('.connection-footer .btn-primary').click()`);await wait();
+  assert.deepEqual(await run(`connectionSaves`),[{profileId:'system',mirrors:['https://mirror.example/copy'],origins:[]}]);
+  assert.deepEqual(await run(`connectionChecks`),['http']);
+  assert.equal(await run(`document.querySelector('.connection-feedback.success').textContent`),await run(`dict['search.connection.accessOk']`));
+  assert.equal(await run(`document.querySelector('.provider-connection').textContent.includes('https://mirror.example/copy')`),true);
+  assert.equal(await run(`document.querySelector('.provider-connection').scrollWidth>document.querySelector('.provider-connection').clientWidth`),false);
+  assert.equal(await run(`getComputedStyle(document.querySelector('textarea[name="mirrors"]')).borderRadius`),await run(`getComputedStyle(document.querySelector('.form-select')).borderRadius`));
+  fs.writeFileSync(path.join(out,'http-provider-mirrors-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`document.querySelector('textarea[name="mirrors"]').focus();document.querySelector('textarea[name="mirrors"]').select()`);
+  await win.webContents.insertText('http://mirror.example');await wait();
+  await run(`document.querySelector('.connection-footer .btn-primary').click()`);await wait();
+  assert.equal(await run(`document.querySelector('[role="alert"]').textContent`),await run(`dict['search.connection.httpsMirrors']`));
+  assert.equal(await run(`connectionSaves.length`),1);
+  for(const type of ['jackett','torznab']){
+    await run(`searchRoot.unmount();mountConnection('${type}')`);await wait();
+    await run(`document.querySelector('.provider-connection').open=true`);await wait();
+    assert.equal(await run(`document.querySelector('textarea[name="mirrors"]')!==null`),true);
+    assert.equal(await run(`document.querySelector('.provider-connection').textContent.includes(dict['search.connection.apiMirrorsHelp'])`),true);
+  }
+  // Download from comparison goes through the same source capability and state.
+  await run(`searchRoot.unmount();localStorage.setItem('havvn.search.groupResults.v1','true');mountSearch();`);await wait();
+  await run(`setQuery('Film');[...document.querySelectorAll('button')].find(e=>e.textContent.trim()==='Найти').click()`);await wait();
+  await run(`progress({searchId:'sample',results:[makeRow('Film (2024) 1080p','compare-one',10),makeRow('Film (2024) 720p','compare-two',5)]})`);await wait();
+  await run(`document.querySelector('.release-compare-button').click()`);await wait();
+  await run(`document.querySelector('.comparison-download').click()`);await wait();
+  assert.deepEqual(await run(`resolved.at(-1)`),['compare-one']);
+  assert.deepEqual(await run(`added.at(-1).searchSourceRefs`),['compare-one']);
+  assert.equal(await run(`document.querySelector('.comparison-download').disabled`),true);
+  assert.equal(await run(`document.querySelector('.comparison-download').textContent`),'В загрузках');
+  await run(`downloads.at(-1).progress=1;emitStats([{id:downloads.at(-1).id,status:'seeding',progress:1}])`);await wait();
+  assert.equal(await run(`document.querySelector('.comparison-download').textContent`),'Скачано');
+  assert.equal(await run(`getComputedStyle(document.querySelector('.comparison-card')).borderRadius`),'14px');
+  fs.writeFileSync(path.join(out,'release-comparison-themed-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  await run(`dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/en.json'),'utf8'));locale='en';progress({searchId:'sample',results:[makeRow('Film (2024) 1080p','compare-one',10)]})`);await wait();
+  assert.equal(await run(`document.querySelector('.um-title').textContent`),'Release comparison');
+  assert.equal(await run(`document.querySelector('.comparison-grid').scrollWidth>document.querySelector('.comparison-grid').clientWidth`),false);
+  if(width===1500)assert.equal(await run(`Math.round(document.querySelector('.comparison-card:last-child').getBoundingClientRect().right)===Math.round(document.querySelector('.comparison-grid').getBoundingClientRect().right)`),true);
+  fs.writeFileSync(path.join(out,'release-comparison-english-'+width+'.png'),(await win.webContents.capturePage()).toPNG());
+  console.log('PASS',width,'search history, numeric controls, theme rounding, download actions, grouping, persistent history and HTTP mirror settings');
  }
  console.log('Screenshots:',out);
  win.destroy();clearTimeout(deadline);app.exit(0);

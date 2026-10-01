@@ -98,3 +98,4 @@
   .connection-actions { flex-direction: column; }
   .connection-actions .btn { width: 100%; }
 }
+.connection-field > .number-input { width: 100%; }

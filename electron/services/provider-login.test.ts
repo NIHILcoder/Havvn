@@ -51,6 +51,13 @@ it('reuses an open login task and closes on route reset', async () => {
   expect(state.windows).toHaveLength(1);
   expect(state.windows[0].isDestroyed()).toBe(true);
 });
+it('opens the last working HTTP mirror for sign-in', async () => {
+  state.route.mirrors.push('https://mirror.test/service'); state.route.origins.push('https://mirror.test'); state.route.lastWorkingMirror = 'https://mirror.test/service';
+  const done = openProviderLogin({ ...provider, type: 'custom', url: 'https://source.test/search?q={query}' }, parent);
+  await Promise.resolve();
+  expect(state.windows[0].loadURL).toHaveBeenCalledWith('https://mirror.test/service');
+  state.windows[0].destroy(); await done;
+});
 it('allows Cloudflare challenge resources only inside the login window', async () => {
   const done = openProviderLogin(provider, parent);
   await Promise.resolve();

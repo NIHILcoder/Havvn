@@ -18,12 +18,19 @@ import { SearchResult } from './types';
 
 /** One torrent, with every indexer that reported it. */
 export interface MergedResult extends SearchResult {
+  /** Per-source observations, so best seed counts do not acquire another date. */
+  observations?: SourceObservation[];
   /** Provider names that returned this torrent, in first-seen order. */
   providers: string[];
   /** Indexer names (Jackett/Prowlarr sub-trackers), where reported. */
   indexers: string[];
   /** How many separate rows collapsed into this one. */
   sourceCount: number;
+}
+
+export type SourceObservation = Pick<SearchResult, 'provider' | 'indexer' | 'checkedAt' | 'seeds' | 'leechers' | 'media'>;
+function observation(row: SearchResult): SourceObservation {
+  return { provider: row.provider, indexer: row.indexer, checkedAt: row.checkedAt, seeds: row.seeds, leechers: row.leechers, media: row.media };
 }
 
 /**
@@ -74,7 +81,13 @@ function pushUnique(list: string[], value: string | undefined): void {
 
 /** Fold one result into an existing merged row. */
 function absorb(target: MergedResult, incoming: SearchResult): void {
+  const observations = [...(target.observations ?? [observation(target)])];
+  const previous = observations.findIndex(source => source.provider === incoming.provider && source.indexer === incoming.indexer);
+  if (previous < 0) observations.push(observation(incoming));
+  else if ((incoming.checkedAt ?? 0) >= (observations[previous].checkedAt ?? 0)) observations[previous] = observation(incoming);
+  target.observations = observations;
   target.sourceRefs = [...new Set([...(target.sourceRefs || []), ...(incoming.sourceRefs || [])])];
+  target.historyKeys = [...new Set([...(target.historyKeys || []), ...(incoming.historyKeys || [])])];
   pushUnique(target.providers, incoming.provider);
   pushUnique(target.indexers, incoming.indexer);
   target.sourceCount += 1;
@@ -103,6 +116,7 @@ function absorb(target: MergedResult, incoming: SearchResult): void {
 function toMerged(r: SearchResult): MergedResult {
   return {
     ...r,
+    observations: [observation(r)],
     providers: [r.provider],
     indexers: r.indexer ? [r.indexer] : [],
     sourceCount: 1,

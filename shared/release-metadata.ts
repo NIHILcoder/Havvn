@@ -1,3 +1,4 @@
+import { releaseLanguageHints } from './release-languages';
 /** Hints from release names only, never verified media properties. */
 export const RESOLUTIONS = ['2160p', '1080p', '1080i', '720p', '576p', '480p'] as const;
 export const CODECS = ['HEVC', 'H.264', 'AV1', 'XviD'] as const;
@@ -8,6 +9,9 @@ export interface ReleaseMetadata {
   voices: string[];
   sources: string[];
   features: string[];
+  audioLanguages?: string[];
+  subtitleLanguages?: string[];
+  hasSubtitles?: boolean;
   year?: string;
   episode?: string;
 }
@@ -27,7 +31,7 @@ export function parseReleaseMetadata(title: string): ReleaseMetadata {
   const year = text.match(/[[(]\s*((?:19|20)\d{2})\s*[\])]/)?.[1];
   const episode = text.match(/(?:^|[^\p{L}\p{N}])(S\d{1,2}(?:[ ._-]?E\d{1,3}(?:[ -]E?\d{1,3})?)?)(?=$|[^\p{L}\p{N}])/iu)?.[1]?.toUpperCase();
   const russianSeason = text.match(/(?:сезон\s*[:№]?\s*(\d{1,2})|(?<!\d)(\d{1,2})\s*(?:-?й\s+)?сезон)(?!\d)/iu);
-  return { resolutions: [...resolutions], codecs: [...codecs], voices: [...voices], sources, features, year,
+  return { resolutions: [...resolutions], codecs: [...codecs], voices: [...voices], sources, features, year, ...releaseLanguageHints(text),
     episode: episode ?? (russianSeason ? `S${(russianSeason[1] || russianSeason[2]).padStart(2, '0')}` : undefined) };
 }
 

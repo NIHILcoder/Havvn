@@ -1,0 +1,21 @@
+.release-comparison { max-width: 1160px; }
+.release-comparison .um-body { container-type: inline-size; }
+.comparison-work { margin: 0 0 8px; font-size: 1rem; color: var(--color-text-primary); overflow-wrap: anywhere; }
+.comparison-explanation { margin: 0 0 18px; font-size: .75rem; line-height: 1.6; color: var(--color-text-muted); }
+.comparison-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 14px; align-items: stretch; }
+.comparison-card { min-width: 0; display: grid; grid-row: span 10; grid-template-rows: subgrid; padding: 16px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-secondary); overflow-wrap: anywhere; }
+.comparison-card h4 { margin: 0; font-size: .8125rem; line-height: 1.6; color: var(--color-text-primary); }
+.comparison-card dl { margin: 0; display: contents; }
+.comparison-card dl > div { display: grid; grid-template-columns: 105px minmax(0, 1fr); gap: 10px; font-size: .75rem; line-height: 1.5; }
+.comparison-card dt { color: var(--color-text-muted); }
+.comparison-card dd { margin: 0; min-width: 0; color: var(--color-text-primary); }
+.comparison-evidence { display: flex; flex-direction: column; margin-bottom: 3px; }
+.comparison-evidence small { color: var(--color-text-muted); font-size: .625rem; }
+.comparison-sources { padding-top: 12px; border-top: 1px solid var(--color-border); }
+.comparison-sources h5 { margin: 0 0 8px; font-size: .75rem; color: var(--color-text-secondary); }
+.comparison-sources ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+.comparison-sources li { display: flex; flex-direction: column; gap: 3px; font-size: .6875rem; line-height: 1.5; color: var(--color-text-muted); }
+.comparison-sources strong { font-weight: 500; color: var(--color-text-primary); }
+.comparison-download { align-self: end; width: 100%; white-space: normal; }
+@container (max-width: 900px) { .comparison-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container (max-width: 590px) { .comparison-grid { grid-template-columns: minmax(0, 1fr); } }

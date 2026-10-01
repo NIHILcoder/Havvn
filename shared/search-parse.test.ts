@@ -6,6 +6,13 @@ import {
   SCRIPT_MAX_RESULTS,
 } from './search-parse';
 
+it('sanitizes optional source media and ignores plugin-supplied check timestamps', () => {
+  const [result] = parseScriptOutput(JSON.stringify([{ title: 'Film', infoHash: 'abc', checkedAt: 1,
+    media: { audioLanguages: ['ENG'], subtitleLanguages: ['RUS', '<script>'], hasSubtitles: false } }]), 'Example');
+  expect(result.media).toEqual({ audioLanguages: ['en'], subtitleLanguages: ['ru'], hasSubtitles: false });
+  expect(result.checkedAt).toBeUndefined();
+});
+
 describe('sanitizeString', () => {
   it('trims and stringifies', () => {
     expect(sanitizeString('  hi  ')).toBe('hi');
