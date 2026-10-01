@@ -43,7 +43,8 @@ import type { SubtitleTrack } from '../../../shared/player-preferences';
 import { extractInfoHashFromMagnet } from '../../../shared/magnet';
 import { classifyMediaKind, isDirectlyPlayable } from '../../../shared/media';
 import { isPrivateOrReservedIPv4 } from '../../../shared/ip-range';
-import { selectVpnIPv4, resolveBindOverrides } from '../../../shared/vpn-bind';
+import { resolveBindOverrides } from '../../../shared/vpn-bind';
+import { getRoutedVpnIPv4 } from '../../utils/vpn-network';
 import { composeUploadLimits, DEFAULT_MAX_UP_KBPS } from '../../../shared/upload-limits';
 import { AdaptiveThrottle } from '../adaptive-throttle';
 import { daemonProxyEnv } from '../../../shared/tracker-proxy';
@@ -150,10 +151,8 @@ export class NativeTorrentManager {
     }
     const [settings, privacy] = await Promise.all([
       db.getSettings(),
-      db.getPrivacyConfig().catch((e) => {
-        log.warn('Failed to read privacy config for VPN bind — starting unbound', { error: String(e) });
-        return null;
-      }),
+      // Config failure must not silently start an unbound engine.
+      db.getPrivacyConfig(),
     ]);
     this.settings = settings;
     // VPN bind (privacy.vpnBindEngine): resolve the VPN adapter's IPv4 NOW and
@@ -163,7 +162,7 @@ export class NativeTorrentManager {
     let bindOverrides: Record<string, unknown> = {};
     if (privacy?.vpnBindEngine === true) {
       const ifaces = os.networkInterfaces();
-      const vpn = selectVpnIPv4(ifaces);
+      const vpn = await getRoutedVpnIPv4();
       bindOverrides = resolveBindOverrides(vpn);
       this.vpnBind = { enabled: true, boundIp: vpn?.address ?? null, iface: vpn?.iface ?? null, fallback: !vpn };
       if (vpn) log.info('Engine bound to VPN interface', { iface: vpn.iface, ip: vpn.address });

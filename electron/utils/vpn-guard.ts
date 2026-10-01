@@ -2,8 +2,8 @@
  * VPN Kill-Switch / Guard + engine VPN-bind monitor.
  *
  * Kill-switch (PrivacyConfig.vpnKillSwitch): periodically re-checks VPN status
- * while torrents are active. If the VPN drops (was up, now down) it auto-pauses
- * ALL torrents so the user's real IP isn't exposed to the swarm, fires an OS
+ * while torrents are active. If tunnel routing is missing or uncertain it pauses
+ * ALL active torrents and room networking, fires an OS
  * notification, and tells the renderer to show a warning banner. Resume is
  * manual by design (the user decides when it's safe).
  *
@@ -12,14 +12,14 @@
  * The daemon reads bind-address-* once at startup, so ANY address change —
  * including the same address coming back after a drop, which does NOT revive
  * the daemon's listening socket — is applied via a full engine restart
- * (manager.restartEngine), debounced against VPN flaps. A plain drop needs no
- * action (sockets are already dead — that's the feature working); it is only
- * reported.
+ * (manager.restartEngine), debounced against VPN flaps. Losing the route also
+ * restarts into loopback fallback: an adapter can remain up after losing routes.
  */
 
 import { BrowserWindow } from 'electron';
 import { detectVPN, getVpnInterfaceIPv4 } from './vpn-detector';
 import { planBindAction } from '../../shared/vpn-bind';
+import { shouldTripVpnGuard } from '../../shared/vpn-status';
 import { logger } from './logger';
 import { showOsNotification } from './os-notify';
 import * as db from '../db/store';
@@ -29,18 +29,19 @@ import { t } from '../i18n';
 
 const log = logger.child('VPNGuard');
 
-const CHECK_INTERVAL_MS = 20_000; // re-check every 20s
+const CHECK_INTERVAL_MS = 5_000;
 // Re-bind debounce: the new address must survive 2 consecutive ticks, and
 // engine restarts are at least a minute apart — a flapping VPN reconnect must
 // not turn into a restart storm that kills active streams over and over.
 const REBIND_MIN_INTERVAL_MS = 60_000;
 
 let timer: NodeJS.Timeout | null = null;
+let initialTimer: NodeJS.Timeout | null = null;
+let generation = 0;
 let mainWindowRef: BrowserWindow | null = null;
 
 // Kill-switch state
 let killSwitchOn = false;
-let lastVpnActive: boolean | null = null; // null = unknown / not yet checked
 let tripped = false;                       // already auto-paused this outage
 
 // Bind-monitor state
@@ -58,6 +59,8 @@ export function initVpnGuard(mainWindow: BrowserWindow): void {
 
 /** (Re)start or stop the guard loop based on the persisted privacy config. */
 export async function restartGuardFromConfig(): Promise<void> {
+  stopVpnGuard();
+  const revision = generation;
   let killSwitch = false;
   let bind = false;
   try {
@@ -69,12 +72,13 @@ export async function restartGuardFromConfig(): Promise<void> {
     // silently adopting the new config mid-session).
     const runningBound = getTorrentManager().getVpnBindStatus()?.enabled === true;
     bind = runningBound || (cfg.vpnBindEngine === true && db.getEngineChoice() === 'native');
-  } catch {
-    killSwitch = false;
-    bind = false;
+  } catch (error) {
+    killSwitch = killSwitchOn;
+    bind = bindOn;
+    log.error('Privacy config unavailable — preserving running guard settings', { error: String(error) });
   }
 
-  stopVpnGuard();
+  if (revision !== generation) return;
   const killSwitchChanged = killSwitch !== killSwitchOn;
   const bindChanged = bind !== bindOn;
   killSwitchOn = killSwitch;
@@ -86,9 +90,9 @@ export async function restartGuardFromConfig(): Promise<void> {
   // re-enabled.
   if (killSwitchChanged && !killSwitch) {
     tripped = false;
-    lastVpnActive = null;
     try { await getRoomManager().resumeNetworking(); } catch (e) { log.error('Room resume on kill-switch disable failed', { error: e instanceof Error ? e.message : String(e) }); }
   }
+  if (revision !== generation) return;
   if (!killSwitchOn && !bindOn) {
     log.info('VPN guard disabled');
     return;
@@ -99,7 +103,6 @@ export async function restartGuardFromConfig(): Promise<void> {
   // toggling one must not wipe the other's in-progress outage latch (a tripped
   // kill-switch would otherwise re-pause / lose its "restored" edge).
   if (killSwitchChanged) {
-    lastVpnActive = null;
     tripped = false;
   }
   if (bindChanged) {
@@ -111,10 +114,12 @@ export async function restartGuardFromConfig(): Promise<void> {
   // in the wrong state. runTick serializes them.
   timer = setInterval(() => { void runTick(); }, CHECK_INTERVAL_MS);
   // Run one check shortly after enabling
-  setTimeout(() => { void runTick(); }, 2_000);
+  initialTimer = setTimeout(() => { initialTimer = null; void runTick(); }, 2_000);
 }
 
 export function stopVpnGuard(): void {
+  generation++;
+  if (initialTimer) { clearTimeout(initialTimer); initialTimer = null; }
   if (timer) {
     clearInterval(timer);
     timer = null;
@@ -126,22 +131,21 @@ let tickRunning = false;
 async function runTick(): Promise<void> {
   if (tickRunning) return;
   tickRunning = true;
-  try { await tick(); } finally { tickRunning = false; }
+  try { await tick(generation); } finally { tickRunning = false; }
 }
 
-async function tick(): Promise<void> {
-  // The bind check is cheap (os.networkInterfaces only) — run it first so a
-  // slow detectVPN() (exec + network) never delays a re-bind decision.
+async function tick(revision: number): Promise<void> {
+  // Both checks use the same short-lived local route snapshot, with no geo lookup.
   if (bindOn) {
     try {
-      tickBind();
+      await tickBind(revision);
     } catch (e) {
       log.error('VPN bind tick failed', { error: e instanceof Error ? e.message : String(e) });
     }
   }
-  if (killSwitchOn) {
+  if (killSwitchOn && revision === generation) {
     try {
-      await tickKillSwitch();
+      await tickKillSwitch(revision);
     } catch (e) {
       log.error('VPN guard tick failed', { error: e instanceof Error ? e.message : String(e) });
     }
@@ -149,7 +153,7 @@ async function tick(): Promise<void> {
 }
 
 // ── Kill-switch ──────────────────────────────────────────────────────────────
-async function tickKillSwitch(): Promise<void> {
+async function tickKillSwitch(revision: number): Promise<void> {
   // Only act when there is something to protect
   const manager = getTorrentManager();
   const downloads = await manager.getDownloads();
@@ -162,16 +166,17 @@ async function tickKillSwitch(): Promise<void> {
   // (restartGuardFromConfig runs on a settings change and already resumed rooms +
   // reset the latches). A stale tick must not act on that reset state and
   // re-suspend rooms with no timer left to ever revive them.
-  if (!killSwitchOn) return;
+  if (!killSwitchOn || revision !== generation) return;
   const vpnActive = result.isVPNActive;
 
-  // VPN dropped: was active (or known) and now inactive, with active torrents
+  // Tunnel route missing or unconfirmed, with activity to protect.
   // Rooms seed over their OWN WebTorrent clients in a separate engine window, so
   // pausing torrents alone still leaks the real IP through every active room —
   // check for room activity too, not just downloads.
   const hasRooms = (() => { try { return db.getPersistedRooms().length > 0; } catch { return false; } })();
 
-  if (lastVpnActive !== false && !vpnActive && (hasActive || hasRooms) && !tripped) {
+  // Also pause activity started/resumed while the route was already unsafe.
+  if (shouldTripVpnGuard(result.state, hasActive || hasRooms) && (hasActive || !tripped)) {
     tripped = true;
     const count = await manager.pauseAllActive();
     // The kill-switch may have been disabled DURING pauseAllActive() (a manual
@@ -179,11 +184,12 @@ async function tickKillSwitch(): Promise<void> {
     // already ran resumeNetworking() as a no-op (nothing was suspended yet) and
     // cleared the timer, so suspending here would freeze rooms with nothing left
     // to ever revive them. Torrents already paused is harmless (manual resume).
-    if (!killSwitchOn) return;
+    if (!killSwitchOn || revision !== generation) return;
     // Fail closed: also tear down every room's networking (the kill-switch used
     // to cover only the torrent engine).
     try { await getRoomManager().suspendNetworking(); } catch (e) { log.error('Room suspend on VPN drop failed', { error: e instanceof Error ? e.message : String(e) }); }
-    log.warn('VPN dropped — auto-paused all torrents + suspended rooms', { paused: count });
+    if (revision !== generation) return;
+    log.warn('Tunnel route unconfirmed — paused torrents + suspended rooms', { paused: count, state: result.state });
     showOsNotification(
       t('notify.vpnLost.title'),
       count > 0
@@ -191,30 +197,30 @@ async function tickKillSwitch(): Promise<void> {
         : hasRooms ? t('notify.vpnLost.bodyRooms') : t('notify.vpnLost.bodyNone'),
       { critical: true },
     );
-    sendToRenderer('app:vpnDropped', { paused: count, rooms: hasRooms, publicIP: result.details.publicIP });
+    sendToRenderer('app:vpnDropped', { paused: count, rooms: hasRooms, state: result.state });
   }
 
   // VPN restored: clear the tripped latch so a future drop trips again.
   // Torrent resume stays MANUAL (the user decides when it's safe), but rooms
   // auto-revive — the VPN is confirmed back here, so it's safe, and a room left
   // dark with no obvious "reconnect" is worse than a paused download.
-  if (vpnActive && tripped) {
+  if (result.state === 'routed' && vpnActive && tripped) {
     tripped = false;
     try { await getRoomManager().resumeNetworking(); } catch (e) { log.error('Room resume on VPN restore failed', { error: e instanceof Error ? e.message : String(e) }); }
     log.info('VPN restored — torrents stay paused (manual), rooms revived');
     sendToRenderer('app:vpnRestored', {});
   }
 
-  lastVpnActive = vpnActive;
 }
 
 // ── Engine bind monitor ──────────────────────────────────────────────────────
-function tickBind(): void {
+async function tickBind(revision: number): Promise<void> {
   if (rebindInProgress) return;
   const manager = getTorrentManager();
   const status = manager.getVpnBindStatus(); // running engine's bind, mirrored from the host
   if (!status?.enabled) return;              // nothing bound — skip the interface scan
-  const current = getVpnInterfaceIPv4();
+  const current = await getVpnInterfaceIPv4();
+  if (revision !== generation || !bindOn) return;
   const action = planBindAction(status, current?.address ?? null, bindLost);
 
   switch (action) {
@@ -235,9 +241,12 @@ function tickBind(): void {
     case 'lost': {
       pendingRebindIp = null;
       bindLost = true;
-      log.warn('VPN adapter lost while the engine is bound — peer sockets are dead (fail-closed)');
+      log.warn('Routed tunnel unconfirmed — restarting bound engine into fallback');
       showOsNotification(t('notify.vpnBindLost.title'), t('notify.vpnBindLost.body'), { critical: true });
       sendToRenderer('app:vpnBindStatus', { kind: 'lost' });
+      // An adapter may still have its address despite routes moving elsewhere.
+      // Re-read at startup and use loopback when no routed tunnel is available.
+      void rebindEngine(null);
       return;
     }
     default:
@@ -245,7 +254,7 @@ function tickBind(): void {
   }
 }
 
-async function rebindEngine(newIp: string): Promise<void> {
+async function rebindEngine(newIp: string | null): Promise<void> {
   rebindInProgress = true;
   try {
     log.info('VPN address changed — restarting the engine to re-bind', { ip: newIp });

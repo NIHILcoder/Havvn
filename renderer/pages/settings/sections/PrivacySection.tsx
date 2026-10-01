@@ -18,16 +18,16 @@
  * legacy component-local <Alert>.
  */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, StatusPill, RestartPendingNotice } from '../controls';
 import { Icon, IconName, Button, Toggle } from '../../../components';
 import { useConfirm } from '../../../components/ConfirmDialog';
 import { PrivacyConfig, IpInfo, VpnBindReport } from '../../../../shared/types';
+import { privacyPosture, type PrivacyPosture as Posture } from '../../../../shared/vpn-status';
 import { useTranslation } from '../../../utils/i18nContext';
 import '../../../components/PrivacySettings.css';
 
-type Posture = 'checking' | 'unknown' | 'protected' | 'caution' | 'exposed';
 type Tone = 'ok' | 'warn' | 'bad' | 'muted';
 
 export const PrivacySection: React.FC = () => {
@@ -61,6 +61,14 @@ export const PrivacySection: React.FC = () => {
   const [copied, setCopied] = useState(false);
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
   const [busyPreset, setBusyPreset] = useState(false);
+  const active = useRef(false);
+  const pending = useRef(false);
+  const refreshId = useRef(0);
+  const cancelRefresh = useCallback(() => {
+    active.current = false;
+    refreshId.current++;
+    pending.current = false;
+  }, []);
 
   const refreshBindStatus = useCallback(async () => {
     try {
@@ -72,27 +80,36 @@ export const PrivacySection: React.FC = () => {
   }, []);
 
   const refreshIp = useCallback(async () => {
+    if (!active.current || pending.current) return;
+    pending.current = true;
+    const id = ++refreshId.current;
     setChecking(true);
     try {
       const info = await window.api.getIpInfo();
+      if (!active.current || id !== refreshId.current) return;
       // Guard: in tests / degraded IPC the call resolves undefined.
       if (info && typeof info === 'object') {
         setIp(info);
-        setIpFailed(false);
+        setIpFailed(!info.ip);
       } else {
         setIp(null);
         setIpFailed(true);
       }
     } catch (e) {
+      if (!active.current || id !== refreshId.current) return;
       console.error('Failed to fetch IP info:', e);
       setIp(null);
       setIpFailed(true);
     } finally {
-      setChecking(false);
+      if (id === refreshId.current) {
+        pending.current = false;
+        if (active.current) setChecking(false);
+      }
     }
   }, []);
 
   useEffect(() => {
+    active.current = true;
     let alive = true;
     void (async () => {
       try {
@@ -110,14 +127,25 @@ export const PrivacySection: React.FC = () => {
     })();
     void refreshIp();
     void refreshBindStatus();
-    return () => { alive = false; };
-  }, [refreshIp, refreshBindStatus]);
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible') { void refreshIp(); void refreshBindStatus(); }
+    };
+    const interval = setInterval(refreshVisible, 30_000);
+    document.addEventListener('visibilitychange', refreshVisible);
+    window.addEventListener('online', refreshVisible);
+    return () => {
+      alive = false; cancelRefresh();
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', refreshVisible);
+      window.removeEventListener('online', refreshVisible);
+    };
+  }, [refreshIp, refreshBindStatus, cancelRefresh]);
 
   // Keep the bind status fresh when the guard re-binds / loses the VPN.
   useEffect(() => {
-    const off = window.api.onVpnBindStatus(() => { void refreshBindStatus(); });
+    const off = window.api.onVpnBindStatus(() => { void refreshBindStatus(); void refreshIp(); });
     return () => off();
-  }, [refreshBindStatus]);
+  }, [refreshBindStatus, refreshIp]);
 
   // Optimistic single-flag save with rollback + shell toast on failure.
   const setCfg = async (key: keyof PrivacyConfig, value: boolean) => {
@@ -188,12 +216,7 @@ export const PrivacySection: React.FC = () => {
 
   // ── Posture verdict (replaces the legacy score bar, whose value mixed a
   //    constant with loading state and read misleadingly low while checking) ─
-  const posture: Posture =
-    checking && !ip ? 'checking'
-    : !ip ? 'unknown'
-    : !ip.vpnActive ? 'exposed'
-    : config.vpnKillSwitch ? 'protected'
-    : 'caution';
+  const posture = privacyPosture(ip?.state, checking, config.vpnKillSwitch);
 
   const verdict: Record<Posture, { icon: IconName; tone: Tone; title: string; desc: string }> = {
     checking:  { icon: 'loader',         tone: 'muted', title: t('privacy.posture.checking'),  desc: t('privacy.posture.checkingDesc') },
@@ -202,7 +225,9 @@ export const PrivacySection: React.FC = () => {
     caution:   { icon: 'alert-triangle', tone: 'warn',  title: t('privacy.posture.caution'),   desc: t('privacy.posture.cautionDesc') },
     exposed:   { icon: 'alert-circle',   tone: 'bad',   title: t('privacy.posture.exposed'),   desc: t('privacy.posture.exposedDesc') },
   };
-  const v = verdict[posture];
+  const v = ip?.state === 'detected' && !checking
+    ? { icon: 'alert-triangle' as IconName, tone: 'warn' as Tone, title: t('privacy.route.detected'), desc: t('privacy.route.detectedDesc') }
+    : verdict[posture];
 
   const maskedIp = ip?.ip ? (revealIp ? ip.ip : ip.ip.replace(/[^.:]/g, '•')) : '—';
   const location = ip ? [ip.city, ip.region, ip.country].filter(Boolean).join(', ') : '';
@@ -244,7 +269,7 @@ export const PrivacySection: React.FC = () => {
               <div className="pv-cell-label"><Icon name="globe" size={13} /> {t('privacy.dash.publicIp')}</div>
               <div className="pv-cell-value pv-ip">
                 <span className={`mono ${revealIp ? '' : 'masked'}`}>{maskedIp}</span>
-                {ip?.ip && (
+                {(ip?.ip || ip?.proxyIp) && (
                   <span className="pv-ip-actions">
                     <button
                       className="pv-icon-btn"
@@ -257,6 +282,7 @@ export const PrivacySection: React.FC = () => {
                     <button
                       className="pv-icon-btn"
                       onClick={copyIp}
+                      disabled={!ip?.ip}
                       title={t('privacy.copy')}
                       aria-label={t('privacy.copy')}
                     >
@@ -271,11 +297,10 @@ export const PrivacySection: React.FC = () => {
             <div className="pv-cell">
               <div className="pv-cell-label"><Icon name="shield" size={13} /> {t('privacy.dash.vpn')}</div>
               <div className="pv-cell-value">
-                {!ip ? '—' : ip.vpnActive ? (
-                  <span className="pv-badge pv-badge--ok"><Icon name="check-circle" size={13} /> {ip.vpnProvider || t('privacy.dash.vpnOn')}</span>
-                ) : (
-                  <span className="pv-badge pv-badge--bad"><Icon name="alert-triangle" size={13} /> {t('privacy.dash.vpnOff')}</span>
-                )}
+                {!ip ? '—' : <span className={`pv-badge ${ip.state === 'routed' ? 'pv-badge--ok' : ''}`}>
+                  <Icon name={ip.state === 'routed' ? 'check-circle' : 'help-circle'} size={13} />
+                  {t(`privacy.route.${ip.state}`)}
+                </span>}
                 {ip?.confidence && (
                   <span className="pv-conf">{t('privacy.vpn.confidence')}: {t(`privacy.conf.${ip.confidence}`)}</span>
                 )}
@@ -296,6 +321,14 @@ export const PrivacySection: React.FC = () => {
 
             {/* VPN interfaces */}
             <div className="pv-cell pv-cell--wide">
+              <div className="pv-cell-label"><Icon name="network" size={13} /> {t('privacy.dash.proxy')}</div>
+              <div className="pv-cell-value">
+                {ip?.proxyConfigured == null ? t('privacy.conf.unknown') : ip.proxyConfigured ? t('privacy.dash.proxyOn') : t('privacy.dash.proxyOff')}
+                {ip?.proxyIp && <span className="mono"> · {revealIp ? ip.proxyIp : ip.proxyIp.replace(/[^.:]/g, '•')}{ip.proxyCountry ? ` (${ip.proxyCountry})` : ''}</span>}
+              </div>
+              <div className="pv-muted">{t('privacy.dash.proxyNote')}</div>
+            </div>
+            <div className="pv-cell pv-cell--wide">
               <div className="pv-cell-label"><Icon name="network" size={13} /> {t('privacy.dash.interfaces')}</div>
               <div className="pv-cell-value">
                 {interfaces.length > 0
@@ -305,16 +338,16 @@ export const PrivacySection: React.FC = () => {
             </div>
           </div>
 
-          {ip?.exposedIsp && (
+          {ip?.ipv6Bypass && (
             <div className="pv-leak">
               <Icon name="alert-triangle" size={16} />
-              <span>{t('privacy.leak.isp')}</span>
+              <span>{t('privacy.route.ipv6Bypass')}</span>
             </div>
           )}
           {ipFailed && !checking && (
             <div className="settings-notice-compact warn">
               <Icon name="alert-triangle" size={14} />
-              <span>{t('privacy.vpn.unknownDesc')}</span>
+              <span>{t('privacy.dash.ipUnavailable')}</span>
             </div>
           )}
         </div>

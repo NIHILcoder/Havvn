@@ -32,6 +32,9 @@ export const VPN_IFACE_PATTERNS: readonly RegExp[] = [
   /proton/i,      // ProtonVPN
   /expressvpn/i,  // ExpressVPN
   /surfshark/i,   // Surfshark
+  /neko(?:box|ray|tun)/i,
+  /sing[ -]?box/i,
+  /amnezia|hiddify|wireguard/i,
 ];
 
 export function isVpnIfaceName(name: string): boolean {
