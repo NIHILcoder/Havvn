@@ -4,14 +4,25 @@ const { setTimeout: delay } = require('node:timers/promises');
 
 function probe(url, signal, timeout) {
   return new Promise(resolve => {
+    let settled = false;
+    let timer;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
     const request = http.get(url, { signal }, response => {
       const ok = response.statusCode === 200;
       response.resume();
-      response.on('end', () => resolve(ok));
-      response.on('error', () => resolve(false));
+      response.on('end', () => finish(ok));
+      response.on('error', () => finish(false));
     });
-    request.setTimeout(timeout, () => request.destroy());
-    request.on('error', () => resolve(false));
+    // The dev server holds this response until compilation finishes. Keep one
+    // request open for the remaining startup budget instead of abandoning it
+    // every two seconds and leaving webpack with closed response streams.
+    timer = setTimeout(() => { request.destroy(); finish(false); }, timeout);
+    request.on('error', () => finish(false));
   });
 }
 
@@ -19,7 +30,7 @@ async function waitForRenderer(url, { timeout = 120000, interval = 500, signal }
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
-    if (await probe(url, signal, Math.min(2000, Math.max(1, deadline - Date.now())))) return;
+    if (await probe(url, signal, Math.max(1, deadline - Date.now()))) return;
     signal?.throwIfAborted();
     await delay(Math.min(interval, Math.max(0, deadline - Date.now())), undefined, { signal });
   }
