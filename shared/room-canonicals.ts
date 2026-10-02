@@ -13,12 +13,22 @@ export function chatCanonical(topic: string, m: { id: string; at: number; member
   return utf8(JSON.stringify([topic, m.id, m.at, m.memberId, m.text]));
 }
 
+/** Additive v2 signature. The historical body signature remains for old peers. */
+export function chatContextCanonical(topic: string, m: { id: string; at: number; memberId: string; text: string; replyTo?: string; replyName?: string; replyText?: string }): Uint8Array {
+  return utf8(JSON.stringify(['chat-v2', topic, m.id, m.at, m.memberId, m.text, m.replyTo || '', m.replyName || '', m.replyText || '']));
+}
+
 export function editCanonical(topic: string, m: { msgId: string; memberId: string; at: number; text: string }): Uint8Array {
   return utf8(JSON.stringify(['chat-edit', topic, m.msgId, m.memberId, m.at, m.text]));
 }
 
 export function voiceStateCanonical(topic: string, m: { memberId: string; inVoice: boolean; muted: boolean; at: number }): Uint8Array {
   return utf8(JSON.stringify(['voice-state', topic, m.memberId, m.at, m.inVoice, m.muted]));
+}
+
+/** Additive proof: retain the v1 signature for old callers; bind deafened in v2. */
+export function voiceStateV2Canonical(topic: string, m: { memberId: string; inVoice: boolean; muted: boolean; deafened: boolean; at: number }): Uint8Array {
+  return utf8(JSON.stringify(['voice-state-v2', topic, m.memberId, m.at, m.inVoice, m.muted, m.deafened]));
 }
 
 export function voiceSignalCanonical(topic: string, m: { memberId: string; to: string; kind: string; data: unknown }): Uint8Array {

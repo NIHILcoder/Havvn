@@ -1,3 +1,4 @@
+import { ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT } from './room-manifest-sync';
 /**
  * Room folders — pure convergence + grouping logic for the optional
  * folder/section overlay on a room's flat file manifest.
@@ -37,6 +38,7 @@ export function mergeFolderUpsert(
   const deletedAt = tombs.get(incoming.id) ?? 0;
   if (deletedAt >= incoming.at) return false;      // deleted at/after this edit — stays gone
   const cur = folders.get(incoming.id);
+  if (!cur && folders.size >= ROOM_FOLDER_LIMIT) return false;
   if (cur && cur.at >= incoming.at) return false;  // we already hold a newer/equal edit
   // Only mutate once we've decided to apply — clearing the tombstone above and
   // THEN bailing would desync the in-memory map from the persisted one.
@@ -72,6 +74,7 @@ export function applyFolderDelete(
   at: number,
 ): boolean {
   if (!id || !Number.isFinite(at)) return false;
+  if (!tombs.has(id) && tombs.size >= ROOM_FOLDER_TOMB_LIMIT) return false;
   const prevTomb = tombs.get(id) ?? 0;
   const nextTomb = Math.max(prevTomb, at);
   const cur = folders.get(id);

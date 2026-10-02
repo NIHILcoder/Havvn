@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import crypto from 'crypto';
 import { deriveKey, topicHash, rendezvousId, encrypt, decrypt, deriveMemberId } from '../electron/sharing/room-crypto';
-import { chatCanonical } from './room-canonicals';
+import { chatCanonical, chatContextCanonical } from './room-canonicals';
 import {
   deriveKeyWeb, topicHashWeb, rendezvousIdWeb, encryptWeb, decryptWeb,
   deriveMemberIdWeb, generateIdentityWeb, signWeb, verifyWeb,
@@ -11,6 +11,21 @@ import {
 const CODE = 'swift-amber-otter-comet-4821';
 
 describe('room-web-crypto matches Node room-crypto', () => {
+  it('v2 reply signatures verify across runtimes and reject every changed context field', async () => {
+    const identity = await generateIdentityWeb();
+    const msg = { id: 'reply', at: 0, memberId: identity.memberId, text: '你好 / Привет', replyTo: 'parent', replyName: 'Alice', replyText: 'quoted text' };
+    const topic = topicHash(CODE), canonical = chatContextCanonical(topic, msg);
+    const webSig = await signWeb(identity.priv, canonical);
+    expect(crypto.verify(null, Buffer.from(canonical), identity.pub, Buffer.from(webSig, 'base64'))).toBe(true);
+    const nodeSig = crypto.sign(null, Buffer.from(canonical), identity.priv).toString('base64');
+    expect(await verifyWeb(identity.pub, canonical, nodeSig)).toBe(true);
+    for (const change of [{ replyTo: 'other' }, { replyName: 'Mallory' }, { replyText: 'fabricated' }, { text: 'changed' }, { at: 1 }, { id: 'other' }, { memberId: 'other' }]) {
+      expect(await verifyWeb(identity.pub, chatContextCanonical(topic, { ...msg, ...change }), nodeSig)).toBe(false);
+    }
+    expect(await verifyWeb(identity.pub, chatContextCanonical('other room', msg), nodeSig)).toBe(false);
+    expect(await verifyWeb(identity.pub, chatCanonical(topic, msg), nodeSig)).toBe(false);
+    expect(new TextDecoder().decode(canonical)).toBe(JSON.stringify(['chat-v2', topic, msg.id, 0, msg.memberId, msg.text, 'parent', 'Alice', 'quoted text']));
+  });
   it('deriveKey / topicHash / rendezvousId are byte-identical', async () => {
     const web = await deriveKeyWeb(CODE);
     const node = deriveKey(CODE);
