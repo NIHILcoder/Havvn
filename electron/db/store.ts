@@ -1,3 +1,6 @@
+import { historyDays, retainLocalHistory, localHistoryPage, type RoomHistoryDays, type RoomHistoryPage } from '../../shared/room-local-data';
+import { ROOM_FILE_LIMIT, ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT } from '../../shared/room-manifest-sync';
+import type { RoomBanSnapshot } from '../../shared/room-bans';
 /**
  * JSON-based storage using electron-store, split across several files by concern
  * so the on-disk data is easy to inspect/edit and the hot path is cheap to write.
@@ -19,8 +22,13 @@
  */
 
 import Store from 'electron-store';
+import { sealRoom, openRoom, lockedRoom, type StoredRoom, type RoomStorageError } from './room-secrets';
+import { isEncryptionAvailable } from './secrets';
+import type { RoomE2ECfg, RoomKeyPage } from '../../shared/room-keyring';
 import { DEFAULT_MAX_UP_KBPS } from '../../shared/upload-limits';
-import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, RSSRule, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, NetworkProfile } from '../../shared/types';
+import { Download, AppSettings, SourceType, Category, SchedulerConfig, UserReputation, ReputationTransaction, PrivacyConfig, RSSFeed, RSSItem, RSSRule, SearchProvider, IPBlocklist, RoomProfile, PersistedRoomFile, PersistedRoomFolder, RoomEvent, RoomChatMessage, RoomChatDraft, NetworkProfile } from '../../shared/types';
+import { normalizeRoomChatDraft } from '../../shared/room-chat-delivery';
+import { ROOM_CHAT_LIMIT, retainRoomChat, upgradeChat } from '../../shared/room-chat-history';
 import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
@@ -29,10 +37,12 @@ import { normalizeLanPrefs, EMPTY_LAN_PREFS, type LanRoomPrefs } from '../../sha
 import { encryptSecret, decryptSecret } from './secrets';
 import { deriveMemberId } from '../sharing/room-crypto';
 import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
+import { searchDownloadHistory } from '../services/search-download-history';
 
 // === Per-file store schemas ===
 
 interface ConfigSchema {
+  appearanceAcrylic?: boolean;
   settings: AppSettings;
   categories: Category[];
   scheduler: SchedulerConfig;
@@ -74,7 +84,7 @@ interface SearchSchema {
 }
 
 interface RoomsSchema {
-  rooms: Record<string, PersistedRoom>;      // Friend swarms / private rooms (Phase 3)
+  rooms: Record<string, StoredRoom>;      // Friend swarms / private rooms (Phase 3)
   roomProfile: RoomProfile | null;           // This install's identity in rooms
   roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
   roomTombstoneProofs: Record<string, Record<string, { by: string; pub: string; sig: string }>>; // roomId → (fileId → author/owner deletion signature), so a tombstone re-verifies as it gossips
@@ -88,6 +98,12 @@ interface RoomsSchema {
   roomLan: Record<string, LanRoomPrefs>;     // roomId → remembered virtual-LAN setup (picked players, game .exes granted a firewall rule); local convenience, never an authority — see shared/lan-prefs.ts
   roomFolderFetch: Record<string, Record<string, boolean>>; // roomId → (folderId → auto-fetch override; absent = inherit room autoFetch)
   roomChats: Record<string, RoomChatMessage[]>; // roomId → chat log (capped, text encrypted at rest)
+  roomChatArchive?: Record<string, RoomChatMessage[]>;
+  roomEventArchive?: Record<string, RoomEvent[]>;
+  roomArchiveEdits?: Record<string, Record<string, { text: string; at: number; by: string; pub: string; sig: string }>>;
+  roomHistoryRetention?: Record<string, RoomHistoryDays>;
+  roomChatReceipts?: Record<string, Array<{ id: string; digest: string }>>; // 1000 recent local sends; encrypted digest, no retained message bodies
+  roomChatDrafts?: Record<string, string>; // entire draft encrypted at rest
   roomReacts: Record<string, Record<string, Record<string, string[]>>>; // roomId → fileId → emoji → memberIds (capped)
   roomChatReacts: Record<string, Record<string, Record<string, string[]>>>; // roomId → chat msgId → emoji → memberIds (capped)
   roomChatEdits: Record<string, Record<string, { text: string; at: number; by: string; pub: string; sig: string }>>; // roomId → msgId → author's signed edit (text encrypted at rest)
@@ -125,20 +141,23 @@ export interface PersistedRoom {
   topicSig?: string;
   e2e?: boolean;     // end-to-end encryption mode (set at creation; learned via gossip)
   secret?: string;   // E2E content key (32-byte hex); distributed over encrypted gossip
-  prevSecrets?: string[]; // decrypt-only keyring: secrets rotated out by kicks (newest first, capped)
+  prevSecrets?: string[]; // retained decrypt-only content keys; never silently evicted
+  keyPages?: RoomKeyPage[]; // current owner-signed paged history (protected at rest)
+  storageError?: RoomStorageError; // read-only recovery status, never stored
+  banState?: RoomBanSnapshot; // current owner-signed ban proof, protected at rest and re-verified by the engine
   bans?: string[];   // memberIds cut by an owner-signed rekey — their gossip is dropped
   // Owner-signed E2E config blob (Ed25519 over topic+ownerId+e2e+secret). Kept so
   // the engine can re-verify the secret's provenance and re-serve it to joiners
   // after a restart; the engine always re-verifies before trusting it.
-  e2eCfg?: { ownerId: string; e2e: boolean; secret: string; pub: string; sig: string };
+  e2eCfg?: RoomE2ECfg;
   // Ownership-transfer chain: every applied owner handover in order, each signed
   // by the then-current owner (Ed25519 over th-room-transfer:v1). The engine
   // re-verifies the whole chain from the invite pin / TOFU root on every
   // restart — never trusted raw — and re-serves it to joiners in HELLOs.
   transferChain?: Array<{ newOwnerId: string; at: number; by: string; pub: string; sig: string }>;
   autoFetch?: boolean; // auto-download files peers share (absent = true, the historical behavior)
-  upKbps?: number;     // per-room upload ceiling, KB/s (absent/0 = unlimited)
-  downKbps?: number;   // per-room download ceiling, KB/s (absent/0 = unlimited)
+  upKbps?: number;     // per-room upload ceiling, KB/s (0 = shared room budget)
+  downKbps?: number;   // per-room download ceiling, KB/s (0 = shared room budget)
   notifyMuted?: boolean; // OS notifications silenced for this room (absent = notify)
 }
 
@@ -234,7 +253,8 @@ const configStore = new Store<ConfigSchema>({
       diskGuardEnabled: true,
       diskGuardMinFreeMB: 2048,
       // Sharing
-      shareUseTurn: true,
+      roomResources: { maxUpKbps: 256, maxDownKbps: 0, voicePriority: true, screenBitrateKbps: 2500 },
+    shareUseTurn: true,
       updatedAt: new Date(),
     },
     categories: defaultCategories,
@@ -431,19 +451,10 @@ export function getRoomTombstones(roomId: string): Record<string, number> {
 export function addRoomTombstone(roomId: string, fileId: string, at: number = Date.now()): void {
   const all = roomsStore.get('roomTombstones') ?? {};
   const map = { ...(all[roomId] ?? {}) };
-  map[fileId] = Math.max(at, map[fileId] ?? 0); // a newer deletion always wins
-  const entries = Object.entries(map);
-  let evicted: string[] = [];
-  if (entries.length > 500) { // cap: evict the oldest deletions first
-    entries.sort((a, b) => a[1] - b[1]);
-    evicted = entries.splice(0, entries.length - 500).map((e) => e[0]);
-  }
-  all[roomId] = Object.fromEntries(entries);
+  if (!(fileId in map) && Object.keys(map).length >= ROOM_FILE_LIMIT) return;
+  map[fileId] = Math.max(at, map[fileId] ?? 0);
+  all[roomId] = map;
   roomsStore.set('roomTombstones', all);
-  // Keep the proof store a subset of the tombstone store: whatever tombstone the
-  // 500-cap dropped, drop its proof too (else a live tombstone could outlive its
-  // proof and stop re-verifying for late joiners).
-  if (evicted.length) pruneRoomTombstoneProofs(roomId, evicted);
 }
 
 /** Lift one tombstone (the user explicitly re-shared the file into the room). */
@@ -474,9 +485,9 @@ export function getRoomTombstoneProofs(roomId: string): Record<string, { by: str
 export function addRoomTombstoneProof(roomId: string, fileId: string, proof: { by: string; pub: string; sig: string }): void {
   const all = roomsStore.get('roomTombstoneProofs') ?? {};
   const map = { ...(all[roomId] ?? {}) };
+  if (!(fileId in map) && Object.keys(map).length >= ROOM_FILE_LIMIT) return;
   map[fileId] = proof;
-  // No independent cap here: a proof only exists for a live tombstone, and the
-  // tombstone store's 500-cap (which prunes proofs it evicts) governs the size.
+  // Proofs share the bounded, non-evicting deletion budget.
   all[roomId] = map;
   roomsStore.set('roomTombstoneProofs', all);
 }
@@ -519,9 +530,9 @@ export function getRoomRevives(roomId: string): Record<string, number> {
 export function addRoomRevive(roomId: string, fileId: string, revAt: number): void {
   const all = roomsStore.get('roomRevives') ?? {};
   const map = { ...(all[roomId] ?? {}) };
+  if (!(fileId in map) && Object.keys(map).length >= ROOM_FILE_LIMIT) return;
   map[fileId] = Math.max(revAt, map[fileId] ?? 0); // a newer revive always wins
   const entries = Object.entries(map);
-  if (entries.length > 500) { entries.sort((a, b) => a[1] - b[1]); entries.splice(0, entries.length - 500); } // cap: evict oldest
   all[roomId] = Object.fromEntries(entries);
   roomsStore.set('roomRevives', all);
 }
@@ -550,11 +561,18 @@ export function getRoomManifest(roomId: string): PersistedRoomFile[] {
 
 /** Add or update one file in a room's persisted manifest (keyed by fileId). */
 export function upsertRoomManifestFile(roomId: string, file: PersistedRoomFile): void {
-  if (!file?.fileId) return;
+  upsertRoomManifestFiles(roomId, [file]);
+}
+
+/** A page is one store write. Existing entries stay intact when the room is full. */
+export function upsertRoomManifestFiles(roomId: string, files: PersistedRoomFile[]): void {
   const all = roomsStore.get('roomManifests') ?? {};
-  const list = (all[roomId] ?? []).filter((f) => f.fileId !== file.fileId);
-  list.push(file);
-  all[roomId] = list.slice(-1000); // cap
+  const entries = new Map((all[roomId] ?? []).map(f => [f.fileId, f]));
+  for (const file of files) {
+    if (!file?.fileId || !entries.has(file.fileId) && entries.size >= ROOM_FILE_LIMIT) continue;
+    entries.set(file.fileId, file);
+  }
+  all[roomId] = [...entries.values()];
   roomsStore.set('roomManifests', all);
 }
 
@@ -582,8 +600,9 @@ export function upsertRoomFolder(roomId: string, folder: PersistedRoomFolder): v
   if (!folder?.id) return;
   const all = roomsStore.get('roomFolders') ?? {};
   const list = (all[roomId] ?? []).filter((f) => f.id !== folder.id);
+  if (!(all[roomId] ?? []).some(f => f.id === folder.id) && list.length >= ROOM_FOLDER_LIMIT) return;
   list.push(folder);
-  all[roomId] = list.slice(-500); // cap
+  all[roomId] = list;
   roomsStore.set('roomFolders', all);
 }
 
@@ -601,9 +620,10 @@ export function getRoomFolderTombstones(roomId: string): Record<string, number> 
 export function addRoomFolderTombstone(roomId: string, folderId: string, at: number = Date.now()): void {
   const all = roomsStore.get('roomFolderTombstones') ?? {};
   const map = { ...(all[roomId] ?? {}) };
+  if (!(folderId in map) && Object.keys(map).length >= ROOM_FOLDER_TOMB_LIMIT) return;
   map[folderId] = Math.max(at, map[folderId] ?? 0); // a newer deletion always wins
   const entries = Object.entries(map);
-  if (entries.length > 500) { entries.sort((a, b) => a[1] - b[1]); entries.splice(0, entries.length - 500); }
+
   all[roomId] = Object.fromEntries(entries);
   roomsStore.set('roomFolderTombstones', all);
 }
@@ -619,21 +639,24 @@ export function clearRoomFolders(roomId: string): void {
 // === Room activity history (locally-observed event log) ===
 
 export function getRoomHistory(roomId: string): RoomEvent[] {
-  return (roomsStore.get('roomHistory') ?? {})[roomId] ?? [];
+  return retainLocalHistory((roomsStore.get('roomHistory') ?? {})[roomId] ?? [], getRoomHistoryRetention(roomId), ev => ev.at);
 }
 
 export function appendRoomEvents(roomId: string, events: RoomEvent[]): void {
   if (!events.length) return;
   const all = roomsStore.get('roomHistory') ?? {};
-  const list = (all[roomId] ?? []).concat(events).slice(-200); // cap
+  const list = retainLocalHistory((all[roomId] ?? []).concat(events), getRoomHistoryRetention(roomId), ev => ev.at).slice(-200);
   all[roomId] = list;
-  roomsStore.set('roomHistory', all);
+  const archive = roomsStore.get('roomEventArchive') ?? {};
+  const byId = new Map((archive[roomId] ?? (all[roomId] ?? [])).concat(events).map(ev => [ev.id, ev]));
+  roomsStore.set({ roomHistory: all, roomEventArchive: { ...archive, [roomId]: retainLocalHistory([...byId.values()], getRoomHistoryRetention(roomId), ev => ev.at) } });
 }
 
 export function clearRoomHistory(roomId: string): void {
   const all = roomsStore.get('roomHistory') ?? {};
   delete all[roomId];
-  roomsStore.set('roomHistory', all);
+  const archive = roomsStore.get('roomEventArchive') ?? {}; delete archive[roomId];
+  roomsStore.set({ roomHistory: all, roomEventArchive: archive });
 }
 
 // === Room chat (gossiped messages, persisted locally + capped) ===
@@ -644,27 +667,137 @@ export function getRoomChats(roomId: string): RoomChatMessage[] {
   const list = (roomsStore.get('roomChats') ?? {})[roomId] ?? [];
   // `replyText` is a snapshot of the PARENT message's body — content, so it's
   // encrypted at rest like `text` (metadata id/at/sender/replyName stay clear).
-  return list.map((m) => ({ ...m, text: decryptSecret(m.text), ...(m.replyText ? { replyText: decryptSecret(m.replyText) } : {}) }));
+  return retainRoomChat(retainLocalHistory(list, getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at).map((m) => ({ ...m, text: decryptSecret(m.text), ...(m.replyText ? { replyText: decryptSecret(m.replyText) } : {}) })));
 }
 
 /** Returns true if at least one message was new (not a re-delivery/backfill dup). */
 export function appendRoomChats(roomId: string, messages: RoomChatMessage[]): boolean {
   if (!messages.length) return false;
   const all = roomsStore.get('roomChats') ?? {};
-  const seen = new Set((all[roomId] ?? []).map((m) => m.id));
-  const fresh = messages
-    .filter((m) => m.id && !seen.has(m.id))
-    .map((m) => ({ ...m, text: encryptSecret(m.text), ...(m.replyText ? { replyText: encryptSecret(m.replyText) } : {}) }));
-  if (!fresh.length) return false;
-  all[roomId] = (all[roomId] ?? []).concat(fresh).slice(-200); // cap
-  roomsStore.set('roomChats', all);
-  return true;
+  const byId = new Map(getRoomChats(roomId).map(m => [m.id, m]));
+  let isNew = false, changed = false;
+  for (const message of messages) {
+    if (!message.id) continue;
+    const prior = byId.get(message.id) ?? archivedRoomChat(roomId, message.id);
+    if (!prior) { byId.set(message.id, { ...message, receivedAt: Date.now() }); isNew = changed = true; }
+    else {
+      const upgrade = upgradeChat(prior, message);
+      if (upgrade) { byId.set(message.id, upgrade); changed = true; }
+    }
+  }
+  if (!changed) return false;
+  all[roomId] = retainRoomChat([...byId.values()]).map(m => ({ ...m, text: encryptSecret(m.text, false), ...(m.replyText ? { replyText: encryptSecret(m.replyText, false) } : {}) }));
+  roomsStore.set({ roomChats: all, roomChatArchive: archiveRoomChats(roomId, all[roomId]) });
+  return isNew;
 }
 
 export function clearRoomChats(roomId: string): void {
   const all = roomsStore.get('roomChats') ?? {};
+  const receipts = roomsStore.get('roomChatReceipts') ?? {}, drafts = roomsStore.get('roomChatDrafts') ?? {};
   delete all[roomId];
-  roomsStore.set('roomChats', all);
+  delete receipts[roomId]; delete drafts[roomId];
+  const archive = roomsStore.get('roomChatArchive') ?? {}, edits = roomsStore.get('roomArchiveEdits') ?? {}, retention = roomsStore.get('roomHistoryRetention') ?? {};
+  delete archive[roomId]; delete edits[roomId]; delete retention[roomId];
+  roomsStore.set({ roomChats: all, roomChatReceipts: receipts, roomChatDrafts: drafts, roomChatArchive: archive, roomArchiveEdits: edits, roomHistoryRetention: retention });
+}
+
+/** Commit message + retry receipt in ONE atomic store write, before gossip. */
+export function commitRoomChat(roomId: string, message: RoomChatMessage): { duplicate: boolean; message?: RoomChatMessage } {
+  const digest = (m: RoomChatMessage) => crypto.createHash('sha256').update(JSON.stringify([m.id, m.memberId, m.text, m.replyTo || ''])).digest('hex');
+  const fingerprint = digest(message);
+  const chats = roomsStore.get('roomChats') ?? {}, receipts = roomsStore.get('roomChatReceipts') ?? {};
+  const receipt = receipts[roomId]?.find(r => r.id === message.id);
+  const existing = getRoomChats(roomId).find(m => m.id === message.id) ?? (!receipt ? archivedRoomChat(roomId, message.id) : undefined);
+  if (receipt || existing) {
+    if ((receipt ? decryptSecret(receipt.digest) : digest(existing!)) !== fingerprint) throw new Error('Message ID already belongs to different content');
+    return { duplicate: true, message: existing };
+  }
+  const saved = { ...message, receivedAt: Date.now() };
+  const encoded = { ...saved, text: encryptSecret(message.text, false), ...(message.replyText ? { replyText: encryptSecret(message.replyText, false) } : {}) };
+  roomsStore.set({
+    roomChats: { ...chats, [roomId]: [...(chats[roomId] ?? []), encoded].slice(-ROOM_CHAT_LIMIT) },
+    roomChatArchive: archiveRoomChats(roomId, [...(chats[roomId] ?? []), encoded]),
+    roomChatReceipts: { ...receipts, [roomId]: [...(receipts[roomId] ?? []), { id: message.id, digest: encryptSecret(fingerprint) }].slice(-1000) },
+  });
+  return { duplicate: false, message: saved };
+}
+
+export function getRoomChatDraft(roomId: string): RoomChatDraft {
+  const encoded = (roomsStore.get('roomChatDrafts') ?? {})[roomId];
+  return encoded ? normalizeRoomChatDraft(JSON.parse(decryptSecret(encoded))) : { text: '' };
+}
+export function setRoomChatDraft(roomId: string, draft: RoomChatDraft): void {
+  const drafts = roomsStore.get('roomChatDrafts') ?? {}, clean = normalizeRoomChatDraft(draft);
+  if (!clean.text && !clean.reply && !clean.editId && !clean.compose) delete drafts[roomId];
+  else drafts[roomId] = encryptSecret(JSON.stringify(clean));
+  roomsStore.set('roomChatDrafts', drafts);
+}
+
+// The local archive is independent from the 200-message wire/rejoin window.
+export function getRoomHistoryRetention(roomId: string): RoomHistoryDays {
+  const saved = (roomsStore.get('roomHistoryRetention') ?? {})[roomId];
+  // Existing installations had no expiry. Do not destroy their history on upgrade.
+  return saved ?? ((roomsStore.get('rooms') ?? {})[roomId] ? 0 : 30);
+}
+function archivedRoomChat(roomId: string, id: string): RoomChatMessage | undefined {
+  const value = ((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? []).find(m => m.id === id);
+  return value ? { ...value, text: decryptSecret(value.text), ...(value.replyText ? { replyText: decryptSecret(value.replyText) } : {}) } : undefined;
+}
+function archiveRoomChats(roomId: string, encoded: RoomChatMessage[]): Record<string, RoomChatMessage[]> {
+  const archive = roomsStore.get('roomChatArchive') ?? {};
+  const entries = new Map((archive[roomId] ?? []).map(m => [m.id, m]));
+  for (const m of encoded) entries.set(m.id, m);
+  return { ...archive, [roomId]: retainLocalHistory([...entries.values()], getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at) };
+}
+export function setRoomHistoryRetention(roomId: string, value: unknown): RoomHistoryDays {
+  const days = historyDays(value), chats = roomsStore.get('roomChatArchive') ?? {}, events = roomsStore.get('roomEventArchive') ?? {};
+  const chat = retainLocalHistory(chats[roomId] ?? (roomsStore.get('roomChats') ?? {})[roomId] ?? [], days, m => m.receivedAt ?? m.at);
+  const activity = retainLocalHistory(events[roomId] ?? getRoomHistory(roomId), days, ev => ev.at);
+  const overlays = roomsStore.get('roomArchiveEdits') ?? {}, ids = new Set(chat.map(m => m.id));
+  roomsStore.set({ roomHistoryRetention: { ...(roomsStore.get('roomHistoryRetention') ?? {}), [roomId]: days },
+    roomChatArchive: { ...chats, [roomId]: chat }, roomEventArchive: { ...events, [roomId]: activity },
+    roomChats: { ...(roomsStore.get('roomChats') ?? {}), [roomId]: chat.slice(-ROOM_CHAT_LIMIT) },
+    roomHistory: { ...(roomsStore.get('roomHistory') ?? {}), [roomId]: activity.slice(-200) },
+    roomChatEdits: { ...(roomsStore.get('roomChatEdits') ?? {}), [roomId]: Object.fromEntries(Object.entries((roomsStore.get('roomChatEdits') ?? {})[roomId] ?? {}).filter(([id])=>ids.has(id))) },
+    roomArchiveEdits: { ...overlays, [roomId]: Object.fromEntries(Object.entries(overlays[roomId] ?? {}).filter(([id])=>ids.has(id))) } });
+  return days;
+}
+/** Remove expired ciphertext too, even when a room receives no new messages. One atomic write. */
+export function pruneRoomLocalHistory(): string[] {
+  const keys = ['roomChats', 'roomChatArchive', 'roomHistory', 'roomEventArchive', 'roomChatEdits', 'roomArchiveEdits'] as const;
+  const patch: Partial<RoomsSchema> = Object.fromEntries(keys.map(key => [key, roomsStore.get(key) ?? {}]));
+  const ids = new Set<string>(keys.flatMap(key => Object.keys(patch[key] ?? {}))), changed: string[] = [];
+  for (const roomId of ids) {
+    const days = getRoomHistoryRetention(roomId); let modified = false;
+    for (const key of ['roomChats', 'roomChatArchive'] as const) {
+      const all = patch[key]!, old = all[roomId] ?? [], next = retainLocalHistory(old, days, m => m.receivedAt ?? m.at);
+      if (old.length !== next.length) { all[roomId] = next; modified = true; }
+    }
+    for (const key of ['roomHistory', 'roomEventArchive'] as const) {
+      const all = patch[key]!, old = all[roomId] ?? [], next = retainLocalHistory(old, days, ev => ev.at);
+      if (old.length !== next.length) { all[roomId] = next; modified = true; }
+    }
+    const messages = new Set([...(patch.roomChats?.[roomId] ?? []), ...(patch.roomChatArchive?.[roomId] ?? [])].map(m => m.id));
+    for (const key of ['roomChatEdits', 'roomArchiveEdits'] as const) {
+      const all = patch[key]!, old = all[roomId] ?? {}, next = Object.fromEntries(Object.entries(old).filter(([id])=>messages.has(id)));
+      if (Object.keys(next).length !== Object.keys(old).length) { all[roomId] = next; modified = true; }
+    }
+    if (modified) changed.push(roomId);
+  }
+  if (changed.length) roomsStore.set(patch);
+  return changed;
+}
+export function getRoomLocalHistoryPage(roomId: string, kind: unknown, before?: string): RoomHistoryPage {
+  if (kind !== 'chat' && kind !== 'event') throw new Error('Invalid room history kind');
+  const retentionDays = getRoomHistoryRetention(roomId);
+  if (kind === 'event') {
+    const events = retainLocalHistory((roomsStore.get('roomEventArchive') ?? {})[roomId] ?? getRoomHistory(roomId), retentionDays, ev => ev.at);
+    const page = localHistoryPage(events, before);
+    return { ...page, retentionDays, items: page.items.map(event => ({ kind: 'event', event })) };
+  }
+  const list = retainLocalHistory((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? (roomsStore.get('roomChats') ?? {})[roomId] ?? [], retentionDays, m => m.receivedAt ?? m.at);
+  const page = localHistoryPage(list, before), edits = (roomsStore.get('roomArchiveEdits') ?? {})[roomId] ?? {};
+  return { ...page, retentionDays, items: page.items.map(m => ({ kind: 'chat', message: { ...m, text: decryptSecret(edits[m.id]?.text ?? m.text), ...(m.replyText ? { replyText: decryptSecret(m.replyText) } : {}) } })) };
 }
 
 // === Room unread (last time the user viewed a room; chat after it is unread) ===
@@ -742,9 +875,13 @@ export function getRoomChatEdits(roomId: string): Record<string, { text: string;
 export function setRoomChatEdits(roomId: string, edits: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>): void {
   const all = roomsStore.get('roomChatEdits') ?? {};
   const capped: Record<string, { text: string; at: number; by: string; pub: string; sig: string }> = {};
-  for (const [msgId, e] of Object.entries(edits ?? {}).slice(0, MAX_REACT_FILES)) capped[msgId] = { ...e, text: encryptSecret(e.text) };
+  for (const [msgId, e] of Object.entries(edits ?? {}).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REACT_FILES)) capped[msgId] = { ...e, text: encryptSecret(e.text, false) };
   all[roomId] = capped;
-  roomsStore.set('roomChatEdits', all);
+  const archive = roomsStore.get('roomArchiveEdits') ?? {};
+  const ids = new Set(((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? []).map(m => m.id));
+  const retained = { ...archive[roomId], ...capped };
+  for (const id of Object.keys(retained)) if (!ids.has(id)) delete retained[id];
+  roomsStore.set({ roomChatEdits: all, roomArchiveEdits: { ...archive, [roomId]: retained } });
 }
 
 export function clearRoomChatEdits(roomId: string): void {
@@ -777,7 +914,7 @@ export function getRoomIdentity(): { pub: string; priv: string } {
  * Portable backup of everything that makes this install "you" in rooms:
  * the Ed25519 signing keypair, the room profile, and the joined-rooms list.
  * The private key is DECRYPTED here — the bundle leaves the machine, so the
- * UI must warn the user to store the file safely.
+ * This is an INTERNAL in-memory bundle; IPC must encrypt it before writing.
  */
 export interface RoomIdentityBundle {
   version: 1;
@@ -785,16 +922,102 @@ export interface RoomIdentityBundle {
   profile: RoomProfile;
   identity: { pub: string; priv: string }; // priv in plaintext PEM (see above)
   rooms: PersistedRoom[];
+  recovery?: Record<string, RoomRecoveryRecord>;
+}
+interface RoomRecoveryRecord {
+  manifest: PersistedRoomFile[];
+  folders: PersistedRoomFolder[];
+  tombstones: Record<string, number>;
+  tombstoneProofs: Record<string, { by: string; pub: string; sig: string }>;
+  revives: Record<string, number>;
+  folderTombstones: Record<string, number>;
+  identities: Record<string, string>;
 }
 
 export function exportRoomIdentityBundle(): RoomIdentityBundle {
+  const rooms = getPersistedRooms();
+  if (rooms.some(room => room.storageError)) throw new Error('Cannot export locked room secrets; restore system storage access and retry');
+  const identity = getRoomIdentity();
+  if (!identity.priv) throw new Error('Cannot unlock the room identity for export');
   return {
     version: 1,
     exportedAt: new Date().toISOString(),
     profile: getRoomProfile(),
-    identity: getRoomIdentity(), // priv already decrypted
-    rooms: getPersistedRooms(),
+    identity, // internal only — sealed by the password backup before file export
+    rooms,
   };
+}
+
+function portableRoomFile(file: PersistedRoomFile): PersistedRoomFile {
+  const copy = { ...file };
+  for (const key of ['localPath', 'cipherPath', 'localOriginal', 'partialDownload', 'torrentFile', 'localError'] as const) delete copy[key];
+  return { ...copy, receivePaused: true };
+}
+/** Portable recovery never contains paths, executables, or local file privileges. */
+export function exportRoomRecoveryBundle(roomId?: string): RoomIdentityBundle {
+  const bundle = exportRoomIdentityBundle();
+  if (roomId !== undefined) {
+    bundle.rooms = bundle.rooms.filter(room => room.roomId === roomId);
+    if (!bundle.rooms.length) throw new Error('Room not found');
+  }
+  bundle.rooms = bundle.rooms.map(room => ({ ...room, folder: '', autoFetch: false }));
+  bundle.recovery = Object.fromEntries(bundle.rooms.map(room => [room.roomId, {
+    manifest: getRoomManifest(room.roomId).map(file => {
+      return portableRoomFile(file);
+    }),
+    folders: getRoomFolders(room.roomId), tombstones: getRoomTombstones(room.roomId), tombstoneProofs: getRoomTombstoneProofs(room.roomId),
+    revives: getRoomRevives(room.roomId), folderTombstones: getRoomFolderTombstones(room.roomId), identities: getRoomIdentities(room.roomId),
+  }]));
+  return bundle;
+}
+/** Public import: bounded schema, empty joined-room list, and fresh local folders. */
+export function importRoomRecoveryBundle(input: unknown, base: string): { rooms: number } {
+  if (getPersistedRooms().length) throw new Error('Restore into a profile with no joined rooms. Leave the current rooms first or use a fresh profile.');
+  const b = structuredClone(input) as RoomIdentityBundle;
+  if (!b || b.version !== 1 || !Array.isArray(b.rooms) || b.rooms.length > 100 || !b.recovery || typeof b.recovery !== 'object' || Array.isArray(b.recovery)) throw new Error('Invalid room recovery bundle');
+  const seen = new Set<string>();
+  const check = (value: unknown, depth = 0): void => {
+    if (depth > 20) throw new Error('Room backup nesting is too deep');
+    if (typeof value === 'string' && value.length > 2 * 1024 * 1024) throw new Error('Room backup field is too large');
+    if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Invalid backup number');
+    if (value && typeof value === 'object') {
+      if (Object.keys(value).length > 5000) throw new Error('Room backup record is too large');
+      for (const [key, item] of Object.entries(value)) {
+        if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('Invalid backup field');
+        check(item, depth + 1);
+      }
+    }
+  };
+  check(b);
+  if (typeof b.identity?.pub !== 'string' || typeof b.identity?.priv !== 'string'
+    || crypto.createPrivateKey(b.identity.priv).asymmetricKeyType !== 'ed25519'
+    || crypto.createPublicKey(b.identity.pub).asymmetricKeyType !== 'ed25519') throw new Error('Invalid room signing key type');
+  if (b.profile?.memberId !== deriveMemberId(b.identity.pub)) throw new Error('Room backup profile does not match its signing key');
+  const rooms = b.rooms.map(room => {
+    if (!room || !/^[a-f0-9-]{36}$/i.test(room.roomId) || seen.has(room.roomId) || typeof room.name !== 'string' || room.name.length > 200
+      || typeof room.code !== 'string' || room.code.length > 256 || typeof room.createdAt !== 'number' || !Number.isSafeInteger(room.createdAt) || room.createdAt < 0) throw new Error('Invalid room backup record');
+    seen.add(room.roomId);
+    const data = b.recovery![room.roomId];
+    if (!data || !Array.isArray(data.manifest) || data.manifest.length > ROOM_FILE_LIMIT || !Array.isArray(data.folders) || data.folders.length > ROOM_FOLDER_LIMIT) throw new Error('Invalid room recovery manifest');
+    for (const field of ['tombstones', 'tombstoneProofs', 'revives', 'folderTombstones', 'identities'] as const) {
+      if (!data[field] || typeof data[field] !== 'object' || Array.isArray(data[field])) throw new Error('Invalid recovery proof map');
+    }
+    for (const field of ['tombstones', 'revives', 'folderTombstones'] as const) {
+      for (const [id, time] of Object.entries(data[field])) if (id.length > 128 || !Number.isSafeInteger(time) || time < 0) throw new Error('Invalid recovery clock');
+    }
+    for (const [id, pub] of Object.entries(data.identities)) if (id.length > 128 || typeof pub !== 'string' || pub.length > 2048) throw new Error('Invalid recovery identity');
+    for (const [id, proof] of Object.entries(data.tombstoneProofs)) if (id.length > 128 || !proof || typeof proof.by !== 'string' || typeof proof.pub !== 'string' || proof.pub.length > 2048 || typeof proof.sig !== 'string' || proof.sig.length > 1024) throw new Error('Invalid recovery deletion proof');
+    for (const folder of data.folders) if (!folder || typeof folder.id !== 'string' || folder.id.length > 128 || typeof folder.name !== 'string' || folder.name.length > 200) throw new Error('Invalid recovery folder');
+    if (room.transferChain !== undefined && (!Array.isArray(room.transferChain) || room.transferChain.length > 5000)) throw new Error('Invalid recovery ownership chain');
+    // The engine re-verifies signed records on rejoin. Imported local privilege flags are always discarded.
+    data.manifest = data.manifest.map(file => {
+      if (!file || typeof file.fileId !== 'string' || file.fileId.length > 128 || typeof file.infoHash !== 'string' || !/^[a-f0-9]{40}$/i.test(file.infoHash) || typeof file.name !== 'string' || file.name.length > 240 || !Number.isSafeInteger(file.size) || file.size < 0) throw new Error('Invalid backup file');
+      return portableRoomFile(file);
+    });
+    return { ...room, storageError: undefined, folder: path.join(base, room.roomId), autoFetch: false };
+  });
+  if (Object.keys(b.recovery).some(id => !seen.has(id))) throw new Error('Unknown room recovery record');
+  return importRoomIdentityBundle({ ...b, rooms });
 }
 
 /** Loose PEM shape check — enough to reject non-key garbage early. */
@@ -827,30 +1050,40 @@ export function importRoomIdentityBundle(bundle: unknown): { rooms: number } {
   // which an old export may carry in the pre-derivation UUID form. Re-own the
   // bundle's rooms under the derived id so imported ownership survives the switch.
   const memberId = deriveMemberId(id.pub);
-  roomsStore.set('roomIdentity', { pub: id.pub, priv: encryptSecret(id.priv) });
-  roomsStore.set('roomProfile', {
+  const pub = crypto.createPublicKey(id.priv).export({ type: 'spki', format: 'pem' }).toString();
+  if (pub !== crypto.createPublicKey(id.pub).export({ type: 'spki', format: 'pem' }).toString()) throw new Error('Room identity keys do not match');
+  const identity = { pub: id.pub, priv: encryptSecret(id.priv) };
+  const nextProfile = {
     memberId,
     name: typeof profile.name === 'string' ? profile.name : '',
     avatarSeed: typeof profile.avatarSeed === 'string' && profile.avatarSeed ? profile.avatarSeed : memberId,
-    // Rich-profile customization travels with the identity; each field
-    // re-validates through the same shared rules as the IPC boundary.
     color: sanitizeProfileColor((profile as RoomProfile).color) ?? '',
     status: sanitizeProfileStatus((profile as RoomProfile).status),
     avatarImg: sanitizeProfileImg((profile as RoomProfile).avatarImg) ?? '',
-  });
-
+  };
   const existing = roomsStore.get('rooms') ?? {};
+  // Prepare every protected record before writing any identity/profile change.
+  for (const [roomId, room] of Object.entries(existing)) if (!room.secrets) existing[roomId] = sealRoom(openRoom(room));
   let count = 0;
-  for (const room of Array.isArray(b.rooms) ? b.rooms : []) {
-    if (!room || typeof room !== 'object') continue;
-    if (typeof room.roomId !== 'string' || !room.roomId) continue;
-    if (typeof room.code !== 'string' || !room.code) continue;
-    if (room.ownerId === profile.memberId) room.ownerId = memberId; // keep ownership under the derived id
-    if (room.ownerPin === profile.memberId) room.ownerPin = memberId; // and keep the owner pin consistent
-    existing[room.roomId] = room;
+  for (const raw of Array.isArray(b.rooms) ? b.rooms : []) {
+    if (!raw || typeof raw !== 'object' || typeof raw.roomId !== 'string' || !raw.roomId || typeof raw.code !== 'string' || !raw.code) continue;
+    const room = structuredClone(raw);
+    if (room.ownerId === profile.memberId) room.ownerId = memberId;
+    if (room.ownerPin === profile.memberId) room.ownerPin = memberId;
+    existing[room.roomId] = sealRoom(room);
     count++;
   }
-  roomsStore.set('rooms', existing);
+  const patch: Partial<RoomsSchema> = { roomIdentity: identity, roomProfile: nextProfile, rooms: existing };
+  if (b.recovery) {
+    patch.roomHistoryRetention = { ...(roomsStore.get('roomHistoryRetention') ?? {}), ...Object.fromEntries((b.rooms ?? []).map(room => [room.roomId, 30 as const])) };
+    const mapping = { manifest: 'roomManifests', folders: 'roomFolders', tombstones: 'roomTombstones', tombstoneProofs: 'roomTombstoneProofs', revives: 'roomRevives', folderTombstones: 'roomFolderTombstones', identities: 'roomIdentities' } as const;
+    for (const [field, key] of Object.entries(mapping)) {
+      const all = { ...(roomsStore.get(key) ?? {}) };
+      for (const [roomId, record] of Object.entries(b.recovery)) all[roomId] = structuredClone(record[field as keyof RoomRecoveryRecord]) as never;
+      Object.assign(patch, { [key]: all });
+    }
+  }
+  roomsStore.set(patch);
   return { rooms: count };
 }
 
@@ -1086,6 +1319,7 @@ export async function updateDownloadStatus(
 
   downloads[id] = download;
   downloadsStore.set('downloads', downloads);
+  if (status === 'removed') searchDownloadHistory.remember(download, [], true);
 }
 
 export async function updateDownloadProgress(
@@ -1202,22 +1436,14 @@ export async function updateDownloadsProgressBatch(
 }
 
 export async function markDownloadRemoved(id: string): Promise<void> {
-  const downloads = downloadsStore.get('downloads');
-  const download = downloads[id];
-
-  if (!download) {
-    throw new Error(`Download not found: ${id}`);
-  }
-
-  download.status = 'removed';
-  download.updatedAt = new Date();
-
-  downloads[id] = download;
-  downloadsStore.set('downloads', downloads);
+  return updateDownloadStatus(id, 'removed');
 }
 
-export async function deleteDownload(id: string): Promise<void> {
+export async function deleteDownload(id: string, rememberRemoval = false): Promise<void> {
   const downloads = downloadsStore.get('downloads');
+  // Explicit removal only: rollback of a failed add and boot tombstone cleanup
+  // must not create history or bring back history the user cleared.
+  if (rememberRemoval && downloads[id]) searchDownloadHistory.remember(downloads[id], [], true);
   delete downloads[id];
   downloadsStore.set('downloads', downloads);
 }
@@ -1914,14 +2140,37 @@ export function setManualPeerBans(ips: string[]): void {
 // === Friend swarms / private rooms (Phase 3) ===
 
 export function getPersistedRooms(): PersistedRoom[] {
-  const rooms = roomsStore.get('rooms') ?? {};
-  return Object.values(rooms).sort((a, b) => b.createdAt - a.createdAt);
+  const raw = roomsStore.get('rooms') ?? {};
+  const migrated = { ...raw };
+  const result: PersistedRoom[] = [];
+  const legacy: string[] = [];
+  for (const record of Object.values(raw)) {
+    try {
+      if (!isEncryptionAvailable()) { result.push(lockedRoom(record, 'unavailable')); continue; }
+      const room = openRoom(record);
+      if (!record.secrets || record.banState !== undefined) { migrated[room.roomId] = sealRoom(room); legacy.push(room.roomId); }
+      result.push(room);
+    } catch {
+      result.push(lockedRoom(record, record.secrets ? record.secrets.version !== 1 ? 'unsupported' : 'decrypt-failed' : 'migration-failed'));
+    }
+  }
+  if (legacy.length) {
+    try { roomsStore.set('rooms', migrated); }
+    catch {
+      for (let i = 0; i < result.length; i++) if (legacy.includes(result[i].roomId)) result[i] = lockedRoom(raw[result[i].roomId], 'migration-failed');
+    }
+  }
+  return result.sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export function savePersistedRoom(room: PersistedRoom): void {
+  const protectedRoom = sealRoom(room); // prepare everything before the atomic store write
   const rooms = roomsStore.get('rooms') ?? {};
-  rooms[room.roomId] = room;
-  roomsStore.set('rooms', rooms);
+  if (rooms[room.roomId]?.secrets) openRoom(rooms[room.roomId]); // never replace inaccessible secrets
+  const fresh = !rooms[room.roomId];
+  rooms[room.roomId] = protectedRoom;
+  if (fresh) roomsStore.set({ rooms, roomHistoryRetention: { ...(roomsStore.get('roomHistoryRetention') ?? {}), [room.roomId]: 30 } });
+  else roomsStore.set('rooms', rooms);
 }
 
 export function deletePersistedRoom(roomId: string): void {
@@ -1948,7 +2197,7 @@ export function setRoomNotifyMuted(roomId: string, notifyMuted: boolean): void {
   roomsStore.set('rooms', rooms);
 }
 
-/** Per-room speed ceilings in KB/s (0 = unlimited). */
+/** Per-room speed ceilings in KB/s (0 = shared room budget). */
 export function setRoomLimits(roomId: string, upKbps: number, downKbps: number): void {
   const rooms = roomsStore.get('rooms') ?? {};
   const room = rooms[roomId];

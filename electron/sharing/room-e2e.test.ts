@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -10,12 +10,12 @@ const plain = () => path.join(dir, 'movie.bin');
 const cipher = () => path.join(dir, 'movie.enc');
 const out = () => path.join(dir, 'movie.out');
 
-beforeAll(() => {
+beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-test-'));
   // ~3 MB + odd tail so it spans many cipher blocks and a partial one.
   fs.writeFileSync(plain(), crypto.randomBytes(3 * 1024 * 1024 + 777));
 });
-afterAll(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('room-e2e', () => {
   it('generates a 32-byte (256-bit) hex secret', () => {

@@ -1,3 +1,4 @@
+import { watchHostCanonical, watchCanonical, type WatchMessage } from '../../shared/room-watch-sync';
 /**
  * Integration tests for how a room learns its E2E config (flag + content secret).
  *
@@ -22,13 +23,17 @@
  *     every member, chains verifiably back to the invite pin for late joiners,
  *     survives restart, and re-anchors the E2E config on the new owner.
  */
+import { GuestRoom } from '../../guest/mesh';
+import { generateIdentityWeb } from '../../shared/room-web-crypto';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import { deriveKey, topicHash, encrypt, generateRoomCode, codeIsE2E, deriveMemberId } from './room-crypto';
-import { generateRoomSecret } from './room-e2e';
+import { deriveKey, topicHash, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId } from './room-crypto';
+import { generateRoomSecret, decryptFile } from './room-e2e';
+import { banSnapshotCanonical, ROOM_BAN_LIMIT, type RoomBanSnapshot } from '../../shared/room-bans';
+import { mintKeyPages, contentKeyEpoch, verifyKeyMetadata, verifyKeyPage } from './room-keyring';
 
 type Sent = { channel: string; payload: any };
 type EngineCtx = {
@@ -37,16 +42,19 @@ type EngineCtx = {
 };
 
 const H = vi.hoisted(() => ({
+  clients: [] as any[],
   trackers: [] as any[],   // FakeTracker instances in creation order
 }));
 
-// WebTorrent stand-in: infoHash is the sha1 of the file content, so the fileId
+// WebTorrent stand-in: infoHash comes from real single-file torrent metadata, so the fileId
 // is deterministic from content. add() never completes (not needed here).
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
+    torrentFile?: Buffer;
     infoHash: string; magnetURI: string; length: number; progress: number; done: boolean;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -57,6 +65,10 @@ vi.mock('webtorrent', async () => {
     once(ev: string, fn: any): void { this.on(ev, fn); }
   }
   class FakeWebTorrent {
+    throttleUpload(): void { /* no-op */ }
+    throttleDownload(): void { /* no-op */ }
+    destroyed = false;
+    constructor() { H.clients.push(this); }
     torrents = new Map<string, FakeTorrent>();
     handlers: Record<string, any[]> = {};
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
@@ -64,23 +76,28 @@ vi.mock('webtorrent', async () => {
     removeListener(ev: string, fn: any): void {
       this.handlers[ev] = (this.handlers[ev] ?? []).filter((f) => f !== fn);
     }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw;
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, _opts: any, cb: (t: any) => void): FakeTorrent {
+      const meta = parseTorrent(source);
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, Buffer.isBuffer(source));
+      this.torrents.set(meta.infoHash, t);
+      // A magnet has not received metadata yet, so it cannot call onready.
+      if (Buffer.isBuffer(source)) { t.torrentFile = source; cb(t); }
+      return t;
     }
+    destroy(cb?: () => void): void { this.destroyed = true; this.torrents.clear(); cb?.(); }
     get(infoHash: string): FakeTorrent | null {
       return (infoHash && this.torrents.get(infoHash)) || null;
     }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); done?.(); }
   }
   return { default: FakeWebTorrent };
 });
@@ -90,7 +107,8 @@ vi.mock('webtorrent', async () => {
 vi.mock('bittorrent-tracker', () => {
   class FakeTracker {
     handlers: Record<string, any[]> = {};
-    constructor() { H.trackers.push(this); }
+    peerId: unknown;
+    constructor(opts: { peerId: unknown }) { this.peerId = opts.peerId; H.trackers.push(this); }
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
     emitPeer(peer: any): void { for (const fn of this.handlers['peer'] ?? []) fn(peer); }
     start(): void { /* no-op */ }
@@ -104,10 +122,12 @@ vi.mock('bittorrent-tracker', () => {
 class FakePeer {
   connected = true;
   other: FakePeer | null = null;
+  intercept?: (frame: any) => boolean;
   handlers: Record<string, any[]> = {};
   on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
   once(ev: string, fn: any): void { this.on(ev, fn); }
   send(data: any): void {
+    if (this.intercept && !this.intercept(data)) return;
     const o = this.other;
     if (!o || !o.connected) return;
     queueMicrotask(() => { for (const fn of o.handlers['data'] ?? []) fn(data); });
@@ -118,11 +138,13 @@ class FakePeer {
   }
 }
 
+// A rekey replaces the tracker; keep test connections on the current rendezvous.
+const currentTracker = (inst: { tracker: { peerId: unknown } }) => H.trackers.findLast(t => t.peerId === inst.tracker.peerId) ?? inst.tracker;
 function connect(a: { tracker: any }, b: { tracker: any }): [FakePeer, FakePeer] {
   const pA = new FakePeer(); const pB = new FakePeer();
   pA.other = pB; pB.other = pA;
-  a.tracker.emitPeer(pA);
-  b.tracker.emitPeer(pB);
+  currentTracker(a).emitPeer(pA);
+  currentTracker(b).emitPeer(pB);
   return [pA, pB];
 }
 
@@ -173,16 +195,16 @@ function makeKeys(): { pub: string; priv: string } {
 
 function joinPayload(o: { roomId: string; code: string; memberId: string; folder: string;
   ownerId?: string; ownerPin?: string; e2e?: boolean; secret?: string; e2eCfg?: any; keys?: { pub: string; priv: string };
-  transferChain?: any[] }) {
+  transferChain?: any[]; bans?: string[]; banState?: RoomBanSnapshot; prevSecrets?: string[]; keyPages?: any[]; manifest?: any[] }) {
   return {
     type: 'join',
     payload: {
       roomId: o.roomId, name: 'E2E adopt test', code: o.code, folder: o.folder,
       self: { memberId: o.memberId, name: o.memberId, avatarSeed: o.memberId, pub: o.keys?.pub ?? '', priv: o.keys?.priv ?? '' },
       useTurn: false, turnServers: [],
-      tombstones: {}, manifest: [], ownerId: o.ownerId ?? '', ownerPin: o.ownerPin ?? '', mutes: [], history: [], chat: [],
+      tombstones: {}, manifest: o.manifest || [], ownerId: o.ownerId ?? '', ownerPin: o.ownerPin ?? '', mutes: [], history: [], chat: [],
       identities: {}, e2e: o.e2e ?? false, secret: o.secret ?? '', e2eCfg: o.e2eCfg ?? null,
-      transferChain: o.transferChain ?? [],
+      transferChain: o.transferChain ?? [], bans: o.bans ?? [], banState: o.banState, prevSecrets: o.prevSecrets ?? [], keyPages: o.keyPages ?? [],
       cacheDir: path.join(o.folder, 'enc'),
     },
   };
@@ -193,7 +215,7 @@ function joinPayload(o: { roomId: string; code: string; memberId: string; folder
 function hostilePeer(inst: Engine): FakePeer {
   const pEngine = new FakePeer(); const pTest = new FakePeer();
   pEngine.other = pTest; pTest.other = pEngine;
-  inst.tracker.emitPeer(pEngine);
+  currentTracker(inst).emitPeer(pEngine);
   return pTest;
 }
 
@@ -577,8 +599,9 @@ describe('ownership transfer: signed chain over the invite pin (M8)', () => {
     const A = await makeEngine();
     await cmd(A, joinPayload({ roomId, code, memberId: A_ID, ownerPin: OWNER, keys: aKeys, folder: newFolder() }));
     A.tracker = H.trackers[H.trackers.length - 1];
+    const bKeys = makeKeys(), B_ID = deriveMemberId(bKeys.pub);
     const B = await makeEngine();
-    await cmd(B, joinPayload({ roomId, code, memberId: 'member-B', ownerPin: OWNER, keys: makeKeys(), folder: newFolder() }));
+    await cmd(B, joinPayload({ roomId, code, memberId: B_ID, ownerPin: OWNER, keys: bKeys, folder: newFolder() }));
     B.tracker = H.trackers[H.trackers.length - 1];
     connect(O, A);
     connect(O, B);
@@ -602,7 +625,7 @@ describe('ownership transfer: signed chain over the invite pin (M8)', () => {
     expect(hist.some((ev: any) => ev.type === 'ownership-transferred' && ev.targetName === A_ID)).toBe(true);
 
     // The NEW owner kicks B; the OLD owner applies the rekey (it accepts A's authority).
-    await cmd(A, { type: 'kick', roomId, memberId: 'member-B' });
+    await cmd(A, { type: 'kick', roomId, memberId: B_ID });
     await new Promise((r) => setTimeout(r, 400)); // kickMember defers the rekey 300ms
     await flush();
     expect((await cmd(B, { type: 'snapshot', roomId })).kicked).toBe(true);
@@ -666,6 +689,10 @@ describe('ownership transfer: signed chain over the invite pin (M8)', () => {
     const good = { newOwnerId: A_ID, at: at1, by: OWNER, pub: ownerKeys.pub, sig: signTransfer(OWNER, OWNER, A_ID, at1, ownerKeys.priv) };
     const bad = { newOwnerId: MAL, at: at2, by: A_ID, pub: aKeys.pub, sig: signTransfer(OWNER, A_ID, MAL, at2, att.priv) };
     hostilePeer(J2).send(helloFrame(code, { ownerId: MAL, transferChain: [good, bad] }));
+    await flush();
+    // A malformed nested proof rejects the whole frame before relay.
+    expect((await cmd(J2, { type: 'snapshot', roomId: 'r-forged2' })).ownerId).toBe('');
+    hostilePeer(J2).send(helloFrame(code, { ownerId: A_ID, transferChain: [good] }));
     await flush();
     expect((await cmd(J2, { type: 'snapshot', roomId: 'r-forged2' })).ownerId).toBe(A_ID);
     expect(chainPersists(J2).at(-1)?.chain).toHaveLength(1);
@@ -853,4 +880,290 @@ describe('ownership transfer: signed chain over the invite pin (M8)', () => {
     await flush();
     expect((await cmd(D, { type: 'snapshot', roomId })).ownerId).toBe(A_ID);
   }, 25000);
+});
+
+
+describe('paged E2E history across many rotations and offline-owner joins', () => {
+  it('keeps the original file readable after 12 rotations, restarts and an offline-owner late join', async () => {
+    const roomId = 'many-epochs', original = generateRoomSecret(), keys = makeKeys(), ownerId = deriveMemberId(keys.pub);
+    let code = generateRoomCode(true);
+    const O = await makeEngine();
+    await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, ownerPin: ownerId, e2e: true, secret: original, keys, folder: newFolder() }));
+    O.tracker = H.trackers.at(-1);
+    const state = await cmd(O, { type: 'addFiles', roomId, paths: [sourceFile] });
+    expect(state.files[0].keyEpoch).toBe(contentKeyEpoch(original));
+    const manifest = O.sent.filter(s => s.channel === 'room-manifest-add').at(-1)!.payload.file;
+    for (let i = 0; i < 12; i++) {
+      await cmd(O, { type: 'kick', roomId, memberId: 'removed-' + i });
+      await vi.waitFor(() => { if (e2ePersists(O).length < i + 1) throw Error('waiting for rekey'); }, { timeout: 1500, interval: 15 });
+      code = O.sent.filter(s => s.channel === 'room-rekey').at(-1)!.payload.code;
+    }
+    const saved = e2ePersists(O).at(-1)!;
+    expect(saved.prevSecrets).toHaveLength(12); expect(saved.prevSecrets).toContain(original);
+    expect(saved.cfg.prevSecrets).toHaveLength(8); expect(saved.cfg.prevSecrets).not.toContain(original);
+    expect(verifyKeyMetadata(topicHash(code), saved.cfg)).toBe(true); expect(saved.keyPages.every((p: any) => verifyKeyPage(topicHash(code), saved.cfg, p))).toBe(true);
+    const R = await makeEngine(), relayKeys = makeKeys();
+    await cmd(R, joinPayload({ roomId, code, memberId: deriveMemberId(relayKeys.pub), ownerId, ownerPin: ownerId, e2e: true, secret: saved.secret,
+      e2eCfg: saved.cfg, prevSecrets: saved.prevSecrets, keyPages: saved.keyPages, keys: relayKeys, folder: newFolder() }));
+    R.tracker = H.trackers.at(-1);
+    await cmd(O, { type: 'leave', roomId }); // owner is genuinely absent from the joined mesh
+    const J = await makeEngine(), folder = newFolder(), guestKeys = makeKeys();
+    await cmd(J, joinPayload({ roomId, code, memberId: deriveMemberId(guestKeys.pub), ownerPin: ownerId, keys: guestKeys, folder,
+      manifest: [{ ...manifest, localPath: undefined, localOriginal: false }] }));
+    J.tracker = H.trackers.at(-1); connect(R, J); await flush(50);
+    const learned = e2ePersists(J).at(-1)!;
+    expect(learned.prevSecrets).toContain(original); expect(learned.keyPages).toHaveLength(saved.cfg.keys.pages);
+    await vi.waitFor(async () => { const snapshot = await cmd(J, { type: 'snapshot', roomId }); expect(snapshot.transfers[manifest.fileId].haveLocally).toBe(true); }, { timeout: 2500, interval: 30 });
+    const snapshot = await cmd(J, { type: 'snapshot', roomId });
+    expect(fs.readFileSync(snapshot.transfers[manifest.fileId].localPath)).toEqual(fs.readFileSync(sourceFile));
+    const plain = path.join(folder, 'independent-output'); await decryptFile(manifest.cipherPath, plain, learned.prevSecrets.find((s: string) => contentKeyEpoch(s) === manifest.keyEpoch));
+    expect(fs.readFileSync(plain)).toEqual(fs.readFileSync(sourceFile));
+    await cmd(R, { type: 'leave', roomId }); await cmd(J, { type: 'leave', roomId });
+  }, 20_000);
+});
+
+
+describe('key-history integrity and transfer ordering', () => {
+  it('finishes paged history before a newly elected owner re-signs it, and ignores stripped/forged pages', async () => {
+    const roomId = 'transfer-history', code = generateRoomCode(true), secret = generateRoomSecret(), owner = makeKeys(), next = makeKeys();
+    const ownerId = deriveMemberId(owner.pub), nextId = deriveMemberId(next.pub);
+    const previous = Array.from({ length: 80 }, () => generateRoomSecret());
+    const O = await makeEngine(); await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, ownerPin: ownerId, e2e: true, secret, prevSecrets: previous, keys: owner, folder: newFolder() })); O.tracker = H.trackers.at(-1);
+    const J = await makeEngine(); await cmd(J, joinPayload({ roomId, code, memberId: nextId, ownerPin: ownerId, keys: next, folder: newFolder() })); J.tracker = H.trackers.at(-1);
+    const held: any[] = [], [outgoing] = connect(O, J);
+    outgoing.intercept = frame => { const msg = decrypt<any>(deriveKey(code), frame); if (msg.t === 'e2e-keys') { held.push(frame); return false; } return true; };
+    await flush();
+    const cfg = e2ePersists(J).at(-1)!.cfg;
+    expect(cfg.keys.total).toBe(81); expect(held).toHaveLength(3); expect(e2ePersists(J).at(-1)!.prevSecrets).toHaveLength(8);
+    const hostile = hostilePeer(J), relayed: any[] = [];
+    outgoing.other!.intercept = frame => { relayed.push(decrypt(deriveKey(code), frame)); return true; };
+    const wrong = { ...decrypt<any>(deriveKey(code), held[0]), root: 'f'.repeat(64), _g: 'wrong-page' };
+    hostile.send(encrypt(deriveKey(code), wrong));
+    const stripped = { ...cfg }; delete stripped.keys;
+    hostile.send(helloFrame(code, { cfg: stripped })); await flush();
+    expect(e2ePersists(J).at(-1)!.cfg.keys.root).toBe(cfg.keys.root); expect(relayed.some(m => m._g === 'wrong-page')).toBe(false);
+    await cmd(O, { type: 'transferOwner', roomId, memberId: nextId }); await flush();
+    expect((await cmd(J, { type: 'snapshot', roomId })).ownerId).toBe(nextId);
+    expect(e2ePersists(J).at(-1)!.cfg.ownerId).toBe(ownerId); // no partial-history mint
+    await expect(cmd(J, { type: 'kick', roomId, memberId: 'someone' })).rejects.toThrow(/history to finish/);
+    outgoing.intercept = undefined;
+    for (const frame of [...held].reverse()) outgoing.send(frame); await flush(50);
+    const minted = e2ePersists(J).at(-1)!;
+    expect(minted.cfg.ownerId).toBe(nextId); expect(minted.cfg.keys.total).toBe(81); expect(minted.prevSecrets).toHaveLength(80);
+    expect(minted.prevSecrets).toEqual(expect.arrayContaining(previous)); expect(minted.keyPages.every((p: any) => verifyKeyPage(topicHash(code), minted.cfg, p))).toBe(true);
+    await cmd(O, { type: 'leave', roomId }); await cmd(J, { type: 'leave', roomId });
+  }, 15_000);
+  it('answers missing-page requests after throttling expires without silently discarding history', async () => {
+    const roomId = 'retry-keys', code = generateRoomCode(true), keys = makeKeys(), ownerId = deriveMemberId(keys.pub), secret = generateRoomSecret();
+    const O = await makeEngine(); await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, ownerPin: ownerId, e2e: true, secret, keys, prevSecrets: Array.from({ length: 40 }, () => generateRoomSecret()), folder: newFolder() })); O.tracker = H.trackers.at(-1);
+    const J = await makeEngine(); await cmd(J, joinPayload({ roomId, code, memberId: 'retry-member', ownerPin: ownerId, folder: newFolder() })); J.tracker = H.trackers.at(-1);
+    const [outgoing] = connect(O, J); let dropped = 0;
+    outgoing.intercept = frame => { const m = decrypt<any>(deriveKey(code), frame); if (m.t === 'e2e-keys' && m.page === 0) { dropped++; return false; } return true; }; await flush();
+    expect(dropped).toBe(1); const cfg = e2ePersists(J).at(-1)!.cfg;
+    outgoing.send(helloFrame(code, { memberId: ownerId, pub: keys.pub, ownerId, cfg })); await flush(); expect(dropped).toBe(1);
+    outgoing.intercept = undefined; const now = Date.now(); const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 15_100);
+    try { outgoing.send(helloFrame(code, { memberId: ownerId, pub: keys.pub, ownerId, cfg })); await flush(); } finally { clock.mockRestore(); }
+    expect(e2ePersists(J).at(-1)!.keyPages).toHaveLength(2); expect(e2ePersists(J).at(-1)!.prevSecrets).toHaveLength(40);
+    await cmd(O, { type: 'leave', roomId }); await cmd(J, { type: 'leave', roomId });
+  }, 15_000);
+});
+
+
+describe('rotation retention boundaries', () => {
+  it('rejects concurrent kicks before generating a conflicting content/gossip epoch', async () => {
+    const roomId = 'rotate-once', code = generateRoomCode(true), keys = makeKeys(), ownerId = deriveMemberId(keys.pub);
+    const O = await makeEngine(); await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, e2e: true, secret: generateRoomSecret(), keys, folder: newFolder() }));
+    await cmd(O, { type: 'kick', roomId, memberId: 'first' });
+    await expect(cmd(O, { type: 'kick', roomId, memberId: 'second' })).rejects.toThrow(/already in progress/);
+    await expect(cmd(O, { type: 'transferOwner', roomId, memberId: 'other' })).rejects.toThrow(/already in progress/);
+    await vi.waitFor(() => expect(e2ePersists(O)).toHaveLength(1), { timeout: 1500 });
+    expect(e2ePersists(O)[0].prevSecrets).toHaveLength(1); await cmd(O, { type: 'leave', roomId });
+  });
+  it('refuses rotation at the bounded history limit without deleting an old key or emitting a rekey', async () => {
+    const roomId = 'full-key-history', code = generateRoomCode(true), keys = makeKeys(), ownerId = deriveMemberId(keys.pub), secret = generateRoomSecret();
+    const previous = Array.from({ length: 2047 }, (_, i) => (i + 1).toString(16).padStart(64, '0'));
+    const O = await makeEngine(); await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, e2e: true, secret, prevSecrets: previous, keys, folder: newFolder() }));
+    await expect(cmd(O, { type: 'kick', roomId, memberId: 'member' })).rejects.toThrow(/history is full/);
+    expect((await cmd(O, { type: 'snapshot', roomId })).code).toBe(code); expect(e2ePersists(O)).toEqual([]);
+    await cmd(O, { type: 'leave', roomId });
+  }, 10_000);
+});
+
+
+describe('current-owner key provenance after transfer', () => {
+  it('does not let a former owner replace the verified current content key/history', async () => {
+    const roomId = 'no-past-key-rollback', code = generateRoomCode(true), secret = generateRoomSecret(), owner = makeKeys(), next = makeKeys();
+    const ownerId = deriveMemberId(owner.pub), nextId = deriveMemberId(next.pub);
+    const O = await makeEngine(); await cmd(O, joinPayload({ roomId, code, memberId: ownerId, ownerId, ownerPin: ownerId, e2e: true, secret, keys: owner, folder: newFolder() })); O.tracker = H.trackers.at(-1);
+    const J = await makeEngine(); await cmd(J, joinPayload({ roomId, code, memberId: nextId, ownerPin: ownerId, keys: next, folder: newFolder() })); J.tracker = H.trackers.at(-1);
+    connect(O, J); await flush(); const oldCfg = e2ePersists(J).at(-1)!.cfg;
+    await cmd(O, { type: 'transferOwner', roomId, memberId: nextId }); await flush();
+    const current = e2ePersists(J).at(-1)!; expect(current.cfg.ownerId).toBe(nextId);
+    const forged = { ownerId, e2e: true, secret: generateRoomSecret(), pub: owner.pub, sig: '' };
+    forged.sig = crypto.sign(null, Buffer.from(JSON.stringify(['th-room-e2e:v1', topicHash(code), ownerId, true, forged.secret])), crypto.createPrivateKey(owner.priv)).toString('base64');
+    mintKeyPages(topicHash(code), forged, [], owner.priv); const malicious = hostilePeer(J);
+    malicious.send(helloFrame(code, { cfg: forged })); malicious.send(helloFrame(code, { cfg: oldCfg })); await flush();
+    expect(e2ePersists(J).at(-1)!.cfg.ownerId).toBe(nextId); expect(e2ePersists(J).at(-1)!.secret).toBe(secret); expect(e2ePersists(J).at(-1)!.cfg.keys.root).toBe(current.cfg.keys.root);
+    await cmd(O, { type: 'leave', roomId }); await cmd(J, { type: 'leave', roomId });
+  }, 10_000);
+});
+
+const banPersists = (inst: Engine) => inst.sent.filter(s => s.channel === 'room-bans').map(s => s.payload);
+function banProof(code: string, who: { pub: string; priv: string }, bans: string[], revision = 1): RoomBanSnapshot {
+  const p: RoomBanSnapshot = { v: 1, ownerId: deriveMemberId(who.pub), revision, bans: [...bans].sort(), pub: who.pub, sig: '' };
+  p.sig = crypto.sign(null, banSnapshotCanonical(topicHash(code), p), who.priv).toString('base64'); return p;
+}
+describe('desktop signed room bans', () => {
+  it('serves the complete signed bans after a kick, holder restart and owner departure; a leaked code does not admit the banned profile', async () => {
+    const code = generateRoomCode(true), keys = makeKeys(), holderKeys = makeKeys(), bannedKeys = makeKeys();
+    const owner = deriveMemberId(keys.pub), holderId = deriveMemberId(holderKeys.pub), bannedId = deriveMemberId(bannedKeys.pub);
+    const a = await makeEngine(), h = await makeEngine(); const secret = generateRoomSecret(), folder = newFolder();
+    await cmd(a, joinPayload({ roomId: 'ban-owner', code, memberId: owner, folder: newFolder(), ownerId: owner, keys, e2e: true, secret })); a.tracker = H.trackers.at(-1);
+    await cmd(h, joinPayload({ roomId: 'ban-holder', code, memberId: holderId, folder, ownerPin: owner, keys: holderKeys })); h.tracker = H.trackers.at(-1);
+    connect(a, h); await flush(); await cmd(a, { type: 'kick', roomId: 'ban-owner', memberId: bannedId });
+    await new Promise(r => setTimeout(r, 380)); await flush();
+    const state = await cmd(h, { type: 'snapshot', roomId: 'ban-holder' }), saved = banPersists(h).at(-1), cfg = e2ePersists(h).at(-1);
+    expect(saved.bans).toContain(bannedId); expect(saved.banState.bans).toContain(bannedId);
+    expect(crypto.verify(null, banSnapshotCanonical(topicHash(state.code), saved.banState), keys.pub, Buffer.from(saved.banState.sig, 'base64'))).toBe(true);
+    await cmd(a, { type: 'leave', roomId: 'ban-owner' }); await cmd(h, { type: 'leave', roomId: 'ban-holder' });
+    const restarted = await makeEngine();
+    await cmd(restarted, joinPayload({ roomId: 'ban-restarted', code: state.code, memberId: holderId, folder, ownerId: owner, ownerPin: owner, keys: holderKeys,
+      bans: saved.bans, banState: saved.banState, e2e: true, secret: cfg.secret, e2eCfg: cfg.cfg, prevSecrets: cfg.prevSecrets, keyPages: cfg.keyPages })); restarted.tracker = H.trackers.at(-1);
+    const late = await makeEngine(), lateKeys = makeKeys();
+    await cmd(late, joinPayload({ roomId: 'ban-late', code: state.code, memberId: deriveMemberId(lateKeys.pub), folder: newFolder(), ownerPin: owner, keys: lateKeys })); late.tracker = H.trackers.at(-1);
+    connect(restarted, late); await flush(); expect(banPersists(late).at(-1).banState).toEqual(saved.banState);
+    const guest = new GuestRoom({ identity: await generateIdentityWeb(), name: 'Guest', avatarSeed: 'guest', trackers: [], onChange: vi.fn() });
+    const g = guest as any; g.key = new Uint8Array(deriveKey(state.code)); g.topic = topicHash(state.code); g.code = state.code; guest.ownerPin = owner;
+    const rec = { id: 1, wire: { send: vi.fn(), destroy: vi.fn() } }; g.wires.set(1, rec);
+    const captured: string[] = [], probe = hostilePeer(restarted); probe.on('data', raw => captured.push(String(raw))); await flush();
+    for (const raw of captured) await g.onFrame(rec, raw);
+    expect(g.banState).toEqual(saved.banState); expect(g.bans.has(bannedId)).toBe(true); g.teardown();
+    const excluded = await makeEngine();
+    await cmd(excluded, joinPayload({ roomId: 'ban-excluded', code: state.code, memberId: bannedId, folder: newFolder(), ownerPin: owner, keys: bannedKeys })); excluded.tracker = H.trackers.at(-1);
+    connect(restarted, excluded); await flush();
+    expect((await cmd(excluded, { type: 'snapshot', roomId: 'ban-excluded' })).kicked).toBe(true);
+    expect(e2ePersists(excluded)).toHaveLength(0);
+    for (const [inst, id] of [[late, 'ban-late'], [excluded, 'ban-excluded'], [restarted, 'ban-restarted']] as const) await cmd(inst, { type: 'leave', roomId: id });
+  }, 15_000); // Six real crypto sessions, deferred rekey and five graceful teardowns exceed 5s on Windows.
+  it('rejects modified signatures, other owners, lower revisions and implicit unbans before forwarding them', async () => {
+    const code = generateRoomCode(), keys = makeKeys(), selfKeys = makeKeys(), other = makeKeys();
+    const owner = deriveMemberId(keys.pub), banned = deriveMemberId(other.pub), inst = await makeEngine();
+    await cmd(inst, joinPayload({ roomId: 'ban-invalid', code, memberId: deriveMemberId(selfKeys.pub), folder: newFolder(), ownerPin: owner, keys: selfKeys })); inst.tracker = H.trackers.at(-1);
+    const raw = hostilePeer(inst), proof = banProof(code, keys, [banned], 2);
+    raw.send(helloFrame(code, { ownerId: owner, banState: { ...proof, bans: [] } })); await flush(); expect(banPersists(inst)).toHaveLength(0);
+    raw.send(helloFrame(code, { ownerId: owner, banState: banProof(code, other, [owner]) })); await flush(); expect(banPersists(inst)).toHaveLength(0);
+    raw.send(helloFrame(code, { ownerId: owner, banState: proof })); await flush(); expect(banPersists(inst).at(-1).banState).toEqual(proof);
+    raw.send(helloFrame(code, { ownerId: owner, banState: banProof(code, keys, [], 3) }));
+    raw.send(helloFrame(code, { ownerId: owner, banState: banProof(code, keys, [banned], 1) }));
+    raw.send(helloFrame(code, { ownerId: owner })); await flush(); expect(banPersists(inst).at(-1).banState).toEqual(proof);
+    await cmd(inst, { type: 'leave', roomId: 'ban-invalid' });
+  });
+  it('stops file swarms as well as gossip when an authenticated snapshot excludes self, without deleting the source', async () => {
+    const code = generateRoomCode(), keys = makeKeys(), selfKeys = makeKeys(), self = deriveMemberId(selfKeys.pub), inst = await makeEngine();
+    await cmd(inst, joinPayload({ roomId: 'ban-stop', code, memberId: self, folder: newFolder(), ownerPin: deriveMemberId(keys.pub), keys: selfKeys })); inst.tracker = H.trackers.at(-1);
+    await cmd(inst, { type: 'addFiles', roomId: 'ban-stop', paths: [sourceFile] }); const client = H.clients.at(-1);
+    hostilePeer(inst).send(helloFrame(code, { ownerId: deriveMemberId(keys.pub), banState: banProof(code, keys, [self]) })); await flush();
+    expect((await cmd(inst, { type: 'snapshot', roomId: 'ban-stop' })).kicked).toBe(true); expect(client.destroyed).toBe(true); expect(fs.existsSync(sourceFile)).toBe(true);
+    await cmd(inst, { type: 'leave', roomId: 'ban-stop' });
+  });
+  it('does not silently evict bans when their history is full', async () => {
+    const code = generateRoomCode(), keys = makeKeys(), owner = deriveMemberId(keys.pub), inst = await makeEngine();
+    const bans = Array.from({ length: ROOM_BAN_LIMIT }, (_, i) => String(i).padStart(32, '0'));
+    await cmd(inst, joinPayload({ roomId: 'ban-limit', code, memberId: owner, folder: newFolder(), ownerId: owner, keys, bans })); inst.tracker = H.trackers.at(-1);
+    await expect(cmd(inst, { type: 'kick', roomId: 'ban-limit', memberId: 'new-profile' })).rejects.toThrow('ban history is full');
+    expect((await cmd(inst, { type: 'snapshot', roomId: 'ban-limit' })).code).toBe(code); expect(banPersists(inst).at(-1).bans).toEqual(bans);
+    await cmd(inst, { type: 'leave', roomId: 'ban-limit' });
+  });
+});
+
+describe('desktop ban proof ownership', () => {
+  it('inherits bans on transfer and preserves the chain when the former owner is then banned', async () => {
+    const code = generateRoomCode(), oldKeys = makeKeys(), nextKeys = makeKeys(), old = deriveMemberId(oldKeys.pub), next = deriveMemberId(nextKeys.pub);
+    const a = await makeEngine(); await cmd(a, joinPayload({ roomId: 'ban-transfer-a', code, memberId: old, ownerId: old, keys: oldKeys, folder: newFolder(), bans: ['removed-before-transfer'] })); a.tracker = H.trackers.at(-1);
+    const b = await makeEngine(); await cmd(b, joinPayload({ roomId: 'ban-transfer-b', code, memberId: next, ownerPin: old, keys: nextKeys, folder: newFolder() })); b.tracker = H.trackers.at(-1);
+    connect(a, b); await flush(); await cmd(a, { type: 'transferOwner', roomId: 'ban-transfer-a', memberId: next }); await flush();
+    expect(banPersists(b).at(-1).banState).toMatchObject({ ownerId: next, bans: ['removed-before-transfer'] });
+    await cmd(b, { type: 'kick', roomId: 'ban-transfer-b', memberId: old }); await new Promise(r => setTimeout(r, 380)); await flush();
+    const state = await cmd(b, { type: 'snapshot', roomId: 'ban-transfer-b' });
+    expect((await cmd(a, { type: 'snapshot', roomId: 'ban-transfer-a' })).kicked).toBe(true);
+    const c = await makeEngine(), cKeys = makeKeys();
+    await cmd(c, joinPayload({ roomId: 'ban-transfer-late', code: state.code, memberId: deriveMemberId(cKeys.pub), ownerPin: old, keys: cKeys, folder: newFolder() })); c.tracker = H.trackers.at(-1);
+    connect(b, c); await flush(); expect((await cmd(c, { type: 'snapshot', roomId: 'ban-transfer-late' })).ownerId).toBe(next);
+    expect(banPersists(c).at(-1).bans).toContain(old); expect(banPersists(c).at(-1).bans).toContain('removed-before-transfer');
+    const observed: any[] = [], observer = hostilePeer(c); observer.on('data', raw => observed.push(decrypt(deriveKey(state.code), String(raw))));
+    observer.send(helloFrame(state.code, { memberId: 'observer' })); await flush();
+    const forkKeys = makeKeys(), forkOwner = deriveMemberId(forkKeys.pub), originalChain = b.sent.filter(e => e.channel === 'room-transfer').at(-1)!.payload.chain;
+    const forkBody = { by: old, newOwnerId: forkOwner, at: originalChain[0].at + 1 };
+    const forkSig = crypto.sign(null, Buffer.from(JSON.stringify(['th-room-transfer:v1', old, old, forkOwner, forkBody.at])), oldKeys.priv).toString('base64');
+    hostilePeer(c).send(helloFrame(state.code, { ownerId: forkOwner, transferChain: [{ ...forkBody, pub: oldKeys.pub, sig: forkSig }], banState: banProof(state.code, forkKeys, [next]), _g: 'banned-owner-fork', _t: 4 })); await flush();
+    expect((await cmd(c, { type: 'snapshot', roomId: 'ban-transfer-late' })).ownerId).toBe(next);
+    expect(banPersists(c).at(-1).bans).not.toContain(next);
+    expect(observed.some(m => m._g === 'banned-owner-fork')).toBe(false);
+    const keys = makeKeys(), d = await makeEngine();
+    await cmd(d, joinPayload({ roomId: 'ban-poison', code, memberId: deriveMemberId(keys.pub), ownerId: old, ownerPin: old, keys, folder: newFolder() })); d.tracker = H.trackers.at(-1);
+    const chain = b.sent.filter(e => e.channel === 'room-transfer').at(-1)!.payload.chain;
+    hostilePeer(d).send(helloFrame(code, { ownerId: next, transferChain: chain, banState: banProof(code, oldKeys, [next]) })); await flush();
+    expect((await cmd(d, { type: 'snapshot', roomId: 'ban-poison' })).ownerId).toBe(next);
+    expect(banPersists(d).some(p => p.bans.includes(next))).toBe(false);
+    for (const [inst, id] of [[a, 'ban-transfer-a'], [b, 'ban-transfer-b'], [c, 'ban-transfer-late'], [d, 'ban-poison']] as const) await cmd(inst, { type: 'leave', roomId: id });
+  }, 15_000); // Four real crypto sessions, a deferred kick and graceful store teardown.
+});
+
+it('receives ban history when a signed live handover arrives before any owner hello', async () => {
+  const code = generateRoomCode(), oldKeys = makeKeys(), selfKeys = makeKeys(), old = deriveMemberId(oldKeys.pub), self = deriveMemberId(selfKeys.pub), inst = await makeEngine();
+  await cmd(inst, joinPayload({ roomId: 'ban-first-transfer', code, memberId: self, ownerPin: old, keys: selfKeys, folder: newFolder() })); inst.tracker = H.trackers.at(-1);
+  const body = { by: old, newOwnerId: self, at: Date.now() };
+  const sig = crypto.sign(null, Buffer.from(JSON.stringify(['th-room-transfer:v1', old, old, self, body.at])), oldKeys.priv).toString('base64');
+  hostilePeer(inst).send(encrypt(deriveKey(code), { t: 'transfer', ...body, pub: oldKeys.pub, sig, banState: banProof(code, oldKeys, ['previously-removed']) })); await flush();
+  expect((await cmd(inst, { type: 'snapshot', roomId: 'ban-first-transfer' })).ownerId).toBe(self);
+  expect(banPersists(inst).at(-1).banState).toMatchObject({ ownerId: self, bans: ['previously-removed'] });
+  await cmd(inst, { type: 'leave', roomId: 'ban-first-transfer' });
+});
+
+describe('desktop watch host authority', () => {
+  it('chooses an acknowledged host, blocks follower controls, relays requests and serves late joiners', async () => {
+    const code = generateRoomCode(), roomId = 'watch-host-authority', ownerKeys = makeKeys(), viewerKeys = makeKeys();
+    const owner = deriveMemberId(ownerKeys.pub), viewer = deriveMemberId(viewerKeys.pub);
+    const a = await makeEngine(); await cmd(a, joinPayload({ roomId, code, memberId: owner, ownerId: owner, keys: ownerKeys, folder: newFolder() })); a.tracker = H.trackers.at(-1);
+    const b = await makeEngine(); await cmd(b, joinPayload({ roomId, code, memberId: viewer, ownerPin: owner, keys: viewerKeys, folder: newFolder() })); b.tracker = H.trackers.at(-1);
+    connect(a, b); await flush(); const added = await cmd(a, { type: 'addFiles', roomId, paths: [sourceFile] }); await flush();
+    const fileId = added.files[0].fileId;
+    try {
+      await expect(cmd(b, { type: 'watchPolicy', roomId, hostId: viewer })).rejects.toThrow('Only the room owner');
+      await expect(cmd(a, { type: 'watchPolicy', roomId, hostId: 'missing' })).rejects.toThrow('unavailable');
+      const state = await cmd(a, { type: 'watchPolicy', roomId, hostId: owner }); await flush();
+      expect((await cmd(b, { type: 'snapshot', roomId })).watchPolicy).toEqual(state.watchPolicy);
+      const topic = topicHash(code), policy = state.watchPolicy;
+      expect(crypto.verify(null, Buffer.from(JSON.stringify(['watch-policy-v1', topic, owner, 0, owner, policy.at])), ownerKeys.pub, Buffer.from(policy.sig, 'base64'))).toBe(true);
+      await expect(cmd(b, { type: 'sync', roomId, payload: { fileId, action: 'play', position: 1, together: true } })).rejects.toThrow('Only the watch host');
+      await cmd(b, { type: 'sync', roomId, payload: { fileId, action: 'request', requested: 'pause', position: 2, together: true, readiness: 'ready' } }); await flush();
+      expect(a.sent.filter(m => m.channel === 'room-sync').at(-1)?.payload).toMatchObject({ memberId: viewer, action: 'request', requested: 'pause', readiness: 'ready' });
+      await cmd(a, { type: 'sync', roomId, payload: { fileId, action: 'play', position: 3, together: true, readiness: 'ready' } }); await flush();
+      expect(b.sent.filter(m => m.channel === 'room-sync').at(-1)?.payload).toMatchObject({ memberId: owner, action: 'play', policyAt: policy.at });
+      const next = await cmd(a, { type: 'watchPolicy', roomId, hostId: viewer }); await flush();
+      await expect(cmd(a, { type: 'sync', roomId, payload: { fileId, action: 'pause', position: 4, together: true } })).rejects.toThrow('Only the watch host');
+      let frame!: WatchMessage; const [wire] = connect(b, a); wire.intercept = raw => { const m = decrypt<WatchMessage>(deriveKey(code), String(raw)); if (m.t === 'sync-v2') frame = m; return true; }; await flush();
+      await cmd(b, { type: 'sync', roomId, payload: { fileId, action: 'seek', position: 8, together: true } }); await flush();
+      expect(a.sent.filter(m => m.channel === 'room-sync').at(-1)?.payload).toMatchObject({ action: 'seek', position: 8 });
+      expect(crypto.verify(null, watchCanonical(topic, frame), viewerKeys.pub, Buffer.from(frame.sig, 'base64'))).toBe(true);
+      expect(crypto.verify(null, watchHostCanonical(topic, frame), viewerKeys.pub, Buffer.from(frame.hostSig, 'base64'))).toBe(true);
+      const count = a.sent.filter(m => m.channel === 'room-sync').length;
+      hostilePeer(a).send(encrypt(deriveKey(code), { ...frame, position: 90, _g: 'tampered-control', _t: 4 })); await flush();
+      expect(a.sent.filter(m => m.channel === 'room-sync')).toHaveLength(count);
+      const c = await makeEngine(), cKeys = makeKeys(); await cmd(c, joinPayload({ roomId: roomId + '-late', code, memberId: deriveMemberId(cKeys.pub), ownerPin: owner, keys: cKeys, folder: newFolder() })); c.tracker = H.trackers.at(-1);
+      connect(b, c); await flush(); expect((await cmd(c, { type: 'snapshot', roomId: roomId + '-late' })).watchPolicy).toEqual(next.watchPolicy);
+      wire.intercept = undefined;
+      await cmd(a, { type: 'kick', roomId, memberId: deriveMemberId(cKeys.pub) }); await new Promise(resolve => setTimeout(resolve, 380)); await flush();
+      const rotated = await cmd(b, { type: 'snapshot', roomId });
+      expect(rotated.code).not.toBe(code); expect(rotated.watchPolicy).toMatchObject({ by: owner, hostId: viewer }); expect(rotated.watchPolicy.at).toBeGreaterThan(next.watchPolicy.at);
+      await cmd(c, { type: 'leave', roomId: roomId + '-late' });
+      await cmd(a, { type: 'watchPolicy', roomId, hostId: '' }); await flush();
+      await cmd(b, { type: 'sync', roomId, payload: { fileId, action: 'play', position: 10, together: true } }); await flush();
+      expect(a.sent.filter(m => m.channel === 'room-sync').at(-1)?.payload).toMatchObject({ action: 'play', position: 10 });
+      await cmd(a, { type: 'watchPolicy', roomId, hostId: owner }); await flush();
+      await cmd(a, { type: 'transferOwner', roomId, memberId: viewer }); await flush();
+      expect((await cmd(a, { type: 'snapshot', roomId })).watchPolicy).toBeUndefined();
+      expect((await cmd(b, { type: 'snapshot', roomId })).watchPolicy).toBeUndefined();
+    } finally { await cmd(a, { type: 'leave', roomId }); await cmd(b, { type: 'leave', roomId }); }
+  }, 15_000);
 });

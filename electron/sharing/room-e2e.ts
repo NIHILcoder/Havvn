@@ -16,6 +16,8 @@
 
 import fs from 'fs';
 import crypto from 'crypto';
+import { pipeline } from 'stream/promises';
+import { Readable } from 'stream';
 
 const IV_LEN = 12;
 const TAG_LEN = 16;
@@ -32,65 +34,48 @@ function keyOf(secretHex: string): Buffer {
 }
 
 /** Encrypt `src` (plaintext) → `dst` (ciphertext). Streams; no full-file buffering. */
-export function encryptFile(src: string, dst: string, secretHex: string): Promise<void> {
-  const key = keyOf(secretHex);
-  return new Promise<void>((resolve, reject) => {
-    const iv = crypto.randomBytes(IV_LEN);
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-    const rs = fs.createReadStream(src);
-    const ws = fs.createWriteStream(dst);
-    const fail = (e: unknown) => { try { rs.destroy(); } catch { /* ignore */ } try { ws.destroy(); } catch { /* ignore */ } reject(e instanceof Error ? e : new Error(String(e))); };
-    rs.on('error', fail);
-    ws.on('error', fail);
-    cipher.on('error', fail);
-    ws.write(iv); // IV first so the reader can recover it without metadata
-    cipher.on('end', () => {
-      // GCM tag is only known once all data has been processed.
-      try { ws.end(cipher.getAuthTag(), () => resolve()); } catch (e) { fail(e); }
-    });
-    rs.pipe(cipher).pipe(ws, { end: false });
-  });
+export async function encryptFile(src: string, dst: string, secretHex: string): Promise<void> {
+  const key = keyOf(secretHex), iv = crypto.randomBytes(IV_LEN);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  let created = false;
+  try {
+    await fs.promises.writeFile(dst, iv, { flag: 'wx' });
+    created = true;
+    await pipeline(fs.createReadStream(src), cipher, fs.createWriteStream(dst, { flags: 'a' }));
+    await fs.promises.appendFile(dst, cipher.getAuthTag());
+  } catch (error) {
+    if (created) await fs.promises.rm(dst, { force: true });
+    throw error;
+  }
 }
 
 /** Decrypt `src` (ciphertext) → `dst` (plaintext). Throws if the tag fails. */
-export async function decryptFile(src: string, dst: string, secretHex: string): Promise<void> {
+export async function decryptFile(src: string, dst: string, secretHex: string,
+  options: { isCurrent?: () => boolean; expectedSize?: number } = {}): Promise<void> {
   const key = keyOf(secretHex);
-  const stat = await fs.promises.stat(src);
-  if (stat.size < IV_LEN + TAG_LEN) throw new Error('Ciphertext too small to be valid');
-
   const fd = await fs.promises.open(src, 'r');
+  const tmp = dst + '.decrypt-' + crypto.randomUUID() + '.tmp';
   try {
-    const iv = Buffer.alloc(IV_LEN);
-    await fd.read(iv, 0, IV_LEN, 0);
-    const tag = Buffer.alloc(TAG_LEN);
-    await fd.read(tag, 0, TAG_LEN, stat.size - TAG_LEN);
-
+    const stat = await fd.stat();
+    if (stat.size < IV_LEN + TAG_LEN) throw new Error('Ciphertext too small to be valid');
+    if (options.expectedSize !== undefined && stat.size !== options.expectedSize + IV_LEN + TAG_LEN) {
+      throw new Error('Ciphertext size does not match the room file');
+    }
+    const iv = Buffer.alloc(IV_LEN), tag = Buffer.alloc(TAG_LEN);
+    if ((await fd.read(iv, 0, IV_LEN, 0)).bytesRead !== IV_LEN
+      || (await fd.read(tag, 0, TAG_LEN, stat.size - TAG_LEN)).bytesRead !== TAG_LEN) throw new Error('Truncated ciphertext');
     const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
-
-    // The ciphertext body sits between the IV and the trailing tag (end inclusive).
-    // Decrypt into a sibling temp file and rename only after the GCM tag
-    // verifies — a wrong key (routine now that the keyring makes multi-key
-    // attempts normal) must never leave unauthenticated garbage at the real
-    // path, nor collide with a concurrent attempt's stream.
-    const tmp = dst + '.decrypt-tmp';
-    const rs = fs.createReadStream(src, { start: IV_LEN, end: stat.size - TAG_LEN - 1 });
-    const ws = fs.createWriteStream(tmp);
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const fail = (e: unknown) => { try { rs.destroy(); } catch { /* ignore */ } try { ws.destroy(); } catch { /* ignore */ } reject(e instanceof Error ? e : new Error(String(e))); };
-        rs.on('error', fail);
-        ws.on('error', fail);
-        decipher.on('error', fail);
-        ws.on('finish', () => resolve());
-        rs.pipe(decipher).pipe(ws);
-      });
-      fs.renameSync(tmp, dst);
-    } catch (e) {
-      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
-      throw e;
-    }
+    const body = stat.size === IV_LEN + TAG_LEN ? Readable.from([])
+      : fd.createReadStream({ start: IV_LEN, end: stat.size - TAG_LEN - 1, autoClose: false });
+    // pipeline settles after streams close, including on authentication failure.
+    await pipeline(body, decipher, fs.createWriteStream(tmp, { flags: 'wx' }));
+    if (options.isCurrent && !options.isCurrent()) throw new Error('Room file operation canceled');
+    // link publishes atomically and fails if dst already exists, on Windows too.
+    // A rename could overwrite a user's file or another successful operation.
+    await fs.promises.link(tmp, dst);
   } finally {
     await fd.close();
+    await fs.promises.rm(tmp, { force: true });
   }
 }
