@@ -7,7 +7,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Download, TorrentFile, TrackerInfo, FilePriority, PeerInfo, TorrentPieces } from '../../shared/types';
 import { peerHostToIPv4 } from '../../shared/ip-range';
-import { Button, Icon } from './index';
+import { Button, Icon, IconName, Toggle } from './index';
+import { NumberInput } from './NumberInput';
 import { Modal } from './Modal';
 import { ContextMenu } from './ContextMenu';
 import { useConfirm } from './ConfirmDialog';
@@ -31,13 +32,6 @@ function codeToFlag(cc: string): string {
   if (!/^[A-Za-z]{2}$/.test(cc)) return '';
   return cc.toUpperCase().replace(/./g, (c) => String.fromCodePoint(127397 + c.charCodeAt(0)));
 }
-
-const FILE_PRIORITY_COLORS: Record<FilePriority, string> = {
-  skip: '#6b7280',
-  low: '#60a5fa',
-  normal: '#22c55e',
-  high: '#f59e0b',
-};
 
 const formatBytes = (bytes: number): string => {
   if (!bytes || bytes === 0) return '0 B';
@@ -75,18 +69,22 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
 
   // Download tab state
   const [sequential, setSequential] = useState(download.sequentialDownload ?? false);
+  const [savedSequential, setSavedSequential] = useState(sequential);
   const [savingDownload, setSavingDownload] = useState(false);
 
   // Seeding tab state
-  const [seedRatio, setSeedRatio] = useState(download.seedRatioLimit ?? 0);
-  const [seedTime, setSeedTime] = useState(download.seedTimeLimitMinutes ?? 0);
+  const [seedRatio, setSeedRatio] = useState(download.seedRatioLimit == null ? '' : String(download.seedRatioLimit));
+  const [seedTime, setSeedTime] = useState(download.seedTimeLimitMinutes == null ? '' : String(download.seedTimeLimitMinutes));
+  const [savedLimits, setSavedLimits] = useState({ ratio: download.seedRatioLimit, time: download.seedTimeLimitMinutes });
+  const [ratioEdited, setRatioEdited] = useState(false);
+  const [timeEdited, setTimeEdited] = useState(false);
   const [savingSeeding, setSavingSeeding] = useState(false);
 
   // Files tab state
   const [files, setFiles] = useState<TorrentFile[]>([]);
   const [externalFile, setExternalFile] = useState<string | null>(null);
   const [loadingFiles, setLoadingFiles] = useState(false);
-  const [savingPriority, setSavingPriority] = useState<number | null>(null);
+  const [savingPriority, setSavingPriority] = useState<{ index: number; priority: FilePriority } | null>(null);
 
   // Trackers tab state
   const [trackers, setTrackers] = useState<TrackerInfo[]>([]);
@@ -104,162 +102,195 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   const [piecesLoaded, setPiecesLoaded] = useState(false);
   const [moving, setMoving] = useState(false);
   const [reannouncing, setReannouncing] = useState(false);
+  const [removingTracker, setRemovingTracker] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<Tab, string>>>({});
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [savedNotice, setSavedNotice] = useState(false);
+  const actionRef = useRef(false);
+  const busy = savingDownload || savingSeeding || savingPriority !== null || moving || addingTracker || reannouncing || removingTracker !== null;
+  const ratioNumber = Number(seedRatio);
+  const timeNumber = Number(seedTime);
+  const ratioDirty = ratioEdited && (savedLimits.ratio == null || ratioNumber !== savedLimits.ratio);
+  const timeDirty = timeEdited && (savedLimits.time == null || timeNumber !== savedLimits.time);
+  const ratioValid = (!ratioEdited && savedLimits.ratio == null) || (seedRatio.trim() !== '' && Number.isFinite(ratioNumber)
+    && ratioNumber >= 0 && ratioNumber <= Number.MAX_SAFE_INTEGER);
+  const timeValid = (!timeEdited && savedLimits.time == null) || (seedTime.trim() !== '' && Number.isSafeInteger(timeNumber) && timeNumber >= 0);
+  const limitsValid = ratioValid && timeValid;
+  const startAction = () => {
+    if (actionRef.current) return false;
+    actionRef.current = true;
+    setSavedNotice(false);
+    return true;
+  };
+  const showError = (err: unknown) => alert({ message: `${t('tcm.failed')}: ${cleanError(err)}` });
 
-  // Load data when tab changes
+  // Poll the active tab only, without overlapping calls or accepting results
+  // from an earlier tab. A failed request must not look like an empty list.
   useEffect(() => {
-    if (tab === 'files' && files.length === 0) loadFiles();
-    if (tab === 'trackers' && trackers.length === 0) loadTrackers();
-  }, [tab]);
-
-  // Live-poll peers while the Peers tab is open (they change constantly).
-  useEffect(() => {
-    if (tab !== 'peers') return;
+    if (tab === 'download' || tab === 'seeding') return;
     let alive = true;
-    const tick = () => {
-      window.api.getPeers(download.id)
-        .then((list) => {
+    let timer: ReturnType<typeof setTimeout>;
+    setLoadingFiles(tab === 'files');
+    setLoadingTrackers(tab === 'trackers');
+    setPeersLoaded(false);
+    setPiecesLoaded(false);
+    const tick = async () => {
+      try {
+        if (tab === 'files') {
+          const list = await window.api.historyPlayback.files(download.id);
+          if (alive) setFiles(list || []);
+        } else if (tab === 'trackers') {
+          const list = await window.api.getTrackers(download.id);
+          if (alive) setTrackers(list || []);
+        } else if (tab === 'pieces') {
+          const result = await window.api.getPieces(download.id);
+          if (alive) setPieces(result);
+        } else {
+          const list = await window.api.getPeers(download.id);
           if (!alive) return;
           const hide = bannedIpsRef.current;
           setPeers((list || []).filter((p) => {
             const n = peerHostToIPv4(p.address);
             return n === null || !hide.has(n);
           }));
-          setPeersLoaded(true);
-        })
-        .catch(() => { if (alive) setPeersLoaded(true); });
+        }
+        if (alive) setErrors(prev => ({ ...prev, [tab]: undefined }));
+      } catch (err) {
+        if (alive) setErrors(prev => ({ ...prev, [tab]: cleanError(err) }));
+      } finally {
+        if (alive) {
+          setLoadingFiles(false); setLoadingTrackers(false);
+          setPeersLoaded(true); setPiecesLoaded(true);
+          timer = setTimeout(() => { void tick(); }, tab === 'peers' ? 1500 : 2500);
+        }
+      }
     };
-    tick();
-    const iv = setInterval(tick, 1500);
-    return () => { alive = false; clearInterval(iv); };
-  }, [tab, download.id]);
-
-  useEffect(() => {
-    if (tab !== 'pieces') return;
-    let alive = true;
-    const tick = () => {
-      window.api.getPieces(download.id)
-        .then((result) => { if (alive) { setPieces(result); setPiecesLoaded(true); } })
-        .catch(() => { if (alive) setPiecesLoaded(true); });
-    };
-    tick();
-    const iv = setInterval(tick, 2000);
-    return () => { alive = false; clearInterval(iv); };
-  }, [tab, download.id]);
-
-  const loadFiles = async () => {
-    setLoadingFiles(true);
-    try {
-      const result = await window.api.historyPlayback.files(download.id);
-      setFiles(result || []);
-    } catch (err) {
-      console.error('Failed to load files:', err);
-    } finally {
-      setLoadingFiles(false);
-    }
-  };
-
-  const loadTrackers = async () => {
-    setLoadingTrackers(true);
-    try {
-      const result = await window.api.getTrackers(download.id);
-      setTrackers(result || []);
-    } catch (err) {
-      console.error('Failed to load trackers:', err);
-    } finally {
-      setLoadingTrackers(false);
-    }
-  };
+    void tick();
+    return () => { alive = false; clearTimeout(timer); };
+  }, [tab, download.id, refreshKey]);
 
   const handleMoveData = async () => {
-    const dest = await window.api.selectDirectory();
-    if (!dest) return;
+    if (!startAction()) return;
     setMoving(true);
     try {
+      const dest = await window.api.selectDirectory();
+      if (!dest) return;
       await window.api.setDownloadLocation(download.id, dest, true);
       onUpdate?.();
+      setSavedNotice(true);
     } catch (err) {
-      await alert({ message: `${t('tcm.failed')}: ${err instanceof Error ? err.message : String(err)}` });
+      await showError(err);
     } finally {
       setMoving(false);
+      actionRef.current = false;
     }
   };
 
   const handleReannounce = async () => {
+    if (!startAction()) return;
     setReannouncing(true);
     try {
       await window.api.reannounceDownload(download.id);
-      await loadTrackers();
+      setRefreshKey(key => key + 1);
     } catch (err) {
-      await alert({ message: `${t('tcm.failed')}: ${err instanceof Error ? err.message : String(err)}` });
+      await showError(err);
     } finally {
       setReannouncing(false);
+      actionRef.current = false;
     }
   };
 
   // Save download settings
   const handleSaveDownload = async () => {
+    if (sequential === savedSequential || !startAction()) return;
     setSavingDownload(true);
     try {
       await window.api.setSequentialDownload(download.id, sequential);
+      setSavedSequential(sequential);
+      setSavedNotice(true);
       onUpdate?.();
-    } catch (err: any) {
-      await alert({ message: `${t('tcm.failed')}: ${err?.message}` });
+    } catch (err) {
+      await showError(err);
     } finally {
       setSavingDownload(false);
+      actionRef.current = false;
     }
   };
 
   // Save seeding limits
   const handleSaveSeeding = async () => {
+    if (!limitsValid || (!ratioDirty && !timeDirty) || !startAction()) return;
     setSavingSeeding(true);
     try {
-      await window.api.setSeedRatioLimit(download.id, seedRatio);
-      await window.api.setSeedTimeLimit(download.id, seedTime);
+      if (ratioDirty) {
+        await window.api.setSeedRatioLimit(download.id, ratioNumber);
+        setSavedLimits(prev => ({ ...prev, ratio: ratioNumber }));
+        setRatioEdited(false);
+      }
+      if (timeDirty) {
+        await window.api.setSeedTimeLimit(download.id, timeNumber);
+        setSavedLimits(prev => ({ ...prev, time: timeNumber }));
+        setTimeEdited(false);
+      }
+      setSavedNotice(true);
       onUpdate?.();
-    } catch (err: any) {
-      await alert({ message: `${t('tcm.failed')}: ${err?.message}` });
+    } catch (err) {
+      onUpdate?.();
+      await showError(err);
     } finally {
       setSavingSeeding(false);
+      actionRef.current = false;
     }
   };
 
   // Change file priority
   const handleFilePriority = async (fileIndex: number, priority: FilePriority) => {
-    setSavingPriority(fileIndex);
+    if (!startAction()) return;
+    setSavingPriority({ index: fileIndex, priority });
     try {
       await window.api.setFilePriority(download.id, fileIndex, priority);
       setFiles(prev =>
         prev.map((f, i) => i === fileIndex ? { ...f, priority } : f)
       );
-    } catch (err: any) {
-      await alert({ message: `${t('tcm.failed')}: ${err?.message}` });
+      setRefreshKey(key => key + 1);
+      onUpdate?.();
+    } catch (err) {
+      await showError(err);
     } finally {
       setSavingPriority(null);
+      actionRef.current = false;
     }
   };
 
   // Add tracker
   const handleAddTracker = async () => {
-    if (!newTrackerUrl.trim()) return;
+    if (!newTrackerUrl.trim() || !startAction()) return;
     setAddingTracker(true);
     try {
       await window.api.addTracker(download.id, newTrackerUrl.trim());
       setNewTrackerUrl('');
-      await loadTrackers();
-    } catch (err: any) {
-      await alert({ message: `${t('tcm.failed')}: ${err?.message}` });
+      setRefreshKey(key => key + 1);
+    } catch (err) {
+      await showError(err);
     } finally {
       setAddingTracker(false);
+      actionRef.current = false;
     }
   };
 
   // Remove tracker
   const handleRemoveTracker = async (url: string) => {
+    if (!startAction()) return;
+    setRemovingTracker(url);
     try {
       await window.api.removeTracker(download.id, url);
       setTrackers(prev => prev.filter(t => t.url !== url));
-    } catch (err: any) {
-      await alert({ message: `${t('tcm.failed')}: ${err?.message}` });
+      setRefreshKey(key => key + 1);
+    } catch (err) {
+      await showError(err);
+    } finally {
+      setRemovingTracker(null);
+      actionRef.current = false;
     }
   };
 
@@ -285,7 +316,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
     }
   };
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
+  const tabs: { id: Tab; label: string; icon: IconName }[] = [
     { id: 'download', label: t('tcm.tabDownload'), icon: 'download' },
     { id: 'seeding', label: t('status.seeding'), icon: 'upload' },
     { id: 'files', label: t('downloads.files'), icon: 'file' },
@@ -307,24 +338,47 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
       }
       ariaLabel={t('tcm.title')}
       size="lg"
+      busy={busy}
+      className={`tcm-modal${tab === 'peers' ? ' tcm-modal-wide' : ''}`}
       bodyClassName="tcm-modal-body"
     >
         {/* Tabs */}
-        <div className="tcm-tabs">
-          {tabs.map(t => (
+        <div className="tcm-tabs" role="tablist" aria-label={t('tcm.title')}>
+          {tabs.map((t, index) => (
             <button
               key={t.id}
+              type="button"
+              role="tab"
+              id={`tcm-tab-${t.id}`}
+              aria-selected={tab === t.id}
+              tabIndex={tab === t.id ? 0 : -1}
+              aria-controls="tcm-panel"
+              disabled={busy}
               className={`tcm-tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => { setTab(t.id); setSavedNotice(false); setPeerMenu(null); }}
+              onKeyDown={event => {
+                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                event.preventDefault();
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
+                  : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+                setTab(tabs[next].id); setSavedNotice(false); setPeerMenu(null);
+                (event.currentTarget.parentElement?.children[next] as HTMLButtonElement)?.focus();
+              }}
             >
-              <Icon name={t.icon as any} size={14} />
+              <Icon name={t.icon} size={14} />
               <span className="tcm-tab-label">{t.label}</span>
             </button>
           ))}
         </div>
 
         {/* Content */}
-        <div className="tcm-body">
+        <div className="tcm-body" id="tcm-panel" role="tabpanel" aria-labelledby={`tcm-tab-${tab}`}>
+          {errors[tab] && <div className="tcm-error" role="alert">
+            <Icon name="alert-circle" size={16} />
+            <span>{t('tcm.loadFailed')}: {errors[tab]}</span>
+            <Button size="sm" variant="secondary" disabled={busy || (tab === 'files' ? loadingFiles : tab === 'trackers' ? loadingTrackers : tab === 'peers' ? !peersLoaded : !piecesLoaded)}
+              onClick={() => setRefreshKey(key => key + 1)}>{t('downloads.retry')}</Button>
+          </div>}
 
           {/* ── DOWNLOAD TAB ── */}
           {tab === 'download' && (
@@ -337,15 +391,9 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                     {t('tcm.sequentialDesc')}
                   </span>
                 </div>
-                <button
-                  className={`tcm-toggle ${sequential ? 'on' : 'off'}`}
-                  onClick={() => setSequential(!sequential)}
-                >
-                  <span className="tcm-toggle-knob" />
-                </button>
+                <Toggle checked={sequential} disabled={busy} ariaLabel={t('tcm.sequential')}
+                  onChange={value => { setSequential(value); setSavedNotice(false); }} />
               </div>
-
-              <div className="tcm-divider" />
 
               <div className="tcm-field">
                 <div className="tcm-field-info">
@@ -357,6 +405,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   variant="secondary"
                   size="sm"
                   loading={moving}
+                  disabled={busy}
                   onClick={() => { void handleMoveData(); }}
                   icon={<Icon name="folder" size={14} />}
                 >
@@ -364,14 +413,12 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                 </Button>
               </div>
 
-              <div className="tcm-divider" />
-
               {/* Per-torrent speed limits were removed: webtorrent 1.9.7 only
                   throttles globally, so they never applied. Use the global /
                   alternative-speed limits in Settings instead. */}
 
               <div className="tcm-actions">
-                <Button variant="primary" loading={savingDownload} onClick={handleSaveDownload}
+                <Button variant="primary" size="sm" loading={savingDownload} disabled={busy || sequential === savedSequential} onClick={handleSaveDownload}
                   icon={<Icon name="check" size={15} />}>
                   {t('tcm.apply')}
                 </Button>
@@ -400,13 +447,16 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="tcm-field-desc">{t('tcm.seedRatioDesc')}</span>
                 </div>
                 <div className="tcm-speed-input">
-                  <input
-                    type="number"
+                  <NumberInput
                     className="tcm-input"
                     min="0"
                     step="0.1"
                     value={seedRatio}
-                    onChange={e => setSeedRatio(parseFloat(e.target.value) || 0)}
+                    disabled={busy}
+                    aria-label={t('tcm.seedRatioLimit')}
+                    aria-invalid={!ratioValid}
+                    placeholder={t('tcm.inherited')}
+                    onValueChange={value => { setSeedRatio(value); setRatioEdited(true); setSavedNotice(false); }}
                   />
                   <span className="tcm-unit">{t('settings.unit.ratio')}</span>
                 </div>
@@ -421,32 +471,38 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="tcm-field-desc">{t('tcm.seedTimeDesc')}</span>
                 </div>
                 <div className="tcm-speed-input">
-                  <input
-                    type="number"
+                  <NumberInput
                     className="tcm-input"
                     min="0"
-                    step="5"
+                    step="1"
                     value={seedTime}
-                    onChange={e => setSeedTime(parseInt(e.target.value) || 0)}
+                    disabled={busy}
+                    aria-label={t('tcm.seedTimeLimit')}
+                    aria-invalid={!timeValid}
+                    placeholder={t('tcm.inherited')}
+                    onValueChange={value => { setSeedTime(value); setTimeEdited(true); setSavedNotice(false); }}
                   />
                   <span className="tcm-unit">{t('settings.unit.min')}</span>
                 </div>
               </div>
 
-              {(seedRatio > 0 || seedTime > 0) && (
+              {((savedLimits.ratio == null && !ratioEdited) || (savedLimits.time == null && !timeEdited)) &&
+                <p className="tcm-inherited">{t('tcm.inheritedHint')}</p>}
+              {!limitsValid && <p className="tcm-error" role="alert">{t('tcm.invalidLimits')}</p>}
+              {limitsValid && (ratioNumber > 0 || timeNumber > 0) && (
                 <div className="tcm-preview-box">
                   <Icon name="zap" size={13} />
                   <span>
                     {t('tcm.seedingStopWhen')}{' '}
-                    {seedRatio > 0 && <strong>{t('settings.unit.ratio')} ≥ {seedRatio}</strong>}
-                    {seedRatio > 0 && seedTime > 0 && <>{' '}{t('settings.or')}{' '}</>}
-                    {seedTime > 0 && <strong>{seedTime} {t('tcm.minElapsed')}</strong>}
+                    {ratioNumber > 0 && <strong>{t('settings.unit.ratio')} ≥ {seedRatio}</strong>}
+                    {ratioNumber > 0 && timeNumber > 0 && <>{' '}{t('settings.or')}{' '}</>}
+                    {timeNumber > 0 && <strong>{seedTime} {t('tcm.minElapsed')}</strong>}
                   </span>
                 </div>
               )}
 
               <div className="tcm-actions">
-                <Button variant="primary" loading={savingSeeding} onClick={handleSaveSeeding}
+                <Button variant="primary" size="sm" loading={savingSeeding} disabled={busy || !limitsValid || (!ratioDirty && !timeDirty)} onClick={handleSaveSeeding}
                   icon={<Icon name="check" size={15} />}>
                   {t('tcm.apply')}
                 </Button>
@@ -462,7 +518,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="spinner" />
                   <span>{t('tcm.loadingFiles')}</span>
                 </div>
-              ) : files.length === 0 ? (
+              ) : files.length === 0 ? (errors.files ? null :
                 <div className="tcm-empty">
                   <Icon name="file" size={32} />
                   <p>{t('tcm.noFiles')}</p>
@@ -486,22 +542,21 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                             </div>
                           </div>
                           <div className="tcm-priority-btns">
-                            {classifyMediaKind(file.path) !== 'other' && <button className="btn btn-ghost tcm-file-external" title={t('external.title')} aria-label={t('external.title')} onClick={() => setExternalFile(file.path)}><Icon name="external-link" size={14} /></button>}
+                            {classifyMediaKind(file.path) !== 'other' && <Button size="sm" variant="ghost" iconOnly disabled={busy} title={t('external.title')} aria-label={t('external.title')} onClick={() => setExternalFile(file.path)} icon={<Icon name="external-link" size={14} />} />}
                             {(['skip', 'low', 'normal', 'high'] as FilePriority[]).map(p => (
-                              <button
+                              <Button
                                 key={p}
+                                size="sm"
+                                variant="secondary"
+                                aria-pressed={priority === p}
                                 className={`tcm-priority-btn ${priority === p ? 'active' : ''}`}
-                                style={priority === p ? { borderColor: FILE_PRIORITY_COLORS[p], color: FILE_PRIORITY_COLORS[p] } : {}}
-                                disabled={savingPriority === idx}
+                                disabled={busy}
+                                loading={savingPriority?.index === idx && savingPriority.priority === p}
                                 onClick={() => handleFilePriority(idx, p)}
                                 title={priorityLabel(p)}
                               >
-                                {savingPriority === idx && priority !== p ? (
-                                  <span className="spinner spinner-xs" />
-                                ) : (
-                                  priorityLabel(p)
-                                )}
-                              </button>
+                                {priorityLabel(p)}
+                              </Button>
                             ))}
                           </div>
                         </div>
@@ -521,7 +576,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="spinner" />
                   <span>{t('tcm.loadingPeers')}</span>
                 </div>
-              ) : peers.length === 0 ? (
+              ) : peers.length === 0 ? (errors.peers ? null :
                 <div className="tcm-empty">
                   <Icon name="users" size={32} />
                   <p>{t('tcm.noPeers')}</p>
@@ -536,7 +591,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <p className="tcm-peers-hint">{t('tcm.ban.hint')}</p>
                   <div className="tcm-peers-table">
                     <div className="tcm-peers-head">
-                      <span className="pc-cc">{t('privacy.dash.location')}</span>
+                      <span className="pc-cc" title={t('tcm.colCountry')}>{t('tcm.colCountry')}</span>
                       <span className="pc-addr">{t('tcm.colAddress')}</span>
                       <span className="pc-client">{t('tcm.colClient')}</span>
                       <span className="pc-flags">{t('tcm.colFlags')}</span>
@@ -582,7 +637,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="spinner" />
                   <span>{t('tcm.loadingFiles')}</span>
                 </div>
-              ) : !pieces || pieces.pieceCount === 0 ? (
+              ) : !pieces || pieces.pieceCount === 0 ? (errors.pieces ? null :
                 <div className="tcm-empty">
                   <Icon name="grid" size={32} />
                   <p>{t('tcm.noPieces')}</p>
@@ -624,6 +679,9 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   className="tcm-tracker-input"
                   placeholder="udp://tracker.example.com:6969/announce"
                   value={newTrackerUrl}
+                  disabled={busy}
+                  aria-label={t('trackers.add')}
+                  maxLength={2048}
                   onChange={e => setNewTrackerUrl(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') handleAddTracker(); }}
                 />
@@ -631,7 +689,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   variant="primary"
                   size="sm"
                   loading={addingTracker}
-                  disabled={!newTrackerUrl.trim()}
+                  disabled={busy || !newTrackerUrl.trim()}
                   onClick={handleAddTracker}
                   icon={<Icon name="plus" size={14} />}
                 >
@@ -641,6 +699,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   variant="secondary"
                   size="sm"
                   loading={reannouncing}
+                  disabled={busy}
                   onClick={() => { void handleReannounce(); }}
                   icon={<Icon name="refresh-cw" size={14} />}
                 >
@@ -653,7 +712,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="spinner" />
                   <span>{t('trackers.loading')}</span>
                 </div>
-              ) : trackers.length === 0 ? (
+              ) : trackers.length === 0 ? (errors.trackers ? null :
                 <div className="tcm-empty">
                   <Icon name="server" size={32} />
                   <p>{t('trackers.empty')}</p>
@@ -661,10 +720,10 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                 </div>
               ) : (
                 <div className="tcm-tracker-list">
-                  {trackers.map((tracker, idx) => {
+                  {trackers.map((tracker) => {
                     const statusLabel = t(`trackers.status.${tracker.status}` as Parameters<typeof t>[0]);
                     return (
-                    <div key={idx} className="tcm-tracker-row">
+                    <div key={tracker.url} className="tcm-tracker-row">
                       <div className="tcm-tracker-info">
                         <span
                           className={`tcm-tracker-dot ${tracker.status}`}
@@ -678,13 +737,14 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                           </span>
                         </div>
                       </div>
-                      <button
-                        className="tcm-tracker-remove"
+                      <Button variant="ghost" size="sm" iconOnly
+                        disabled={busy}
+                        loading={removingTracker === tracker.url}
                         onClick={() => handleRemoveTracker(tracker.url)}
                         title={t('trackers.remove')}
-                      >
-                        <Icon name="trash" size={14} />
-                      </button>
+                        aria-label={t('trackers.remove')}
+                        icon={<Icon name="trash" size={14} />}
+                      />
                     </div>
                     );
                   })}
@@ -692,6 +752,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
               )}
             </div>
           )}
+          {savedNotice && <p className="tcm-saved" role="status"><Icon name="check" size={14} />{t('tcm.saved')}</p>}
         </div>
     </Modal>
     {externalFile && <ExternalPlayerModal downloadId={download.id} relativePath={externalFile} onClose={() => setExternalFile(null)} />}

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import './Select.css';
@@ -16,6 +16,9 @@ interface SelectProps {
   placeholder?: string;
   className?: string;
   disabled?: boolean;
+  id?: string;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
 }
 
 export const Select: React.FC<SelectProps> = ({
@@ -25,28 +28,68 @@ export const Select: React.FC<SelectProps> = ({
   placeholder,
   className = '',
   disabled = false,
+  id,
+  ariaLabel,
+  ariaDescribedBy,
 }) => {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
-  // Open upward when the trigger sits near the bottom of the window, so the
-  // menu is never clipped by the viewport or a scroll container's edge.
-  const [dropUp, setDropUp] = useState(false);
   const selectRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((opt) => opt.value === value);
 
-  const openMenu = () => {
-    const el = selectRef.current;
-    if (el) {
-      const r = el.getBoundingClientRect();
-      const menuH = Math.min(options.length, 6) * 40 + 16; // rough menu height
-      // Measure against the select's OWN window — it may live in a pop-out.
-      const win = el.ownerDocument.defaultView ?? window;
-      const below = win.innerHeight - r.bottom;
-      setDropUp(below < menuH && r.top > below);
+  const openMenu = () => setIsOpen(true);
+
+  const positionMenu = useCallback(() => {
+    const el = selectRef.current, menu = menuRef.current;
+    if (!el || !menu) return;
+    const win = el.ownerDocument.defaultView ?? window;
+    const r = el.getBoundingClientRect(), gap = 6, edge = 8;
+    const below = win.innerHeight - r.bottom - gap - edge, above = r.top - gap - edge;
+    const list = menu.querySelector<HTMLElement>('.custom-select-list');
+    const up = below < Math.min(list?.scrollHeight ?? menu.scrollHeight, 250) + 2 && above > below;
+    const available = Math.max(0, up ? above : below);
+    menu.style.width = `${Math.min(r.width, Math.max(0, win.innerWidth - edge * 2))}px`;
+    menu.style.setProperty('--select-list-max-height', `${Math.max(0, Math.min(250, available - 2))}px`);
+    menu.style.left = `${Math.max(edge, Math.min(r.left, win.innerWidth - menu.offsetWidth - edge))}px`;
+    menu.style.top = `${Math.max(edge, up ? r.top - gap - menu.offsetHeight : r.bottom + gap)}px`;
+    menu.classList.toggle('drop-up', up);
+  }, []);
+
+  // The top layer escapes dialog/scroll clipping while retaining the owning
+  // document, theme inheritance and modal focus trap (unlike a body portal).
+  useLayoutEffect(() => {
+    const menu = menuRef.current, el = selectRef.current;
+    if (!isOpen || !menu || !el) return;
+    menu.setAttribute('popover', 'manual');
+    menu.showPopover(); positionMenu();
+    const win = el.ownerDocument.defaultView ?? window, doc = el.ownerDocument;
+    const observer = new (win as Window & typeof globalThis).ResizeObserver(positionMenu);
+    observer.observe(el);
+    const onScroll = (e: Event) => { if (!menu.contains(e.target as Node)) setIsOpen(false); };
+    win.addEventListener('resize', positionMenu);
+    doc.addEventListener('scroll', onScroll, true);
+    return () => {
+      observer.disconnect(); win.removeEventListener('resize', positionMenu);
+      doc.removeEventListener('scroll', onScroll, true);
+      if (menu.matches(':popover-open')) menu.hidePopover();
+    };
+  }, [isOpen, positionMenu]);
+
+  useLayoutEffect(() => { if (isOpen) positionMenu(); });
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const list = menuRef.current?.querySelector<HTMLElement>('.custom-select-list');
+    const selected = list?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (list && selected) {
+      if (selected.offsetTop < list.scrollTop) list.scrollTop = selected.offsetTop;
+      else if (selected.offsetTop + selected.offsetHeight > list.scrollTop + list.clientHeight)
+        list.scrollTop = selected.offsetTop + selected.offsetHeight - list.clientHeight;
     }
-    setIsOpen(true);
-  };
+  }, [isOpen, value]);
+
+  useEffect(() => { if (disabled) setIsOpen(false); }, [disabled]);
 
   // Handle outside click to close dropdown. Listen on the select's OWN document —
   // inside a pop-out window, main-document listeners never see its events.
@@ -78,9 +121,13 @@ export const Select: React.FC<SelectProps> = ({
       e.preventDefault();
       if (isOpen) setIsOpen(false); else openMenu();
     } else if (e.key === 'Escape') {
+      if (isOpen) { e.preventDefault(); e.stopPropagation(); }
+      setIsOpen(false);
+    } else if (e.key === 'Tab') {
       setIsOpen(false);
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
+      if (!options.length) return;
       if (!isOpen) {
         openMenu();
         return;
@@ -104,7 +151,10 @@ export const Select: React.FC<SelectProps> = ({
       className={`custom-select-container ${className} ${disabled ? 'disabled' : ''}`} 
       ref={selectRef}
     >
-      <div
+      <button
+        id={id}
+        type="button"
+        disabled={disabled}
         className={`custom-select-trigger ${isOpen ? 'open' : ''}`}
         onClick={() => { if (!disabled) { if (isOpen) setIsOpen(false); else openMenu(); } }}
         onKeyDown={handleKeyDown}
@@ -112,8 +162,11 @@ export const Select: React.FC<SelectProps> = ({
         role="button"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        aria-disabled={disabled}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
       >
-        <div className="custom-select-value">
+        <span className="custom-select-value">
           {selectedOption ? (
             <>
               {selectedOption.icon && <Icon name={selectedOption.icon as any} size={16} />}
@@ -122,14 +175,14 @@ export const Select: React.FC<SelectProps> = ({
           ) : (
             <span className="placeholder">{placeholder ?? t('select.placeholder')}</span>
           )}
-        </div>
-        <div className="custom-select-icon">
+        </span>
+        <span className="custom-select-icon">
           <Icon name="chevron-down" size={16} />
-        </div>
-      </div>
+        </span>
+      </button>
 
       {isOpen && (
-        <div className={`custom-select-dropdown${dropUp ? ' drop-up' : ''}`}>
+        <div ref={menuRef} className="custom-select-dropdown">
           <ul role="listbox" className="custom-select-list">
             {options.map((option) => (
               <li

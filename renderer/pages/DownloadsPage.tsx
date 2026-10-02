@@ -1406,6 +1406,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       {/* Torrent Control Modal */}
       {controlModalDownload && (
         <TorrentControlModal
+          key={controlModalDownload.id}
           download={controlModalDownload}
           onClose={() => setControlModalId(null)}
           onUpdate={loadDownloads}

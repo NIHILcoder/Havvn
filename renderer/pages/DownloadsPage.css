@@ -567,7 +567,12 @@ input[type="checkbox"].download-checkbox {
 
 .trow-sub-cat {
   text-transform: capitalize;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.trow-sub > span:first-child, .trow-sub-pct { flex-shrink: 0; white-space: nowrap; }
 
 /* Progress column */
 .trow-prog {
@@ -770,6 +775,59 @@ input[type="checkbox"].download-checkbox {
   @media (hover: none) {
     .trow-main { grid-template-columns: 40px minmax(0, 1fr); }
   }
+}
+
+/* The real compact row reserves the larger of the action/readout widths.
+   Both layers occupy that slot, so hover/focus cannot cover title or progress. */
+.download-item-with-tail .trow-main {
+  grid-template-columns: 40px minmax(0, 1fr) 200px;
+}
+.trow-tail {
+  display: grid;
+  flex: none;
+  min-width: 400px;
+  margin-right: var(--space-3);
+}
+.trow-readouts, .trow-tail .trow-actions { grid-area: 1 / 1; }
+.trow-readouts {
+  display: grid;
+  grid-template-columns: 132px 100px;
+  gap: var(--space-4);
+  align-items: center;
+  justify-content: end;
+}
+.trow-tail .trow-actions {
+  position: static;
+  transform: none;
+  padding: 0;
+  background: none;
+  justify-content: flex-end;
+}
+.trow-tail .trow-actions .btn { white-space: nowrap; }
+@container dl (max-width: 900px) {
+  .download-item-with-tail .trow-main { grid-template-columns: 40px minmax(0, 1fr); }
+  .download-item-with-tail .trow-prog { display: none; }
+  .download-item-with-tail .trow-sub-pct { display: inline; }
+}
+@media (max-width: 1080px) {
+  .download-item-with-tail .trow-main { grid-template-columns: 40px minmax(0, 1fr); }
+}
+@container dl (max-width: 660px) {
+  .trow-tail { min-width: 0; }
+  .trow-tail .trow-readouts { grid-template-columns: 100px; }
+  .trow-tail .trow-rate, .trow-action-label { display: none; }
+  .trow-tail .trow-actions .btn { width: 28px; min-width: 28px; padding: 0; gap: 0; }
+  .trow-tail .trow-actions { gap: var(--space-1); }
+}
+@media (max-width: 800px) {
+  .trow-tail { min-width: 0; }
+  .trow-tail .trow-readouts { grid-template-columns: 100px; }
+  .trow-tail .trow-rate, .trow-action-label { display: none; }
+  .trow-tail .trow-actions .btn { width: 28px; min-width: 28px; padding: 0; gap: 0; }
+  .trow-tail .trow-actions { gap: var(--space-1); }
+}
+@media (hover: none) {
+  .download-item-with-tail .trow-readouts { visibility: hidden; }
 }
 
 .error-text {

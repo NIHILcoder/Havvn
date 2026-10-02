@@ -7,6 +7,7 @@
  */
 import React from 'react';
 import { Button, Icon, IconName } from '../../components';
+import { NumberInput } from '../../components/NumberInput';
 import { useTranslation } from '../../utils/i18nContext';
 import './controls.css';
 
@@ -69,15 +70,14 @@ export const NumberField: React.FC<{
   ariaLabel?: string;
 }> = ({ value, onChange, unit, min, max, step, width, ariaLabel }) => (
   <span className="stg-num">
-    <input
-      type="number"
+    <NumberInput
       value={value}
       min={min}
       max={max}
       step={step}
       aria-label={ariaLabel}
       style={width ? { width } : undefined}
-      onChange={(e) => onChange(e.target.value === '' ? 0 : parseFloat(e.target.value) || 0)}
+      onValueChange={(value) => onChange(value === '' ? 0 : parseFloat(value) || 0)}
     />
     {unit && <span className="stg-num-u">{unit}</span>}
   </span>

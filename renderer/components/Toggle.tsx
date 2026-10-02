@@ -13,6 +13,8 @@ interface ToggleProps {
   label?: string;
   /** Screen-reader-only name — use inside SettingRow, where the row already shows the label. */
   ariaLabel?: string;
+  id?: string;
+  ariaDescribedBy?: string;
   size?: 'small' | 'medium' | 'large';
 }
 
@@ -22,6 +24,8 @@ export const Toggle: React.FC<ToggleProps> = ({
   disabled = false,
   label,
   ariaLabel,
+  id,
+  ariaDescribedBy,
   size = 'medium',
 }) => {
   const handleClick = () => {
@@ -39,17 +43,22 @@ export const Toggle: React.FC<ToggleProps> = ({
 
   return (
     <div className={`toggle-container ${disabled ? 'disabled' : ''}`}>
-      <div
+      <button
+        id={id}
+        type="button"
+        disabled={disabled}
         className={`toggle-switch ${size} ${checked ? 'active' : ''} ${disabled ? 'disabled' : ''}`}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         role="switch"
         aria-checked={checked}
+        aria-disabled={disabled}
         aria-label={ariaLabel ?? label}
+        aria-describedby={ariaDescribedBy}
         tabIndex={disabled ? -1 : 0}
       >
         <span className="toggle-slider" />
-      </div>
+      </button>
       {label && <span className="toggle-label">{label}</span>}
     </div>
   );

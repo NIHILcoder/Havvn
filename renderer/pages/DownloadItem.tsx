@@ -103,7 +103,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
 
     return (
       <div
-        className={`download-item download-item-compact download-st-${status} ${isSelected ? 'selected' : ''}`}
+        className={`download-item download-item-compact download-item-with-tail download-st-${status} ${isSelected ? 'selected' : ''}`}
         onContextMenu={(e) => onContextMenu?.(e, download.id)}
       >
         {onSelect && (
@@ -156,96 +156,98 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             </div>
             <ProgressBar value={progress} variant={getProgressVariant()} />
           </div>
-          <div className="trow-rate">
-            {status === 'downloading' ? (
-              <>
-                <span className="trow-rate-main rate-down">↓ {formatSpeed(currentStats.downSpeedBps)}</span>
-                <span className="trow-rate-sub">
-                  {currentStats.peers} {t('downloads.peersShort')}
-                  {currentStats.seeds > 0 && ` · ${currentStats.seeds} ${t('downloads.seedsShort')}`}
-                </span>
-              </>
-            ) : status === 'seeding' ? (
-              <>
-                <span className="trow-rate-main rate-up">↑ {formatSpeed(currentStats.upSpeedBps)}</span>
-                <span className="trow-rate-sub">{currentStats.peers} {t('downloads.peersShort')}</span>
-              </>
-            ) : (
-              <span className="trow-rate-sub">—</span>
-            )}
-          </div>
-          <div className="trow-status">
-            <StatusBadge status={status} showIcon={false} />
-          </div>
         </div>
+        <div className="trow-tail">
+          <div className="trow-readouts">
+            <div className="trow-rate">
+              {status === 'downloading' ? (
+                <>
+                  <span className="trow-rate-main rate-down">↓ {formatSpeed(currentStats.downSpeedBps)}</span>
+                  <span className="trow-rate-sub">
+                    {currentStats.peers} {t('downloads.peersShort')}
+                    {currentStats.seeds > 0 && ` · ${currentStats.seeds} ${t('downloads.seedsShort')}`}
+                  </span>
+                </>
+              ) : status === 'seeding' ? (
+                <>
+                  <span className="trow-rate-main rate-up">↑ {formatSpeed(currentStats.upSpeedBps)}</span>
+                  <span className="trow-rate-sub">{currentStats.peers} {t('downloads.peersShort')}</span>
+                </>
+              ) : (
+                <span className="trow-rate-sub">—</span>
+              )}
+            </div>
+            <div className="trow-status">
+              <StatusBadge status={status} showIcon={false} />
+            </div>
+          </div>
 
-        {/* Hover-reveal actions (always visible on touch): Share + the one
-            state action, then the icon utilities. Everything else lives in
-            the ⋯ / right-click menu. */}
-        <div className="trow-actions">
-          {onShare && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="share-2" size={13} />}
-              onClick={() => onShare(download.id)}
-              title={t('downloads.share')}
-            >
-              {t('downloads.share')}
-            </Button>
-          )}
-          {(status === 'downloading' || status === 'queued') && (
-            <Button variant="ghost" size="sm" onClick={() => onPause(download.id)}>
-              {t('downloads.pause')}
-            </Button>
-          )}
-          {status === 'seeding' && (
-            <Button variant="ghost" size="sm" onClick={() => onStopSeeding(download.id)} title={t('downloads.stopSeeding')}>
-              {t('downloads.stop')}
-            </Button>
-          )}
-          {(status === 'paused' || status === 'completed') && (
-            <Button variant="ghost" size="sm" onClick={() => onResume(download.id)}>
-              {t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}
-            </Button>
-          )}
-          {status === 'error' && (
-            <Button variant="ghost" size="sm" onClick={() => onRetry(download.id)}>
-              {t('downloads.retry')}
-            </Button>
-          )}
-          {canWatch && (
+          {/* Readouts and actions share a reserved area, never the progress bar. */}
+          <div className="trow-actions">
+            {onShare && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Icon name="share-2" size={13} />}
+                onClick={() => onShare(download.id)}
+                title={t('downloads.share')}
+              >
+                <span className="trow-action-label">{t('downloads.share')}</span>
+              </Button>
+            )}
+            {(status === 'downloading' || status === 'queued') && (
+              <Button variant="ghost" size="sm" icon={<Icon name="pause" size={13} />} title={t('downloads.pause')} onClick={() => onPause(download.id)}>
+                <span className="trow-action-label">{t('downloads.pause')}</span>
+              </Button>
+            )}
+            {status === 'seeding' && (
+              <Button variant="ghost" size="sm" icon={<Icon name="stop" size={13} />} onClick={() => onStopSeeding(download.id)} title={t('downloads.stopSeeding')}>
+                <span className="trow-action-label">{t('downloads.stop')}</span>
+              </Button>
+            )}
+            {(status === 'paused' || status === 'completed') && (
+              <Button variant="ghost" size="sm" icon={<Icon name={status === 'completed' || progress >= 1 ? 'upload' : 'play'} size={13} />} title={t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')} onClick={() => onResume(download.id)}>
+                <span className="trow-action-label">{t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}</span>
+              </Button>
+            )}
+            {status === 'error' && (
+              <Button variant="ghost" size="sm" icon={<Icon name="refresh" size={13} />} title={t('downloads.retry')} onClick={() => onRetry(download.id)}>
+                <span className="trow-action-label">{t('downloads.retry')}</span>
+              </Button>
+            )}
+            {canWatch && (
+              <Button
+                variant="ghost"
+                size="sm"
+                iconOnly
+                className="download-watch-btn"
+                icon={<Icon name="play" size={14} />}
+                onClick={() => onStream!(download.id)}
+                title={watchLabel}
+              />
+            )}
+            {(status === 'completed' || status === 'seeding') && (
+              <Button
+                variant="ghost"
+                size="sm"
+                iconOnly
+                icon={<Icon name="folder" size={14} />}
+                onClick={() => onOpenFolder(download.savePath)}
+                title={t('downloads.openFolder')}
+              />
+            )}
             <Button
               variant="ghost"
               size="sm"
               iconOnly
-              className="download-watch-btn"
-              icon={<Icon name="play" size={14} />}
-              onClick={() => onStream!(download.id)}
-              title={watchLabel}
+              icon={<Icon name="more-horizontal" size={14} />}
+              onClick={(e) => {
+                e.stopPropagation();
+                onContextMenu?.(e, download.id);
+              }}
+              title={t('downloads.more')}
             />
-          )}
-          {(status === 'completed' || status === 'seeding') && (
-            <Button
-              variant="ghost"
-              size="sm"
-              iconOnly
-              icon={<Icon name="folder" size={14} />}
-              onClick={() => onOpenFolder(download.savePath)}
-              title={t('downloads.openFolder')}
-            />
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            iconOnly
-            icon={<Icon name="more-horizontal" size={14} />}
-            onClick={(e) => {
-              e.stopPropagation();
-              onContextMenu?.(e, download.id);
-            }}
-            title={t('downloads.more')}
-          />
+          </div>
         </div>
       </div>
     );
