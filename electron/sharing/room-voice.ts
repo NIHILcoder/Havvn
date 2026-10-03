@@ -21,6 +21,9 @@ import { RNNOISE_WASM_BASE64 } from './voice/rnnoise-wasm';
 import { RNNOISE_WORKLET_SOURCE } from './voice/rnnoise-worklet';
 import { ScreenAec } from './voice/screen-aec';
 
+import { VoiceLinkRecovery, type VoiceLinkState } from '../../shared/room-voice-recovery';
+import { acceptVoiceStamp, ROOM_VOICE_PEERS, ROOM_VOICE_ROSTER, voiceMeshMembers } from '../../shared/room-voice-policy';
+
 export type SignalKind = 'offer' | 'answer' | 'ice';
 
 // Screen-share echo-canceller FIR length (samples @ the AEC context rate, ~48k).
@@ -113,15 +116,19 @@ export type VoiceQuality = 'good' | 'fair' | 'poor';
 export interface VoiceParticipant {
   memberId: string;
   muted: boolean;
-  /** Display-only (rides voice-state OUTSIDE the signature for ≤2.24 compat). */
+  /** Authenticated by voice-state-v2; legacy peers carry a cosmetic field. */
   deafened?: boolean;
   speaking: boolean;
   sharing: boolean;        // this member is sharing their screen
   quality?: VoiceQuality;  // OUR link quality to this peer (getStats RTT + loss)
   reconnecting?: boolean;  // the link dropped and is re-establishing (ICE)
+  connection?: VoiceLinkState;
+  reconnectAttempts?: number;
+  waitingForSlot?: boolean;
 }
 
 export interface VoiceState {
+  micUnavailable?: boolean;
   inVoice: boolean;
   muted: boolean;
   deafened: boolean;
@@ -134,22 +141,9 @@ export interface VoiceState {
 // Mesh cap: each participant holds a PC to every other, so this bounds fan-out
 // AND caps how many RTCPeerConnections a hostile member can force us to allocate
 // (they can mint unlimited valid identities). ~8 others is the friend-scale ceiling.
-const MAX_VOICE_PEERS = 8;
+const MAX_VOICE_PEERS = ROOM_VOICE_PEERS;
 const MAX_PENDING_ICE = 64;  // per-peer ICE buffer cap (real ICE is a few dozen) — bounds a flood-before-offer
-// Anti-replay stamps (lastStateAt/lastShareAt) are kept across a member's departure
-// so a captured old signed presence can't resurrect them — FIFO-capped so a member
-// minting endless identities can't grow the maps without bound.
-const MAX_ANTIREPLAY = 512;
-
-/** Evict oldest (front) entries until the map is under `max`. Insertion order = age
- *  (callers re-insert on refresh), so the front is the least-recently-stamped. */
-function capMap<K, V>(m: Map<K, V>, max: number): void {
-  while (m.size >= max) {
-    const oldest = m.keys().next().value;
-    if (oldest === undefined) break;
-    m.delete(oldest);
-  }
-}
+// Anti-replay floors survive departures and fail closed at the shared identity cap.
 
 // Screenshare quality caps. The mesh leg is real upstream bandwidth (per watching
 // viewer); the loopback leg is host-local, so its cap only bounds encoder CPU.
@@ -158,7 +152,7 @@ const SHARE_LOOPBACK_MAX_BITRATE = 10_000_000;
 const SHARE_MAX_FRAMERATE = 15;
 
 /** Best-effort sender bitrate/framerate cap (screen video legs). */
-async function applyShareCaps(sender: RTCRtpSender, maxBitrate: number): Promise<void> {
+async function applyShareCaps(sender: RTCRtpSender, maxBitrate: number, failed?: () => void): Promise<void> {
   try {
     const p = sender.getParameters();                       // reuse — carries transactionId
     (p as any).degradationPreference = 'maintain-resolution'; // pairs with contentHint 'detail' (text stays sharp)
@@ -166,7 +160,7 @@ async function applyShareCaps(sender: RTCRtpSender, maxBitrate: number): Promise
     p.encodings[0].maxBitrate = maxBitrate;
     (p.encodings[0] as any).maxFramerate = SHARE_MAX_FRAMERATE;
     await sender.setParameters(p);
-  } catch { /* caps are best-effort */ }
+  } catch { failed?.(); /* encoder caps are best-effort, surface mesh failures */ }
 }
 
 // Voice-link quality poll cadence + thresholds (RTT ms / loss fraction). A poll
@@ -225,6 +219,8 @@ class Vad {
     if (Number.isFinite(t)) this.threshold = Math.max(1, Math.min(128, t));
   }
 
+  resume(): void { try { void this.ctx?.resume().catch(() => {}); } catch { /* unavailable context */ } }
+
   stop(): void {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     try { this.ctx?.close(); } catch { /* ignore */ }
@@ -236,6 +232,7 @@ class Vad {
 /** One media connection to one other voice participant (perfect negotiation). */
 class MediaPeer {
   private pc: RTCPeerConnection;
+  readonly recovery: VoiceLinkRecovery;
   private makingOffer = false;
   private ignoreOffer = false;
   private settingRemoteAnswer = false;
@@ -261,11 +258,12 @@ class MediaPeer {
     localStream: MediaStream,
     private onSpeaking: (s: boolean) => void,
     private onRemoteShare: (track: MediaStreamTrack | null, stream: MediaStream | null) => void,
-    private onFailed: () => void,
+    private onConnectionChange: () => void,
     private onMicStream: (stream: MediaStream | null) => void,
     private now: () => number,
   ) {
     this.pc = new RTCPeerConnection({ iceServers: a.iceServers });
+    this.recovery = new VoiceLinkRecovery(() => this.pc.restartIce(), this.onConnectionChange, this.now, () => this.pc.connectionState, () => Math.floor(Math.random() * 250));
     for (const track of localStream.getTracks()) this.pc.addTrack(track, localStream);
     // Adding our track fires negotiationneeded → we offer. Both sides do this on
     // connect; glare is resolved below (impolite wins, polite rolls back).
@@ -273,20 +271,22 @@ class MediaPeer {
       try {
         this.makingOffer = true;
         await this.pc.setLocalDescription();
-        this.a.sendSignal(this.id, 'offer', this.pc.localDescription);
+        if (!this.closed) this.a.sendSignal(this.id, 'offer', this.pc.localDescription);
       } catch (e) { this.a.log('voice negotiation failed: ' + String(e)); }
       finally { this.makingOffer = false; }
     };
-    // A PC can go dead asymmetrically (our side torn down while the peer kept
-    // theirs — the fresh PC then can't complete against their stale one, so its
-    // DTLS/ICE ultimately fails). Reap it so the session re-creates a clean pair.
+    // Keep the existing media connection and restart ICE with a bounded budget.
+    // Short disconnects get a grace period; leave() cancels all recovery timers.
     this.pc.onconnectionstatechange = () => {
       const s = this.pc.connectionState;
+      if (s === 'connected' && this.shareTransceiver) this.setScreenBitrate(this.screenBitrate / 1000);
       if (s === 'connected') this.everConnected = true; // arms the "reconnecting" state (vs a first-time connect)
-      if (!this.closed && s === 'failed') this.onFailed();
+      if (!this.closed) this.recovery.update(s);
     };
-    this.pc.onicecandidate = ({ candidate }) => { if (candidate) this.a.sendSignal(this.id, 'ice', candidate); };
+    this.pc.oniceconnectionstatechange = () => { if (!this.closed) this.recovery.update(this.pc.connectionState); };
+    this.pc.onicecandidate = ({ candidate }) => { if (!this.closed && candidate) this.a.sendSignal(this.id, 'ice', candidate); };
     this.pc.ontrack = ({ track, streams }) => {
+      if (this.closed) return;
       const stream = streams[0];
       if (!stream) return;
       if (track.kind === 'video') {
@@ -358,7 +358,9 @@ class MediaPeer {
         this.ignoreOffer = !this.polite && collision;
         if (this.ignoreOffer) return; // impolite peer keeps its own offer
         this.settingRemoteAnswer = kind === 'answer';
-        await this.pc.setRemoteDescription(data); // polite peer: implicit rollback happens here
+        try { await this.pc.setRemoteDescription(data); // polite peer: implicit rollback happens here
+        } finally { this.settingRemoteAnswer = false; }
+        if (this.closed) return;
         this.settingRemoteAnswer = false;
         // Flush candidates that arrived before this description (signaling rides an
         // UNORDERED relay flood, so trickled ICE can beat the offer/answer).
@@ -371,7 +373,7 @@ class MediaPeer {
           // self-heals a direction flip lost to a glare rollback.
           this.applyRecvPolicy();
           await this.pc.setLocalDescription();
-          this.a.sendSignal(this.id, 'answer', this.pc.localDescription);
+          if (!this.closed) this.a.sendSignal(this.id, 'answer', this.pc.localDescription);
           return;
         }
       } else if (kind === 'ice') {
@@ -379,7 +381,9 @@ class MediaPeer {
         try { await this.pc.addIceCandidate(data); }
         catch (e) { if (!this.ignoreOffer) throw e; } // a dropped candidate after an ignored offer is expected
       }
-    } catch (e) { this.a.log('voice signal error: ' + String(e)); }
+    } catch (e) { this.a.log('voice signal error: ' + String(e)); } finally {
+      if (!this.closed && this.pc.signalingState === 'stable' && this.pc.connectionState === 'connected') this.recovery.update('connected');
+    }
   }
 
   setVolume(v: number): void {
@@ -419,10 +423,17 @@ class MediaPeer {
   }
 
   /** Hot-swap the outgoing audio track (device change in the no-pipeline fallback). */
+  resume(): void {
+    if (this.closed) return;
+    this.vad?.resume();
+    void this.audioEl?.play().catch(() => {});
+    void this.shareAudioEl?.play().catch(() => {});
+  }
+
   replaceAudioTrack(track: MediaStreamTrack): void {
     if (this.closed) return;
     for (const sender of this.pc.getSenders()) {
-      if (sender.track?.kind === 'audio') void sender.replaceTrack(track).catch(() => { /* ignore */ });
+      if (sender.track?.kind === 'audio' && sender !== this.shareAudioTransceiver?.sender) void sender.replaceTrack(track).catch(() => { /* ignore */ });
     }
   }
 
@@ -432,10 +443,21 @@ class MediaPeer {
    *  sharing, is the very m-line RECEIVING their screen. Recycling it (then forcing
    *  'sendonly') would kill both shares on this leg. addTransceiver always makes a
    *  fresh m-line, leaving their incoming share untouched. */
+  private screenBitrate = SHARE_MESH_MAX_BITRATE;
+  private screenCapsChain: Promise<void> = Promise.resolve();
+  setScreenBitrate(kbps: number): void {
+    this.screenBitrate = kbps * 1000;
+    const transceiver = this.shareTransceiver;
+    if (transceiver) this.screenCapsChain = this.screenCapsChain.then(async () => {
+      if (this.closed || this.shareTransceiver !== transceiver) return;
+      await applyShareCaps(transceiver.sender, this.screenBitrate, () => { if (this.pc.connectionState === 'connected') this.a.warn('Could not apply the screen video bitrate limit.'); });
+    });
+  }
+
   addShareTrack(track: MediaStreamTrack, stream: MediaStream): void {
     if (this.closed || this.shareTransceiver) return;
     this.shareTransceiver = this.pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-    void applyShareCaps(this.shareTransceiver.sender, SHARE_MESH_MAX_BITRATE);
+    this.setScreenBitrate(this.screenBitrate / 1000);
   }
 
   /** Stop sending our screen track. transceiver.stop() (not removeTrack) marks the
@@ -522,6 +544,7 @@ class MediaPeer {
 
   close(): void {
     this.closed = true;
+    this.recovery.close();
     this.vad?.stop(); this.vad = null;
     try { this.pc.close(); } catch { /* ignore */ }
     if (this.audioEl) { try { this.audioEl.srcObject = null; } catch { /* ignore */ } this.audioEl = null; }
@@ -611,7 +634,8 @@ class ScreenForwarder {
 
 export class VoiceSession {
   private active = false;
-  private joining = false; // getUserMedia in flight (re-entrancy guard)
+  private joining = false; // covers capture AND async pipeline initialization
+  private captureGeneration = 0;
   private muted = false;
   private deafened = false;
   private mutedBeforeDeafen = false; // restore this exact mute state on un-deafen
@@ -626,6 +650,8 @@ export class VoiceSession {
   private rnnoiseNode: AudioWorkletNode | null = null; // RNNoise NS worklet ('enhanced' mode), inserted src→rnnoise→gain
   private rnnoiseModuleAdded = false;             // audioWorklet.addModule('rnnoise') done for the CURRENT audioCtx
   private rnnoiseWarned = false;                   // already toasted "enhanced NS unavailable" this session (don't spam)
+  private deviceRevision = 0;
+  private capturedDeviceRevision = 0;
   private curCaptureKey = '';                     // captureKey() the current rawStream was REQUESTED with
   private usingFallback = false;                   // the preferred input device was absent — running on the default
   private captureBroken = false;                   // recapture failed with NO device at all — retry on the next devicechange
@@ -662,12 +688,19 @@ export class VoiceSession {
     private getSettings: () => VoiceSettings = defaultVoiceSettings,
   ) {}
 
+  private screenBitrateKbps = SHARE_MESH_MAX_BITRATE / 1000;
+  setScreenBitrate(kbps: number): void {
+    if (!Number.isInteger(kbps) || kbps < 250 || kbps > 20_000) throw new Error('Invalid screen bitrate');
+    this.screenBitrateKbps = kbps;
+    for (const peer of this.peers.values()) peer.setScreenBitrate(kbps);
+  }
+
   isActive(): boolean { return this.active; }
 
   /** Capture the configured mic. If the chosen device is gone, falls back to the
    *  system default WITHOUT clearing the preference (it may come back) and returns
    *  the fallback in `warning` for the UI to toast. */
-  private async captureMic(s: VoiceSettings): Promise<{ stream: MediaStream; warning?: string }> {
+  private async captureMic(s: VoiceSettings, generation = this.captureGeneration): Promise<{ stream: MediaStream; warning?: string }> {
     const base = {
       echoCancellation: s.echoCancellation,
       noiseSuppression: browserNs(s), // browser DSP only in 'standard'; 'enhanced' uses RNNoise, 'off' uses neither
@@ -676,7 +709,10 @@ export class VoiceSession {
     if (s.inputDeviceId) {
       try {
         return { stream: await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: s.inputDeviceId } } }) };
-      } catch { /* chosen mic unplugged/unavailable — fall through to default */ }
+      } catch (e) {
+        if (generation !== this.captureGeneration) throw e;
+        /* chosen mic unplugged/unavailable — fall through to default */
+      }
     }
     const stream = await navigator.mediaDevices.getUserMedia({ audio: base });
     return { stream, warning: s.inputDeviceId ? 'Selected microphone is unavailable — using the system default.' : undefined };
@@ -687,22 +723,24 @@ export class VoiceSession {
    *  if the worklet/WASM can't load. RNNoise wants 48kHz — the context is built at
    *  48kHz, so no per-node resampling. */
   private async ensureRnnoiseNode(): Promise<AudioWorkletNode | null> {
-    if (!this.audioCtx) return null;
+    const ctx = this.audioCtx;
+    if (!ctx) return null;
     if (this.rnnoiseNode) return this.rnnoiseNode;
     try {
       if (!this.rnnoiseModuleAdded) {
         const url = URL.createObjectURL(new Blob([RNNOISE_WORKLET_SOURCE], { type: 'application/javascript' }));
-        try { await this.audioCtx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+        try { await ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+        if (this.audioCtx !== ctx) return null;
         this.rnnoiseModuleAdded = true;
       }
-      const node = new AudioWorkletNode(this.audioCtx, 'rnnoise', {
+      const node = new AudioWorkletNode(ctx, 'rnnoise', {
         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
         channelCount: 1, channelCountMode: 'explicit', channelInterpretation: 'speakers',
       });
       // If the WASM fails to instantiate INSIDE the worklet, the processor passes
       // audio through untouched (working but unsuppressed) — warn so it isn't silent.
       node.port.onmessage = (e: MessageEvent) => {
-        if ((e.data as { type?: string })?.type === 'error') {
+        if (this.audioCtx === ctx && (e.data as { type?: string })?.type === 'error') {
           this.a.log('rnnoise worklet init error: ' + String((e.data as { message?: string }).message));
           this.a.warn('Enhanced noise suppression failed to start — using none.');
         }
@@ -714,7 +752,7 @@ export class VoiceSession {
       this.rnnoiseNode = node;
       return node;
     } catch (e) {
-      this.a.log('rnnoise worklet load failed: ' + String(e));
+      if (this.audioCtx === ctx) this.a.log('rnnoise worklet load failed: ' + String(e));
       return null;
     }
   }
@@ -724,17 +762,19 @@ export class VoiceSession {
    *  the source's old fan-out first. RNNoise unavailability silently degrades to a
    *  direct src→gain (browser 'standard' NS is separately requested at capture time). */
   private async connectGraph(mode: NoiseSuppressionMode): Promise<void> {
-    if (!this.audioCtx || !this.srcNode || !this.gainNode) return;
-    try { this.srcNode.disconnect(); } catch { /* ignore */ }
+    const ctx = this.audioCtx, src = this.srcNode, gain = this.gainNode;
+    if (!ctx || !src || !gain) return;
+    try { src.disconnect(); } catch { /* ignore */ }
     if (this.rnnoiseNode) { try { this.rnnoiseNode.disconnect(); } catch { /* ignore */ } }
     let rnnoiseFailed = false;
     if (mode === 'enhanced') {
       const node = await this.ensureRnnoiseNode();
+      if (this.audioCtx !== ctx || this.srcNode !== src || this.gainNode !== gain) return;
       // ensureRnnoiseNode awaits addModule — a leave() may have torn the graph down
       // meanwhile; bail if so (the caller re-checks active too).
-      if (node && this.audioCtx && this.srcNode && this.gainNode) {
-        this.srcNode.connect(node);
-        node.connect(this.gainNode);
+      if (node) {
+        src.connect(node);
+        node.connect(gain);
         this.rnnoiseWarned = false; // a later failure should warn again
         return;
       }
@@ -745,7 +785,7 @@ export class VoiceSession {
     // fallback there is NO browser NS either (captureMic requested it off), so the
     // honest message is "none", not "standard". Warn once per session (a persistently
     // failing addModule would otherwise re-warn on every capture-key change).
-    this.srcNode.connect(this.gainNode);
+    src.connect(gain);
     if (rnnoiseFailed && !this.rnnoiseWarned) {
       this.rnnoiseWarned = true;
       this.a.warn('Enhanced noise suppression is unavailable — noise suppression is off.');
@@ -757,8 +797,11 @@ export class VoiceSession {
    *  stream is sent directly (gain then has no effect). AudioContext is pinned to 48kHz
    *  for RNNoise (Chromium resamples the mic input to the context rate). */
   private async buildPipeline(raw: MediaStream, s: VoiceSettings): Promise<MediaStream> {
+    let ctx: AudioContext | null = null;
+    let output: MediaStream | null = null;
     try {
-      this.audioCtx = new AudioContext({ sampleRate: 48000 });
+      ctx = new AudioContext({ sampleRate: 48000 });
+      this.audioCtx = ctx;
       this.rnnoiseNode = null;
       this.rnnoiseModuleAdded = false;
       void this.audioCtx.resume().catch(() => { /* ignore */ });
@@ -766,11 +809,17 @@ export class VoiceSession {
       this.gainNode = this.audioCtx.createGain();
       this.gainNode.gain.value = s.inputGain;
       const dest = this.audioCtx.createMediaStreamDestination();
+      output = dest.stream;
       this.gainNode.connect(dest);
       await this.connectGraph(s.noiseSuppressionMode);
+      if (this.audioCtx !== ctx) output.getTracks().forEach((t) => t.stop());
       return dest.stream;
     } catch {
-      this.audioCtx = null; this.srcNode = null; this.gainNode = null; this.rnnoiseNode = null;
+      output?.getTracks().forEach((t) => t.stop());
+      if (this.audioCtx === ctx) {
+        this.audioCtx = null; this.srcNode = null; this.gainNode = null; this.rnnoiseNode = null;
+      }
+      try { void ctx?.close().catch(() => { /* already closed */ }); } catch { /* ignore */ }
       return raw;
     }
   }
@@ -783,51 +832,69 @@ export class VoiceSession {
       throw new Error('Microphone unavailable (the room engine is not a secure context).');
     }
     const s = this.getSettings();
+    const generation = ++this.captureGeneration;
+    const deviceRevision = this.deviceRevision;
     this.joining = true;
     let warning: string | undefined;
     try {
-      const cap = await this.captureMic(s);
+      const cap = await this.captureMic(s, generation);
+      if (generation !== this.captureGeneration) { cap.stream.getTracks().forEach((t) => t.stop()); return; }
       this.rawStream = cap.stream;
       warning = cap.warning;
-    } finally { this.joining = false; }
-    this.curCaptureKey = captureKey(s);
-    this.usingFallback = !!warning;
-    this.watchRawTrack(); // a mid-call unplug ends the track — recapture instead of going silent
-    this.masterVolume = s.masterVolume;
-    this.localStream = await this.buildPipeline(this.rawStream, s);
-    this.active = true;
-    // muted/deafened deliberately PERSIST across leave/rejoin within the session
-    // (Discord convention — leaving muted and hopping back shouldn't hot-mic you).
-    this.pttActive = false;
-    this.vadOpen = false;
-    this.applyTransmit();
-    // Run VAD on an always-open CLONE of the sent (post-gain) track: gating the
-    // SENT track via enabled=false makes it emit silence, which would starve a VAD
-    // reading that same track ('vad' mode would latch shut). The clone shares the
-    // source but keeps its own enabled=true, so voice-activity gating can re-open.
-    // Force-enable it: a clone inherits the source track's enabled state, so
-    // rejoining while MUTED would otherwise clone a disabled (silent) track and the
-    // VAD would never open after un-muting.
-    const clone = this.localStream.getAudioTracks()[0]?.clone();
-    if (clone) clone.enabled = true;
-    this.vadStream = clone ? new MediaStream([clone]) : null;
-    this.localVad = this.vadStream
-      ? new Vad(this.vadStream, (vs) => this.onVad(vs), this.now, s.vadThreshold)
-      : null;
-    this.a.announce(true, this.muted, this.nextAt(), this.deafened);
-    for (const id of this.roster.keys()) this.ensurePeer(id); // connect to everyone already here
-    if (!this.statsTimer) this.statsTimer = setInterval(() => { void this.pollQuality(); }, QUALITY_POLL_MS);
-    this.a.onChange();
-    // Settings may have changed while getUserMedia was in flight (the engine's
-    // room-cmd handler is not serialized across awaits). Reconcile BOTH the live
-    // knobs (gain/volume/VAD — built above from the pre-await snapshot) and the
-    // capture config against the latest settings.
-    this.applySettings();
-    return warning;
+      this.curCaptureKey = captureKey(s);
+      this.capturedDeviceRevision = deviceRevision;
+      this.usingFallback = !!warning;
+      this.captureBroken = false;
+      this.watchRawTrack(); // a mid-call unplug ends the track — recapture instead of going silent
+      this.masterVolume = s.masterVolume;
+      const local = await this.buildPipeline(cap.stream, s);
+      if (generation !== this.captureGeneration) { local.getTracks().forEach((t) => t.stop()); return; }
+      this.localStream = local;
+      this.active = true;
+      // muted/deafened deliberately PERSIST across leave/rejoin within the session
+      // (Discord convention — leaving muted and hopping back shouldn't hot-mic you).
+      this.pttActive = false;
+      this.vadOpen = false;
+      this.applyTransmit();
+      // Run VAD on an always-open CLONE of the sent (post-gain) track: gating the
+      // SENT track via enabled=false makes it emit silence, which would starve a VAD
+      // reading that same track ('vad' mode would latch shut). The clone shares the
+      // source but keeps its own enabled=true, so voice-activity gating can re-open.
+      // Force-enable it: a clone inherits the source track's enabled state, so
+      // rejoining while MUTED would otherwise clone a disabled (silent) track and the
+      // VAD would never open after un-muting.
+      const clone = this.localStream.getAudioTracks()[0]?.clone();
+      if (clone) clone.enabled = true;
+      this.vadStream = clone ? new MediaStream([clone]) : null;
+      this.localVad = this.vadStream
+        ? new Vad(this.vadStream, (vs) => this.onVad(vs), this.now, s.vadThreshold)
+        : null;
+      this.a.announce(true, this.muted, this.nextAt(), this.deafened);
+      this.reconcilePeers();
+      if (!this.statsTimer) this.statsTimer = setInterval(() => { void this.pollQuality(); }, QUALITY_POLL_MS);
+      this.a.onChange();
+      // Settings may have changed while getUserMedia was in flight (the engine's
+      // room-cmd handler is not serialized across awaits). Reconcile BOTH the live
+      // knobs (gain/volume/VAD — built above from the pre-await snapshot) and the
+      // capture config against the latest settings.
+      this.applySettings();
+      return warning;
+    } catch (e) {
+      if (generation !== this.captureGeneration) return;
+      this.leave();
+      throw e;
+    } finally {
+      if (generation === this.captureGeneration) this.joining = false;
+    }
   }
 
   leave(): void {
-    if (!this.active) return;
+    ++this.captureGeneration;
+    const wasActive = this.active;
+    const wasJoining = this.joining;
+    this.joining = false;
+    this.settingsChain = Promise.resolve();
+    if (!wasActive && !wasJoining) return;
     this.active = false;
     // Screenshare teardown FIRST: release the capture before closing PCs, close
     // every open watch ('end' → the renderer overlay closes), drop share state.
@@ -859,15 +926,16 @@ export class VoiceSession {
     try { this.rnnoiseNode?.disconnect(); } catch { /* ignore */ }
     try { this.rnnoiseNode?.port.close(); } catch { /* ignore */ }
     this.srcNode = null; this.gainNode = null; this.rnnoiseNode = null; this.rnnoiseModuleAdded = false; this.rnnoiseWarned = false;
-    try { this.audioCtx?.close(); } catch { /* ignore */ }
+    try { void this.audioCtx?.close().catch(() => { /* already closed */ }); } catch { /* ignore */ }
     this.audioCtx = null;
     this.curCaptureKey = '';
+    this.captureBroken = false;
     this.localSpeaking = false;
     this.vadOpen = false;
     this.pttActive = false;
     this.speaking.clear();
     this.pendingOffers.clear();
-    this.a.announce(false, false, this.nextAt(), false);
+    if (wasActive) this.a.announce(false, false, this.nextAt(), false);
     this.a.onChange();
   }
 
@@ -896,6 +964,7 @@ export class VoiceSession {
     if (!track) return;
     track.onended = () => {
       if (!this.active || this.rawStream?.getAudioTracks()[0] !== track) return;
+      this.captureBroken = true; this.localSpeaking = false; this.applyTransmit(); this.a.onChange();
       this.curCaptureKey = ''; // force recaptureIfNeeded past its equality guard
       this.settingsChain = this.settingsChain.then(() => this.recaptureIfNeeded()).catch(() => { /* ignore */ });
     };
@@ -906,7 +975,10 @@ export class VoiceSession {
    *  broken entirely (the only input was unplugged — a returning device recovers us). */
   onDevicesChanged(): void {
     if (!this.active) return;
-    if (this.captureBroken || (this.usingFallback && this.getSettings().inputDeviceId)) {
+    // Default-device changes can switch input without ending the old track.
+    this.applySettings(); // also reapply the preferred output sink after hardware changes
+    if (this.captureBroken || !this.getSettings().inputDeviceId || this.usingFallback) {
+      ++this.deviceRevision;
       this.curCaptureKey = '';
       this.settingsChain = this.settingsChain.then(() => this.recaptureIfNeeded()).catch(() => { /* ignore */ });
     }
@@ -917,24 +989,31 @@ export class VoiceSession {
    *  device used), so an unavailable-device fallback doesn't retry forever. */
   private async recaptureIfNeeded(): Promise<void> {
     if (!this.active) return;
+    const generation = this.captureGeneration;
     const s = this.getSettings();
     const key = captureKey(s);
-    if (key === this.curCaptureKey) return;
+    const deviceRevision = this.deviceRevision;
+    if (key === this.curCaptureKey && deviceRevision === this.capturedDeviceRevision) return;
     let cap: { stream: MediaStream; warning?: string };
     // A total capture failure (no device at all) leaves us silent — flag it so a
     // later devicechange retries (usingFallback wouldn't latch, blocking recovery).
-    try { cap = await this.captureMic(s); }
-    catch (e) { this.a.log('voice recapture failed: ' + String(e)); this.captureBroken = true; return; }
+    try { cap = await this.captureMic(s, generation); }
+    catch (e) {
+      if (generation === this.captureGeneration) { this.a.log('voice recapture failed: ' + String(e)); this.captureBroken = !this.rawStream?.getAudioTracks()[0] || this.rawStream.getAudioTracks()[0].readyState === 'ended'; this.a.onChange(); }
+      return;
+    }
     const fresh = cap.stream;
-    if (!this.active) { fresh.getTracks().forEach((t) => t.stop()); return; } // left voice mid-recapture
+    if (!this.active || generation !== this.captureGeneration) { fresh.getTracks().forEach((t) => t.stop()); return; }
     this.captureBroken = false;
     this.curCaptureKey = key;
+    this.capturedDeviceRevision = deviceRevision;
     const wasFallback = this.usingFallback;
     this.usingFallback = !!cap.warning;
     if (cap.warning && !wasFallback) this.a.warn(cap.warning); // loud at join, now loud mid-call too
     const old = this.rawStream;
     this.rawStream = fresh;
     this.watchRawTrack();
+    old?.getTracks().forEach((t) => t.stop());
     if (this.audioCtx && this.gainNode) {
       // Re-source and re-wire the graph for the current NS mode, keeping the SAME
       // gainNode + dest (so the sent track / localStream is unchanged → no
@@ -945,23 +1024,25 @@ export class VoiceSession {
       this.srcNode = this.audioCtx.createMediaStreamSource(fresh);
       await this.connectGraph(s.noiseSuppressionMode);
       // connectGraph may have awaited addModule; a leave() could have run meanwhile.
-      if (!this.active) { fresh.getTracks().forEach((t) => t.stop()); old?.getTracks().forEach((t) => t.stop()); return; }
+      if (!this.active || generation !== this.captureGeneration) { fresh.getTracks().forEach((t) => t.stop()); return; }
     } else {
       // No-pipeline fallback (Web Audio failed at join): the raw track IS the sent
       // track — swap it on every live sender and rebuild the VAD on the new track.
       const track = fresh.getAudioTracks()[0];
       if (track) {
+        // Gate before replaceTrack: mute/deafen/PTT must never leak on recapture.
+        track.enabled = this.transmitting();
         this.localStream = fresh;
         for (const p of this.peers.values()) p.replaceAudioTrack(track);
         this.localVad?.stop();
         this.vadStream?.getTracks().forEach((t) => t.stop());
-        const clone = track.clone();
+        const clone = track.clone(); clone.enabled = true;
         this.vadStream = clone ? new MediaStream([clone]) : null;
         this.localVad = this.vadStream ? new Vad(this.vadStream, (vs) => this.onVad(vs), this.now, s.vadThreshold) : null;
         this.applyTransmit();
       }
     }
-    old?.getTracks().forEach((t) => t.stop());
+    this.applyTransmit(); this.a.onChange();
   }
 
   private effectiveVolume(memberId: string): number {
@@ -1086,9 +1167,7 @@ export class VoiceSession {
    *  `at` discipline as voice-state, with its OWN per-member replay map. */
   onPeerShare(memberId: string, sharing: boolean, streamId: string, at: number): void {
     if (memberId === this.a.selfId) return;
-    if (!Number.isFinite(at) || at <= (this.lastShareAt.get(memberId) ?? 0)) return; // stale/replayed — drop
-    this.lastShareAt.delete(memberId); this.lastShareAt.set(memberId, at); // re-insert at tail (freshest)
-    capMap(this.lastShareAt, MAX_ANTIREPLAY);
+    if (!acceptVoiceStamp(this.lastShareAt, memberId, at, this.now())) return;
     if (!this.roster.has(memberId)) {
       // Their voice-state hasn't landed yet (unordered flood) — buffer the LATEST
       // announce (bounded), applied when they roster in onPeerState.
@@ -1176,7 +1255,7 @@ export class VoiceSession {
 
   /** Are we sending audio right now (open + not gated by mode)? */
   private transmitting(): boolean {
-    if (!this.active || this.muted) return false;
+    if (!this.active || this.muted || this.deafened || this.captureBroken || !this.meshMembers().has(this.a.selfId)) return false;
     if (this.inputMode === 'ptt') return this.pttActive;
     if (this.inputMode === 'vad') return this.vadOpen;
     return true; // 'always'
@@ -1201,13 +1280,12 @@ export class VoiceSession {
    *  departed member or flip their displayed mute. */
   onPeerState(memberId: string, inVoice: boolean, muted: boolean, at: number, deafened = false): void {
     if (memberId === this.a.selfId) return;
-    if (!Number.isFinite(at) || at <= (this.lastStateAt.get(memberId) ?? 0)) return; // stale/replayed — drop
-    this.lastStateAt.delete(memberId); this.lastStateAt.set(memberId, at); // re-insert at tail (freshest)
-    capMap(this.lastStateAt, MAX_ANTIREPLAY);
-    const had = this.roster.has(memberId);
+    if (!acceptVoiceStamp(this.lastStateAt, memberId, at, this.now())) return;
+    const previous = this.roster.get(memberId);
+    const had = !!previous;
     if (inVoice) {
       // Cap: don't let unlimited (possibly fabricated) identities grow the roster.
-      if (!had && this.roster.size >= MAX_VOICE_PEERS) { this.a.log('voice roster full — ignoring ' + memberId.slice(0, 8)); return; }
+      if (!had && this.roster.size >= ROOM_VOICE_ROSTER) { this.a.log('voice roster full — ignoring ' + memberId.slice(0, 8)); return; }
       this.roster.set(memberId, { muted, deafened });
       // A voice-share that beat this voice-state (unordered flood) applies now.
       const pend = this.pendingShares.get(memberId);
@@ -1215,14 +1293,11 @@ export class VoiceSession {
     } else {
       this.roster.delete(memberId); this.speaking.delete(memberId);
       // Leaving voice implies their share ended (no separate announce is sent).
-      this.pendingShares.delete(memberId);
+      this.pendingShares.delete(memberId); this.pendingOffers.delete(memberId);
       if (this.remoteShares.has(memberId)) this.applyPeerShare(memberId, false, '');
     }
-    if (this.active) {
-      if (inVoice) this.ensurePeer(memberId);
-      else this.dropPeer(memberId);
-    }
-    if (had !== inVoice || this.active) this.a.onChange();
+    this.reconcilePeers();
+    if (had !== inVoice || this.active || inVoice && (previous?.muted !== muted || previous?.deafened !== deafened)) this.a.onChange();
   }
 
   /** A signaling blob for us from `from` (already auth-verified by the engine).
@@ -1240,7 +1315,7 @@ export class VoiceSession {
     // member (bounded), applied when their voice-state lands (ensurePeer), so a
     // reordered offer isn't lost → no glare deadlock. Non-offers are meaningless
     // without a peer and are dropped.
-    if (kind === 'offer' && this.pendingOffers.size < MAX_VOICE_PEERS) this.pendingOffers.set(from, data);
+    if (kind === 'offer' && (this.pendingOffers.has(from) || this.pendingOffers.size < MAX_VOICE_PEERS)) this.pendingOffers.set(from, data);
   }
 
   /** A member left the ROOM entirely — drop them from voice too. NOTE: the
@@ -1248,7 +1323,7 @@ export class VoiceSession {
    *  them re-opens a replay window (a captured old signed inVoice/sharing:true would
    *  verify against a cleared floor and resurrect a ghost). They're monotonic
    *  floors, so a legitimate later re-announce (higher `at`) still passes; only a
-   *  stale replay is blocked. FIFO-capped so minted identities can't grow them. */
+   *  stale replay is blocked. Bounded without evicting a remembered floor. */
   onMemberGone(memberId: string): void {
     this.pendingOffers.delete(memberId);
     this.pendingShares.delete(memberId);
@@ -1259,6 +1334,7 @@ export class VoiceSession {
     this.roster.delete(memberId);
     this.speaking.delete(memberId);
     this.dropPeer(memberId);
+    this.reconcilePeers();
     this.a.onChange();
   }
 
@@ -1275,7 +1351,24 @@ export class VoiceSession {
   /** VPN kill-switch / room teardown: fully stop voice (releases the mic). */
   suspend(): void { this.leave(); }
 
+  private meshMembers(): Set<string> { return voiceMeshMembers(this.a.selfId, this.active, this.roster.keys()); }
+
+  private reconcilePeers(): void {
+    const admitted = this.meshMembers();
+    for (const id of this.peers.keys()) {
+      if (!this.active || !admitted.has(this.a.selfId) || !admitted.has(id)) {
+        this.closeForwarder(id); this.remoteTracks.delete(id); this.dropPeer(id);
+      }
+    }
+    if (this.active && admitted.has(this.a.selfId)) for (const id of admitted) {
+      if (id !== this.a.selfId) this.ensurePeer(id);
+    }
+    this.applyTransmit();
+  }
+
   private ensurePeer(memberId: string): MediaPeer | undefined {
+    const admitted = this.meshMembers();
+    if (!this.active || !admitted.has(this.a.selfId) || !admitted.has(memberId)) return;
     let p = this.peers.get(memberId);
     if (!p && this.localStream) {
       if (this.peers.size >= MAX_VOICE_PEERS) { this.a.log('voice peer cap reached — not connecting ' + memberId.slice(0, 8)); return undefined; }
@@ -1285,7 +1378,7 @@ export class VoiceSession {
         memberId, polite, this.a, this.localStream,
         (s) => this.setSpeaking(memberId, s),
         (track, stream) => this.setRemoteShareTrack(memberId, track, stream),
-        () => this.onPeerFailed(memberId),
+        () => this.a.onChange(),
         (stream) => this.onPeerMicStream(memberId, stream),
         this.now,
       );
@@ -1295,6 +1388,7 @@ export class VoiceSession {
       if (this.locallyMutedIds.has(memberId)) p.setLocallyMuted(true);
       // Mid-share join: attach the live screen track BEFORE the pending offer is
       // applied, so the fresh (stable) PC carries it in its very first negotiation.
+      p.setScreenBitrate(this.screenBitrateKbps);
       if (this.shareTrack && this.shareStream) p.addShareTrack(this.shareTrack, this.shareStream);
       if (this.shareAudioTrack && this.shareStream) p.addShareAudioTrack(this.shareAudioTrack, this.shareStream);
       // They already announced a share → route their screen audio by that streamId.
@@ -1339,17 +1433,22 @@ export class VoiceSession {
     for (const [id, ms] of this.peerMicStreams) this.aec.setReference(id, ms, this.refGain(id));
   }
 
-  /** A peer's RTCPeerConnection reached 'failed' (e.g. it was torn down on our side
-   *  while the remote kept theirs, so the fresh PC couldn't complete). Drop it and,
-   *  if the member is still rostered, re-create a clean pair. */
-  private onPeerFailed(memberId: string): void {
+  /** Explicit retry keeps microphone, mute, gain, output routing and screen tracks. */
+  reconnect(): void {
     if (!this.active) return;
-    this.dropPeer(memberId);
-    if (!this.roster.has(memberId)) return;
-    const p = this.ensurePeer(memberId);
-    // If we were watching this member's screen, the rebuilt peer starts with
-    // watching=false — re-arm it so the video m-line renegotiates back to recvonly.
-    if (p && this.forwarders.has(memberId)) p.setWatching(true);
+    for (const p of this.peers.values()) { p.resume(); p.recovery.retry(); }
+    this.localVad?.resume();
+    if (this.captureBroken) { this.curCaptureKey = ''; this.applySettings(); }
+    void this.audioCtx?.resume().catch(() => {});
+    this.reannounce();
+  }
+
+  onNetworkChanged(): void {
+    if (!this.active) return;
+    for (const p of this.peers.values()) { p.resume(); p.recovery.networkChanged(); }
+    this.localVad?.resume();
+    void this.audioCtx?.resume().catch(() => {});
+    this.reannounce();
   }
 
   private setSpeaking(memberId: string, s: boolean): void {
@@ -1366,10 +1465,13 @@ export class VoiceSession {
     if (!this.active) return;
     let changed = false;
     const seen = new Set<string>();
+    const generation = this.captureGeneration;
     for (const [id, p] of this.peers) {
       let entry: { level: VoiceQuality; reconnecting: boolean } | null = null;
       if (p.linkConnected()) {
         const { rttMs, loss } = await p.sampleQuality();
+        if (!this.active || generation !== this.captureGeneration) return;
+        if (this.peers.get(id) !== p) continue;
         const level: VoiceQuality = (rttMs > RTT_POOR_MS || loss > LOSS_POOR) ? 'poor'
           : (rttMs > RTT_FAIR_MS || loss > LOSS_FAIR) ? 'fair' : 'good';
         entry = { level, reconnecting: false };
@@ -1388,15 +1490,18 @@ export class VoiceSession {
 
   getState(): VoiceState {
     const participants: VoiceParticipant[] = [];
-    if (this.active) participants.push({ memberId: this.a.selfId, muted: this.muted, deafened: this.deafened, speaking: this.localSpeaking && !this.muted, sharing: this.isSharing() });
+    const admitted = this.meshMembers();
+    if (this.active) participants.push({ memberId: this.a.selfId, muted: this.muted, deafened: this.deafened, ...(!admitted.has(this.a.selfId) ? { waitingForSlot: true } : {}), speaking: this.localSpeaking && !this.muted, sharing: this.isSharing() });
     for (const [id, st] of this.roster) {
       const q = this.quality.get(id);
       participants.push({
-        memberId: id, muted: st.muted, deafened: !!st.deafened, speaking: !!this.speaking.get(id) && !st.muted, sharing: this.remoteShares.has(id),
+        memberId: id, ...(!admitted.has(id) ? { waitingForSlot: true } : {}), muted: st.muted, deafened: !!st.deafened, speaking: !!this.speaking.get(id) && !st.muted, sharing: this.remoteShares.has(id),
         ...(q ? { quality: q.level, ...(q.reconnecting ? { reconnecting: true } : {}) } : {}),
+        ...(this.active && this.peers.has(id) ? { connection: this.peers.get(id)!.recovery.state,
+          reconnectAttempts: this.peers.get(id)!.recovery.attempts } : {}),
       });
     }
-    return { inVoice: this.active, muted: this.muted, deafened: this.deafened, transmitting: this.transmitting(), inputMode: this.inputMode, sharing: this.isSharing(), participants };
+    return { inVoice: this.active, muted: this.muted, deafened: this.deafened, transmitting: this.transmitting(), inputMode: this.inputMode, sharing: this.isSharing(), participants, ...(this.active && this.captureBroken ? { micUnavailable: true } : {}) };
   }
 }
 

@@ -44,26 +44,33 @@ export function playMagnet(
     tracker: { rtcConfig: { iceServers: [...PUBLIC_STUN_SERVERS] } },
   });
   let torrent: WtTorrent | null = null;
+  let destroyed = false;
+  let blobUrl: string | undefined;
   client.add(magnetURI, { announce: trackers }, (t) => {
+    if (destroyed) return;
     torrent = t;
     const files = t.files || [];
     const file = files.find((f) => f.name === fileName) || files[0];
     if (!file) return;
     if (typeof file.renderTo === 'function') {
-      file.renderTo(media, { autoplay: true, controls: true });
+      file.renderTo(media, { autoplay: false, controls: true });
     } else {
       file.getBlobURL((err, url) => {
         if (err || !url) return;
+        if (destroyed) { URL.revokeObjectURL(url); return; }
+        blobUrl = url;
         media.src = url;
-        void media.play().catch(() => { /* gesture */ });
       });
     }
   });
   return {
     fileId,
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
       try { if (torrent) client.remove(torrent); } catch { /* ignore */ }
       try { client.destroy(); } catch { /* ignore */ }
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
     },
   };
 }

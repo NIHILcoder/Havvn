@@ -1,3 +1,4 @@
+import { ROOM_VOICE_ROSTER } from '../../shared/room-voice-policy';
 /**
  * Unit tests for VoiceSession's presence/roster bookkeeping — the parts that run
  * WITHOUT touching browser media APIs (no join(), so no getUserMedia/RTCPeerConnection).
@@ -72,8 +73,8 @@ describe('VoiceSession roster (no media)', () => {
 
   it('caps the roster so fabricated identities can\'t grow it without bound', () => {
     const vs = new VoiceSession(makeAdapter());
-    for (let i = 0; i < 20; i++) vs.onPeerState('peer-' + i, true, false, i + 1);
-    expect(vs.getState().participants.length).toBe(8); // MAX_VOICE_PEERS
+    for (let i = 0; i < ROOM_VOICE_ROSTER + 10; i++) vs.onPeerState('peer-' + i, true, false, i + 1);
+    expect(vs.getState().participants.length).toBe(ROOM_VOICE_ROSTER); // Presence is separate from the eight media links.
   });
 
   it('ignores our OWN presence echo (self is added by join, not gossip)', () => {

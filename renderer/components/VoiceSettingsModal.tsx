@@ -7,6 +7,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Button } from './Button';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { Toggle } from './Toggle';
@@ -166,6 +167,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
           <span className="vsm-label"><Icon name="mic" size={14} /> {t('rooms.voice.inputDevice')}</span>
           <Select
             className="vsm-select"
+            ariaLabel={t('rooms.voice.inputDevice')}
             options={deviceOptions('audioinput', prefs.inputDeviceId)}
             value={prefs.inputDeviceId || ''}
             onChange={(v) => update({ inputDeviceId: v || null })}
@@ -175,6 +177,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
           <span className="vsm-label"><Icon name="volume-2" size={14} /> {t('rooms.voice.outputDevice')}</span>
           <Select
             className="vsm-select"
+            ariaLabel={t('rooms.voice.outputDevice')}
             options={deviceOptions('audiooutput', prefs.outputDeviceId)}
             value={prefs.outputDeviceId || ''}
             onChange={(v) => update({ outputDeviceId: v || null })}
@@ -182,21 +185,21 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
         </div>
         {/* Mic test: live meter with the VAD threshold marker on the same scale. */}
         <div className="vsm-row vsm-test">
-          <button className={`vsm-test-btn${testing ? ' active' : ''}`} onClick={() => setTesting((x) => !x)}>
+          <Button size="sm" className={`vsm-test-btn${testing ? ' active' : ''}`} onClick={() => setTesting((x) => !x)}>
             <Icon name={testing ? 'pause' : 'play'} size={12} />
             {testing ? t('rooms.voice.micTestStop') : t('rooms.voice.micTest')}
-          </button>
+          </Button>
           {/* Hear yourself: play the PROCESSED mic back so the NS mode is audible.
               Turning it on starts the test too — the monitor lives inside the mic
               test, so on its own this button would silently do nothing. */}
-          <button
-            className={`vsm-test-btn${monitor ? ' active' : ''}`}
+          <Button size="sm"
+            className={`vsm-test-btn${monitor ? ' active' : ''}`} aria-pressed={monitor}
             onClick={() => { const next = !monitor; setMonitor(next); if (next) setTesting(true); }}
             title={t('rooms.voice.micMonitorHint')}
           >
             <Icon name={monitor ? 'volume-2' : 'volume-x'} size={12} />
             {t('rooms.voice.micMonitor')}
-          </button>
+          </Button>
           <div className="vsm-meter" title={t('rooms.voice.micTestHint')}>
             <div
               className={`vsm-meter-fill${shownLevel > prefs.vadThreshold ? ' hot' : ''}`}
@@ -214,7 +217,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
         <div className="vsm-row">
           <span className="vsm-label">{t('rooms.voice.inputGain')}</span>
           <input
-            type="range" min={0} max={200} step={5} className="vsm-range"
+            aria-label={t('rooms.voice.inputGain')} type="range" min={0} max={200} step={5} className="vsm-range"
             value={Math.round(prefs.inputGain * 100)}
             onChange={(e) => update({ inputGain: Number(e.target.value) / 100 })}
           />
@@ -223,7 +226,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
         <div className="vsm-row">
           <span className="vsm-label">{t('rooms.voice.outputVolume')}</span>
           <input
-            type="range" min={0} max={100} step={5} className="vsm-range"
+            aria-label={t('rooms.voice.outputVolume')} type="range" min={0} max={100} step={5} className="vsm-range"
             value={Math.round(prefs.masterVolume * 100)}
             onChange={(e) => update({ masterVolume: Number(e.target.value) / 100 })}
           />
@@ -236,20 +239,20 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
         <div className="vsm-section-title">{t('rooms.voice.mode')}</div>
         <div className="vsm-modes">
           {modes.map((m) => (
-            <button
+            <Button size="sm"
               key={m.id}
-              className={`vsm-mode${prefs.inputMode === m.id ? ' active' : ''}`}
+              className={`vsm-mode${prefs.inputMode === m.id ? ' active' : ''}`} aria-pressed={prefs.inputMode === m.id}
               onClick={() => update({ inputMode: m.id })}
-            >{m.label}</button>
+            >{m.label}</Button>
           ))}
         </div>
         {prefs.inputMode === 'ptt' && (
           <>
             <div className="vsm-row">
               <span className="vsm-label">{t('rooms.voice.pttKey')}</span>
-              <button className={`vsm-key${capturing ? ' capturing' : ''}`} onClick={() => setCapturing(true)}>
+              <Button size="sm" className={`vsm-key${capturing ? ' capturing' : ''}`} onClick={() => setCapturing(true)}>
                 {capturing ? t('rooms.voice.pressKey') : keyLabel(prefs.pttKey)}
-              </button>
+              </Button>
             </div>
             <div className="vsm-row" title={t('rooms.voice.globalPttHint')}>
               <span className="vsm-label">{t('rooms.voice.globalPtt')}</span>
@@ -270,7 +273,7 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
           <div className="vsm-row" title={t('rooms.voice.vadHint')}>
             <span className="vsm-label">{t('rooms.voice.vadSensitivity')}</span>
             <input
-              type="range" min={2} max={48} step={1} className="vsm-range"
+              aria-label={t('rooms.voice.vadSensitivity')} type="range" min={2} max={48} step={1} className="vsm-range"
               value={prefs.vadThreshold}
               onChange={(e) => update({ vadThreshold: Number(e.target.value) })}
             />
@@ -290,11 +293,11 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
           <span className="vsm-label">{t('rooms.voice.noiseSuppression')}</span>
           <div className="vsm-modes">
             {nsModes.map((m) => (
-              <button
+              <Button size="sm"
                 key={m.id}
-                className={`vsm-mode${prefs.noiseSuppressionMode === m.id ? ' active' : ''}`}
+                className={`vsm-mode${prefs.noiseSuppressionMode === m.id ? ' active' : ''}`} aria-pressed={prefs.noiseSuppressionMode === m.id}
                 onClick={() => update({ noiseSuppressionMode: m.id })}
-              >{m.label}</button>
+              >{m.label}</Button>
             ))}
           </div>
           {prefs.noiseSuppressionMode === 'enhanced' && <span className="vsm-hint">{t('rooms.voice.nsHint')}</span>}
@@ -321,12 +324,12 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
       <div className="vsm-popout-head">
         <span className="vsm-popout-title"><Icon name="headphones" size={14} /> {t('rooms.voice.settings')}</span>
         <span className="vsm-popout-acts">
-          <button className="vsm-popout-btn" onClick={closePopout} title={t('rooms.voice.popIn')}>
+          <Button size="sm" className="vsm-popout-btn" onClick={closePopout} title={t('rooms.voice.popIn')} aria-label={t('rooms.voice.popIn')}>
             <Icon name="minimize" size={13} />
-          </button>
-          <button className="vsm-popout-btn" onClick={() => { closePopout(); onClose(); }} title={t('common.close')}>
+          </Button>
+          <Button size="sm" className="vsm-popout-btn" onClick={() => { closePopout(); onClose(); }} title={t('common.close')} aria-label={t('common.close')}>
             <Icon name="x" size={13} />
-          </button>
+          </Button>
         </span>
       </div>
       <div className="vsm-body vsm-popout-body">{content}</div>
@@ -346,9 +349,9 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
         // Wrapped, not passed directly: `openPopout` takes an optional window
         // FEATURES string (the dock's tear-off uses it to ask for cursor
         // placement), and a click event is not that.
-        <button className="vsm-detach" onClick={() => { openPopout(); }} title={t('rooms.voice.popOut')}>
+        <Button size="sm" className="vsm-detach" onClick={() => { openPopout(); }} title={t('rooms.voice.popOut')}>
           <Icon name="external-link" size={13} /> {t('rooms.voice.popOut')}
-        </button>
+        </Button>
       }
     >
       {content}

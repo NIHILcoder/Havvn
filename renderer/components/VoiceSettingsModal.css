@@ -53,13 +53,13 @@
   position: relative;
   flex: 1;
   height: 10px;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--color-bg-tertiary);
   overflow: hidden;
 }
 .vsm-meter-fill {
   height: 100%;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--color-text-tertiary);
   transition: width 90ms linear;
 }
@@ -84,7 +84,7 @@
 }
 
 /* Input mode chips + PTT key (mirrors the old voice-panel popover styling) */
-.vsm-modes { display: flex; gap: 6px; }
+.vsm-modes { display: flex; flex-wrap: wrap; gap: 6px; }
 .vsm-mode {
   flex: 1;
   padding: 6px 8px;
@@ -171,3 +171,9 @@
 }
 .vsm-popout-btn:hover { background: var(--color-bg-tertiary); color: var(--color-text-primary); }
 .vsm-popout-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; }
+.vsm-row { flex-wrap: wrap; }
+.vsm-label { min-width: 0; overflow-wrap: anywhere; }
+.vsm-test .vsm-meter { min-width: 100px; }
+.vsm-test-btn.btn.active, .vsm-mode.btn.active { color: var(--color-bg-primary); }
+.vsm-popout-acts .btn { min-width: 26px; padding: 4px; }
+.vsm-popout-head { flex-shrink: 0; }

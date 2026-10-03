@@ -2,7 +2,7 @@
 // an AudioWorklet is loaded as a classic script — it can't `import`/`export`, and the
 // engine has no bundler to emit a separate worklet file. At runtime the engine wraps
 // this in a Blob URL and calls `audioWorklet.addModule(url)` (the engine page is a
-// file:// secure context with no CSP, so blob: worklets + WebAssembly are allowed).
+// packaged file:// host explicitly permits blob: worklets + WebAssembly in its CSP).
 //
 // The processor instantiates the RNNoise WASM directly against its minimal Emscripten
 // import surface (two functions), so we don't need the Emscripten JS glue (which is an

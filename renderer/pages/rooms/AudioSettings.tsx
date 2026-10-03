@@ -11,8 +11,9 @@
  * equaliser rides the SAME graph, so it is honestly disabled rather than silently
  * doing nothing.
  */
+import { Button } from '../../components/Button';
 import React from 'react';
-import { Icon } from '../../components';
+import { Icon, Select, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import {
   AudioPrefs, RepeatMode, EQ_FREQS, EQ_LIMIT, EQ_PRESETS, presetFor,
@@ -53,14 +54,8 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
       <div className="ras-section">
         <div className="ras-row">
           <span className="ras-label">{t('audio.eq')}</span>
-          <button
-            className={`ras-switch${prefs.eqOn ? ' on' : ''}`}
-            onClick={() => onChange({ eqOn: !prefs.eqOn })}
-            disabled={!canEq}
-            aria-pressed={prefs.eqOn}
-          >
-            {prefs.eqOn ? t('audio.on') : t('audio.off')}
-          </button>
+          <Toggle size="small" checked={prefs.eqOn} ariaLabel={t('audio.eq')}
+            disabled={!canEq} onChange={value => onChange({ eqOn: value })} />
         </div>
 
         {!canEq && <div className="ras-note">{t('audio.eqUnavailable')}</div>}
@@ -70,6 +65,7 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
             <label key={hz} className="ras-band" title={`${hz} Hz · ${prefs.bands[i] > 0 ? '+' : ''}${prefs.bands[i]} dB`}>
               <input
                 type="range"
+                aria-label={`${hz} Hz`}
                 min={-EQ_LIMIT}
                 max={EQ_LIMIT}
                 step={1}
@@ -87,14 +83,14 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
 
         <div className="ras-presets">
           {Object.keys(EQ_PRESETS).map((name) => (
-            <button
+            <Button size="sm"
               key={name}
               className={`ras-preset${preset === name ? ' on' : ''}`}
               disabled={!canEq}
               onClick={() => onChange({ bands: EQ_PRESETS[name].slice(), eqOn: name !== 'flat' })}
             >
               {t(`audio.preset.${name}` as 'audio.preset.flat')}
-            </button>
+            </Button>
           ))}
         </div>
 
@@ -114,14 +110,8 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
 
         <div className="ras-row">
           <span className="ras-label" title={t('audio.normalizeHint')}>{t('audio.normalize')}</span>
-          <button
-            className={`ras-switch${prefs.normalize ? ' on' : ''}`}
-            onClick={() => onChange({ normalize: !prefs.normalize })}
-            disabled={!canEq}
-            aria-pressed={prefs.normalize}
-          >
-            {prefs.normalize ? t('audio.on') : t('audio.off')}
-          </button>
+          <Toggle size="small" checked={prefs.normalize} ariaLabel={t('audio.normalize')}
+            disabled={!canEq} onChange={value => onChange({ normalize: value })} />
         </div>
       </div>
 
@@ -131,26 +121,21 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
           <span className="ras-label">{t('audio.repeat')}</span>
           <div className="ras-seg">
             {(['off', 'one', 'all'] as RepeatMode[]).map((m) => (
-              <button
+              <Button size="sm"
                 key={m}
                 className={`ras-seg-btn${prefs.repeat === m ? ' on' : ''}`}
                 onClick={() => onChange({ repeat: m })}
                 aria-pressed={prefs.repeat === m}
               >
                 {t(`audio.repeat.${m}` as 'audio.repeat.off')}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
         <div className="ras-row">
           <span className="ras-label">{t('audio.shuffle')}</span>
-          <button
-            className={`ras-switch${prefs.shuffle ? ' on' : ''}`}
-            onClick={() => onChange({ shuffle: !prefs.shuffle })}
-            aria-pressed={prefs.shuffle}
-          >
-            {prefs.shuffle ? t('audio.on') : t('audio.off')}
-          </button>
+          <Toggle size="small" checked={prefs.shuffle} ariaLabel={t('audio.shuffle')}
+            onChange={value => onChange({ shuffle: value })} />
         </div>
       </div>
 
@@ -159,25 +144,15 @@ export const AudioSettings: React.FC<AudioSettingsProps> = ({ prefs, onChange, d
         {devices.length > 0 && (
           <label className="ras-row">
             <span className="ras-label">{t('audio.output')}</span>
-            <select
-              className="ras-select"
-              value={prefs.sinkId}
-              onChange={(e) => onChange({ sinkId: e.target.value })}
-            >
-              <option value="">{t('audio.outputDefault')}</option>
-              {devices.map((d) => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}
-            </select>
+            <Select className="ras-select" ariaLabel={t('audio.output')} value={prefs.sinkId}
+              onChange={value => onChange({ sinkId: value })}
+              options={[{ value: '', label: t('audio.outputDefault') }, ...devices.map(d => ({ value: d.deviceId, label: d.label }))]} />
           </label>
         )}
         <div className="ras-row">
           <span className="ras-label" title={t('audio.detachHint')}>{t('audio.detach')}</span>
-          <button
-            className={`ras-switch${prefs.detachOnOpen ? ' on' : ''}`}
-            onClick={() => onChange({ detachOnOpen: !prefs.detachOnOpen })}
-            aria-pressed={prefs.detachOnOpen}
-          >
-            {prefs.detachOnOpen ? t('audio.on') : t('audio.off')}
-          </button>
+          <Toggle size="small" checked={prefs.detachOnOpen} ariaLabel={t('audio.detach')}
+            onChange={value => onChange({ detachOnOpen: value })} />
         </div>
       </div>
     </div>
