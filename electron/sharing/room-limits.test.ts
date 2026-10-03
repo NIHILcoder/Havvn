@@ -24,9 +24,11 @@ const H = vi.hoisted(() => ({
 
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
+    torrentFile?: Buffer;
     infoHash: string; magnetURI: string; length: number; progress: number; done: boolean;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -50,24 +52,28 @@ vi.mock('webtorrent', async () => {
     }
     throttleUpload(rate: number): void { this.throttleCalls.push(['up', rate]); }
     throttleDownload(rate: number): void { this.throttleCalls.push(['down', rate]); }
-    destroy(): void { this.destroyed = true; }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    destroy(done?: () => void): void { this.destroyed = true; done?.(); }
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw;
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, _opts: any, cb: (t: any) => void): FakeTorrent {
+      const meta = parseTorrent(source);
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, Buffer.isBuffer(source));
+      this.torrents.set(meta.infoHash, t);
+      // A magnet has not received metadata yet, so it cannot call onready.
+      if (Buffer.isBuffer(source)) { t.torrentFile = source; cb(t); }
+      return t;
     }
     get(infoHash: string): FakeTorrent | null {
       return (infoHash && this.torrents.get(infoHash)) || null;
     }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); done?.(); }
   }
   return { default: FakeWebTorrent };
 });
@@ -94,7 +100,7 @@ type Engine = EngineCtx;
 let reqSeq = 3000;
 async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise<T> {
   const reqId = ++reqSeq;
-  inst.listeners['room-cmd'](null, { reqId, ...msg });
+  await inst.listeners['room-cmd'](null, { reqId, ...msg });
   await flush();
   const res = inst.sent
     .filter((s) => s.channel === 'room-res')
@@ -159,11 +165,13 @@ describe('per-room speed limits', () => {
     // The client is lazy — seeding the first file constructs it.
     await cmd(E, { type: 'addFiles', roomId: 'room-1', paths: [fileA] });
     const c1 = H.clients[H.clients.length - 1];
-    expect(c1.opts.uploadLimit).toBe(500 * 1024);
-    expect(c1.opts.downloadLimit).toBe(100 * 1024);
+    expect(c1.opts.uploadLimit).toBe(0); // no traffic before shared allocation
+    expect(c1.throttleCalls).toContainEqual(['up', 256 * 1024]);
+    expect(c1.opts.downloadLimit).toBe(0);
+    expect(c1.throttleCalls).toContainEqual(['down', 100 * 1024]);
   });
 
-  it('setLimits throttles the live client and 0 lifts the limit (-1)', async () => {
+  it('setLimits applies the per-room ceiling inside the shared budget', async () => {
     const c1 = H.clients[H.clients.length - 1];
     await cmd(E, { type: 'setLimits', roomId: 'room-1', upKbps: 256, downKbps: 0 });
     expect(c1.throttleCalls).toContainEqual(['up', 256 * 1024]);
@@ -180,22 +188,52 @@ describe('per-room speed limits', () => {
     const c2 = H.clients[H.clients.length - 1];
     const c1 = H.clients[H.clients.length - 2];
     expect(c2).not.toBe(c1);
-    expect(c2.opts.uploadLimit).toBe(-1);   // unlimited by default
-    expect(c2.opts.downloadLimit).toBe(-1);
+    expect(c2.opts.uploadLimit).toBe(0);
+    expect(c2.opts.downloadLimit).toBe(0);
+    expect(c1.throttleCalls).toContainEqual(['up', 128 * 1024]);
+    expect(c2.throttleCalls).toContainEqual(['up', 128 * 1024]);
 
-    // Throttling room-2 must not touch room-1's client.
+    // Capping room-2 returns its spare share to room-1.
     const before = c1.throttleCalls.length;
     await cmd(E, { type: 'setLimits', roomId: 'room-2', upKbps: 64, downKbps: 32 });
     expect(c2.throttleCalls).toContainEqual(['up', 64 * 1024]);
-    expect(c1.throttleCalls.length).toBe(before);
+    expect(c1.throttleCalls.length).toBeGreaterThan(before);
+    expect(c1.throttleCalls).toContainEqual(['up', 192 * 1024]);
+  });
+
+  it('rolls back both limits if applying the second fails and keeps the actual snapshot', async () => {
+    const c1 = H.clients[H.clients.length - 2];
+    const throttle = vi.spyOn(c1, 'throttleDownload').mockImplementationOnce(() => { throw new Error('limiter failed'); });
+    await expect(cmd(E, { type: 'setLimits', roomId: 'room-1', upKbps: 700, downKbps: 800 })).rejects.toThrow('limiter failed');
+    expect(c1.throttleCalls.slice(-2)).toEqual([['up', 192 * 1024], ['down', -1]]);
+    expect(await cmd(E, { type: 'snapshot', roomId: 'room-1' })).toMatchObject({ upKbps: 256, downKbps: 0 });
+    throttle.mockRestore();
+  });
+
+  it('returns applied values and rejects invalid ceilings and settings for an inactive room', async () => {
+    expect(await cmd(E, { type: 'setLimits', roomId: 'room-2', upKbps: 50, downKbps: 20 })).toMatchObject({ upKbps: 50, downKbps: 20 });
+    for (const rate of [NaN, Infinity, -1, 1_000_001]) {
+      await expect(cmd(E, { type: 'setLimits', roomId: 'room-2', upKbps: rate, downKbps: 20 })).rejects.toThrow('Invalid');
+    }
+    for (const type of ['setLimits', 'setAutoFetch', 'mute', 'setFolderAutoFetch']) {
+      await expect(cmd(E, { type, roomId: 'missing', upKbps: 0, downKbps: 0 })).rejects.toThrow('Room not active');
+    }
   });
 
   it("leaving a room destroys ITS client only", async () => {
     const c1 = H.clients[H.clients.length - 2];
     const c2 = H.clients[H.clients.length - 1];
     await cmd(E, { type: 'leave', roomId: 'room-1' });
-    await new Promise((r) => setTimeout(r, 300)); // teardown is deferred ~200ms
     expect(c1.destroyed).toBe(true);
     expect(c2.destroyed).toBe(false);
+  });
+
+  it('stops a client if restoring its previous limits fails too', async () => {
+    const c2 = H.clients[H.clients.length - 1];
+    const throttle = vi.spyOn(c2, 'throttleDownload').mockImplementation(() => { throw new Error('broken limiter'); });
+    await expect(cmd(E, { type: 'setLimits', roomId: 'room-2', upKbps: 999, downKbps: 999 })).rejects.toThrow('broken limiter');
+    expect(c2.destroyed).toBe(true);
+    expect(await cmd(E, { type: 'snapshot', roomId: 'room-2' })).toMatchObject({ upKbps: 50, downKbps: 20 });
+    throttle.mockRestore();
   });
 });

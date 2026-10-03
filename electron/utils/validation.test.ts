@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import { validateFilePath, validatePort, validateRoomCode, validateInfoHash, validateUrl } from './validation';
-import { validateChatMessage, validateTrackerUrl, validateFileName } from './security';
+import { validateChatMessage, validateTrackerUrl, validateFileName, validateSeedLimit } from './security';
 
 // Exercise exported production validators rather than the removed validation API.
 describe('file path boundaries', () => {
@@ -20,6 +20,17 @@ describe('file path boundaries', () => {
   });
 });
 describe('numeric and protocol validation', () => {
+  it.each([NaN, Infinity, -Infinity, -1, '', '10', null, Number.MAX_SAFE_INTEGER + 1])('rejects invalid seed limit %j', value => {
+    expect(() => validateSeedLimit(value)).toThrow();
+    expect(() => validateSeedLimit(value, true)).toThrow();
+  });
+  it('allows zero and fractional ratios but requires whole minutes', () => {
+    expect(() => validateSeedLimit(0)).not.toThrow();
+    expect(() => validateSeedLimit(0, true)).not.toThrow();
+    expect(() => validateSeedLimit(1.5)).not.toThrow();
+    expect(() => validateSeedLimit(1.5, true)).toThrow();
+    expect(() => validateSeedLimit(30, true)).not.toThrow();
+  });
   it.each(['80junk', '1.5', '', ' ', NaN, Infinity, 0, 65536])('rejects invalid port %j', value => {
     expect(() => validatePort(value)).toThrow();
   });

@@ -22,18 +22,21 @@ type EngineCtx = {
 };
 
 const H = vi.hoisted(() => ({
+  catalog: new Map<string, { raw: Buffer; source: string }>(),
   trackers: [] as any[],   // FakeTracker instances in creation order
   clients: [] as any[],    // FakeWebTorrent instances in creation order
 }));
 
-// WebTorrent stand-in: infoHash is the sha1 of the content (deterministic
+// WebTorrent stand-in: infoHash comes from real torrent metadata (deterministic
 // fileId); downloads never complete on their own — the test drives progress by
 // mutating torrent.progress and emitting 'download' / 'done'.
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
+    torrentFile?: Buffer; downloadPath?: string;
     infoHash: string; magnetURI: string; length: number; progress: number; done: boolean;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -42,7 +45,7 @@ vi.mock('webtorrent', async () => {
     }
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
     once(ev: string, fn: any): void { this.on(ev, fn); }
-    emit(ev: string): void { for (const fn of this.handlers[ev] ?? []) fn(); }
+    emit(ev: string): void { if (ev === 'done' && this.downloadPath) fsMod.copyFileSync(H.catalog.get(this.infoHash)!.source, this.downloadPath); for (const fn of this.handlers[ev] ?? []) fn(); }
   }
   class FakeWebTorrent {
     torrents = new Map<string, FakeTorrent>();
@@ -56,23 +59,28 @@ vi.mock('webtorrent', async () => {
     throttleUpload(): void { /* no-op */ }
     throttleDownload(): void { /* no-op */ }
     destroy(): void { /* no-op */ }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw; H.catalog.set(meta.infoHash, { raw, source: p });
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false); // never completes by itself
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, opts: any, cb: (t: any) => void): FakeTorrent {
+      const parsed = parseTorrent(source), raw = Buffer.isBuffer(source) ? source : H.catalog.get(parsed.infoHash)?.raw;
+      const meta = raw ? parseTorrent(raw) : parsed;
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, false);
+      t.torrentFile = raw; t.downloadPath = raw ? opts.path + '/' + meta.name : undefined;
+      this.torrents.set(meta.infoHash, t);
+      if (raw) cb(t);
+      return t;
     }
     get(infoHash: string): FakeTorrent | null {
       return (infoHash && this.torrents.get(infoHash)) || null;
     }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); done?.(); }
   }
   return { default: FakeWebTorrent };
 });
@@ -80,7 +88,8 @@ vi.mock('webtorrent', async () => {
 vi.mock('bittorrent-tracker', () => {
   class FakeTracker {
     handlers: Record<string, any[]> = {};
-    constructor() { H.trackers.push(this); }
+    announce: string[];
+    constructor(opts: { announce: string[] }) { this.announce = opts.announce; H.trackers.push(this); }
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
     emitPeer(peer: any): void { for (const fn of this.handlers['peer'] ?? []) fn(peer); }
     start(): void { /* no-op */ }
@@ -315,4 +324,104 @@ describe('room liveness: file reactions, typing, coarse progress', () => {
     expect(stateA.memberProg['B']).toBeUndefined();
     expect(sentMsgs(pB, 'prog').slice(before).map((m) => m.pct)).toEqual([30, 70]); // no extra frames
   });
+});
+
+describe('room connection diagnostics on real engine commands and peer frames', () => {
+  it('tracks discovery, handshake and sync, and retries without dropping established peers', async () => {
+    const A = await makeEngine(); await cmd(A, joinPayload('A', path.join(dir, 'a')));
+    A.tracker = H.trackers.at(-1);
+    const B = await makeEngine(); await cmd(B, joinPayload('B', path.join(dir, 'b')));
+    B.tracker = H.trackers.at(-1);
+    try {
+      expect((await snapshot(A)).connection.phase).toBe('discovering');
+      A.tracker.handlers.update[0]({ announce: A.tracker.announce[0] });
+      expect((await snapshot(A)).connection).toMatchObject({ phase: 'waiting', trackers: { acknowledged: 1 } });
+      const pA = new FakePeer(), pB = new FakePeer(); pA.connected = false;
+      A.tracker.emitPeer(pA);
+      expect((await snapshot(A)).connection.phase).toBe('connecting');
+      Object.assign(pA, { _pc: { getStats: async () => new Map([
+        ['transport', { type: 'transport', selectedCandidatePairId: 'pair' }],
+        ['pair', { type: 'candidate-pair', id: 'pair', localCandidateId: 'local', remoteCandidateId: 'remote' }],
+        ['local', { id: 'local', type: 'local-candidate', candidateType: 'relay' }],
+        ['remote', { id: 'remote', type: 'remote-candidate', candidateType: 'host' }],
+      ]) } });
+      pA.connected = true; pA.handlers.connect[0]();
+      expect((await snapshot(A)).connection.phase).toBe('authenticating');
+      pA.other = pB; pB.other = pA; B.tracker.emitPeer(pB); await flush();
+      const established = (await snapshot(A)).connection;
+      expect(established).toMatchObject({ phase: 'ready', channels: { open: 1, identified: 1, turn: 1 } });
+      expect(established.lastSyncAt).toBeGreaterThan(0);
+      const full = sentMsgs(pB, 'hello').find(m => m.manifestFull === true); expect(full).toBeTruthy();
+      pA.handlers.data[0](encrypt(KEY, { ...full, manifestFull: false, files: [] }));
+      pA.handlers.data[0]('malformed-frame');
+      pA.handlers.data[0](encrypt(KEY, { t: 'hello', manifestFull: 'invalid-marker' }));
+      const after = (await snapshot(A)).connection;
+      expect(after.phase).toBe('ready'); expect(after.lastConnectedAt).toBe(established.lastConnectedAt);
+      expect(after.observations).toMatchObject({ 'frame-unreadable': 1, 'message-rejected': 1 });
+      const oldTracker = A.tracker;
+      const retried = await cmd(A, { type: 'retryConnection', roomId: ROOM_ID });
+      expect(retried.connection).toMatchObject({ phase: 'ready', channels: { open: 1 }, trackers: { acknowledged: 0 }, observations: { 'discovery-retry': 1 } });
+      expect(pA.connected).toBe(true);
+      oldTracker.handlers.error[0](new Error('PRIVATE_TRACKER_DETAIL'));
+      oldTracker.handlers.update[0]({ announce: oldTracker.announce[0] });
+      const stalePeer = new FakePeer(); oldTracker.emitPeer(stalePeer);
+      expect(stalePeer.connected).toBe(false);
+      expect((await snapshot(A)).connection.observations['tracker-unavailable']).toBe(0);
+      pA.destroy(); expect((await snapshot(A)).connection.phase).toBe('waiting');
+    } finally {
+      await cmd(A, { type: 'leave', roomId: ROOM_ID }); await cmd(B, { type: 'leave', roomId: ROOM_ID });
+    }
+  });
+});
+
+
+describe('manifest paging through real room engines', () => {
+  it('persists an unpaged legacy greeting in bounded batches without losing files', async () => {
+    const a = await makeEngine(), b = await makeEngine();
+    const pa = joinPayload('A', path.join(dir, 'legacy-a')), pb = joinPayload('B', path.join(dir, 'legacy-b'));
+    Object.assign(pa.payload, { autoFetch: false }); Object.assign(pb.payload, { autoFetch: false });
+    await cmd(a, pa); a.tracker = H.trackers.at(-1);
+    await cmd(b, pb); b.tracker = H.trackers.at(-1);
+    const [wire] = connect(a, b);
+    try {
+      await flush();
+      const hello = sentMsgs(wire, 'hello').find(m => m.manifestFull === true);
+      expect(hello).toBeTruthy();
+      const files = Array.from({ length: 500 }, (_, i) => ({ fileId: i.toString(16).padStart(40, '0'),
+        infoHash: i.toString(16).padStart(40, '0'), name: 'Legacy ' + i + '.mkv', size: i,
+        magnetURI: 'magnet:?xt=urn:btih:' + i.toString(16).padStart(40, '0'), addedBy: 'A', addedByName: 'A', addedAt: 1 }));
+      wire.send(encrypt(KEY, { ...hello, files }));
+      await vi.waitFor(async () => expect((await snapshot(b)).files).toHaveLength(500));
+      const batches = b.sent.filter(s => s.channel === 'room-manifest-batch');
+      expect(batches).toHaveLength(8);
+      expect(batches.every(s => s.payload.files.length <= 64 && s.payload.events.length <= 64)).toBe(true);
+      expect(batches.flatMap(s => s.payload.files.map((f: { fileId: string }) => f.fileId))).toEqual(files.map(f => f.fileId));
+    } finally { await cmd(a, { type: 'leave', roomId: ROOM_ID }); await cmd(b, { type: 'leave', roomId: ROOM_ID }); }
+  });
+  it.each([500, 5000])('converges %i files without oversized frames or per-file persistence IPC', async count => {
+    const a = await makeEngine(), b = await makeEngine();
+    const files = Array.from({ length: count }, (_, i) => ({ fileId: i.toString(16).padStart(40, '0'),
+      infoHash: i.toString(16).padStart(40, '0'), name: 'Film ' + i + '.mkv', size: i,
+      magnetURI: 'magnet:?xt=urn:btih:' + i.toString(16).padStart(40, '0'), addedBy: 'A', addedByName: 'A', addedAt: 1 }));
+    const pa = joinPayload('A', path.join(dir, 'a')), pb = joinPayload('B', path.join(dir, 'b'));
+    Object.assign(pa.payload, { manifest: files, autoFetch: false }); Object.assign(pb.payload, { autoFetch: false });
+    await cmd(a, pa); a.tracker = H.trackers.at(-1);
+    await cmd(b, pb); b.tracker = H.trackers.at(-1);
+    const [wire] = connect(a, b);
+    try {
+      await vi.waitFor(async () => {
+        const state = await snapshot(b);
+        expect(state.files).toHaveLength(count);
+        expect(state.connection?.phase).toBe('ready');
+      }, { timeout: 30_000, interval: 100 });
+      expect(wire.sentFrames.every(frame => String(frame).length < 1_000_000)).toBe(true);
+      const batches = b.sent.filter(s => s.channel === 'room-manifest-batch');
+      expect(batches.reduce((n, s) => n + s.payload.files.length, 0)).toBe(count);
+      expect(batches.every(s => s.payload.files.length <= 64 && s.payload.events.length <= 64)).toBe(true);
+      expect(b.sent.filter(s => s.channel === 'room-manifest-add')).toHaveLength(0);
+      const pages = sentMsgs(wire, 'hello').filter(m => m.manifestPart);
+      expect(pages.length).toBeGreaterThan(1);
+      expect(pages.every(page => page.files.length <= 64)).toBe(true);
+    } finally { await cmd(a, { type: 'leave', roomId: ROOM_ID }); await cmd(b, { type: 'leave', roomId: ROOM_ID }); }
+  }, 35_000);
 });

@@ -56,9 +56,15 @@ export function validateChatMessage(text: unknown): asserts text is string {
   }
 }
 
-/**
- * Валидация URL трекера
- */
+/** Per-torrent ratio and minute limits, including the explicit unlimited zero. */
+export function validateSeedLimit(value: unknown, wholeMinutes = false): asserts value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER
+    || (wholeMinutes && !Number.isSafeInteger(value))) {
+    throw new Error(wholeMinutes ? 'Seeding time must be a non-negative whole number of minutes' : 'Seed ratio must be a finite non-negative number');
+  }
+}
+
+/** Валидация URL трекера. */
 export function validateTrackerUrl(url: unknown): asserts url is string {
   if (typeof url !== 'string') {
     throw new Error('Tracker URL must be a string');

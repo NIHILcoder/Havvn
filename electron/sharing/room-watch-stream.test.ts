@@ -17,11 +17,12 @@ import path from 'path';
 type Sent = { channel: string; payload: any };
 type EngineCtx = { listeners: Record<string, (e: any, msg: any) => void>; sent: Sent[] };
 
-const H = vi.hoisted(() => ({ trackers: [] as any[], createServerCalls: 0, closedPorts: [] as number[], portSeq: 40000 }));
+const H = vi.hoisted(() => ({
+  catalog: new Map<string, { raw: Buffer; source: string }>(), trackers: [] as any[], createServerCalls: 0, closedPorts: [] as number[], portSeq: 40000 }));
 
 vi.mock('webtorrent', async () => {
-  const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeServer {
     port = 0;
     private handlers: Record<string, any[]> = {};
@@ -32,7 +33,8 @@ vi.mock('webtorrent', async () => {
   }
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
-    infoHash: string; magnetURI: string; length: number; progress: number; done: boolean; ready = true;
+    torrentFile?: Buffer; downloadPath?: string;
+    infoHash: string; magnetURI: string; length: number; progress: number; done: boolean; ready = true; destroyed = false;
     files: Array<{ name: string; select: () => void }>;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -45,26 +47,33 @@ vi.mock('webtorrent', async () => {
     createServer(_opts: any): FakeServer { H.createServerCalls++; return new FakeServer(); }
   }
   class FakeWebTorrent {
+    throttleUpload(): void { /* no-op */ }
+    throttleDownload(): void { /* no-op */ }
     torrents = new Map<string, FakeTorrent>();
     handlers: Record<string, any[]> = {};
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
     once(ev: string, fn: any): void { this.on(ev, fn); }
     removeListener(ev: string, fn: any): void { this.handlers[ev] = (this.handlers[ev] ?? []).filter((f) => f !== fn); }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw; H.catalog.set(meta.infoHash, { raw, source: p });
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false); // download never completes
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, opts: any, cb: (t: any) => void): FakeTorrent {
+      const parsed = parseTorrent(source), raw = Buffer.isBuffer(source) ? source : H.catalog.get(parsed.infoHash)?.raw;
+      const meta = raw ? parseTorrent(raw) : parsed;
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, false);
+      t.torrentFile = raw; t.downloadPath = raw ? opts.path + '/' + meta.name : undefined;
+      this.torrents.set(meta.infoHash, t);
+      if (raw) cb(t);
+      return t;
     }
     get(infoHash: string): FakeTorrent | null { return (infoHash && this.torrents.get(infoHash)) || null; }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); t.destroyed = true; for (const fn of t.handlers.close ?? []) fn(); done?.(); }
     destroy(cb?: () => void): void { if (cb) cb(); }
   }
   return { default: FakeWebTorrent };
@@ -246,5 +255,11 @@ describe('watch-while-downloading (engine watchStream)', () => {
     const info = await cmd<{ port: number }>(M, { type: 'watchStream', roomId: 'r-ws-manual', fileId });
     expect(info.port).toBeGreaterThan(0);
     expect((await cmd(M, { type: 'snapshot', roomId: 'r-ws-manual' })).transfers[fileId]?.status).toBe('downloading');
+    await cmd(M, { type: 'pauseReceive', roomId: 'r-ws-manual', fileId });
+    expect(H.closedPorts).toContain(info.port);
+    await expect(cmd(M, { type: 'watchStream', roomId: 'r-ws-manual', fileId })).rejects.toThrow(/paused/i);
+    await cmd(M, { type: 'fetchFile', roomId: 'r-ws-manual', fileId }); await flush();
+    const resumed = await cmd<{ port: number }>(M, { type: 'watchStream', roomId: 'r-ws-manual', fileId });
+    expect(resumed.port).not.toBe(info.port);
   });
 });

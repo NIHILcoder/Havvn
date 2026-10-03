@@ -23,14 +23,16 @@ const H = vi.hoisted(() => ({
   trackers: [] as any[],   // FakeTracker instances in creation order
 }));
 
-// WebTorrent stand-in: infoHash is the sha1 of the file content, so the fileId
+// WebTorrent stand-in: infoHash comes from real single-file torrent metadata, so the fileId
 // is deterministic from content. add() never completes — a transfer stuck at
 // 'downloading' is exactly what these tests assert on.
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
+    torrentFile?: Buffer;
     infoHash: string; magnetURI: string; length: number; progress: number; done: boolean;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -41,6 +43,8 @@ vi.mock('webtorrent', async () => {
     once(ev: string, fn: any): void { this.on(ev, fn); }
   }
   class FakeWebTorrent {
+    throttleUpload(): void { /* no-op */ }
+    throttleDownload(): void { /* no-op */ }
     torrents = new Map<string, FakeTorrent>();
     handlers: Record<string, any[]> = {};
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
@@ -48,23 +52,27 @@ vi.mock('webtorrent', async () => {
     removeListener(ev: string, fn: any): void {
       this.handlers[ev] = (this.handlers[ev] ?? []).filter((f) => f !== fn);
     }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw;
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false); // download never completes
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, _opts: any, cb: (t: any) => void): FakeTorrent {
+      const meta = parseTorrent(source);
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, Buffer.isBuffer(source));
+      this.torrents.set(meta.infoHash, t);
+      // A magnet has not received metadata yet, so it cannot call onready.
+      if (Buffer.isBuffer(source)) { t.torrentFile = source; cb(t); }
+      return t;
     }
     get(infoHash: string): FakeTorrent | null {
       return (infoHash && this.torrents.get(infoHash)) || null;
     }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); done?.(); }
   }
   return { default: FakeWebTorrent };
 });
@@ -209,7 +217,9 @@ describe('room auto-download toggle', () => {
 
     // An explicit fetch pulls exactly that file.
     const fetched = await cmd(C, { type: 'fetchFile', roomId: ROOM_ID, fileId });
-    expect(fetched.transfers[fileId]?.status).toBe('downloading');
+    expect(['queued', 'downloading']).toContain(fetched.transfers[fileId]?.status); // acceptance does not wait for completion
+    await flush();
+    expect((await cmd(C, { type: 'snapshot', roomId: ROOM_ID })).transfers[fileId]?.status).toBe('downloading');
   });
 
   it('flipping auto back on pulls everything left unfetched', async () => {

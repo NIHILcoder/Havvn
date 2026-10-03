@@ -1,4 +1,10 @@
-import { useChromiumWebRTC } from './chromium-webrtc';
+import { PendingServerCommands, validCommandRequest, commandCanonical, commandReplyCanonical, type ServerCommandRequest, type ServerCommandReply } from '../../shared/server-command';
+import { historyDays, retainLocalHistory } from '../../shared/room-local-data';
+import { managedCopy, deleteManagedCopy, roomTreeBytes, type RoomCopy } from './room-copy-storage';
+import type { RoomDiskUsage } from '../../shared/room-local-data';
+import { WatchHostState, watchPolicyCanonical, type WatchPolicy } from '../../shared/room-watch-host';
+import { roomHelloParts, RoomHelloAssembly, RoomHelloOutbox, ROOM_FILE_LIMIT, ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT, ROOM_HELLO_ENTRIES, roomChannelHasCapacity, roomManifestCanFit, storeRoomManifestFile, type ManifestPart } from '../../shared/room-manifest-sync';
+import { useChromiumWebRTC as configureChromiumWebRTC } from './chromium-webrtc';
 /**
  * Room engine — runs as the PRELOAD of a hidden BrowserWindow (one per app),
  * exactly like share-seeder.ts, so it uses Chromium's native WebRTC (the native
@@ -23,6 +29,18 @@ import { useChromiumWebRTC } from './chromium-webrtc';
  */
 
 import { ipcRenderer } from 'electron';
+import { ROOM_BAN_LIMIT, validBanSnapshot, banSnapshotCanonical, banSnapshotAdvances, copyBanSnapshot, type RoomBanSnapshot } from '../../shared/room-bans';
+import { ROOM_KEY_LIMIT, type RoomE2ECfg, type RoomKeyPage } from '../../shared/room-keyring';
+import { contentKeyEpoch, mergeContentKeys, mintKeyPages, verifyKeyMetadata, verifyKeyPage, completeKeyPages, completeContentKeys } from './room-keyring';
+import { assertCompatibleOwnerPin } from '../../shared/room-owner-pin';
+import { RoomTrafficBudget } from './room-traffic-budget';
+import { type RoomResourcePolicy } from '../../shared/room-resources';
+import { RoomConnectionMonitor, selectedRoomChannelPath, type RoomConnectionEvent, type RoomChannelPath } from '../../shared/room-diagnostics';
+import { normalizeRoomRate } from '../../shared/room-chat-delivery';
+import { roomFileName, orderedTransferPrefix, ownerChainAnchored, ownerChainsCompatible, canDeleteRoomFile, canReviveRoomFile, currentRoomDeletion, transferCanonical as sharedTransferCanonical } from '../../shared/room-authority';
+import { ROOM_PROTOCOL_VERSION, DESKTOP_ROOM_CAPABILITIES, readRoomCapabilities } from '../../shared/room-capabilities';
+import { chatContextCanonical, voiceStateV2Canonical } from '../../shared/room-canonicals';
+import { ROOM_CHAT_LIMIT, chatEnvelope, chatBackfillPages, retainRoomChat, upgradeChat, validChatTime } from '../../shared/room-chat-history';
 import fs from 'fs';
 import path from 'path';
 import type WebTorrentType from 'webtorrent';
@@ -30,22 +48,30 @@ import { createTorrentStreamServer } from '../torrent/stream-server';
 let WebTorrent: typeof WebTorrentType;
 import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
 import { encryptFile, decryptFile, generateRoomSecret } from './room-e2e';
-import { RoomFile, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
+import { validateGossip, RoomIngressBudget, ROOM_MEMBER_LIMIT, ROOM_IDENTITY_LIMIT, ROOM_RELAY_TYPES, ROOM_WIRE_LIMIT } from '../../shared/room-protocol';
+import { gossipProofs, currentHelloProofs } from '../../shared/room-message-auth';
+import { WatchSender, WatchReceiver, watchCanonical, watchHostCanonical, type WatchMessage } from '../../shared/room-watch-sync';
+import { RoomReceiveQueue } from './room-receive-queue';
+import { RoomDiskBudget } from './room-disk-budget';
+import { roomDiskName, newRoomFilePath, isManagedRoomPath, roomTorrentMetadata, verifyRoomFile, migrateRoomFile, roomFileStamp, matchingRoomPlaintext } from './room-file-storage';
+import { RoomFile, RoomFileError, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, RoomChatAck, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon, wantAutoFetch } from '../../shared/room-folders';
 import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
-import { safeBaseName, safeDirSegment } from '../../shared/path-safety';
+import { safeDirSegment } from '../../shared/path-safety';
 import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import crypto from 'crypto';
 import type { ServerMirrorState } from '../../shared/gameserver-types';
 import { parseMirrorBody } from '../gameserver/server-mirror';
 
 let TrackerClient: any;
+let RoomChunkStore: any;
 let networkingModules: Promise<void> | undefined;
 async function loadNetworkingModules(): Promise<void> {
-  useChromiumWebRTC();
-  networkingModules ??= Promise.all([import('webtorrent'), import('bittorrent-tracker')]).then(([wt, tracker]) => {
+  configureChromiumWebRTC();
+  networkingModules ??= Promise.all([import('webtorrent'), import('bittorrent-tracker'), import('fs-chunk-store')]).then(([wt, tracker, store]) => {
     WebTorrent = wt.default;
     TrackerClient = tracker.default;
+    RoomChunkStore = store.default;
   }).catch(error => { networkingModules = undefined; throw error; });
   await networkingModules;
 }
@@ -61,9 +87,6 @@ function rememberRoomTorrent(client: any, hash: string, torrent: any): any {
 }
 function addKnownTorrent(client: any, hash: string, source: any, options: any, callback: any): any {
   return rememberRoomTorrent(client, hash, client.add(source, options, callback));
-}
-function seedKnownTorrent(client: any, hash: string, source: any, options: any, callback: any): any {
-  return rememberRoomTorrent(client, hash, client.seed(source, options, callback));
 }
 function findTorrent(client: any, hash: string): any {
   const pending = pendingRoomTorrents.get(client)?.get(hash);
@@ -128,18 +151,18 @@ const SRV_CMD_FLOOR_CAP = 512;
 // are each running game servers does not exist; the cap is only there so a
 // keyholder minting identities cannot grow the map.
 const SRV_MIRROR_HOST_CAP = 32;
-const RELAYABLE = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit', 'sync', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic', 'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer', 'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach', 'srv-mirror', 'srv-cmd']);
+const RELAYABLE = ROOM_RELAY_TYPES;
 
 // ── Gossip input hardening ────────────────────────────────────────────────────
 // Decryption already proves a peer holds the room code, but a *malicious member*
 // could still send oversized/malformed gossip to exhaust memory — and peer-relay
 // would re-flood it. So every inbound frame is size-capped before we even decrypt,
-// and the decoded message's strings/arrays are clamped to sane bounds (in place,
-// so the relayed copy is bounded too). Limits are far above any legitimate use.
+// and the decoded message is validated against shared schemas. Signed bytes
+// are checked unchanged BEFORE relay; legacy display sanitizers run afterwards.
 const MAX_FRAME_CHARS = 1_000_000;   // reject an encrypted frame larger than ~1 MB
-const MAX_ARRAY = 5000;              // have / files / tombs entries
-const MAX_TOMBSIGS = 500;            // signed tombstones per hello — each costs an Ed25519 verify, and the store caps at 500 anyway
-const MAX_CHAT_LOG = 200;            // backfilled chat messages per frame (matches the persisted chat cap; each costs a verify)
+const MAX_ARRAY = ROOM_FILE_LIMIT;              // have / files / tombs entries
+const MAX_TOMBSIGS = 500;            // signed tombstones per received legacy frame; outgoing snapshots are paged
+const MAX_CHAT_LOG = ROOM_CHAT_LIMIT; // accept legacy frames; new senders use pages of 50
 const MAX_STR = 1024;                // ids, names, seeds
 const MAX_MAGNET = 4096;             // a magnet URI
 const MAX_TEXT = 2000;               // a chat message body
@@ -169,7 +192,9 @@ type Msg =
   // whose owner runs an older build that doesn't sign.
   // `fileReacts` is a clamped summary of this member's reaction view (fileId →
   // emoji → memberIds) so late joiners converge by unioning member sets.
-  | { t: 'hello'; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; transferChain?: TransferLink[]; guest?: boolean }
+  | RoomKeyPage
+  | { t: 'e2e-key-request'; memberId: string; root: string; page: number }
+  | { t: 'hello'; manifestFull?: boolean; manifestPart?: ManifestPart; manifestRequest?: boolean; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; chatSync?: number; watchSync?: number; chatIds?: string[]; transferChain?: TransferLink[]; banState?: RoomBanSnapshot; watchPolicy?: WatchPolicy; guest?: boolean; protocolVersion?: number; capabilities?: string[] }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -182,7 +207,7 @@ type Msg =
   // by `at`; kept separate from 'add' because mergeFile is add-only.
   | { t: 'assign'; fileId: string; folderId: string; at: number; memberId: string }
   | { t: 'have'; memberId: string; fileId: string }
-  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string; guest?: boolean }
+  | { t: 'ping'; memberId: string; name: string; avatarSeed: string; have: string[]; roomName: string; ownerId: string; guest?: boolean; protocolVersion?: number; capabilities?: string[]; watchSync?: number }
   // Rich profile (custom avatar image / name color / status line). A SEPARATE
   // rarely-sent Msg — never on the 15s ping (the image is ~tens of KB) — and
   // SIGNED with a per-member monotonic `at` floor, unlike hello/ping's display
@@ -203,23 +228,22 @@ type Msg =
   // LWW by `at` (same future-clock cutoff as rename/topic). Every applied
   // transfer joins room.transferChain, which full HELLOs re-serve so a joiner
   // holding an OLD invite can walk pin → transfer#1 → … → current owner.
-  | { t: 'transfer'; newOwnerId: string; at: number; by: string; pub: string; sig: string }
+  | { t: 'transfer'; banState?: RoomBanSnapshot; newOwnerId: string; at: number; by: string; pub: string; sig: string }
   // Sent when a member leaves voluntarily so peers drop them at once instead of
   // keeping a 45s offline ghost in the list.
   | { t: 'bye'; memberId: string }
   // Watch-together: relayed verbatim to peers; the renderers keep playback in sync
   // and show who's in the session ('join'/'leave'/'beat' presence).
+  | WatchPolicy
+  | WatchMessage
   | { t: 'sync'; fileId: string; action: 'play' | 'pause' | 'seek' | 'state' | 'join' | 'leave' | 'beat' | 'react'; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed: string; playing: boolean; together?: boolean; emoji?: string }
   // A chat message. Carries its own id (dedupes re-delivery across multiple wires)
   // and the sender's identity so peers can render it without a member lookup.
   // `pub` is the sender's Ed25519 public key (PEM) and `sig` an Ed25519 signature
   // over the immutable fields — proves authorship, so no keyholder can post under
   // another member's id (anti-spoofing on top of the room-key confidentiality).
-  // `replyTo`/`replyName`/`replyText` ride OUTSIDE the signed chat canonical (an
-  // unsigned quote pointer, like voice `deafened`) — older peers ignore them and
-  // still verify/relay the message; a relay could tamper the quote but not the
-  // signed body, and the parent is resolved by id regardless.
-  | { t: 'chat'; id: string; memberId: string; name: string; avatarSeed: string; text: string; at: number; pub: string; sig: string; replyTo?: string; replyName?: string; replyText?: string }
+  // Legacy sig authenticates the body; v2 contextSig also authenticates the reply.
+  | { t: 'chat'; chatV?: 2; contextSig?: string; id: string; memberId: string; name: string; avatarSeed: string; text: string; at: number; pub: string; sig: string; replyTo?: string; replyName?: string; replyText?: string }
   // Author edits their own message. A SEPARATE signed type (NOT a mutation of the
   // 'chat' message — that would break dedupe-by-id and older peers) over a domain-
   // tagged editCanonical; receivers enforce memberId === the target's author. LWW
@@ -229,7 +253,7 @@ type Msg =
   // Backfill: a UNICAST reply to a peer whose HELLO said it was behind — the
   // messages it missed while offline, each carrying its own pub/sig so they
   // re-verify independently of who re-served them. Never broadcast/relayed.
-  | { t: 'chat-log'; msgs: Array<{ id: string; memberId: string; name: string; avatarSeed: string; text: string; at: number; pub: string; sig: string }> }
+  | { t: 'chat-log'; msgs: RoomChatMessage[] }
   // Owner renamed the room. OWNER-SIGNED + last-writer-wins by `at`, so it can
   // actually change an already-set name (the plain HELLO roomName only bootstraps
   // a placeholder). Relayed verbatim; peers verify `by === ownerId`.
@@ -247,7 +271,7 @@ type Msg =
   // Voice presence: the sender joined/left the room's voice channel or toggled
   // mute. SIGNED so a member can't fake another's presence; relayed so late/relay-
   // only members learn who is talking.
-  | { t: 'voice-state'; memberId: string; inVoice: boolean; muted: boolean; deafened?: boolean; at: number; pub: string; sig: string }
+  | { t: 'voice-state'; memberId: string; inVoice: boolean; muted: boolean; deafened?: boolean; at: number; pub: string; sig: string; voiceV?: 2; stateSig?: string }
   // Voice signaling (WebRTC offer/answer/ICE) from `memberId` to `to`. SIGNED so
   // signaling can't be spoofed; relayed+targeted so it reaches a peer we can only
   // reach through another member. The media itself is DTLS-SRTP peer-to-peer.
@@ -279,9 +303,11 @@ type Msg =
   // Game-server mirror: host-signed compact instance state for remote viewers.
   | { t: 'srv-mirror'; hostId: string; at: number; body: string; pub: string; sig: string }
   // Operator console command relayed to the host.
-  | { t: 'srv-cmd'; by: string; instanceId: string; command: string; at: number; pub: string; sig: string };
+  | { t: 'srv-cmd'; by: string; instanceId: string; command: string; at: number; pub: string; sig: string }
+  | (ServerCommandRequest & { t: 'srv-cmd-v2'; pub: string; sig: string })
+  | (ServerCommandReply & { t: 'srv-result-v2'; pub: string; sig: string });
 
-interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean; }
+interface Wire { id: number; peer: any; path?: RoomChannelPath; statsPending?: boolean; manifestReceived?: boolean; manifestRequestedAt?: number; memberId?: string; greetedFull?: boolean; legacyChatSent?: boolean; }
 
 /**
  * The room's E2E config as a self-contained, owner-signed claim: `sig` is an
@@ -291,14 +317,7 @@ interface Wire { id: number; peer: any; memberId?: string; greetedFull?: boolean
  * in their HELLOs, so a joiner can authenticate the secret even while the owner
  * is offline. Binding to the CURRENT topic means the owner re-signs on rekey.
  */
-interface E2ECfg {
-  ownerId: string; e2e: boolean; secret: string; pub: string; sig: string;
-  // Keyring: PREVIOUS secrets (decrypt-only), under their OWN signature so the
-  // v1 canonical (and with it <=2.24 verification) stays intact. Optional —
-  // absent/invalid prev parts degrade to "current secret only", never reject
-  // the whole config.
-  prevSecrets?: string[]; prevSig?: string;
-}
+type E2ECfg = RoomE2ECfg;
 
 interface Room {
   roomId: string;
@@ -325,13 +344,18 @@ interface Room {
   e2e: boolean;                          // end-to-end encryption (ciphertext on the wire)
   secret: string;                        // E2E content key (32-byte hex; '' until learned)
   e2eCfg: E2ECfg | null;                 // owner-signed E2E config we hold + re-serve to joiners
-  prevSecrets: string[];                 // decrypt-only keyring (rotated-out secrets, newest first)
+  prevSecrets: string[];                 // retained decrypt-only keys, including legacy epochs
+  keyPages: RoomKeyPage[];                // current signed paged history for offline-owner joins
+  keyRequestedAt: Map<number, number>;
+  keySentAt: Map<number, number>;
+  banState: RoomBanSnapshot | null;
   bans: Set<string>;                     // memberIds cut by an owner-signed rekey — their gossip is dropped
   e2eSigned: boolean;                    // e2e/secret/owner were established by a VERIFIED owner signature
   cacheDir: string;                      // where ciphertext copies live (outside the room folder)
   wires: Map<number, Wire>;
   members: Map<string, RoomMember>;      // by memberId (excludes self)
-  files: Map<string, RoomFile>;          // by fileId
+  files: Map<string, RoomFile>;
+  manifestLimited?: boolean;          // by fileId
   folders: Map<string, RoomFolder>;      // by folderId — optional sections overlay (LWW)
   folderTombstones: Map<string, number>; // deleted folderId → deletedAt; a newer upsert revives it
   transfers: Map<string, RoomTransfer>;  // by fileId
@@ -341,8 +365,8 @@ interface Room {
   revives: Map<string, number>;          // fileId → revAt of a VERIFIED revive we accepted; guards the revived file from re-deletion by an equal/older re-gossiped tombstone (session-only)
   autoFetch: boolean;                    // auto-download peers' files; false = wait for an explicit fetchFile
   folderFetch: Record<string, boolean>;  // per-folder auto-fetch override (local pref; absent key = inherit autoFetch)
-  upKbps: number;                        // per-room upload ceiling, KB/s (0 = unlimited)
-  downKbps: number;                      // per-room download ceiling, KB/s (0 = unlimited)
+  upKbps: number;                        // per-room upload ceiling, KB/s (0 = shared room budget)
+  downKbps: number;                      // per-room download ceiling, KB/s (0 = shared room budget)
   mutes: Set<string>;                    // locally-muted memberIds (per install)
   history: RoomEvent[];                  // activity log, newest last (capped)
   chat: RoomChatMessage[];               // chat messages, newest last (capped)
@@ -374,12 +398,14 @@ interface Room {
    *  IS that host's replay floor — a shared floor let the host with the faster
    *  clock silently bury everyone else's servers. */
   srvMirrors: Map<string, ServerMirrorState>;
+  pendingServerCommands: PendingServerCommands;
   srvCmdAt: Map<string, number>;         // memberId → last srv-cmd `at` accepted from them (our OWN id: last we SENT, so two commands in one millisecond still advance); the anti-replay floor for operator commands (session-only, capped)
   seenGids: Set<string>;                 // relay dedup — gossip ids already processed
   seenGidOrder: string[];                // FIFO order for capping seenGids
   kicked: boolean;                       // the owner removed us (session-only)
   kickedBy: string;                      // who removed us (display name)
   snapshotTimer: any;
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
   lastSnapshot: number;
 }
 
@@ -388,6 +414,57 @@ interface Room {
 // two rooms sharing identical content stop colliding on one infoHash).
 const clients = new Map<string, any>();  // roomId → WebTorrent client
 const rooms = new Map<string, Room>();
+const connectionMonitors = new WeakMap<Room, RoomConnectionMonitor>();
+function connectionMonitor(room: Room): RoomConnectionMonitor {
+  let monitor = connectionMonitors.get(room);
+  if (!monitor) { monitor = new RoomConnectionMonitor(room.trackers.length); connectionMonitors.set(room, monitor); }
+  return monitor;
+}
+function observeConnection(room: Room, event: RoomConnectionEvent): void { connectionMonitor(room).observe(event); pushState(room); }
+function connectionSnapshot(room: Room) {
+  const channels = { pending: 0, open: 0, identified: 0, syncing: 0, direct: 0, turn: 0, unknown: 0 };
+  for (const wire of room.wires.values()) {
+    if (wire.peer.destroyed) continue;
+    if (!wire.peer.connected) { channels.pending++; continue; }
+    channels.open++; channels[wire.path ?? 'unknown']++;
+    if (wire.memberId && wire.memberId !== room.self.memberId && !room.bans.has(wire.memberId)) {
+      channels.identified++;
+      if (wire.manifestReceived === false) channels.syncing++;
+    }
+  }
+  return connectionMonitor(room).snapshot(channels, room.e2e && !room.secret, room.kicked);
+}
+async function sampleChannelPath(room: Room, wire: Wire): Promise<void> {
+  if (wire.statsPending || typeof wire.peer._pc?.getStats !== 'function') return;
+  wire.statsPending = true;
+  try {
+    const stats = await wire.peer._pc.getStats();
+    if (rooms.get(room.roomId) !== room || room.wires.get(wire.id) !== wire || !wire.peer.connected || wire.peer.destroyed) return;
+    const path = selectedRoomChannelPath(typeof stats.values === 'function' ? stats.values() : stats);
+    if (wire.path !== path) { wire.path = path; pushState(room); }
+  } catch { /* unmeasured paths remain unknown */ }
+  finally { wire.statsPending = false; }
+}
+const trafficBudget = new RoomTrafficBudget((id) => {
+  const client = clients.get(id); clients.delete(id);
+  try { client?.destroy(); } catch { /* fail closed */ }
+  log('Room file client stopped after limiter failure: ' + id);
+});
+function refreshFileBudget(): boolean {
+  const before = trafficBudget.isVoicePriorityActive();
+  try { trafficBudget.setVoiceActive([...rooms.values()].some(r => r.voice?.isActive())); }
+  catch (error) { log('Room voice priority could not be applied: ' + String(error)); }
+  return before !== trafficBudget.isVoicePriorityActive();
+}
+function removeFileClient(id: string): void {
+  try { trafficBudget.remove(id); } catch (error) { log('Room budget reallocation failed: ' + String(error)); }
+}
+function pushResourceStates(): void { for (const r of rooms.values()) pushState(r, true); }
+function applyResourcePolicy(value: unknown): void {
+  trafficBudget.configure(value);
+  for (const r of rooms.values()) r.voice.setScreenBitrate(trafficBudget.getPolicy().screenBitrateKbps);
+  pushResourceStates();
+}
 // Watch-while-downloading: WebTorrent's own per-torrent HTTP stream server, one
 // per watched file, keyed `${roomId}:${fileId}`. It serves Range requests over
 // the live torrent — blocking on and prioritizing not-yet-downloaded pieces — so
@@ -421,33 +498,26 @@ try {
     for (const r of rooms.values()) { try { r.voice.onDevicesChanged(); } catch { /* ignore */ } }
   });
 } catch { /* no mediaDevices (insecure context) — device pickers just stay empty */ }
+// Network recovery is limited to calls already active; a kill-switch never auto-joins.
+globalThis.addEventListener?.('online', () => {
+  if (netSuspended) return;
+  for (const r of rooms.values()) if (!r.kicked) r.voice.onNetworkChanged();
+});
 
 /** Enumerate audio devices IN THIS window (deviceId is salted per-origin, so the
  *  ids the capture pipeline needs must come from here, not the main renderer).
- *  Labels can be blank until a media grant in this context — a momentary capture
- *  unlocks them. */
+ *  Labels can be blank until the user explicitly joins/tests voice. Enumeration
+ *  must never open a microphone merely to discover those labels. */
 async function listVoiceDevices(): Promise<VoiceDeviceInfo[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
-  let devs = await navigator.mediaDevices.enumerateDevices();
+  const devs = await navigator.mediaDevices.enumerateDevices();
   const audio = (d: MediaDeviceInfo) => d.kind === 'audioinput' || d.kind === 'audiooutput';
-  if (!devs.some((d) => audio(d) && d.label)) {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      s.getTracks().forEach((t) => t.stop());
-      devs = await navigator.mediaDevices.enumerateDevices();
-    } catch { /* mic denied — return unlabeled ids, the UI shows generic names */ }
-  }
   return devs.filter(audio).map((d) => ({ deviceId: d.deviceId, kind: d.kind as VoiceDeviceInfo['kind'], label: d.label || '' }));
 }
 // Debug handles for the hidden window's console/CDP — rooms and clients are
 // module-scoped and otherwise unreachable when diagnosing a live install.
 (globalThis as any).__rooms = rooms;
 (globalThis as any).__clients = clients;
-
-/** Room KB/s (0 = unlimited) → webtorrent limit (bytes/s, -1 = unlimited). */
-function kbpsToLimit(kbps: number): number {
-  return kbps > 0 ? kbps * 1024 : -1;
-}
 
 function ensureClient(room: Room): any {
   // Kill-switch chokepoint: NEVER construct a WebTorrent client while suspended,
@@ -456,19 +526,22 @@ function ensureClient(room: Room): any {
   // reference; without this, its next seed would build a fresh client keyed to a
   // deleted roomId — one that suspendAllNetworking can never find to tear down,
   // leaking on the real IP for the whole outage.
-  if (netSuspended || !rooms.has(room.roomId)) throw new Error('Room networking is suspended (VPN kill-switch)');
+  if (netSuspended || rooms.get(room.roomId) !== room) throw new Error('Room networking is suspended (VPN kill-switch)');
   let c = clients.get(room.roomId);
   if (!c) {
     c = new WebTorrent({
       natUpnp: false, natPmp: false,
       utp: false,
       dht: false,
-      uploadLimit: kbpsToLimit(room.upKbps),
-      downloadLimit: kbpsToLimit(room.downKbps),
+      enableWebSeeds: false,
+      uploadLimit: 0,
+      downloadLimit: 0,
       tracker: { wrtc: nativeWrtc, rtcConfig: { iceServers: room.iceServers } },
     } as any);
     c.on('error', (e: any) => log('wt client error: ' + (e?.message || e)));
     clients.set(room.roomId, c);
+    trafficBudget.register(room.roomId, c, room.upKbps, room.downKbps);
+    pushResourceStates();
     log('WebTorrent client ready (Chromium WebRTC) for room ' + room.roomId);
   }
   return c;
@@ -558,7 +631,7 @@ function applyReactIn(map: Map<string, Map<string, Set<string>>>, id: string, em
     }
     let set = byEmoji.get(emoji);
     if (!set) { set = new Set(); byEmoji.set(emoji, set); }
-    if (set.has(memberId) || set.size >= MAX_ARRAY) return false;
+    if (set.has(memberId) || set.size >= ROOM_MEMBER_LIMIT) return false;
     set.add(memberId);
   } else {
     const set = byEmoji?.get(emoji);
@@ -677,7 +750,7 @@ function mergeChatEdits(room: Room, rec?: Record<string, { text: string; at: num
       text: clampStr((raw as any).text, MAX_TEXT), at: Number((raw as any).at) || 0,
       by: clampStr((raw as any).by, MAX_STR), pub: clampStr((raw as any).pub, MAX_STR * 2), sig: clampStr((raw as any).sig, MAX_STR),
     };
-    if (!edit.text || !edit.at) continue;
+    if (!edit.text || !validChatTime(edit.at)) continue;
     if (room.mutes.has(edit.by)) continue;    // a muted member's edits stay hidden (mirror the live/backfill paths)
     if (!verifyEdit(room, { msgId, memberId: edit.by, at: edit.at, text: edit.text, pub: edit.pub, sig: edit.sig })) continue;
     // Target not held yet (fresh joiner merges HELLO edits BEFORE the chat-log
@@ -747,6 +820,7 @@ function buildState(room: Room): RoomState {
       .filter((f) => room.transfers.get(f.fileId)?.haveLocally)
       .map((f) => f.fileId),
     role: roleOf(room.self.memberId),
+    protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: true,
     ...(room.self.color ? { color: room.self.color } : {}),
     ...(room.self.status ? { status: room.self.status } : {}),
     ...(room.self.avatarImg ? { avatarImg: room.self.avatarImg } : {}),
@@ -773,8 +847,9 @@ function buildState(room: Room): RoomState {
       } : {}),
     });
   }
+  const queuedReceives = receiveQueue.positions(room);
   const transfers: Record<string, RoomTransfer> = {};
-  for (const [k, v] of room.transfers) transfers[k] = v;
+  for (const [k, v] of room.transfers) transfers[k] = { ...v, queuePosition: queuedReceives.get(k) };
   // Count distinct *members* that are online, not raw WebRTC wires — multiple
   // trackers each broker a wire to the same peer, so wires.size over-counts.
   const onlinePeers = members.filter((m) => !m.isSelf && m.online).length;
@@ -811,33 +886,41 @@ function buildState(room: Room): RoomState {
   }
   return {
     roomId: room.roomId,
+    connection: connectionSnapshot(room),
     name: room.name,
     ...(room.topicText ? { topic: room.topicText } : {}),
     code: room.code,
     // The shareable invite pins the owner (when known) so joiners can't be tricked
     // into adopting an impostor owner; the bare `code` stays the speakable fallback.
-    invite: buildInvite(room.code, room.ownerId),
+    invite: buildInvite(room.code, room.ownerId || room.ownerPin),
     folder: room.folder,
     topicHash: room.topic,
     createdAt: 0,
     ownerId: room.ownerId,
+    watchPolicy: watchState(room).host.current(room.ownerId, room.transferAt),
     canManage: !!room.ownerId && room.ownerId === room.self.memberId,
     e2e: room.e2e,
     members,
+    manifestLimited: room.manifestLimited,
     files: Array.from(room.files.values()).sort((a, b) => a.addedAt - b.addedAt),
     // Folders sorted by name (natural), then by id as a deterministic tiebreaker
     // so two same-named folders render in the SAME order on every peer (Map
     // insertion order differs per peer). The renderer groups files under them.
     folders: Array.from(room.folders.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) || a.id.localeCompare(b.id)),
     transfers,
+    receiveQueue: { ...receiveQueue.counts(room), concurrency: 2,
+      waitingBytes: Array.from(room.files.values()).filter(f => queuedReceives.has(f.fileId)).reduce((sum, f) => sum + f.size, 0) },
     history: room.history.slice(-100),
-    chat: room.chat.slice(-100),
+    chat: room.chat.slice(-ROOM_CHAT_LIMIT),
     connected: room.started,
     peerCount: onlinePeers,
     autoFetch: room.autoFetch,
     folderFetch: { ...room.folderFetch },
     upKbps: room.upKbps,
     downKbps: room.downKbps,
+    resources: { policy: trafficBudget.getPolicy(), voicePriorityActive: trafficBudget.isVoicePriorityActive(),
+      fileUpBps: trafficBudget.rates(room.roomId)?.[0] ?? 0,
+      fileDownBps: trafficBudget.rates(room.roomId)?.[1] ?? 0 },
     kicked: room.kicked,
     ...(room.kicked ? { kickedBy: room.kickedBy } : {}),
     typingMemberIds,
@@ -861,6 +944,7 @@ function idleLanState(): RoomState['lan'] {
 
 function pushState(room: Room, immediate = false): void {
   const send = () => {
+    if (rooms.get(room.roomId) !== room) return;
     room.lastSnapshot = Date.now();
     room.snapshotTimer = null;
     try { ipcRenderer.send('room-update', buildState(room)); } catch { /* ignore */ }
@@ -872,7 +956,51 @@ function pushState(room: Room, immediate = false): void {
 }
 
 // ── Gossip ──────────────────────────────────────────────────────────────────
+const helloAssemblies = new WeakMap<object, RoomHelloAssembly>();
+const helloPages = new WeakMap<object, ReturnType<typeof roomHelloParts>>();
+const helloOutboxes = new WeakMap<Room, RoomHelloOutbox>();
+const helloClocks = new WeakMap<Room, number>();
+function helloAssembly(target: object, limit = 256): RoomHelloAssembly {
+  let assembly = helloAssemblies.get(target);
+  if (!assembly) { assembly = new RoomHelloAssembly(limit); helloAssemblies.set(target, assembly); }
+  return assembly;
+}
+function resetHelloSync(room: Room): void {
+  helloOutboxes.get(room)?.stop(); helloOutboxes.delete(room); helloAssemblies.delete(room);
+}
 function sendTo(room: Room, wire: Wire, msg: Msg): void {
+  if (msg.t === 'hello' && msg.manifestFull === true && !msg.manifestPart) {
+    const at = Math.max(Date.now(), (helloClocks.get(room) || 0) + 1); helloClocks.set(room, at);
+    try {
+      let pages = helloPages.get(msg);
+      if (!pages) { pages = roomHelloParts(msg, crypto.randomBytes(12).toString('hex'), at); helloPages.set(msg, pages); }
+      if (pages.length > 1) {
+        for (const page of pages) if (page._g) markSeen(room, page._g);
+        let outbox = helloOutboxes.get(room);
+        if (!outbox) { outbox = new RoomHelloOutbox(); helloOutboxes.set(room, outbox); }
+        const key = room.key;
+        outbox.enqueue(wire, pages, page => sendTo(room, wire, page as Msg), () => {
+          if (rooms.get(room.roomId) !== room || room.key !== key || netSuspended || room.kicked
+            || room.wires.get(wire.id) !== wire || !wire.peer?.connected) return null;
+          return roomChannelHasCapacity(wire.peer);
+        });
+        return;
+      }
+    } catch (error) { log('HELLO paging failed: ' + String(error)); return; }
+  }
+  if (msg.t === 'hello' && msg.manifestPart && (msg as Msg & { _t?: number })._t! < 4) {
+    let outbox = helloOutboxes.get(room);
+    if (!outbox) { outbox = new RoomHelloOutbox(); helloOutboxes.set(room, outbox); }
+    const key = room.key;
+    outbox.relay(msg, page => {
+      try { wire.peer.send(encrypt(key, page)); } catch { /* closed channel */ }
+    }, () => {
+      if (rooms.get(room.roomId) !== room || room.key !== key || netSuspended || room.kicked
+        || room.wires.get(wire.id) !== wire || !wire.peer?.connected || room.bans.has(wire.memberId || '')) return null;
+      return (wire.peer?._channel?.bufferedAmount || 0) < 512 * 1024;
+    });
+    return;
+  }
   try {
     if (wire.peer && wire.peer.connected) wire.peer.send(encrypt(room.key, msg));
   } catch (e) { log('send failed: ' + String(e)); }
@@ -917,9 +1045,47 @@ function broadcast(room: Room, msg: Msg): void {
   }
 }
 
+function persistBanState(room: Room): void {
+  try { ipcRenderer.send('room-bans', { roomId: room.roomId, bans: [...room.bans], banState: room.banState }); } catch { /* ignore */ }
+}
+function mintBanState(room: Room): void {
+  if (room.ownerId !== room.self.memberId) return;
+  const bans = [...room.bans].sort();
+  if (room.banState?.ownerId === room.ownerId && JSON.stringify(room.banState.bans) === JSON.stringify(bans)) return;
+  const proof: RoomBanSnapshot = { v: 1, ownerId: room.ownerId, revision: room.banState?.ownerId === room.ownerId ? room.banState.revision + 1 : 1, bans, pub: room.self.pub, sig: '' };
+  proof.sig = signBytes(room, Buffer.from(banSnapshotCanonical(room.topic, proof)));
+  if (validBanSnapshot(proof)) { room.banState = proof; persistBanState(room); }
+}
+function dropBannedMember(room: Room, id: string): void {
+  room.members.delete(id); room.memberProg.delete(id); delete room.typing[id];
+  room.voice.onMemberGone(id); room.lan?.onMemberGone(id);
+  for (const wire of [...room.wires.values()]) if (wire.memberId === id) {
+    try { wire.peer.destroy(); } catch { /* ignore */ } room.wires.delete(wire.id);
+  }
+}
+function adoptBanState(room: Room, proof: RoomBanSnapshot): boolean {
+  if (!validBanSnapshot(proof) || !banSnapshotAdvances(proof, room.ownerId, room.banState, room.bans)
+    || !verifySignedBy(room, proof.ownerId, proof.pub, proof.sig, Buffer.from(banSnapshotCanonical(room.topic, proof)))) return false;
+  if (room.banState?.sig === proof.sig) return true;
+  room.banState = copyBanSnapshot(proof);
+  for (const id of proof.bans) { room.bans.add(id); dropBannedMember(room, id); }
+  persistBanState(room);
+  if (room.bans.has(room.self.memberId)) markKicked(room, room.members.get(room.ownerId)?.name || '?');
+  else { broadcast(room, helloMsg(room)); pushState(room, true); }
+  return true;
+}
+
 function helloMsg(room: Room, full = true): Msg {
+  const watch = watchState(room);
+  let policy = watch.host.current(room.ownerId, room.transferAt);
+  if (policy && watch.policyTopic !== room.topic && room.ownerId === room.self.memberId) {
+    policy = { ...policy, at: Math.max(Date.now(), policy.at + 1), sig: '' };
+    policy.sig = signBytes(room, Buffer.from(watchPolicyCanonical(room.topic, policy)));
+    if (watch.host.accept(policy, room.ownerId, Date.now(), room.transferAt)) watch.policyTopic = room.topic;
+    else policy = undefined;
+  }
   const m: any = {
-    t: 'hello',
+    t: 'hello', manifestFull: full,
     memberId: room.self.memberId,
     name: room.self.name || 'You',
     avatarSeed: room.self.avatarSeed,
@@ -937,14 +1103,17 @@ function helloMsg(room: Room, full = true): Msg {
     e2e: room.e2e, // E2E mode + content key ride the encrypted gossip channel
     secret: room.secret,
     ...(room.e2eCfg ? { cfg: room.e2eCfg } : {}), // owner-signed config, re-served for joiners
+    ...(room.banState?.ownerId === room.ownerId ? { banState: room.banState } : {}),
+    ...(policy && watch.policyTopic === room.topic ? { watchPolicy: policy } : {}),
     ...(room.transferChain.length ? { transferChain: room.transferChain } : {}), // ownership-transfer chain — lets a joiner walk pin → current owner
     ...(room.fileReacts.size ? { fileReacts: reactsToRecord(room) } : {}), // late joiners union this in
     ...(room.chatReacts.size ? { chatReacts: chatReactsToRecord(room) } : {}),
     ...(room.chatEdits.size ? { chatEdits: chatEditsToRecord(room) } : {}), // author-signed edits — receivers re-verify
     ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
     ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
-    // How caught-up our chat is — a reconnecting peer replies with a chat-log of
-    // anything newer that it holds, so messages said while we were offline arrive.
+    // Legacy clock retained only for older clients; v2 reconciles by ID.
+    chatSync: 2, watchSync: 2, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES],
+    chatIds: room.chat.filter(m => m.chatV === 2).map(m => m.id),
     ...(room.chat.length ? { chatAt: room.chat[room.chat.length - 1].at } : {}),
   };
   if (!full) {
@@ -955,10 +1124,16 @@ function helloMsg(room: Room, full = true): Msg {
     // as a reply once the peer identifies (see case 'hello').
     m.secret = ''; m.files = []; m.have = []; m.tombs = [];
     delete m.tombsAt; delete m.tombSigs; delete m.cfg; delete m.fileReacts;
-    delete m.chatReacts; delete m.chatEdits; delete m.folders; delete m.folderTombs; delete m.chatAt;
-    delete m.transferChain; // not secret, but rides only the FULL hello like everything else post-identification
+    delete m.chatReacts; delete m.chatEdits; delete m.folders; delete m.folderTombs; delete m.chatAt; delete m.chatIds;
+    // Public owner/ban proofs may be sent before identification so an excluded
+    // profile can learn its status without receiving secrets or file metadata.
+    if (!m.banState) delete m.transferChain;
   }
-  return m as Msg;
+  return currentHelloProofs(m, room.topic, room.transferChain[0]?.by || room.ownerPin || room.ownerId, p => {
+    if (room.bans.has(p.memberId) && !p.chainLink || deriveMemberId(p.pub) !== p.memberId) return false;
+    try { return crypto.verify(null, p.bytes, crypto.createPublicKey(p.pub), Buffer.from(p.sig, 'base64')); }
+    catch { return false; }
+  }) as Msg;
 }
 
 /** Persist a folder create/edit to main so it (and the grouping) survives restart. */
@@ -995,7 +1170,7 @@ function e2ePrevCanonical(topic: string, ownerId: string, prevSecrets: string[])
   return Buffer.from(JSON.stringify(['th-room-e2e-prev:v1', topic, ownerId, prevSecrets]), 'utf8');
 }
 
-const MAX_PREV_SECRETS = 8;
+const LEGACY_PREV_SECRETS = 8;
 
 /** Owner only: mint the signed E2E config for the room's CURRENT topic. */
 function signE2ECfg(room: Room): E2ECfg | null {
@@ -1005,10 +1180,12 @@ function signE2ECfg(room: Room): E2ECfg | null {
     const sig = crypto.sign(null, e2eCanonical(room.topic, body), key).toString('base64');
     const cfg: E2ECfg = { ...body, pub: room.self.pub, sig };
     if (room.prevSecrets.length) {
-      const prev = room.prevSecrets.slice(0, MAX_PREV_SECRETS);
+      const prev = room.prevSecrets.slice(0, LEGACY_PREV_SECRETS);
       cfg.prevSecrets = prev;
       cfg.prevSig = crypto.sign(null, e2ePrevCanonical(room.topic, room.self.memberId, prev), key).toString('base64');
     }
+    room.keyPages = mintKeyPages(room.topic, cfg, room.prevSecrets, room.self.priv);
+    room.keyRequestedAt.clear(); room.keySentAt.clear();
     return cfg;
   } catch (e) { log('e2e cfg sign failed: ' + String(e)); return null; }
 }
@@ -1016,7 +1193,7 @@ function signE2ECfg(room: Room): E2ECfg | null {
 /** Validate a cfg's OPTIONAL keyring part; [] when absent or unverifiable. */
 function verifiedPrevSecrets(room: Room, cfg: E2ECfg): string[] {
   if (!Array.isArray(cfg.prevSecrets) || !cfg.prevSecrets.length || typeof cfg.prevSig !== 'string') return [];
-  const prev = cfg.prevSecrets.slice(0, MAX_PREV_SECRETS).map((x) => clampStr(x, MAX_SECRET)).filter(Boolean);
+  const prev = cfg.prevSecrets.slice(0, LEGACY_PREV_SECRETS).map((x) => clampStr(x, MAX_SECRET)).filter(Boolean);
   if (!prev.length) return [];
   try {
     const ok = crypto.verify(null, e2ePrevCanonical(room.topic, cfg.ownerId, prev), crypto.createPublicKey(cfg.pub), Buffer.from(cfg.prevSig, 'base64'));
@@ -1036,7 +1213,14 @@ function verifiedPrevSecrets(room: Room, cfg: E2ECfg): string[] {
  */
 function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
   if (!cfg || typeof cfg !== 'object') return false;
+  if (cfg.keys && !verifyKeyMetadata(room.topic, cfg)) return false;
   if (!cfg.ownerId || !cfg.pub || !cfg.sig || typeof cfg.e2e !== 'boolean' || typeof cfg.secret !== 'string') return false;
+  // A past owner is a recovery source until the current owner establishes cfg.
+  // It cannot replace a current owner's history or change an already verified key.
+  if (room.e2eSigned && room.ownerId && cfg.ownerId !== room.ownerId
+    && (room.e2eCfg?.ownerId === room.ownerId || room.secret && cfg.secret !== room.secret)) {
+    log('past-owner E2E config cannot replace the current authenticated state'); return false;
+  }
   // Same crypto anchor as every other signed command: the ownerId must be the
   // hash of the signing key, so a forged cfg can't poison the owner's binding
   // (which would then reject the REAL owner's config and rekeys).
@@ -1067,7 +1251,7 @@ function verifyE2ECfg(room: Room, cfg: any): cfg is E2ECfg {
 
 /** Persist the current E2E view (flag, secret, signed blob) via the main process. */
 function persistE2E(room: Room): void {
-  try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret, prevSecrets: room.prevSecrets, cfg: room.e2eCfg }); } catch { /* ignore */ }
+  try { ipcRenderer.send('room-e2e', { roomId: room.roomId, e2e: room.e2e, secret: room.secret, prevSecrets: room.prevSecrets, keyPages: room.keyPages, cfg: room.e2eCfg }); } catch { /* ignore */ }
 }
 
 /**
@@ -1104,24 +1288,31 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
         // Keep the secret we legitimately held: the cfg's keyring rides outside
         // the v1 signature and can be stripped in transit (or by an old relay's
         // clamp) — a key we already trusted needs no signature to stay usable.
-        room.prevSecrets = [room.secret, ...room.prevSecrets.filter((x) => x !== room.secret)].slice(0, MAX_PREV_SECRETS);
+        room.prevSecrets = mergeContentKeys(cfg.secret, [room.secret], room.prevSecrets);
       }
       room.secret = cfg.secret;
       changed = true;
     }
-    // Keyring is owner-authoritative: replace ours with the verified list (its
-    // own signature — see verifiedPrevSecrets; a stripped/forged part only
-    // costs OLD-file reads, never the current secret above).
+    // Merge the separately verified compatibility list with locally held keys.
+    // A stripped list cannot discard old keys that we already trusted.
     const prev = verifiedPrevSecrets(room, cfg);
     if (prev.length) {
       // Verified list first (owner order), then any locally-held keys it lacks.
-      const merged = [...prev, ...room.prevSecrets.filter((x) => !prev.includes(x))].slice(0, MAX_PREV_SECRETS);
+      const merged = mergeContentKeys(room.secret, prev, room.prevSecrets);
       if (JSON.stringify(merged) !== JSON.stringify(room.prevSecrets)) {
         room.prevSecrets = merged;
         changed = true;
       }
     }
-    if (!room.e2eSigned || room.e2eCfg?.sig !== cfg.sig) { room.e2eCfg = cfg; room.e2eSigned = true; changed = true; }
+    if (!room.e2eSigned || room.e2eCfg?.sig !== cfg.sig || cfg.keys && room.e2eCfg?.keys?.root !== cfg.keys.root) {
+      if (cfg.keys && !verifyKeyMetadata(room.topic, cfg)) return;
+      // A stripped extension cannot discard an authenticated history we already hold.
+      if (!(room.e2eCfg?.keys && !cfg.keys && room.e2eCfg.sig === cfg.sig)) {
+        const keep = room.keyPages.filter(p => verifyKeyPage(room.topic, cfg, p));
+        room.e2eCfg = cfg; room.keyPages = keep; room.keyRequestedAt.clear(); room.keySentAt.clear();
+      }
+      room.e2eSigned = true; changed = true;
+    }
   } else if (!room.e2eSigned) {
     if (codeIsE2E(room.code)) {
       // New-format room: the owner always signs, so an unsigned secret can only
@@ -1142,7 +1333,7 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
   // that names the current owner and future joiners can't authenticate the secret.
   let remintOwner = false;
   if (room.ownerId === room.self.memberId && room.e2e && room.secret &&
-      (!room.e2eCfg || room.e2eCfg.ownerId !== room.self.memberId)) {
+      (!room.e2eCfg || room.e2eCfg.ownerId !== room.self.memberId) && completeContentKeys(room.e2eCfg, room.secret, room.prevSecrets)) {
     const mine = signE2ECfg(room);
     if (mine) { room.e2eCfg = mine; room.e2eSigned = true; changed = true; remintOwner = true; }
   }
@@ -1153,63 +1344,236 @@ function maybeAdoptE2E(room: Room, e2e?: boolean, secret?: string, cfg?: E2ECfg)
     pushState(room);
   }
   if (remintOwner) broadcast(room, helloMsg(room));
+  requestKeyPages(room);
 }
 
-/**
- * Where a room file's plaintext lands on disk: <roomDir>/<folder name>/ when the
- * file is assigned to a known folder (its name reduced to one safe path segment),
- * else the room root — so the on-disk layout mirrors the folder grouping shown in
- * the UI. Creates the directory (falls back to the room root if that fails).
- * Keyed on the folder NAME for a human-readable layout; renaming a folder does
- * not move already-landed files (that reconcile is out of scope here).
- */
-function folderDirFor(room: Room, file: RoomFile): string {
-  const fid = file.folderId;
-  if (typeof fid === 'string' && fid) {
-    const folder = room.folders.get(fid);
-    const seg = folder ? safeDirSegment(folder.name) : '';
-    if (seg) {
-      const dir = path.join(room.folder, seg);
-      try { fs.mkdirSync(dir, { recursive: true }); return dir; }
-      catch { /* fall through to the room root */ }
-    }
+function requestKeyPages(room: Room): void {
+  const keys = room.e2eCfg?.keys;
+  if (!keys || !room.wires.size || room.e2eCfg?.ownerId === room.self.memberId) return;
+  for (let page = 0; page < keys.pages; page++) {
+    if (room.keyPages.some(p => p.page === page)) continue;
+    if (Date.now() - (room.keyRequestedAt.get(page) ?? -Infinity) < 10_000) continue;
+    room.keyRequestedAt.set(page, Date.now());
+    broadcast(room, { t: 'e2e-key-request', memberId: room.self.memberId, root: keys.root, page });
   }
-  return room.folder;
+}
+function adoptKeyPage(room: Room, page: RoomKeyPage): void {
+  const cfg = room.e2eCfg;
+  if (!cfg || !verifyKeyPage(room.topic, cfg, page) || room.keyPages.some(p => p.page === page.page)) return;
+  const clean: RoomKeyPage = { t: 'e2e-keys', ownerId: page.ownerId, epoch: page.epoch, root: page.root, page: page.page, total: page.total, entries: page.entries.map(e => ({ epoch: e.epoch, secret: e.secret })), pub: page.pub, sig: page.sig };
+  const pages = [...room.keyPages, clean];
+  // Every page has an owner signature; the complete list must also match its signed root.
+  if (pages.length === cfg.keys!.pages && !completeKeyPages(cfg, pages)) return;
+  const prev = mergeContentKeys(room.secret, page.entries.map(e => e.secret), room.prevSecrets);
+  room.keyPages = pages; room.prevSecrets = prev;
+  if (room.ownerId === room.self.memberId && completeContentKeys(cfg, room.secret, room.prevSecrets)) {
+    const mine = signE2ECfg(room);
+    if (mine) { room.e2eCfg = mine; room.e2eSigned = true; broadcast(room, helloMsg(room)); }
+  }
+  persistE2E(room); void decryptPending(room); pushState(room);
 }
 
-/** Decrypt one E2E file's cached ciphertext into the room folder (plaintext).
- *  Tries the current secret, then the keyring (GCM rejects wrong keys). */
-async function decryptOne(room: Room, file: RoomFile, cipherPath: string): Promise<void> {
-  if (!room.secret) return;
-  const plain = path.join(folderDirFor(room, file), file.name);
-  try {
-    const candidates = [room.secret, ...room.prevSecrets];
-    let done = false;
-    let lastErr: unknown = null;
-    for (const sec of candidates) {
-      try { await decryptFile(cipherPath, plain, sec); done = true; break; }
-      catch (err) { lastErr = err; }
-    }
-    if (!done) throw lastErr ?? new Error('no matching key');
-    setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: plain, cipherPath });
-    persistManifest(room, file, plain, cipherPath);
-    broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
+// Storage bookkeeping belongs to the room session and is never sent to peers.
+type ReceiveLease = { release: () => void; holding: boolean; disk?: () => void; timer?: ReturnType<typeof setTimeout> };
+let queuePushPending = false;
+const receiveQueue = new RoomReceiveQueue(2, 512, () => {
+  if (queuePushPending) return;
+  queuePushPending = true;
+  queueMicrotask(() => { queuePushPending = false; for (const room of rooms.values()) pushState(room, true); });
+});
+const diskBudget = new RoomDiskBudget();
+type FileStorageState = {
+  receives: Map<string, ReceiveLease>;
+  stopping: Map<string, Promise<void>>;
+  metadata: Map<string, Buffer>; originals: Set<string>;
+  proofs: Map<string, { path: string; stamp: string }>;
+  pending: Map<string, Promise<void>>; decrypting: Map<string, Promise<void>>;
+  epochs: Map<string, number>;
+  partialPaths: Map<string, string>;
+  decryptKeys: Map<string, string>; // digest of the last attempted keyring, local only
+};
+const roomStorage = new WeakMap<Room, FileStorageState>();
+function storageFor(room: Room): FileStorageState {
+  let state = roomStorage.get(room);
+  if (!state) {
+    state = { receives: new Map(), stopping: new Map(), metadata: new Map(), originals: new Set(), proofs: new Map(), pending: new Map(), decrypting: new Map(), epochs: new Map(), partialPaths: new Map(), decryptKeys: new Map() };
+    roomStorage.set(room, state);
+  }
+  return state;
+}
+function currentFile(room: Room, file: RoomFile, epoch = storageFor(room).epochs.get(file.fileId) ?? 0, localOnly = false): boolean {
+  return rooms.get(room.roomId) === room && room.files.get(file.fileId) === file
+    && !room.kicked && (localOnly || (!netSuspended && !room.transfers.get(file.fileId)?.released))
+    && (storageFor(room).epochs.get(file.fileId) ?? 0) === epoch
+    && !isTombstonedAt(room, file.fileId, file.addedAt);
+}
+function releaseReceive(room: Room, fileId: string): void { storageFor(room).receives.get(fileId)?.release(); }
+function cancelReceives(room: Room): void {
+  for (const id of [...storageFor(room).receives.keys()]) releaseReceive(room, id);
+  receiveQueue.cancel(room);
+}
+function cancelFileOperation(room: Room, fileId: string, holdReceive = false): void {
+  if (holdReceive) receiveQueue.cancelWaiting(room, fileId);
+  else { releaseReceive(room, fileId); receiveQueue.cancel(room, fileId); }
+  const state = storageFor(room);
+  state.epochs.set(fileId, (state.epochs.get(fileId) ?? 0) + 1);
+  state.pending.delete(fileId); state.decrypting.delete(fileId);
+}
+function rememberPlaintext(room: Room, fileId: string, localPath: string, expectedStamp = roomFileStamp(localPath)): void {
+  const stamp = roomFileStamp(localPath);
+  if (!stamp || stamp !== expectedStamp) throw new Error('Room file no longer exists or changed after verification');
+  storageFor(room).proofs.set(fileId, { path: localPath, stamp });
+  setTransfer(room, fileId, { localStamp: stamp });
+}
+function fileFailure(room: Room, file: RoomFile, stage: RoomFileError['stage'], cause: unknown, patch: Partial<RoomTransfer> = {}): void {
+  const err = cause as { code?: string; message?: string };
+  const message = String(err?.message || cause).slice(0, 1000);
+  const code: RoomFileError['code'] = err?.code === 'ENOSPC' ? 'disk-full'
+    : err?.code === 'ENOENT' ? 'missing-file'
+    : ['EACCES', 'EPERM'].includes(err?.code || '') ? 'permission'
+    : stage === 'decryption' && /authenticate|bad decrypt|matching room key/i.test(message) ? 'authentication'
+    : stage === 'local-file' || /changed|does not match|unexpected size|length mismatch/i.test(message) ? 'changed-file' : 'failed';
+  storageFor(room).proofs.delete(file.fileId);
+  closeStreamServers(room.roomId, file.fileId);
+  setTransfer(room, file.fileId, { ...patch, status: 'error', phase: 'error', haveLocally: false, localStamp: undefined,
+    error: { stage, code, message } });
+  persistManifest(room, file);
+  pushState(room, true);
+}
+function verifiedLocalFile(roomId: string, fileId: string): string {
+  const room = rooms.get(roomId);
+  const tr = room?.transfers.get(fileId);
+  const proof = room && storageFor(room).proofs.get(fileId);
+  if (room && tr?.haveLocally && proof && proof.path === tr.localPath && roomFileStamp(proof.path) === proof.stamp) return proof.path;
+  if (room && tr?.haveLocally) {
+    const file = room.files.get(fileId);
+    if (file) fileFailure(room, file, 'local-file', new Error('This file has changed or is missing on disk'));
+    const t = clients.get(roomId) && findTorrent(clients.get(roomId), fileId);
+    if (t) void Promise.resolve(clients.get(roomId)?.remove(t)).catch(e => log('changed file release failed: ' + String(e)));
     pushState(room, true);
-  } catch (e) {
-    setTransfer(room, file.fileId, { status: 'error', cipherPath });
-    log('e2e decrypt failed: ' + String(e));
   }
+  throw new Error('This file is not verified or has changed on disk. Fetch or share it again.');
+}
+function decryptKeyStamp(room: Room): string {
+  return crypto.createHash('sha256').update([room.secret, ...room.prevSecrets].filter(Boolean).join(':')).digest('hex');
 }
 
-/** Decrypt any downloaded-but-still-encrypted files now that we have the secret. */
+/** Authenticate into a fresh fileId slot. Parallel requests share one operation. */
+function decryptOne(room: Room, file: RoomFile, cipherPath: string, checked?: { metadata: Buffer; stamp: string }): Promise<void> {
+  const state = storageFor(room);
+  const pending = state.decrypting.get(file.fileId);
+  if (pending) return pending;
+  const epoch = state.epochs.get(file.fileId) ?? 0;
+  const isCurrent = () => currentFile(room, file, epoch, true);
+  let attemptedKeys: string[] = [];
+  const job = (async () => {
+    if (!isCurrent()) return;
+    setTransfer(room, file.fileId, { phase: 'verifying', status: 'done', haveLocally: false, error: undefined, downSpeed: 0 });
+    pushState(room, true);
+    let plain: string | undefined;
+    let stage: RoomFileError['stage'] = 'verification';
+    let cipherStamp: string | undefined;
+    let releaseDisk: (() => void) | undefined;
+    try {
+      cipherStamp = roomFileStamp(cipherPath);
+      // The download completion path just streamed the hashes. Reuse that
+      // proof only while the exact filesystem identity is unchanged; manual
+      // retry always checks the cached bytes afresh.
+      if (checked && checked.stamp !== cipherStamp) throw new Error('Encrypted copy changed after verification');
+      const metadata = checked?.metadata ?? await verifyRoomFile(cipherPath, file, state.metadata.get(file.fileId));
+      if (!isCurrent()) return;
+      if (!cipherStamp || roomFileStamp(cipherPath) !== cipherStamp) throw new Error('Encrypted copy changed during verification');
+      state.metadata.set(file.fileId, metadata);
+      setTransfer(room, file.fileId, { progress: 1, cipherReady: true, cipherPath, phase: 'ciphertext-ready' });
+      // Snapshot keys for this operation: config/key rotation can arrive while
+      // the disk pipeline runs. A later config update can retry with new keys.
+      const secrets = [room.secret, ...room.prevSecrets].filter((s): s is string => !!s && (!file.keyEpoch || contentKeyEpoch(s) === file.keyEpoch));
+      attemptedKeys = secrets;
+      state.decryptKeys.set(file.fileId, decryptKeyStamp(room));
+      if (!secrets.length) {
+        setTransfer(room, file.fileId, { phase: 'waiting-key' });
+        persistManifest(room, file); pushState(room, true); return;
+      }
+      stage = 'decryption';
+      setTransfer(room, file.fileId, { phase: 'decrypting' });
+      persistManifest(room, file); pushState(room, true);
+      if (!state.receives.has(file.fileId)) {
+        fs.mkdirSync(room.folder, { recursive: true });
+        releaseDisk = diskBudget.reserve([{ root: room.folder, bytes: file.size }]);
+      }
+      plain = newRoomFilePath(room.folder, file.fileId, roomDiskName({ name: file.name }));
+      let done = false, lastErr: unknown;
+      for (const secret of secrets) {
+        try { await decryptFile(cipherPath, plain, secret, { isCurrent, expectedSize: file.size }); done = true; if (!file.keyEpoch) file.keyEpoch = contentKeyEpoch(secret); break; }
+        catch (error) {
+          lastErr = error;
+          if (!isCurrent() || !/authenticate|bad decrypt/i.test(String(error))) throw error;
+        }
+      }
+      if (!done) throw lastErr ?? new Error('No matching room key');
+      if (!isCurrent()) { await fs.promises.rm(plain, { force: true }); return; }
+      if (roomFileStamp(cipherPath) !== cipherStamp) { stage = 'verification'; throw new Error('Encrypted copy changed during decryption'); }
+      let selected = plain, stamp = roomFileStamp(plain);
+      const prior = room.transfers.get(file.fileId)?.localPath;
+      if (prior && (state.originals.has(file.fileId) || isManagedRoomPath(room.folder, file.fileId, prior))) {
+        const matching = await matchingRoomPlaintext(prior, plain).catch(() => undefined);
+        if (!isCurrent()) { await fs.promises.rm(plain, { force: true }); return; }
+        if (matching) {
+          await fs.promises.rm(plain, { force: true });
+          selected = prior; stamp = matching;
+        }
+      }
+      if (!isCurrent()) { await fs.promises.rm(plain, { force: true }); return; }
+      if (roomFileStamp(cipherPath) !== cipherStamp) { stage = 'verification'; throw new Error('Encrypted copy changed before publication'); }
+      rememberPlaintext(room, file.fileId, selected, stamp);
+      if (selected !== prior) state.originals.delete(file.fileId);
+      setTransfer(room, file.fileId, { progress: 1, phase: 'ready', status: room.transfers.get(file.fileId)?.released ? 'done' : 'seeding', haveLocally: true, error: undefined, localPath: selected, cipherPath });
+      persistManifest(room, file, selected, cipherPath);
+      broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
+      pushState(room, true);
+    } catch (error) {
+      if (plain) await fs.promises.rm(plain, { force: true }).catch(() => {});
+      if (!isCurrent()) return;
+      const changedCipher = stage === 'decryption' && roomFileStamp(cipherPath) !== cipherStamp;
+      if (changedCipher) stage = 'verification';
+      const failure = changedCipher ? new Error('Encrypted copy changed or is missing during decryption') : error;
+      state.proofs.delete(file.fileId);
+      fileFailure(room, file, stage, failure, { cipherPath, ...(stage === 'verification' ? { cipherReady: false } : {}) });
+      if (stage === 'verification') {
+        const c = clients.get(room.roomId), t = c && findTorrent(c, file.infoHash);
+        if (t) void Promise.resolve(c.remove(t)).catch(e => log('invalid ciphertext release failed: ' + String(e)));
+      }
+      log('e2e decrypt failed: ' + String(failure));
+    } finally { releaseDisk?.(); }
+  })();
+  state.decrypting.set(file.fileId, job);
+  void job.finally(() => {
+    if (state.decrypting.get(file.fileId) !== job) return;
+    state.decrypting.delete(file.fileId);
+    // A config update that arrived mid-pipeline joined this job. Try once with
+    // newly available keys after it finishes, rather than losing that update.
+    if (isCurrent() && (room.transfers.get(file.fileId)?.error?.code === 'authentication' || room.transfers.get(file.fileId)?.phase === 'waiting-key')
+      && [room.secret, ...room.prevSecrets].some(key => key && !attemptedKeys.includes(key))) void decryptOne(room, file, cipherPath);
+  });
+  return job;
+}
+/** Retry only the cached bytes; never start a client or re-add a torrent. */
+function retryDecrypt(roomId: string, fileId: string): void {
+  const room = rooms.get(roomId), file = room?.files.get(fileId);
+  if (!room || !file || room.kicked) throw new Error('File not available in this room');
+  const tr = room.transfers.get(fileId);
+  if (!file.enc || !tr?.cipherReady || !tr.cipherPath) throw new Error('Download the encrypted file before retrying decryption');
+  if (tr.haveLocally) { verifiedLocalFile(roomId, fileId); return; }
+  void decryptOne(room, file, tr.cipherPath);
+}
 async function decryptPending(room: Room): Promise<void> {
   if (!room.e2e || !room.secret) return;
   for (const [fileId, tr] of room.transfers) {
     const file = room.files.get(fileId);
-    if (!file || !file.enc || !tr.cipherPath) continue;
-    const plain = path.join(folderDirFor(room, file), file.name);
-    if (tr.haveLocally && fs.existsSync(plain)) continue;
-    if (!fs.existsSync(tr.cipherPath)) continue;
+    if (!file?.enc || !tr.cipherReady || !tr.cipherPath || !fs.existsSync(tr.cipherPath)) continue;
+    try { verifiedLocalFile(room.roomId, fileId); continue; } catch { /* not ready */ }
+    if (tr.phase !== 'waiting-key' && !(tr.error?.code === 'authentication'
+      && storageFor(room).decryptKeys.get(fileId) !== decryptKeyStamp(room))) continue;
     await decryptOne(room, file, tr.cipherPath);
   }
 }
@@ -1222,7 +1586,9 @@ function logEvent(room: Room, ev: Omit<RoomEvent, 'id' | 'at'> & { at?: number }
   const full: RoomEvent = { id: crypto.randomBytes(8).toString('hex'), at: at ?? Date.now(), ...rest };
   room.history.push(full);
   if (room.history.length > 200) room.history = room.history.slice(-200);
-  try { ipcRenderer.send('room-history-add', { roomId: room.roomId, event: full }); } catch { /* ignore */ }
+  const batch = manifestBatches.get(room);
+  if (batch) batch.events.push(full);
+  else try { ipcRenderer.send('room-history-add', { roomId: room.roomId, event: full }); } catch { /* ignore */ }
   pushState(room);
 }
 
@@ -1230,8 +1596,17 @@ function logEvent(room: Room, ev: Omit<RoomEvent, 'id' | 'at'> & { at?: number }
  * Record a chat message (in memory + persisted) and refresh the UI immediately.
  * Idempotent on message id so re-delivery across multiple wires is harmless.
  */
-function addChat(room: Room, msg: RoomChatMessage, backfill = false): void {
-  if (room.chat.some((m) => m.id === msg.id)) return;
+function addChat(room: Room, msg: RoomChatMessage, backfill = false, persisted = false): void {
+  const index = room.chat.findIndex(m => m.id === msg.id);
+  if (index >= 0) {
+    const upgrade = upgradeChat(room.chat[index], msg);
+    if (!upgrade) return;
+    room.chat[index] = upgrade;
+    try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: upgrade, backfill: true }); } catch { /* ignore */ }
+    pushState(room, true);
+    return;
+  }
+  if (!persisted) msg = { ...msg, receivedAt: Date.now() };
   room.chat.push(msg);
   // A verified edit that arrived before this message (fresh-joiner HELLO ahead of
   // the backfill, or relay reorder) was buffered — apply it now that its target
@@ -1241,26 +1616,30 @@ function addChat(room: Room, msg: RoomChatMessage, backfill = false): void {
     room.pendingEdits.delete(msg.id);
     if (applyChatEdit(room, msg.id, pending)) persistChatEdits(room);
   }
-  if (room.chat.length > 200) {
-    room.chat = room.chat.slice(-200);
+  if (room.chat.length > ROOM_CHAT_LIMIT) {
+    room.chat = room.chat.slice(-ROOM_CHAT_LIMIT);
     if (pruneChatReacts(room)) persistChatReacts(room); // aged-out msgs free their cap slots
     if (pruneChatEdits(room)) persistChatEdits(room);   // and their edit overlay
   }
   // `backfill` = historical catch-up (not live) — the main process persists + badges
   // it but does NOT fire an OS notification, so a reconnect can't detonate a toast storm.
-  try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: msg, backfill }); } catch { /* ignore */ }
+  if (!persisted) { try { ipcRenderer.send('room-chat-add', { roomId: room.roomId, message: msg, backfill }); } catch { /* ignore */ } }
   pushState(room, true);
 }
 
-/** Reply to a peer's HELLO with the chat messages it missed while offline: those
- *  newer than its `since` that we can re-serve WITH a signature (so they verify on
- *  its side). Unicast — never broadcast — so backfill goes only to who needs it. */
-function sendChatBackfill(room: Room, wire: Wire, since: number): void {
-  const msgs = room.chat
-    .filter((m) => m.at > since && m.pub && m.sig)
-    .slice(-100)
-    .map((m) => ({ id: m.id, memberId: m.memberId, name: m.name, avatarSeed: m.avatarSeed, text: m.text, at: m.at, pub: m.pub as string, sig: m.sig as string }));
-  if (msgs.length) sendTo(room, wire, { t: 'chat-log', msgs });
+/** Clock-independent catch-up, at most four unicast pages. Slim v2 HELLO waits
+ * for the full inventory. Older peers receive the retained window once/wire. */
+function sendChatBackfill(room: Room, wire: Wire, hello: { chatSync?: number; chatIds?: string[] }): void {
+  if (hello.chatSync === 2 && !Array.isArray(hello.chatIds)) return;
+  if (hello.chatSync !== 2 && wire.legacyChatSent) return;
+  const pages = chatBackfillPages(room.chat, hello.chatSync === 2 ? hello.chatIds : undefined);
+  const work = pages.reduce((sum, page) => sum + page.length * 2, 0);
+  if (!ingressBudget(ingressByWire, wire).take(0, work) || !ingressBudget(ingressByRoom, room).take(0, work)) return;
+  if (hello.chatSync !== 2) wire.legacyChatSent = true;
+  for (const page of pages) {
+    const msgs = page.filter(m => !room.bans.has(m.memberId) && verifyChat(room, m));
+    if (msgs.length) sendTo(room, wire, { t: 'chat-log', msgs });
+  }
 }
 
 // ── Chat authorship (Ed25519) ────────────────────────────────────────────────
@@ -1289,7 +1668,7 @@ function signBytes(room: Room, canonical: Buffer): string {
  *  neither impersonate the owner nor poison another member's binding. First
  *  binding wins; a later mismatch is rejected at verify time. */
 function bindIdentity(room: Room, memberId: string, pub?: string): void {
-  if (!memberId || !pub || room.identities.has(memberId)) return;
+  if (!memberId || !pub || room.identities.has(memberId) || room.identities.size >= ROOM_IDENTITY_LIMIT) return;
   if (deriveMemberId(pub) !== memberId) { log('id/pub mismatch for ' + memberId + ' — not bound'); return; }
   room.identities.set(memberId, pub);
   try { ipcRenderer.send('room-identity-add', { roomId: room.roomId, memberId, pub }); } catch { /* ignore */ }
@@ -1308,7 +1687,7 @@ function idMatchesPub(memberId: string, pub: string): boolean {
  * Any mismatch is an impersonation attempt and is dropped.
  */
 function verifySignedBy(room: Room, memberId: string, pub: string, sig: string, canonical: Buffer): boolean {
-  if (!memberId || !pub || !sig) return false;
+  if (!memberId || !pub || !sig || (!room.identities.has(memberId) && room.identities.size >= ROOM_IDENTITY_LIMIT)) return false;
   if (!idMatchesPub(memberId, pub)) { log('id not derived from pub for ' + memberId + ' — dropped'); return false; } // the crypto anchor: pub must hash to the claimed id
   const bound = room.identities.get(memberId);
   if (bound && bound !== pub) { log('identity mismatch for ' + memberId + ' — dropped'); return false; }
@@ -1327,8 +1706,9 @@ function chatCanonical(topic: string, m: { id: string; at: number; memberId: str
 function signChat(room: Room, m: { id: string; at: number; memberId: string; text: string }): string {
   return signBytes(room, chatCanonical(room.topic, m));
 }
-function verifyChat(room: Room, msg: { id: string; at: number; memberId: string; text: string; pub: string; sig: string }): boolean {
-  return verifySignedBy(room, msg.memberId, msg.pub, msg.sig, chatCanonical(room.topic, msg));
+function verifyChat(room: Room, msg: RoomChatMessage): boolean {
+  return verifySignedBy(room, msg.memberId, msg.pub!, msg.sig!, chatCanonical(room.topic, msg))
+    && (msg.chatV !== 2 || verifySignedBy(room, msg.memberId, msg.pub!, msg.contextSig!, Buffer.from(chatContextCanonical(room.topic, msg))));
 }
 
 /** Stable bytes for a chat EDIT. Domain-tagged ('chat-edit') so an edit signature
@@ -1372,7 +1752,7 @@ function renameCanonical(topic: string, m: { name: string; at: number; by: strin
  *  same identity AND where `by` is currently owner — a same-person-owns-both edge
  *  with no privilege gain (they already control both rooms). See the design doc. */
 function transferCanonical(rootOwnerId: string, m: { by: string; newOwnerId: string; at: number }): Buffer {
-  return Buffer.from(JSON.stringify(['th-room-transfer:v1', rootOwnerId, m.by, m.newOwnerId, m.at]), 'utf8');
+  return Buffer.from(sharedTransferCanonical(rootOwnerId, m));
 }
 
 /** Bytes the owner signs over a topic change (same discipline as rename). */
@@ -1422,9 +1802,7 @@ function profileCanonical(topic: string, m: { memberId: string; at: number; name
 function srvMirrorCanonical(topic: string, m: { hostId: string; at: number; body: string }): Buffer {
   return Buffer.from(JSON.stringify(['srv-mirror', topic, m.hostId, m.at, m.body]), 'utf8');
 }
-function srvCmdCanonical(topic: string, m: { by: string; instanceId: string; command: string; at: number }): Buffer {
-  return Buffer.from(JSON.stringify(['srv-cmd', topic, m.by, m.instanceId, m.command, m.at]), 'utf8');
-}
+
 
 /** Our signed rich-profile announcement. An EMPTY profile still announces —
  *  a peer whose session cache holds our old avatar/status must be able to
@@ -1474,7 +1852,8 @@ function createVoiceSession(room: Room): VoiceSession {
       // signed bytes would fail verification on ≤2.24 peers (who'd then drop
       // the whole presence). It's cosmetic — a replayed frame could at worst
       // show a stale headphone glyph, never affect audio or authorization.
-      broadcast(room, { t: 'voice-state', memberId: room.self.memberId, inVoice, muted, deafened: deafened === true, at, pub: room.self.pub, sig });
+      const stateSig = signBytes(room, Buffer.from(voiceStateV2Canonical(room.topic, { memberId: room.self.memberId, inVoice, muted, deafened: deafened === true, at })));
+      broadcast(room, { t: 'voice-state', memberId: room.self.memberId, inVoice, muted, deafened: deafened === true, at, pub: room.self.pub, sig, voiceV: 2, stateSig });
     },
     announceShare(sharing: boolean, streamId: string, at: number): void {
       const sig = signBytes(room, voiceShareCanonical(room.topic, { memberId: room.self.memberId, sharing, streamId, at }));
@@ -1488,10 +1867,12 @@ function createVoiceSession(room: Room): VoiceSession {
       // Transient user-facing warning (e.g. a mid-call mic fallback) → renderer toast.
       try { ipcRenderer.send('room-voice-warn', { msg }); } catch { /* ignore */ }
     },
-    onChange(): void { pushState(room, true); },
+    onChange(): void { if (refreshFileBudget()) pushResourceStates(); else pushState(room, true); },
     log,
   };
-  return new VoiceSession(adapter, undefined, () => voiceSettings);
+  const session = new VoiceSession(adapter, undefined, () => voiceSettings);
+  session.setScreenBitrate(trafficBudget.getPolicy().screenBitrateKbps);
+  return session;
 }
 
 /** Wire a room's LanSession to the signed, encrypted gossip + the elevated Wintun
@@ -1818,9 +2199,9 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
   const client = new LanPipeClient({
     pipeName: String(opts.pipeName || ''),
     token: String(opts.token || ''),
-    onData: (frame) => { try { room.lanEgress?.(frame); } catch (e) { log('lan egress error: ' + String(e)); } },
-    onControl: (m) => onLanControl(room, m),
-    onClose: () => { try { room.lan?.suspend(); } catch { /* ignore */ } },
+    onData: (frame) => { if (rooms.get(roomId) !== room || room.lanPipe !== client) return; try { room.lanEgress?.(frame); } catch (e) { log('lan egress error: ' + String(e)); } },
+    onControl: (m) => { if (rooms.get(roomId) === room && room.lanPipe === client) onLanControl(room, m); },
+    onClose: () => { if (rooms.get(roomId) !== room || room.lanPipe !== client) return; try { room.lan?.suspend(); } catch { /* ignore */ } },
   });
   room.lanPipe = client;
   try {
@@ -1829,7 +2210,11 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
     teardownLan(room);
     throw new Error('LAN helper connection failed: ' + String(e));
   }
-  if (netSuspended || !rooms.has(roomId)) { teardownLan(room); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
+  if (netSuspended || rooms.get(roomId) !== room || room.lanPipe !== client) {
+    client.close();
+    if (room.lanPipe === client) teardownLan(room);
+    throw new Error('LAN start was cancelled by a room or network change');
+  }
   // Apply BEFORE start(): the first advert we emit must already carry the honest
   // willingness bit, or peers would briefly hold us as a candidate we then refuse.
   session.setRelayEnabled(lanRelayEnabled);
@@ -1955,7 +2340,7 @@ function verifyChainLinks(room: Room, links: unknown): TransferLink[] | null {
   let root = '';
   let prevNewOwner = '';
   let prevAt = 0;
-  for (const raw of links.slice(0, MAX_TRANSFER_CHAIN)) {
+  for (const raw of orderedTransferPrefix(links)) {
     const l = clampTransferLink(raw);
     if (!l) break;                                              // malformed — keep the valid prefix
     if (l.newOwnerId === l.by) break;                           // self-transfer
@@ -1977,13 +2362,7 @@ function verifyChainLinks(room: Room, links: unknown): TransferLink[] | null {
  *  (TOFU): trust it if we hold no chain yet (first-seen), or it extends the same
  *  genesis root / passes through our current owner. */
 function chainAnchored(room: Room, chain: TransferLink[]): boolean {
-  const root = chain[0].by;
-  if (room.ownerPin) {
-    return root === room.ownerPin || chain.some((l) => l.newOwnerId === room.ownerPin);
-  }
-  const knownRoot = room.transferChain.length ? room.transferChain[0].by : room.ownerId;
-  if (!knownRoot) return true; // TOFU, nothing established yet — trust the first sound chain
-  return root === knownRoot || chain.some((l) => l.by === knownRoot || l.newOwnerId === knownRoot);
+  return ownerChainAnchored(room, chain);
 }
 
 /**
@@ -2026,7 +2405,7 @@ function adoptChain(room: Room, links: unknown, quiet = false): boolean {
     // same re-mint set as applyLocalRekey). The E2E secret and topic do not
     // rotate on transfer — only the signing authority — so new joiners would
     // otherwise reject the previous owner's E2E config, tombstones and topic.
-    if (room.e2e && room.secret) {
+    if (room.e2e && room.secret && completeContentKeys(room.e2eCfg, room.secret, room.prevSecrets)) {
       room.e2eCfg = signE2ECfg(room);
       room.e2eSigned = !!room.e2eCfg;
       persistE2E(room);
@@ -2047,6 +2426,7 @@ function adoptChain(room: Room, links: unknown, quiet = false): boolean {
       room.topicMsg = { text: room.topicText, at, by, pub: room.self.pub, sig };
       try { ipcRenderer.send('room-topic', { roomId: room.roomId, text: room.topicText, at, by, pub: room.self.pub, sig }); } catch { /* ignore */ }
     }
+    mintBanState(room);
     // Re-greet so peers pick up the fresh cfg/tombSigs/topic/chain at once.
     broadcast(room, helloMsg(room));
   }
@@ -2117,13 +2497,13 @@ function clampStr(v: any, n: number): string {
 }
 
 /** Coerce a peer-supplied file entry to a sane shape, or null if unusable.
- *  file.name is reduced to a traversal-free basename (safeBaseName) because every
+ *  file.name is reduced to a traversal-free basename (roomFileName) because every
  *  write site does path.join(room.folder, file.name) — see shared/path-safety. */
 function clampFile(f: any): RoomFile | null {
   if (!f || typeof f !== 'object') return null;
   const fileId = clampStr(f.fileId, MAX_STR);
   const magnetURI = clampStr(f.magnetURI, MAX_MAGNET);
-  const name = safeBaseName(clampStr(f.name, MAX_STR));
+  const name = roomFileName(clampStr(f.name, MAX_STR));
   // A file with no usable (traversal-free) name can't be safely stored — drop it.
   if (!fileId || !magnetURI || !name) return null;
   // fileId is an infoHash by construction — reject anything with whitespace or
@@ -2143,7 +2523,7 @@ function clampFile(f: any): RoomFile | null {
     // Never from the future: a hostile far-future addedAt would otherwise outrank
     // (and permanently defeat) every later deletion. Falls back to now if absent.
     addedAt: Math.min(Number.isFinite(f.addedAt) ? f.addedAt : Date.now(), Date.now()),
-    ...(f.enc ? { enc: true } : {}),
+    ...(f.enc ? { enc: true, ...(f.keyEpoch ? { keyEpoch: f.keyEpoch } : {}) } : {}),
     // Revive authorization (only on an add that lifts an authenticated tombstone).
     ...(f.revBy && f.revPub && f.revSig && Number.isFinite(f.revAt) ? { revBy: clampStr(f.revBy, MAX_STR), revPub: clampStr(f.revPub, MAX_STR * 2), revAt: Number(f.revAt), revSig: clampStr(f.revSig, MAX_STR) } : {}),
     // Folder assignment MUST be copied explicitly or it is silently stripped on
@@ -2181,6 +2561,7 @@ function clampFolder(f: any): RoomFolder | null {
 
 /** Bound a decoded gossip message's strings/arrays in place (anti-DoS). */
 function clampGossip(msg: any): void {
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return;
   if ('memberId' in msg) msg.memberId = clampStr(msg.memberId, MAX_STR);
   if ('name' in msg) msg.name = clampStr(msg.name, MAX_STR);
   if ('roomName' in msg) msg.roomName = clampStr(msg.roomName, MAX_STR);
@@ -2208,7 +2589,7 @@ function clampGossip(msg: any): void {
   if ('sharing' in msg) msg.sharing = msg.sharing === true;
   if ('fileId' in msg) msg.fileId = clampStr(msg.fileId, MAX_STR);
   if ('msgId' in msg) msg.msgId = clampStr(msg.msgId, MAX_STR);
-  if ('replyTo' in msg) msg.replyTo = clampStr(msg.replyTo, MAX_STR);      // chat reply pointer (unsigned)
+  if ('replyTo' in msg) msg.replyTo = clampStr(msg.replyTo, MAX_STR);      // v2 includes this pointer in contextSig
   if ('replyName' in msg) msg.replyName = clampStr(msg.replyName, MAX_STR); // reply quote author snapshot
   if ('replyText' in msg) msg.replyText = clampStr(msg.replyText, MAX_TEXT); // reply quote body snapshot
   if ('secret' in msg) msg.secret = clampStr(msg.secret, MAX_SECRET);
@@ -2221,9 +2602,10 @@ function clampGossip(msg: any): void {
     msg.cfg = (c && typeof c === 'object' && !Array.isArray(c))
       ? {
           ownerId: clampStr(c.ownerId, MAX_STR), e2e: c.e2e === true, secret: clampStr(c.secret, MAX_SECRET), pub: clampStr(c.pub, MAX_STR * 2), sig: clampStr(c.sig, MAX_STR),
+          ...(c.keys ? { keys: { v: c.keys.v, epoch: c.keys.epoch, root: c.keys.root, total: c.keys.total, pages: c.keys.pages, sig: c.keys.sig } } : {}),
           // The optional signed keyring rides along (verified separately).
           ...(Array.isArray(c.prevSecrets) && typeof c.prevSig === 'string'
-            ? { prevSecrets: c.prevSecrets.slice(0, MAX_PREV_SECRETS).map((x: any) => clampStr(x, MAX_SECRET)).filter(Boolean), prevSig: clampStr(c.prevSig, MAX_STR) }
+            ? { prevSecrets: c.prevSecrets.slice(0, LEGACY_PREV_SECRETS).map((x: any) => clampStr(x, MAX_SECRET)).filter(Boolean), prevSig: clampStr(c.prevSig, MAX_STR) }
             : {}),
         }
       : undefined;
@@ -2309,18 +2691,69 @@ function clampGossip(msg: any): void {
   if ('fileReacts' in msg) msg.fileReacts = clampReactsRecord(msg.fileReacts);
 }
 
+const voiceV2Rooms = new WeakMap<Room, Set<string>>();
+function voiceV2Peers(room: Room): Set<string> {
+  let peers = voiceV2Rooms.get(room);
+  if (!peers) { peers = new Set(); voiceV2Rooms.set(room, peers); }
+  return peers;
+}
+
+// Session state is keyed by the Room object: leaving releases it, rekey retains replay floors.
+const ingressByWire = new WeakMap<Wire, RoomIngressBudget>();
+const ingressByRoom = new WeakMap<Room, RoomIngressBudget>();
+const watchByRoom = new WeakMap<Room, { sender: WatchSender; receiver: WatchReceiver; host: WatchHostState; policyTopic?: string }>();
+function watchState(room: Room) {
+  let state = watchByRoom.get(room);
+  if (!state) { state = { sender: new WatchSender(), receiver: new WatchReceiver(), host: new WatchHostState() }; watchByRoom.set(room, state); }
+  return state;
+}
+function ingressBudget(map: WeakMap<object, RoomIngressBudget>, key: object): RoomIngressBudget {
+  let budget = map.get(key);
+  if (!budget) { budget = new RoomIngressBudget(); map.set(key, budget); }
+  return budget;
+}
+function authenticateGossip(room: Room, msg: any, wire: Wire): boolean {
+  const proofs = gossipProofs(msg, room.topic, room.transferChain[0]?.by || room.ownerPin || room.ownerId);
+  // Handlers re-verify before applying authority; account for that work as well.
+  // Key pages additionally verify their authenticated descriptor and page in
+  // both the relay gate and adoption path (five verifications including preflight).
+  const proofCost = proofs.length * (msg.t === 'e2e-keys' ? 5 : 2);
+  if (!ingressBudget(ingressByWire, wire).take(0, proofCost)
+    || !ingressBudget(ingressByRoom, room).take(0, proofCost)) { observeConnection(room, 'rate-limited'); return false; }
+  const identities = new Set(room.identities.keys());
+  for (const p of proofs) {
+    if (room.bans.has(p.memberId) && !p.chainLink || deriveMemberId(p.pub) !== p.memberId) { observeConnection(room, 'identity-rejected'); return false; }
+    const bound = room.identities.get(p.memberId);
+    if (bound && bound !== p.pub) { observeConnection(room, 'identity-rejected'); return false; }
+    identities.add(p.memberId);
+    if (identities.size > ROOM_IDENTITY_LIMIT) { observeConnection(room, 'identity-rejected'); return false; }
+    try { if (!crypto.verify(null, p.bytes, crypto.createPublicKey(p.pub), Buffer.from(p.sig, 'base64'))) { observeConnection(room, 'identity-rejected'); return false; } }
+    catch { observeConnection(room, 'identity-rejected'); return false; }
+  }
+  if ((msg.t === 'hello' || msg.t === 'ping') && msg.pub) {
+    if (deriveMemberId(msg.pub) !== msg.memberId || (room.identities.has(msg.memberId) && room.identities.get(msg.memberId) !== msg.pub)) { observeConnection(room, 'identity-rejected'); return false; }
+    if (!room.identities.has(msg.memberId) && identities.size >= ROOM_IDENTITY_LIMIT) { observeConnection(room, 'identity-rejected'); return false; }
+  }
+  return true;
+}
 function onMessage(room: Room, wire: Wire, raw: any): void {
+  if (room.kicked) return;
   let msg: Msg;
   try {
     const text = typeof raw === 'string' ? raw : Buffer.from(raw).toString('utf8');
-    if (text.length > MAX_FRAME_CHARS) { log('oversized gossip frame dropped (' + text.length + ' chars)'); return; }
-    msg = decrypt<Msg>(room.key, text);
+    if (text.length > MAX_FRAME_CHARS) { observeConnection(room, 'rate-limited'); log('oversized gossip frame dropped (' + text.length + ' chars)'); return; }
+    if (!ingressBudget(ingressByWire, wire).take(Buffer.byteLength(text))
+      || !ingressBudget(ingressByRoom, room).take(Buffer.byteLength(text))) { observeConnection(room, 'rate-limited'); return; }
+    const decoded = validateGossip(decrypt<unknown>(room.key, text));
+    if (!decoded) { observeConnection(room, 'message-rejected'); return; }
+    msg = decoded as Msg;
   } catch {
-    // Wrong key / not a member / corrupt — ignore silently.
-    return;
+    // Decryption/JSON failure is an observation, not proof of a wrong invite.
+    observeConnection(room, 'frame-unreadable'); return;
   }
-  clampGossip(msg);
   const meta = msg as any;
+  if (meta._g && room.seenGids.has(meta._g)) return;
+  if (!authenticateGossip(room, msg, wire)) return;
   // Banned identities (owner-signed rekey victims) are dead to this room: drop
   // every frame that NAMES one — as sender (memberId), actor (`by`) or file
   // author ('add' carries only file.addedBy). A DIRECT frame also identifies
@@ -2350,25 +2783,82 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     return;
   }
 
+  // Apply bans before full reply, relay, manifest and backfill from this hello.
+  if (msg.t === 'hello') {
+    if (msg.transferChain && !ownerChainsCompatible(room.transferChain, msg.transferChain)) return;
+    const proof = msg.banState;
+    adoptChain(room, msg.transferChain);
+    maybeAdoptOwner(room, msg.ownerId);
+    if (proof && (proof.ownerId !== room.ownerId || !adoptBanState(room, proof))) delete msg.banState;
+    if (room.kicked) return;
+    if (room.bans.has(msg.memberId)) {
+      if (direct) { try { wire.peer.destroy(); } catch { /* ignore */ } room.wires.delete(wire.id); }
+      return;
+    }
+  }
+
   // Peer-relay: drop anything we've already handled (incl. our own flooded echo),
-  // otherwise remember it and forward it onward before processing locally.
+  // otherwise authenticate and check watch replay floors BEFORE forwarding.
   const gid: string = meta._g || '';
   if (gid) {
     if (room.seenGids.has(gid)) return;
+  }
+  if ((msg.t === 'hello' || msg.t === 'ping') && !room.members.has(msg.memberId) && room.members.size >= ROOM_MEMBER_LIMIT) return;
+  if (msg.t === 'e2e-keys' && (!room.e2eCfg || !verifyKeyPage(room.topic, room.e2eCfg, msg))) return;
+  if (['have', 'bye', 'typing', 'react-file', 'react-chat', 'prog', 'e2e-key-request'].includes(msg.t) && !room.members.has(meta.memberId)) return;
+  if (msg.t === 'transfer' && !room.ownerId) maybeAdoptOwner(room, msg.by);
+  if (msg.t === 'transfer' && room.ownerId && msg.by !== room.ownerId) return;
+  if (msg.t === 'transfer' && msg.banState && (msg.banState.ownerId !== msg.by || msg.banState.bans.includes(msg.newOwnerId) || !adoptBanState(room, msg.banState))) return;
+  if (room.kicked) return;
+  if (['rename', 'topic', 'rekey', 'kicked'].includes(msg.t) && (!room.ownerId || meta.by !== room.ownerId)) return;
+  if (msg.t === 'del') {
+    const file = room.files.get(msg.fileId);
+    if (file && !canDeleteRoomFile(room.ownerId, file.addedBy, msg.memberId)) return;
+  }
+  if (['voice-state', 'voice-signal', 'voice-share'].includes(msg.t) && !room.members.has(meta.memberId)) return;
+  if (['voice-state', 'voice-share'].includes(msg.t) && meta.at > Date.now() + 60_000) return;
+  if (msg.t === 'voice-state') {
+    const versions = voiceV2Peers(room);
+    if (versions.has(msg.memberId) && msg.voiceV !== 2) return;
+    if (msg.voiceV === 2) versions.add(msg.memberId);
+  }
+  if (msg.t === 'hello' && msg.watchPolicy) {
+    if (watchState(room).host.accept(msg.watchPolicy, room.ownerId, Date.now(), room.transferAt)) { watchState(room).policyTopic = room.topic; pushState(room, true); }
+    else if (msg.watchPolicy.by !== room.ownerId) delete msg.watchPolicy;
+  }
+  if (msg.t === 'watch-policy-v1') {
+    if (!watchState(room).host.accept(msg, room.ownerId, Date.now(), room.transferAt)) return;
+    watchState(room).policyTopic = room.topic;
+  }
+  if (msg.t === 'sync-v2') {
+    if (!room.members.has(msg.memberId) || room.identities.get(msg.memberId) !== msg.pub || !room.files.has(msg.fileId)) return;
+    if (!watchState(room).host.allows(msg, room.ownerId, room.transferAt) || !watchState(room).receiver.accept(msg)) return;
+  }
+  if (gid) {
     markSeen(room, gid);
     forwardRelay(room, meta, wire.id);
   }
 
+  clampGossip(msg);
   switch (msg.t) {
     case 'hello': {
+      const sync = helloAssembly(direct ? wire : room, direct ? 1 : 256).accept(msg);
+      if (!sync.accepted) break;
       // A direct hello on a wire not yet bound to a member = a fresh connection
       // (their FIRST greet this link) — they may have restarted and lost their
       // session-only profile cache, so the announce gate below must not skip them.
       const freshWire = direct && !wire.memberId;
-      if (direct) wire.memberId = msg.memberId;
+      if (direct) {
+        wire.memberId = msg.memberId;
+        if (freshWire) connectionMonitor(room).identified();
+        if (sync.complete) wire.manifestReceived = true;
+        else if (wire.manifestReceived !== true && (msg.manifestPart || msg.manifestFull === false)) wire.manifestReceived = false;
+        void sampleChannelPath(room, wire);
+      }
       // The peer just identified (and passed the ban gate above) — hand it the
       // FULL hello the slim greet withheld (secret/cfg/manifest). Once per wire.
-      if (direct && !wire.greetedFull) {
+      if (direct && (!wire.greetedFull || msg.manifestRequest === true && Date.now() - (wire.manifestRequestedAt || 0) >= 10_000)) {
+        wire.manifestRequestedAt = Date.now();
         wire.greetedFull = true;
         sendTo(room, wire, helloMsg(room));
       }
@@ -2376,7 +2866,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       if (msg.guest === true) m.guest = true;
-      m.have = Array.from(new Set(msg.have || []));
+      m.watchSync = msg.watchSync === 2;
+      Object.assign(m, readRoomCapabilities(msg));
+
       maybeAdoptRoomName(room, msg.roomName);
       // Track the name's LWW clock once we're in sync on the name, so a later
       // owner rename (at > nameAt) is accepted and a stale one is rejected. HELLO
@@ -2390,15 +2882,14 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // Topic re-serve: the SIGNED topic rides HELLOs and is verified exactly
       // like the live 'topic' gossip (owner + LWW + clock) — never adopted on
       // trust, so a member can't plant an owner-labeled topic.
-      if (msg.topicMsg) {
-        applySignedTopic(room, msg.topicMsg);
-      }
+      // Applied below, after adopting the verified ownership chain.
       // Ownership-transfer chain BEFORE the bare ownerId claim: a joiner on an
       // old invite walks pin → current owner here, instead of rejecting the new
       // owner's id against the pin below (and E2E cfg verification right after
       // depends on the post-walk owner).
       adoptChain(room, msg.transferChain);
       maybeAdoptOwner(room, msg.ownerId);
+      if (msg.topicMsg) applySignedTopic(room, msg.topicMsg);
       maybeAdoptE2E(room, msg.e2e, msg.secret, msg.cfg);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
       // A greeting from someone we haven't announced our rich profile to yet —
@@ -2412,17 +2903,17 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // Re-announce voice presence on EVERY hello (not just a new member's): a
       // hello doubles as a "who's in voice?" solicit — e.g. a peer that just
       // un-muted us locally greets to re-learn the voice state it was dropping.
-      room.voice.reannounce();
+      if (sync.first) room.voice.reannounce();
       // Same solicit for the virtual-LAN session: presence (lan-state) is transient
       // and survives rekey by re-flooding on hello, exactly like voice-state.
-      room.lan?.reannounce();
+      if (sync.first) room.lan?.reannounce();
       // Merge the peer's files first so an authenticated tombstone below can check
       // authorship (addedBy) against the file, then re-suppress it. `tombSigs` are
       // AUTHENTICATED deletions — each re-verifies (owner/author + signature)
       // before it applies. Bare `tombs`/`tombsAt` from ≤2.15 peers are NOT trusted
       // here (an unsigned tomb would be a free "delete anyone's file" over hello);
       // they still ride our own hello outward so old peers keep converging.
-      for (const f of msg.files || []) mergeFile(room, f);
+      mergeHelloFiles(room, msg.files || []);
       for (const [id, p] of Object.entries(msg.tombSigs || {})) acceptRemoteTomb(room, id, Number(p?.at), String(p?.by || ''), String(p?.pub || ''), String(p?.sig || ''));
       // Reconcile the folder ASSIGNMENT of files we ALREADY hold: mergeFile is
       // add-only, so a reassignment made while we were offline rides the peer's
@@ -2469,8 +2960,18 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // it is), UNICAST it the messages it's missing — only ones we can re-serve with
       // a signature, so they self-authenticate on its side. Only on a DIRECT hello,
       // so `wire` really is that peer (relayed hellos don't identify the wire).
-      if (direct) sendChatBackfill(room, wire, Number(msg.chatAt) || 0);
+      m.have = Array.from(new Set((sync.have ?? msg.have ?? []).map(id => room.files.get(id)?.fileId).filter((id): id is string => !!id)));
+      if (direct && (!msg.manifestPart || sync.complete)) { sendChatBackfill(room, wire, msg); if (sync.complete) connectionMonitor(room).synced(); }
       pushState(room);
+      break;
+    }
+    case 'e2e-keys': adoptKeyPage(room, msg); break;
+    case 'e2e-key-request': {
+      const page = room.keyPages.find(p => p.root === msg.root && p.page === msg.page);
+      if (!page || Date.now() - (room.keySentAt.get(msg.page) ?? -Infinity) < 10_000) break;
+      room.keySentAt.set(msg.page, Date.now());
+      const reply = { ...page, _g: crypto.randomBytes(6).toString('hex'), _t: RELAY_TTL };
+      markSeen(room, reply._g); sendTo(room, wire, reply);
       break;
     }
     case 'chat-log': {
@@ -2480,16 +2981,12 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // BEFORE the expensive verify so a stuffed frame can't force N signature checks.
       const list = Array.isArray(msg.msgs) ? msg.msgs.slice(0, MAX_CHAT_LOG) : [];
       for (const c of list) {
-        const text = String(c?.text || '').slice(0, 2000);
-        const memberId = String(c?.memberId || '');
-        const id = String(c?.id || '');
-        const at = Number(c?.at) || 0;
-        if (!id || !text || !memberId || room.mutes.has(memberId) || room.bans.has(memberId)) continue;
-        if (at > Date.now() + 60_000) continue;             // no future-dated chat (would sit unread forever)
-        if (room.chat.some((m) => m.id === id)) continue;   // already have it — skip the verify
-        const cm = { id, at, memberId, text, pub: String(c.pub || ''), sig: String(c.sig || '') };
+        const cm = chatEnvelope(c);
+        if (!cm || room.mutes.has(cm.memberId) || room.bans.has(cm.memberId)) continue;
+        const prior = room.chat.find(m => m.id === cm.id);
+        if (prior && !upgradeChat(prior, cm)) continue;
         if (!verifyChat(room, cm)) continue;
-        addChat(room, { id, at: at || Date.now(), memberId, name: String(c.name || '?'), avatarSeed: String(c.avatarSeed || memberId), text, pub: cm.pub, sig: cm.sig }, true /* backfill — no toast */);
+        addChat(room, cm, true /* backfill — no toast */);
       }
       break;
     }
@@ -2498,7 +2995,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       const isNew = !room.members.has(msg.memberId);
       const m = touchMember(room, msg.memberId, msg.name, msg.avatarSeed);
       if (msg.guest === true) m.guest = true;
-      m.have = Array.from(new Set(msg.have || []));
+      Object.assign(m, readRoomCapabilities(msg));
+      if (msg.watchSync === 2) m.watchSync = true;
+      m.have = Array.from(new Set((msg.have || []).map(id => room.files.get(id)?.fileId).filter((id): id is string => !!id)));
       maybeAdoptRoomName(room, msg.roomName);
       maybeAdoptOwner(room, msg.ownerId);
       if (isNew) logEvent(room, { type: 'joined', actorId: msg.memberId, actorName: msg.name || '?' });
@@ -2651,7 +3150,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       const at = Number(msg.at);
       if (!Number.isFinite(at) || at > Date.now() + 60_000) break; // reject unstamped / far-future presence
       if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, voiceStateCanonical(room.topic, { memberId: msg.memberId, inVoice: msg.inVoice, muted: msg.muted, at }))) break;
-      room.voice.onPeerState(msg.memberId, !!msg.inVoice, !!msg.muted, at, msg.deafened === true);
+      room.voice.onPeerState(msg.memberId, !!msg.inVoice, !!msg.muted, at, msg.voiceV === 2 && msg.deafened === true);
       break;
     }
     case 'voice-signal': {
@@ -2718,7 +3217,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
     case 'lan-signal': {
       if (!room.lan) break;
       if (msg.to !== room.self.memberId) break; // not addressed to us (already relayed above)
-      if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice') break;
+      if (msg.kind !== 'offer' && msg.kind !== 'answer' && msg.kind !== 'ice' && msg.kind !== 'retry') break;
       if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, lanSignalCanonical(room.topic, { memberId: msg.memberId, to: msg.to, kind: msg.kind, data: msg.data }))) break;
       room.lan.onSignal(msg.memberId, msg.kind as LanSignalKind, msg.data); // the ADMISSION GATE (must-fix #1) is INSIDE onSignal
       break;
@@ -2794,62 +3293,54 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       pushState(room);
       break;
     }
-    case 'srv-cmd': {
-      // An operator's console command. The signature proves WHO typed it, and
-      // nothing more: the gid dedup is session-only and keyed on a sender-chosen
-      // id, so without a floor here any keyholder could re-flood a captured
-      // `stop` / `op <them>` / `ban <victim>` forever and it would still verify.
-      // Hence the OWN per-member monotonic floor — never shared with another
-      // message type's (the voice-share lesson), same discipline as 'profile'.
-      const at = Number(msg.at);
-      if (!Number.isFinite(at) || at > Date.now() + 60_000) break;
+    // Legacy packets cannot report host acceptance and are deliberately refused.
+    case 'srv-cmd': break;
+    case 'srv-cmd-v2': {
+      if (netSuspended || room.kicked || msg.hostId !== room.self.memberId || !room.members.has(msg.by) || !validCommandRequest(msg)) break;
+      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, Buffer.from(commandCanonical(room.topic, msg)))) break;
       const prevAt = room.srvCmdAt.get(msg.by);
-      if (prevAt !== undefined && prevAt >= at) break;
-      const instanceId = String(msg.instanceId || '').slice(0, 128);
-      const command = String(msg.command || '').slice(0, 512);
-      if (!verifySignedBy(room, msg.by, msg.pub, msg.sig, srvCmdCanonical(room.topic, { by: msg.by, instanceId, command, at }))) break;
-      // Raised only AFTER the signature holds, or an unsigned far-future `at`
-      // would poison the floor and lock the real operator out.
-      if (prevAt === undefined && room.srvCmdAt.size >= SRV_CMD_FLOOR_CAP) {
-        let evict: string | undefined;
-        for (const id of room.srvCmdAt.keys()) { if (!room.members.has(id)) { evict = id; break; } }
-        evict = evict ?? room.srvCmdAt.keys().next().value;
-        if (evict !== undefined) room.srvCmdAt.delete(evict);
-      }
-      room.srvCmdAt.set(msg.by, at);
-      try {
-        ipcRenderer.send('srv-remote-cmd', { roomId: room.roomId, by: msg.by, instanceId, command });
-      } catch { /* ignore */ }
+      if (prevAt !== undefined && prevAt >= msg.at) break;
+      if (prevAt === undefined && room.srvCmdAt.size >= SRV_CMD_FLOOR_CAP) break;
+      room.srvCmdAt.set(msg.by, msg.at);
+      // Main rechecks the instance's room, current grant and deduplicates IDs.
+      void ipcRenderer.invoke('srv-remote-cmd', { roomId: room.roomId, request: msg }).then(result => {
+        if (rooms.get(room.roomId) !== room || netSuspended || room.kicked || !room.members.has(msg.by)) return;
+        const reply: ServerCommandReply = { commandId: msg.commandId, hostId: room.self.memberId, to: msg.by,
+          instanceId: msg.instanceId, ok: result?.ok === true, ...(result?.ok !== true ? { reason: String(result?.reason || 'command-unknown').slice(0, 64) } : {}), at: Date.now() };
+        broadcast(room, { t: 'srv-result-v2', ...reply, pub: room.self.pub, sig: signBytes(room, Buffer.from(commandReplyCanonical(room.topic, reply))) });
+      }).catch(() => { /* sender gets an unknown-outcome timeout */ });
       break;
     }
-    case 'sync': {
+    case 'srv-result-v2': {
+      if (netSuspended || room.kicked || msg.to !== room.self.memberId || !room.members.has(msg.hostId)) break;
+      if (!verifySignedBy(room, msg.hostId, msg.pub, msg.sig, Buffer.from(commandReplyCanonical(room.topic, msg)))) break;
+      room.pendingServerCommands.accept(msg);
+      break;
+    }
+    case 'watch-policy-v1': pushState(room, true); break;
+    case 'sync-v2': {
       // Relay watch-together control + presence to the main process → renderer.
       try {
         ipcRenderer.send('room-sync', {
           roomId: room.roomId, fileId: msg.fileId, action: msg.action,
           position: msg.position, rate: msg.rate, at: msg.at,
-          memberId: msg.memberId, name: msg.name, avatarSeed: msg.avatarSeed, playing: msg.playing, together: msg.together, emoji: msg.emoji,
+          ...(msg.v === 3 ? { v: 3, readiness: msg.readiness, requested: msg.requested, policyBy: msg.policyBy, policyAt: msg.policyAt, policyOwnerAt: msg.policyOwnerAt, hostSig: msg.hostSig } : {}),
+          sessionId: msg.sessionId, startedAt: msg.startedAt, seq: msg.seq,
+          memberId: msg.memberId, name: room.members.get(msg.memberId)!.name, avatarSeed: room.members.get(msg.memberId)!.avatarSeed, playing: msg.playing, together: msg.together, emoji: msg.emoji,
         });
       } catch { /* ignore */ }
       break;
     }
     case 'chat': {
       if (room.mutes.has(msg.memberId)) break; // a muted member's messages stay hidden
-      const text = String(msg.text || '').slice(0, 2000);
-      if (!text) break;
-      if ((Number(msg.at) || 0) > Date.now() + 60_000) break; // no future-dated chat (would sit unread forever + skew ordering)
+      const cm = chatEnvelope(msg);
+      if (!cm) break;
       // Reject unsigned, badly-signed, or impersonating messages outright.
-      if (!verifyChat(room, { id: String(msg.id), at: Number(msg.at) || 0, memberId: msg.memberId, text, pub: msg.pub, sig: msg.sig })) break;
+      if (!verifyChat(room, cm)) break;
       // Keep the sender fresh in the member list so a chatter never looks offline.
       const m = room.members.get(msg.memberId);
       if (m) m.lastSeen = Date.now();
-      // Keep pub/sig so this message can be re-served as backfill and still verify.
-      // Reply fields ride outside the canonical (clampGossip already bounded them).
-      addChat(room, {
-        id: String(msg.id), at: Number(msg.at) || Date.now(), memberId: msg.memberId,
-        name: msg.name || '?', avatarSeed: msg.avatarSeed || msg.memberId, text, pub: msg.pub, sig: msg.sig,
-        ...(msg.replyTo ? { replyTo: String(msg.replyTo), replyName: msg.replyName ? String(msg.replyName) : undefined, replyText: msg.replyText ? String(msg.replyText) : undefined } : {}),
-      });
+      addChat(room, cm);
       break;
     }
     case 'chat-edit': {
@@ -2857,7 +3348,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       const text = String(msg.text || '').slice(0, 2000);
       if (!text) break;
       const at = Number(msg.at) || 0;
-      if (at > Date.now() + 60_000) break;                  // no future-dated edits (skews LWW)
+      if (!validChatTime(at)) break;
       const msgId = String(msg.msgId || '');
       if (!verifyEdit(room, { msgId, memberId: msg.memberId, at, text, pub: msg.pub, sig: msg.sig })) break;
       const edit = { text, at, by: msg.memberId, pub: msg.pub, sig: msg.sig };
@@ -2934,6 +3425,7 @@ function recordRevive(room: Room, fileId: string, revAt: number): void {
   revAt = Math.min(revAt, Date.now() + 60_000); // defense in depth: the guard must never hold a future value (would block real deletions)
   const cur = room.revives.get(fileId);
   if (cur !== undefined && cur >= revAt) return;
+  if (!room.revives.has(fileId) && room.revives.size >= ROOM_FILE_LIMIT) return;
   room.revives.set(fileId, revAt);
   try { ipcRenderer.send('room-revive', { roomId: room.roomId, fileId, revAt }); } catch { /* ignore */ }
 }
@@ -2954,8 +3446,9 @@ function clearTombstone(room: Room, fileId: string): void {
  * AFTER it (someone revived the file), the stale tombstone is ignored outright.
  */
 function applyTombstone(room: Room, fileId: string, at: number, by?: { id: string; name: string }): void {
+  if (!room.tombstones.has(fileId) && room.tombstones.size >= ROOM_FILE_LIMIT) return;
   const current = room.files.get(fileId);
-  if (current && current.addedAt > at) return; // revived later — the newer add wins
+  if (!currentRoomDeletion(at, current?.addedAt, room.revives.get(fileId))) return;
   // A revive we VERIFIED (room.revives, never the file's untrusted revAt field)
   // that lifts a deletion at-or-after this one outranks it, independent of clock
   // skew on addedAt — so a re-gossiped old tombstone can't silently re-delete a
@@ -2971,13 +3464,16 @@ function applyTombstone(room: Room, fileId: string, at: number, by?: { id: strin
   const tr = room.transfers.get(fileId);
   const c = clients.get(room.roomId);
   if (c) { const t = findTorrent(c, fileId); if (t) { try { c.remove(t); } catch { /* ignore */ } } }
-  room.files.delete(fileId);
+  cancelFileOperation(room, fileId);
+  storageFor(room).proofs.delete(fileId);
+  storageFor(room).decryptKeys.delete(fileId);
+  room.files.delete(fileId); room.manifestLimited = false;
   room.transfers.delete(fileId);
   for (const m of room.members.values()) m.have = m.have.filter((id) => id !== fileId);
   // Delete the downloaded copy (only if it's inside the room folder).
   try {
     const lp = tr?.localPath;
-    if (lp && path.resolve(lp).startsWith(path.resolve(room.folder) + path.sep) && fs.existsSync(lp)) {
+    if (lp && !storageFor(room).originals.has(fileId) && isManagedRoomPath(room.folder, fileId, lp) && fs.existsSync(lp)) {
       fs.unlinkSync(lp);
     }
   } catch (e) { log('tombstone unlink failed: ' + String(e)); }
@@ -2985,8 +3481,10 @@ function applyTombstone(room: Room, fileId: string, at: number, by?: { id: strin
   // lives in its own directory under the cache — sweep the empty dir with it.
   try {
     const cp = tr?.cipherPath;
-    if (cp && fs.existsSync(cp)) fs.unlinkSync(cp);
-    if (cp && room.cacheDir) {
+    const owned = cp && (isManagedRoomPath(room.cacheDir, fileId, cp)
+      || (path.resolve(path.dirname(path.dirname(cp))) === path.resolve(room.cacheDir) && path.basename(path.dirname(cp)).startsWith('share-')));
+    if (cp && owned && fs.existsSync(cp)) fs.unlinkSync(cp);
+    if (cp && owned && room.cacheDir) {
       const d = path.dirname(cp);
       if (path.resolve(d).startsWith(path.resolve(room.cacheDir) + path.sep)) fs.rmdirSync(d); // throws if non-empty — fine
     }
@@ -3014,7 +3512,7 @@ function acceptRemoteTomb(room: Room, fileId: string, at: number, by: string, pu
   // dropped without running crypto.verify — resists a hello stuffed with forged
   // tombSigs turning into thousands of Ed25519 verifications.
   const file = room.files.get(fileId);
-  const authorized = (!!room.ownerId && by === room.ownerId) || (!!file && file.addedBy === by);
+  const authorized = canDeleteRoomFile(room.ownerId, file?.addedBy, by);
   if (!authorized) {
     // We can't authorize this yet — but a non-owner deletion of a file we simply
     // DON'T HOLD may be a valid AUTHOR deletion we can't check without the file
@@ -3060,20 +3558,21 @@ function rememberPendingTomb(room: Room, fileId: string, p: TombProof): void {
 function applyPendingTomb(room: Room, file: RoomFile): boolean {
   const p = room.pendingTombs.get(file.fileId);
   if (!p) return false;
+  if (!canDeleteRoomFile(room.ownerId, file.addedBy, p.by)) return false;
   // A revive on the arriving file that lifts a deletion at-or-after the pending one
   // SUPERSEDES it — the pending proof is stale (a replayed, already-undone
   // deletion). Only a valid owner/deleter-signed revive counts, so a member can't
   // use this to force-revive someone else's deletion.
   if (Number.isFinite(file.revAt) && (file.revAt as number) >= p.at && (file.revAt as number) <= Date.now() + 60_000 && file.revBy && file.revPub && file.revSig) {
     const rby = file.revBy;
-    const revAuthorized = (!!room.ownerId && rby === room.ownerId) || rby === p.by;
+    const revAuthorized = canReviveRoomFile(room.ownerId, p.by, rby);
     if (revAuthorized && verifySignedBy(room, rby, file.revPub, file.revSig, reviveCanonical(room.topic, { fileId: file.fileId, tombAt: file.revAt as number, by: rby }))) {
       room.pendingTombs.delete(file.fileId);
       recordRevive(room, file.fileId, file.revAt as number); // VERIFIED revive — guards against re-deletion by the replayed tombstone
       return false; // revive wins — let the add proceed
     }
   }
-  const authorized = (!!room.ownerId && p.by === room.ownerId) || p.by === file.addedBy;
+  const authorized = canDeleteRoomFile(room.ownerId, file.addedBy, p.by);
   if (!authorized) return false; // not the author/owner — keep it pending for a different candidate
   room.pendingTombs.delete(file.fileId);
   // Verify only now, on a real authorship match — bounds crypto to genuine candidates.
@@ -3088,13 +3587,19 @@ function applyPendingTomb(room: Room, file: RoomFile): boolean {
 }
 
 function attachWire(room: Room, peer: any): void {
+  if (rooms.get(room.roomId) !== room || room.kicked || netSuspended || room.wires.size >= ROOM_WIRE_LIMIT) { try { peer.destroy(); } catch { /* already closed */ } return; }
   const wire: Wire = { id: ++wireSeq, peer };
-  room.wires.set(wire.id, wire);
-  const greet = () => sendTo(room, wire, helloMsg(room, false)); // slim until the peer identifies
+  room.wires.set(wire.id, wire); observeConnection(room, 'peer-found');
+  const current = () => rooms.get(room.roomId) === room && room.wires.get(wire.id) === wire;
+  const greet = () => {
+    if (!current()) return;
+    observeConnection(room, 'channel-open'); void sampleChannelPath(room, wire);
+    sendTo(room, wire, helloMsg(room, false));
+  };
   if (peer.connected) greet(); else peer.once('connect', greet);
-  peer.on('data', (d: any) => onMessage(room, wire, d));
-  peer.on('close', () => { room.wires.delete(wire.id); pushState(room); });
-  peer.on('error', () => { /* transient WebRTC noise */ });
+  peer.on('data', (d: any) => { if (current()) onMessage(room, wire, d); });
+  peer.on('close', () => { if (!current()) return; room.wires.delete(wire.id); observeConnection(room, 'peer-closed'); });
+  peer.on('error', () => { if (current()) observeConnection(room, 'peer-connect-failed'); });
   pushState(room);
 }
 
@@ -3105,6 +3610,7 @@ function attachWire(room: Room, peer: any): void {
  * tombstone; on failure the tombstone stands and the resurrection is refused.
  */
 function acceptRevive(room: Room, file: RoomFile): boolean {
+  if (!room.revives.has(file.fileId) && room.revives.size >= ROOM_FILE_LIMIT) return false;
   const by = file.revBy, pub = file.revPub, sig = file.revSig, revAt = file.revAt;
   if (!by || !pub || !sig || !Number.isFinite(revAt)) return false;
   // A revive can only lift a deletion that could actually exist. Deletions are
@@ -3119,7 +3625,7 @@ function acceptRevive(room: Room, file: RoomFile): boolean {
   // hello stuffed with revive-bearing files whose revBy is neither the owner nor
   // the deleter is rejected without ever running crypto.verify.
   const proof = room.tombSigs.get(file.fileId);
-  const authorized = (!!room.ownerId && by === room.ownerId) || (!!proof && proof.by === by);
+  const authorized = canReviveRoomFile(room.ownerId, proof?.by, by);
   if (!authorized) return false;
   // The revive is self-describing: it is signed over the deletion it lifts (revAt),
   // not over our locally-held tombAt, so it verifies regardless of clock skew.
@@ -3132,6 +3638,7 @@ function acceptRevive(room: Room, file: RoomFile): boolean {
 // ── File manifest + transfers ────────────────────────────────────────────────
 function mergeFile(room: Room, file: RoomFile): void {
   if (!file || !file.fileId) return;
+  if (!room.files.has(file.fileId) && !roomManifestCanFit(room.files, file)) { room.manifestLimited = true; return; }
   if (room.mutes.has(file.addedBy) || room.bans.has(file.addedBy)) return; // muted locally / banned by rekey
   const tombAt = room.tombstones.get(file.fileId);
   if (tombAt !== undefined) {
@@ -3150,7 +3657,8 @@ function mergeFile(room: Room, file: RoomFile): void {
     return; // a pending author-deletion for this file just resolved — drop the re-seed
   }
   if (!room.files.has(file.fileId)) {
-    room.files.set(file.fileId, file);
+    if (room.files.size >= ROOM_FILE_LIMIT) { log("Room manifest full: " + room.roomId); return; }
+    if (!storeRoomManifestFile(room.files, file)) { room.manifestLimited = true; return; }
     persistManifest(room, file); // localPath filled in once the download lands
     logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: file.addedByName || room.members.get(file.addedBy)?.name || '?', fileName: file.name });
     // Manual mode: list the file but don't fetch — the user pulls it with an
@@ -3162,15 +3670,40 @@ function mergeFile(room: Room, file: RoomFile): void {
 }
 
 function setTransfer(room: Room, fileId: string, patch: Partial<RoomTransfer>): void {
-  const prev = room.transfers.get(fileId) || { fileId, progress: 0, status: 'queued' as const, downSpeed: 0, peers: 0, haveLocally: false };
-  room.transfers.set(fileId, { ...prev, ...patch, fileId });
+  if (!room.transfers.has(fileId) && room.transfers.size >= ROOM_FILE_LIMIT) return;
+  const prev = room.transfers.get(fileId) || { fileId, progress: 0, phase: 'queued' as const, status: 'queued' as const, downSpeed: 0, peers: 0, haveLocally: false };
+  const next = { ...prev, ...patch, fileId };
+  if (patch.haveLocally === true) { next.phase = 'ready'; next.error = undefined; }
+  else if (patch.status === 'error') next.phase = 'error';
+  room.transfers.set(fileId, next);
 }
 
 /** Persist a manifest entry to the main process so the room resumes its file
  *  list — and re-seeds — on the next launch. localPath lets us re-seed a file
  *  shared from its original location (outside the room folder). */
+const manifestBatches = new WeakMap<Room, { files: Map<string, PersistedRoomFile>; events: RoomEvent[] }>();
+function mergeHelloFiles(room: Room, files: RoomFile[]): void {
+  if (files.length < 2) { for (const file of files) mergeFile(room, file); return; }
+  // Legacy peers still send a whole manifest in one HELLO. Keep persistence
+  // bounded independently of their transport format so the manager accepts it.
+  for (let offset = 0; offset < files.length; offset += ROOM_HELLO_ENTRIES) {
+    const batch = { files: new Map<string, PersistedRoomFile>(), events: [] as RoomEvent[] };
+    manifestBatches.set(room, batch);
+    try { for (const file of files.slice(offset, offset + ROOM_HELLO_ENTRIES)) mergeFile(room, file); }
+    finally {
+      manifestBatches.delete(room);
+      if (batch.files.size || batch.events.length) ipcRenderer.send('room-manifest-batch', {
+        roomId: room.roomId, files: [...batch.files.values()], events: batch.events,
+      });
+    }
+  }
+}
 function persistManifest(room: Room, file: RoomFile, localPath?: string, cipherPath?: string): void {
-  const entry: PersistedRoomFile = { ...file, ...(localPath ? { localPath } : {}), ...(cipherPath ? { cipherPath } : {}) };
+  const tr = room.transfers.get(file.fileId);
+  const entry: PersistedRoomFile = { ...file, localPath: localPath ?? tr?.localPath, cipherPath: cipherPath ?? tr?.cipherPath,
+    localError: tr?.error, torrentFile: storageFor(room).metadata.get(file.fileId)?.toString('base64'), localOriginal: storageFor(room).originals.has(file.fileId), partialDownload: storageFor(room).partialPaths.has(file.fileId), receivePaused: tr?.receivePaused };
+  const batch = manifestBatches.get(room);
+  if (batch) { batch.files.set(file.fileId, entry); return; }
   try { ipcRenderer.send('room-manifest-add', { roomId: room.roomId, file: entry }); } catch { /* ignore */ }
 }
 
@@ -3179,21 +3712,26 @@ function persistManifest(room: Room, file: RoomFile, localPath?: string, cipherP
  *  the swarm never sees plaintext. localPath still points at the original so the
  *  sharer can watch/open it directly. */
 function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
+  if (room.files.size >= ROOM_FILE_LIMIT) return Promise.reject(new Error("Room file limit reached (5000). Remove files before adding more."));
   const c = ensureClient(room);
   const name = path.basename(filePath);
+  const seedSecret = room.secret;
+  const seedEpoch = room.e2e && seedSecret ? contentKeyEpoch(seedSecret) : undefined;
+  roomDiskName({ name, enc: room.e2e });
   return new Promise<RoomFile>((resolve, reject) => {
     if (!fs.existsSync(filePath)) return reject(new Error('File not found: ' + filePath));
 
+    const originalStamp = roomFileStamp(filePath);
     const plainSize = (() => { try { return fs.statSync(filePath).size; } catch { return 0; } })();
 
     const doSeed = (seedPath: string, seedName: string, cipherPath?: string) => {
       let settled = false;
-      const onErr = (e: any) => { if (!settled) { settled = true; reject(e instanceof Error ? e : new Error(String(e))); } };
+      const onErr = (e: any) => { c.removeListener('error', onErr); if (!settled) { settled = true; reject(e instanceof Error ? e : new Error(String(e))); } };
       c.once('error', onErr);
       try {
         c.seed(seedPath, { announce: room.trackers, name: seedName } as any, (torrent: any) => {
-          if (settled) return; settled = true;
-          c.removeListener('error', onErr);
+          if (settled) return;
+          void (async () => {
           const file: RoomFile = {
             fileId: torrent.infoHash,
             name,
@@ -3203,11 +3741,25 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
             addedBy: room.self.memberId,
             addedByName: room.self.name || 'You',
             addedAt: Date.now(),
-            ...(room.e2e ? { enc: true } : {}),
+            ...(room.e2e ? { enc: true, keyEpoch: seedEpoch } : {}),
           };
-          setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: filePath, ...(cipherPath ? { cipherPath } : {}) });
+          const metadata = await verifyRoomFile(seedPath, file, torrent.torrentFile);
+          if (roomFileStamp(filePath) !== originalStamp || rooms.get(room.roomId) !== room || netSuspended || room.kicked) {
+            void Promise.resolve(c.remove(torrent)).catch(() => {});
+            throw new Error('Room session ended or source changed while sharing');
+          }
+          if (settled) return;
+          settled = true; c.removeListener('error', onErr);
+          storageFor(room).metadata.set(file.fileId, metadata);
+          storageFor(room).originals.add(file.fileId);
+          rememberPlaintext(room, file.fileId, filePath, originalStamp);
+          setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: filePath, ...(cipherPath ? { cipherPath, cipherReady: true } : {}) });
           wireTorrentStats(room, torrent);
           resolve(file);
+          })().catch(error => {
+            void Promise.resolve(c.remove(torrent)).catch(() => {});
+            onErr(error);
+          });
         });
       } catch (e) { onErr(e); }
     };
@@ -3222,10 +3774,12 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
       // Uniqueness therefore lives in the DIRECTORY: encryption is IV-fresh per
       // share, so a same-named re-share writing to a fixed path would truncate
       // the ciphertext backing the still-registered previous seed.
-      const cipherDir = path.join(room.cacheDir, `${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`);
-      try { fs.mkdirSync(cipherDir, { recursive: true }); } catch { /* ignore */ }
+      fs.mkdirSync(room.cacheDir, { recursive: true });
+      const cipherDir = fs.mkdtempSync(path.join(room.cacheDir, 'share-'));
       const cipherPath = path.join(cipherDir, `${name}.enc`);
-      encryptFile(filePath, cipherPath, room.secret)
+      const release = diskBudget.reserve([{ root: room.cacheDir, bytes: plainSize + 28 }]);
+      encryptFile(filePath, cipherPath, seedSecret)
+        .finally(release)
         .then(() => doSeed(cipherPath, `${name}.enc`, cipherPath))
         .catch((e) => reject(e instanceof Error ? e : new Error(String(e))));
     } else {
@@ -3236,176 +3790,275 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
 
 /** Make sure a manifest file exists locally — seed it if already on disk,
  *  otherwise download it into the room folder over the WebTorrent swarm. */
-function ensureLocal(room: Room, file: RoomFile): void {
-  if (isTombstonedAt(room, file.fileId, file.addedAt)) return; // deleted — don't fetch it again
-  const c = ensureClient(room);
-  if (findTorrent(c, file.infoHash)) return; // already adding/seeding
-  // The transfer may already know where the bytes live (a file shared from its
-  // ORIGINAL location, or a sharer's ciphertext in a non-canonical cache dir) —
-  // prefer those paths over the canonical slots so a reseed never re-downloads
-  // what is already on disk.
-  const known = room.transfers.get(file.fileId);
-
-  // E2E: the swarm carries ciphertext. Download it into the cache (never the
-  // room folder), then decrypt the plaintext into the folder for watch/open.
-  if (room.e2e) {
-    const plain = path.join(folderDirFor(room, file), file.name);
-    const cipherName = `${file.name}.enc`;
-    // The cache slot is keyed by fileId, NOT display name: two same-named files
-    // are different ciphertexts, and a name-keyed slot would adopt (or truncate)
-    // the wrong one. fileId is the cipher torrent's infoHash, so a hit at this
-    // path is the right bytes by construction. Non-hex ids (hostile gossip)
-    // fall back to their hash so they can't traverse out of the cache dir.
-    const idDir = /^[0-9a-f]{40}$/i.test(file.fileId) ? file.fileId : crypto.createHash('sha1').update(file.fileId).digest('hex');
-    const cipherDir = path.join(room.cacheDir, idDir);
-    // A transfer-known ciphertext (the sharer's own, in a timestamp-keyed cache
-    // dir) beats the fileId-keyed slot — same bytes, different location.
-    const knownCipher = known?.cipherPath && fs.existsSync(known.cipherPath) ? known.cipherPath : null;
-    const cachedCipher = knownCipher ?? path.join(cipherDir, cipherName);
-    try { fs.mkdirSync(cipherDir, { recursive: true }); } catch { /* ignore */ }
-    if (fs.existsSync(cachedCipher)) {
-      // Already have the ciphertext — re-seed it and (re)derive the plaintext.
-      const havePlain = fs.existsSync(plain);
-      setTransfer(room, file.fileId, { status: 'seeding', progress: 1, haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath: cachedCipher });
-      try { seedKnownTorrent(c, file.infoHash, cachedCipher, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
-      catch (e) { log('e2e reseed failed: ' + String(e)); }
-      if (room.secret && !havePlain) void decryptOne(room, file, cachedCipher);
-      return;
-    }
-    setTransfer(room, file.fileId, { status: 'downloading', progress: 0, cipherPath: cachedCipher });
-    try {
-      addKnownTorrent(c, file.infoHash, file.magnetURI, { path: cipherDir, announce: room.trackers } as any, (torrent: any) => {
-        wireTorrentStats(room, torrent);
-        torrent.on('done', () => {
-          const landedCipher = path.join(cipherDir, safeBaseName(torrent.name) || cipherName);
-          setTransfer(room, file.fileId, { progress: 1, downSpeed: 0, cipherPath: landedCipher });
-          if (room.secret) void decryptOne(room, file, landedCipher);
-          else { persistManifest(room, file, undefined, landedCipher); log('e2e: ciphertext ready, awaiting room key for ' + file.name); pushState(room, true); }
-        });
-      });
-    } catch (e) { setTransfer(room, file.fileId, { status: 'error' }); log('e2e download add failed: ' + String(e)); }
-    return;
-  }
-
-  // Land the file in its folder's subdirectory (or the room root if unassigned),
-  // mirroring the UI grouping. The same dir is used for the seed-from-disk check
-  // and the download target so a reseed finds what a prior download left.
-  const dir = folderDirFor(room, file);
-  // A transfer-known path (a share seeded from its original location) beats
-  // the room-folder slot.
-  const knownPlain = known?.localPath && fs.existsSync(known.localPath) ? known.localPath : null;
-  const onDisk = knownPlain ?? path.join(dir, file.name);
-  if (fs.existsSync(onDisk)) {
-    setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: onDisk });
-    persistManifest(room, file, onDisk);
-    try {
-      seedKnownTorrent(c, file.infoHash, onDisk, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t));
-    } catch (e) { log('reseed failed: ' + String(e)); }
-    return;
-  }
-
-  setTransfer(room, file.fileId, { status: 'downloading', progress: 0 });
-  try {
-    addKnownTorrent(c, file.infoHash, file.magnetURI, { path: dir, announce: room.trackers } as any, (torrent: any) => {
-      wireTorrentStats(room, torrent);
-      torrent.on('done', () => {
-        const landed = path.join(dir, file.name);
-        setTransfer(room, file.fileId, { progress: 1, status: 'seeding', downSpeed: 0, haveLocally: true, localPath: landed });
-        persistManifest(room, file, landed); // record where it landed so we re-seed it next launch
-        broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
-        pushState(room, true);
-      });
-    });
-  } catch (e) {
-    setTransfer(room, file.fileId, { status: 'error' });
-    log('download add failed: ' + String(e));
-  }
+function ensureLocal(room: Room, file: RoomFile, allowDownload = true): Promise<void> {
+  const state = storageFor(room);
+  const pending = state.pending.get(file.fileId);
+  if (room.transfers.get(file.fileId)?.receivePaused) return Promise.resolve();
+  if (pending) return pending;
+  if (state.receives.has(file.fileId)) return Promise.resolve();
+  const tr = room.transfers.get(file.fileId);
+  const client = clients.get(room.roomId);
+  if (client && findTorrent(client, file.infoHash) && !tr?.error && (tr?.haveLocally || (!file.enc && tr?.status !== 'error'))) return Promise.resolve();
+  const epoch = state.epochs.get(file.fileId) ?? 0;
+  setTransfer(room, file.fileId, { status: 'queued', phase: 'queued', downSpeed: 0, haveLocally: false }); pushState(room, true);
+  const job = (async () => {
+    const slot = await receiveQueue.acquire(room, file.fileId);
+    if (!currentFile(room, file, epoch)) { slot(); return; }
+    const lease: ReceiveLease = { holding: false, release: () => {
+      if (lease.timer) clearTimeout(lease.timer); lease.disk?.(); lease.disk = undefined;
+      if (state.receives.get(file.fileId) === lease) state.receives.delete(file.fileId);
+      slot();
+    } };
+    state.receives.set(file.fileId, lease);
+    try { await prepareLocal(room, file, () => currentFile(room, file, epoch), allowDownload); }
+    catch (error) { lease.release(); throw error; }
+    if (!lease.holding) lease.release();
+  })().catch(error => {
+    if (!currentFile(room, file, epoch)) return;
+    fileFailure(room, file, 'transfer', error);
+    log('room file preparation failed: ' + String(error));
+  });
+  state.pending.set(file.fileId, job);
+  void job.finally(() => { if (state.pending.get(file.fileId) === job) state.pending.delete(file.fileId); });
+  return job;
 }
 
-/**
- * Resume one persisted manifest file on startup: register it in the manifest,
- * then re-seed from its known on-disk path if present (covers a file shared from
- * its ORIGINAL location, outside the room folder). Otherwise fall back to the
- * normal seed-from-folder / download path.
- */
+async function prepareLocal(room: Room, file: RoomFile, isCurrent: () => boolean, allowDownload: boolean): Promise<void> {
+  if (!isCurrent()) return;
+  const c = ensureClient(room), state = storageFor(room);
+  const existing = findTorrent(c, file.infoHash);
+  if (existing) {
+    const tr = room.transfers.get(file.fileId);
+    if (file.enc && tr?.cipherReady && !tr.haveLocally && tr.cipherPath) { await decryptOne(room, file, tr.cipherPath); return; }
+    if (tr?.status !== 'error' && !tr?.error) return;
+    await new Promise<void>((resolve, reject) => {
+      try { void Promise.resolve(c.remove(existing, (e?: Error) => e ? reject(e) : resolve())).catch(reject); }
+      catch (error) { reject(error); }
+    });
+    if (!isCurrent()) return;
+  }
+  if (room.e2e && !file.enc) throw new Error('An encrypted room cannot transfer a plaintext torrent');
+  roomDiskName(file); // reject unsupported names before allocating a download
+  const known = room.transfers.get(file.fileId);
+  let candidate = file.enc ? known?.cipherPath : known?.localPath;
+  // Legacy plaintext is a candidate for hash verification, never proof of readiness.
+  if (!candidate && !file.enc) {
+    const folder = file.folderId && room.folders.get(file.folderId);
+    const segment = folder ? safeDirSegment(folder.name) : '';
+    candidate = path.join(room.folder, segment || '', file.name);
+  }
+  let verified: string | undefined;
+  if (candidate && fs.existsSync(candidate)) {
+    setTransfer(room, file.fileId, { phase: 'verifying', status: 'queued', haveLocally: false }); pushState(room, true);
+    try {
+      const metadata = await verifyRoomFile(candidate, file, state.metadata.get(file.fileId));
+      if (!isCurrent()) return;
+      state.metadata.set(file.fileId, metadata);
+      const root = file.enc ? room.cacheDir : room.folder;
+      // Original author paths stay exactly where the user selected them.
+      verified = !file.enc && state.originals.has(file.fileId) ? candidate
+        : isManagedRoomPath(root, file.fileId, candidate) && path.basename(candidate) === roomDiskName(file) ? candidate
+        : await (async () => {
+          fs.mkdirSync(root, { recursive: true });
+          const release = diskBudget.reserve([{ root, bytes: file.size + (file.enc ? 28 : 0) }]);
+          try { return await migrateRoomFile(candidate!, root, file, metadata, isCurrent); }
+          finally { release(); }
+        })();
+      if (!isCurrent()) return;
+    } catch (error) {
+      if (!isCurrent()) return;
+      log('room local copy rejected (kept on disk): ' + String(error));
+      state.originals.delete(file.fileId); state.proofs.delete(file.fileId);
+    }
+  }
+  if (!isCurrent()) return;
+  if (!verified && !allowDownload) {
+    setTransfer(room, file.fileId, { phase: known?.error ? 'error' : 'queued', status: known?.error ? 'error' : 'queued', progress: 0, cipherReady: false, haveLocally: false }); pushState(room, true); return;
+  }
+  const root = file.enc ? room.cacheDir : room.folder;
+  const partial = state.partialPaths.get(file.fileId);
+  const canResume = partial && isManagedRoomPath(root, file.fileId, partial) && path.basename(partial) === roomDiskName(file);
+  if (!verified) {
+    fs.mkdirSync(root, { recursive: true }); fs.mkdirSync(room.folder, { recursive: true });
+    const lease = state.receives.get(file.fileId);
+    if (lease) lease.disk = diskBudget.reserve([{ root, bytes: file.size + (file.enc ? 28 : 0) }, ...(file.enc ? [{ root: room.folder, bytes: file.size }] : [])]);
+  }
+  const target = verified ?? (canResume ? partial : newRoomFilePath(root, file.fileId, roomDiskName(file)));
+  if (verified) state.partialPaths.delete(file.fileId);
+  else state.partialPaths.set(file.fileId, target);
+  setTransfer(room, file.fileId, { phase: verified ? 'verifying' : 'downloading', status: 'downloading', progress: 0, haveLocally: false, cipherReady: false, error: undefined,
+    ...(file.enc ? { cipherPath: target, localPath: known?.localPath } : { localPath: target }) });
+  persistManifest(room, file, file.enc ? undefined : target, file.enc ? target : undefined);
+  const source = state.metadata.get(file.fileId) ?? file.magnetURI;
+  const lease = state.receives.get(file.fileId);
+  let completing: Promise<void> | undefined;
+  const finish = (torrent: any) => {
+    if (completing) return;
+    completing = (async () => {
+      if (!isCurrent()) return;
+      setTransfer(room, file.fileId, { phase: 'verifying', downSpeed: 0 }); pushState(room, true);
+      const raw = roomTorrentMetadata(file, torrent.torrentFile);
+      const verifiedStamp = roomFileStamp(target);
+      await verifyRoomFile(target, file, raw);
+      if (!isCurrent()) return;
+      if (!verifiedStamp || roomFileStamp(target) !== verifiedStamp) throw new Error('Room file changed after verification');
+      state.metadata.set(file.fileId, raw);
+      state.partialPaths.delete(file.fileId);
+      if (file.enc) {
+        setTransfer(room, file.fileId, { progress: 1, status: 'done', phase: 'ciphertext-ready', cipherReady: true, downSpeed: 0, cipherPath: target });
+        persistManifest(room, file, undefined, target);
+        if (known?.error?.stage === 'decryption') {
+          // A persisted failure stays reviewable after restart; an explicit
+          // retry or newly received key can clear it using these same bytes.
+          setTransfer(room, file.fileId, { status: 'error', phase: 'error', error: known.error });
+          persistManifest(room, file); pushState(room, true);
+        } else await decryptOne(room, file, target, { metadata: raw, stamp: verifiedStamp });
+      } else {
+        rememberPlaintext(room, file.fileId, target, verifiedStamp);
+        setTransfer(room, file.fileId, { progress: 1, status: 'seeding', downSpeed: 0, haveLocally: true, localPath: target });
+        persistManifest(room, file, target);
+        broadcast(room, { t: 'have', memberId: room.self.memberId, fileId: file.fileId });
+        pushState(room, true);
+      }
+    })().catch(error => {
+      if (!isCurrent()) return;
+      state.proofs.delete(file.fileId);
+      fileFailure(room, file, 'verification', error, { cipherReady: false });
+      void Promise.resolve(c.remove(torrent)).catch(() => {});
+      log('room file verification failed: ' + String(error)); pushState(room, true);
+    }).finally(() => lease?.release());
+  };
+  if (lease) lease.holding = true;
+  const torrent = addKnownTorrent(c, file.infoHash, source,
+    { path: path.dirname(target), announce: room.trackers, skipVerify: false,
+      store: class {
+        constructor(chunkLength: number, options: any) {
+          try {
+            if (!isCurrent()) throw new Error('Room file operation canceled');
+            const raw = roomTorrentMetadata(file, options.torrent.torrentFile);
+            state.metadata.set(file.fileId, raw);
+            const store = new RoomChunkStore(chunkLength, options);
+            if (verified) store.put = (_index: number, _data: unknown, cb: (error: Error) => void) => cb(new Error('Verified room source changed; refusing to overwrite it'));
+            else {
+              const put = store.put.bind(store); let checkedAt = 0;
+              store.put = (index: number, data: unknown, cb: (error?: Error) => void) => {
+                try {
+                  if (!isCurrent()) throw new Error('Room file operation canceled');
+                  if (Date.now() - checkedAt >= 1000) { diskBudget.assertAvailable(root); checkedAt = Date.now(); }
+                } catch (error) { queueMicrotask(() => cb(error as Error)); return; }
+                put(index, data, cb);
+              };
+            }
+            return store;
+          } catch (error) {
+            // Refuse the store before filesystem access. WebTorrent expects a
+            // chunk store, so fail reads/writes via callbacks rather than throw
+            // from its asynchronous metadata handler.
+            const fail = (...args: any[]) => queueMicrotask(() => args[args.length - 1](error));
+            const close = (cb: () => void) => queueMicrotask(cb);
+            return { get: fail, put: fail, close, destroy: close };
+          }
+        }
+      } }, (t: any) => {
+      if (!isCurrent()) return;
+      try { roomTorrentMetadata(file, t.torrentFile); }
+      catch (error) {
+        fileFailure(room, file, 'verification', error, { cipherReady: false });
+        void Promise.resolve(c.remove(t)).catch(() => {});
+        cancelFileOperation(room, file.fileId);
+        log('room torrent metadata rejected: ' + String(error)); lease?.release(); pushState(room, true); return;
+      }
+      wireTorrentStats(room, t);
+      persistManifest(room, file, file.enc ? undefined : target, file.enc ? target : undefined);
+      t.once('done', () => finish(t));
+      if (t.done || t.progress >= 1) finish(t);
+    });
+  torrent.on?.('error', (error: unknown) => {
+    if (!isCurrent()) return;
+    // Ciphertext seeding errors must not interrupt a local decrypt pipeline or
+    // overwrite its result/reason. Network failures matter while fetching.
+    if (room.transfers.get(file.fileId)?.cipherReady || room.transfers.get(file.fileId)?.haveLocally) return;
+    fileFailure(room, file, 'transfer', error);
+    cancelFileOperation(room, file.fileId); void Promise.resolve(c.remove(torrent)).catch(() => {});
+    log('room torrent failed: ' + String(error)); pushState(room, true);
+  });
+  const arm = (ms: number) => {
+    if (!lease || state.receives.get(file.fileId) !== lease) return;
+    if (lease.timer) clearTimeout(lease.timer);
+    lease.timer = setTimeout(() => {
+      if (!isCurrent() || completing) return;
+      fileFailure(room, file, 'transfer', new Error('Room file transfer stalled. Check peers and retry.'));
+      cancelFileOperation(room, file.fileId); void Promise.resolve(c.remove(torrent)).catch(() => {});
+    }, ms);
+  };
+  arm(torrent.torrentFile ? 180_000 : 60_000);
+  torrent.on?.('metadata', () => arm(180_000));
+  torrent.on?.('download', () => arm(180_000));
+}
+
+/** Restored paths are candidates until their original torrent hashes agree. */
 function restoreManifestFile(room: Room, pf: PersistedRoomFile): void {
-  if (isTombstonedAt(room, pf.fileId, pf.addedAt)) return;
-  if (room.files.has(pf.fileId)) return;
+  if (isTombstonedAt(room, pf.fileId, pf.addedAt) || room.files.has(pf.fileId)) return;
   const file: RoomFile = {
     fileId: pf.fileId, name: pf.name, size: pf.size, infoHash: pf.infoHash,
     magnetURI: pf.magnetURI, addedBy: pf.addedBy, addedByName: pf.addedByName, addedAt: pf.addedAt,
-    ...(pf.enc ? { enc: true } : {}),
-    // Preserve the folder assignment across restart (same field-list trap as clampFile).
+    ...(pf.enc ? { enc: true, ...(pf.keyEpoch ? { keyEpoch: pf.keyEpoch } : {}) } : {}),
     ...(pf.folderId ? { folderId: pf.folderId } : {}),
     ...(Number.isFinite(pf.folderAt) ? { folderAt: pf.folderAt } : {}),
   };
-  room.files.set(file.fileId, file);
-  const c = ensureClient(room);
-  if (findTorrent(c, file.infoHash)) return; // already seeding/adding
-
-  // E2E: re-seed the cached CIPHERTEXT (never the plaintext) and make sure the
-  // plaintext exists in the folder for watch/open.
-  if (room.e2e) {
-    const plain = path.join(folderDirFor(room, file), file.name);
-    if (pf.cipherPath && fs.existsSync(pf.cipherPath)) {
-      const cipherName = `${file.name}.enc`;
-      let cipherPath = pf.cipherPath;
-      // Legacy cache entries (<ts>_<rand>_<name>.enc) predate the disk-name ==
-      // torrent-name rule; seeding one under the canonical name would recreate
-      // the unreadable-store seeder this layout exists to prevent. Move the file
-      // into the modern per-share directory — same bytes + same torrent name →
-      // same infoHash, so the manifest fileId still holds.
-      if (path.basename(cipherPath) !== cipherName) {
-        try {
-          const idDir = /^[0-9a-f]{40}$/i.test(file.fileId) ? file.fileId : crypto.createHash('sha1').update(file.fileId).digest('hex');
-          const dir = path.join(room.cacheDir, idDir);
-          fs.mkdirSync(dir, { recursive: true });
-          const dst = path.join(dir, cipherName);
-          fs.renameSync(cipherPath, dst);
-          cipherPath = dst;
-          persistManifest(room, file, pf.localPath, dst);
-          log('e2e cipher migrated to per-share layout: ' + file.name);
-        } catch (e) { log('e2e cipher migrate failed: ' + String(e)); }
-      }
-      const havePlain = fs.existsSync(plain);
-      setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: havePlain, ...(havePlain ? { localPath: plain } : {}), cipherPath });
-      try { seedKnownTorrent(c, file.infoHash, cipherPath, { announce: room.trackers, name: cipherName } as any, (t: any) => wireTorrentStats(room, t)); }
-      catch (e) { log('e2e manifest reseed failed: ' + String(e)); }
-      if (room.secret && !havePlain) void decryptOne(room, file, cipherPath);
-      return;
-    }
-    if (effectiveAutoFetch(room, file.folderId)) ensureLocal(room, file); // no cached ciphertext — re-download it
-    return;
+  if (room.files.size >= ROOM_FILE_LIMIT) throw new Error("Room manifest exceeds 5000 files");
+  if (!storeRoomManifestFile(room.files, file)) throw new Error("Saved room manifest exceeds its metadata budget");
+  const state = storageFor(room);
+  const pendingPath = file.enc ? pf.cipherPath : pf.localPath;
+  if (pf.partialDownload && pendingPath && isManagedRoomPath(file.enc ? room.cacheDir : room.folder, file.fileId, pendingPath)
+    && path.basename(pendingPath) === roomDiskName(file)) state.partialPaths.set(file.fileId, pendingPath);
+  if (pf.torrentFile) {
+    try { state.metadata.set(file.fileId, roomTorrentMetadata(file, Buffer.from(pf.torrentFile, 'base64'))); }
+    catch (error) { log('room persisted metadata rejected: ' + String(error)); }
   }
-
-  if (pf.localPath && fs.existsSync(pf.localPath)) {
-    setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, localPath: pf.localPath });
-    try { seedKnownTorrent(c, file.infoHash, pf.localPath, { announce: room.trackers, name: file.name } as any, (t: any) => wireTorrentStats(room, t)); }
-    catch (e) { log('manifest reseed failed: ' + String(e)); }
-    return;
+  if (pf.localPath && (pf.localOriginal === true
+    || (pf.localOriginal === undefined && pf.addedBy === room.self.memberId && !isManagedRoomPath(room.folder, file.fileId, pf.localPath)))) {
+    state.originals.add(file.fileId);
   }
-  if (effectiveAutoFetch(room, file.folderId)) ensureLocal(room, file); // not at the known path — seed-from-folder or re-download
+  setTransfer(room, file.fileId, { phase: pf.receivePaused ? 'paused' : pf.localError ? 'error' : 'queued', status: pf.localError ? 'error' : 'queued', error: pf.localError, receivePaused: pf.receivePaused === true,
+    haveLocally: false, cipherReady: false, localPath: pf.localPath, cipherPath: pf.cipherPath });
+  if ((file.enc ? pf.cipherPath : pf.localPath) || effectiveAutoFetch(room, file.folderId)) void ensureLocal(room, file, effectiveAutoFetch(room, file.folderId));
 }
 
 function wireTorrentStats(room: Room, torrent: any): void {
   const fileId = torrent.infoHash;
+  const epoch = storageFor(room).epochs.get(fileId) ?? 0;
+  let lastDiskCheck = 0;
   const update = () => {
+    if (torrent.destroyed || rooms.get(room.roomId) !== room || !room.files.has(fileId) || room.transfers.get(fileId)?.released
+      || (storageFor(room).epochs.get(fileId) ?? 0) !== epoch) return;
     const done = torrent.progress >= 1 || torrent.done;
+    const prior = room.transfers.get(fileId);
+    if (prior?.haveLocally && Date.now() - lastDiskCheck > 1000) {
+      lastDiskCheck = Date.now();
+      try { verifiedLocalFile(room.roomId, fileId); } catch { return; }
+    }
     setTransfer(room, fileId, {
       progress: torrent.progress || (done ? 1 : 0),
-      status: done ? 'seeding' : 'downloading',
+      status: prior?.status === 'error' ? 'error' : prior?.haveLocally ? 'seeding' : prior?.cipherReady ? 'done' : 'downloading',
+      phase: prior?.phase && prior.phase !== 'queued' ? prior.phase : 'downloading',
       downSpeed: torrent.downloadSpeed || 0,
       peers: torrent.numPeers || 0,
-      haveLocally: done || (room.transfers.get(fileId)?.haveLocally ?? false),
+      haveLocally: prior?.haveLocally ?? false,
     });
     // Let peers see our download move (10%-step throttled; 'have' covers 100%).
-    maybeBroadcastProg(room, fileId, torrent.progress || 0, done);
+    maybeBroadcastProg(room, fileId, torrent.progress || 0, !!prior?.haveLocally);
     pushState(room);
   };
   torrent.on('download', update);
   torrent.on('upload', update);
   torrent.on('wire', update);
-  torrent.on('error', (e: any) => { setTransfer(room, fileId, { status: 'error' }); log(`torrent ${fileId.slice(0, 8)} error: ${e?.message || e}`); });
+  torrent.on('error', (e: any) => {
+    const file = room.files.get(fileId), tr = room.transfers.get(fileId);
+    if (torrent.destroyed || rooms.get(room.roomId) !== room || !file || tr?.released || (storageFor(room).epochs.get(fileId) ?? 0) !== epoch) return;
+    if (!tr?.cipherReady && !tr?.haveLocally) fileFailure(room, file, 'transfer', e);
+    log(`torrent ${fileId.slice(0, 8)} error: ${e?.message || e}`);
+  });
   // Surface swarm distress that otherwise dies silently — piece-verification
   // failures arrive as 'warning' and look like an endless 0%-download without this.
   torrent.on('warning', (e: any) => log(`torrent ${fileId.slice(0, 8)} warning: ${e?.message || e}`));
@@ -3414,7 +4067,7 @@ function wireTorrentStats(room: Room, torrent: any): void {
 }
 
 // ── Rendezvous tracker (recreated when the room is rekeyed) ──────────────────
-function attachTracker(room: Room): void {
+function attachTracker(room: Room, strict = false): void {
   try {
     const tracker = new TrackerClient({
       infoHash: room.rendezvous,
@@ -3425,22 +4078,27 @@ function attachTracker(room: Room): void {
       wrtc: nativeWrtc,
     });
     room.tracker = tracker;
-    tracker.on('peer', (peer: any) => attachWire(room, peer));
-    tracker.on('warning', () => { /* tracker noise */ });
-    tracker.on('error', (e: any) => log('tracker error: ' + (e?.message || e)));
-    tracker.on('update', () => { room.started = true; });
+    connectionMonitor(room).resetTrackers(room.trackers.length);
+    const current = () => room.tracker === tracker && rooms.get(room.roomId) === room && !room.kicked && !netSuspended;
+    tracker.on('peer', (peer: any) => { if (current()) attachWire(room, peer); else try { peer.destroy(); } catch { /* stale tracker */ } });
+    tracker.on('warning', () => { if (current()) observeConnection(room, 'tracker-unavailable'); });
+    tracker.on('error', (e: any) => { if (current()) { observeConnection(room, 'tracker-unavailable'); log('tracker error: ' + (e?.message || e)); } });
+    tracker.on('update', (data: { announce?: string }) => { if (current()) { room.started = true; connectionMonitor(room).trackerAck(room.trackers.indexOf(data?.announce ?? '')); pushState(room); } });
     tracker.start();
     room.started = true;
     log('Tracker announced: ' + room.name + ' (' + room.rendezvous.slice(0, 8) + ')');
   } catch (e) {
+    try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* partial start */ }
+    room.tracker = null; room.started = false; observeConnection(room, 'tracker-unavailable');
     log('tracker start failed: ' + String(e));
+    if (strict) throw e;
   }
 }
 
-function restartTracker(room: Room): void {
+function restartTracker(room: Room, strict = false): void {
   try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
   room.tracker = null;
-  attachTracker(room);
+  attachTracker(room, strict);
 }
 
 // ── Kick = key rotation ──────────────────────────────────────────────────────
@@ -3462,6 +4120,7 @@ function sendRekey(room: Room, oldKey: Buffer, msg: Msg, kickedId: string, excep
 /** Switch this room onto a new code: drop the kicked member, re-key, re-announce. */
 function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedName: string): void {
   if (room.code === newCode) return; // already applied (dedupe)
+  resetHelloSync(room);
   room.members.delete(kickedId);
   room.memberProg.delete(kickedId);
   delete room.typing[kickedId];
@@ -3493,9 +4152,10 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
     // Rotate the CONTENT key too: files shared after the kick use a secret the
     // kicked member never receives. The outgoing secret joins the decrypt-only
     // keyring (old files stay readable; they were already in their hands).
-    room.prevSecrets = [room.secret, ...room.prevSecrets].slice(0, MAX_PREV_SECRETS);
+    room.prevSecrets = mergeContentKeys('', [room.secret], room.prevSecrets);
     room.secret = generateRoomSecret();
   }
+  room.keyPages = []; room.keyRequestedAt.clear(); room.keySentAt.clear();
   if (room.e2e) {
     room.e2eCfg = room.ownerId === room.self.memberId ? signE2ECfg(room) : null;
     persistE2E(room);
@@ -3507,6 +4167,8 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
     room.bans.add(kickedId);
     try { ipcRenderer.send('room-rekey', { roomId: room.roomId, code: newCode, banId: kickedId }); } catch { /* ignore */ }
   }
+  room.banState = null;
+  mintBanState(room); persistBanState(room);
   // Tombstone proofs are bound to the topic, which just rotated — the OLD-topic
   // signatures no longer verify, so a member joining on the new code couldn't
   // converge pre-rekey deletions (they'd resurrect). The owner re-mints every
@@ -3543,6 +4205,7 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
 function suspendAllNetworking(): void {
   let n = 0;
   for (const room of Array.from(rooms.values())) {
+    room.pendingServerCommands.cancel();
     try { room.voice.suspend(); } catch { /* ignore */ } // voice leaks the real IP too — tear it down
     teardownLan(room); // the LAN adapter holds a real interface too — revert it with the rest
     try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
@@ -3553,7 +4216,13 @@ function suspendAllNetworking(): void {
     const c = clients.get(room.roomId);
     clients.delete(room.roomId);
     try { c?.destroy(); } catch { /* ignore */ }
+    removeFileClient(room.roomId);
+    cancelReceives(room);
     room.started = false;
+    if (room.snapshotTimer) clearTimeout(room.snapshotTimer);
+    if (room.heartbeatTimer) clearInterval(room.heartbeatTimer);
+    if (room.profileAnnounce) clearTimeout(room.profileAnnounce);
+    room.snapshotTimer = null; room.heartbeatTimer = null; room.profileAnnounce = null;
     rooms.delete(room.roomId);
     n++;
   }
@@ -3564,7 +4233,7 @@ function suspendAllNetworking(): void {
  *  every wire so we don't linger in the swarm the room just rotated away from. */
 function markKicked(room: Room, byName: string): void {
   if (room.kicked) return;
-  room.kicked = true;
+  room.kicked = true; cancelReceives(room);
   room.kickedBy = byName;
   logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: byName, targetName: room.self.name || 'You' });
   try { room.voice.suspend(); } catch { /* ignore */ }
@@ -3574,12 +4243,23 @@ function markKicked(room: Room, byName: string): void {
   for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
   room.wires.clear();
   closeStreamServers(room.roomId);
+  const client = clients.get(room.roomId); clients.delete(room.roomId);
+  try { client?.destroy(); } catch { /* ignore */ }
+  removeFileClient(room.roomId);
   room.started = false;
   pushState(room, true);
 }
 
+const pendingRoomRekeys = new WeakSet<Room>();
+
 /** Owner-only: remove a member by rotating the room code away from them. */
 function kickMember(room: Room, memberId: string): void {
+  if (!room.bans.has(memberId) && room.bans.size >= ROOM_BAN_LIMIT) throw new Error('Room ban history is full; create a new room to remove more profiles');
+  if (pendingRoomRekeys.has(room)) throw new Error('A room key rotation is already in progress');
+  if (room.e2e && !completeContentKeys(room.e2eCfg, room.secret, room.prevSecrets)) throw new Error('Wait for room key history to finish syncing before rotating keys');
+  if (room.e2e && new Set([room.secret, ...room.prevSecrets].filter(Boolean)).size >= ROOM_KEY_LIMIT) {
+    throw new Error('Room key history is full; create a new room and share the active files there');
+  }
   if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can remove members');
   if (memberId === room.self.memberId) throw new Error('You cannot remove yourself');
   const kickedName = room.members.get(memberId)?.name || '?';
@@ -3605,10 +4285,13 @@ function kickMember(room: Room, memberId: string): void {
     t: 'rekey', newCode, kickedId: memberId, kickedName, by,
     pub: room.self.pub, sig: signBytes(room, rekeyCanonical(room.topic, { newCode, kickedId: memberId, by })),
   };
+  pendingRoomRekeys.add(room);
   setTimeout(() => {
-    if (!rooms.get(room.roomId)) return; // room was left/destroyed meanwhile
-    sendRekey(room, oldKey, rekey, memberId);
-    applyLocalRekey(room, newCode, memberId, kickedName);
+    try {
+      if (rooms.get(room.roomId) !== room) return;
+      sendRekey(room, oldKey, rekey, memberId);
+      applyLocalRekey(room, newCode, memberId, kickedName);
+    } finally { pendingRoomRekeys.delete(room); }
   }, 300);
 }
 
@@ -3618,11 +4301,14 @@ function kickMember(room: Room, memberId: string): void {
 function transferOwnership(roomId: string, memberId: string): RoomState {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
+  if (pendingRoomRekeys.has(room)) throw new Error('A room key rotation is already in progress');
   if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can transfer ownership');
   const newOwnerId = String(memberId || '');
   if (!newOwnerId || newOwnerId === room.self.memberId) throw new Error('Pick another member to transfer ownership to');
   if (!room.members.has(newOwnerId)) throw new Error('That member is not in this room');
   if (room.bans.has(newOwnerId)) throw new Error('That member was removed from this room');
+  const recipient = room.members.get(newOwnerId)!;
+  if (recipient.guest || recipient.capabilities && !recipient.capabilities.includes('owner-manage')) throw new Error('Ownership requires a desktop client with room management support');
   if (room.transferChain.length >= MAX_TRANSFER_CHAIN) throw new Error('This room has already changed hands the maximum number of times');
   const by = room.self.memberId;
   const at = Math.max(Date.now(), room.transferAt + 1); // strictly newer, never in the past
@@ -3630,7 +4316,8 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
   // ours if we are the first to transfer (empty chain = we are the genesis owner).
   const root = room.transferChain.length ? room.transferChain[0].by : by;
   const sig = signBytes(room, transferCanonical(root, { by, newOwnerId, at }));
-  const msg: Msg = { t: 'transfer', newOwnerId, at, by, pub: room.self.pub, sig };
+  mintBanState(room);
+  const msg: Msg = { t: 'transfer', newOwnerId, at, by, pub: room.self.pub, sig, ...(room.banState ? { banState: room.banState } : {}) };
   if (!applyTransferMsg(room, msg)) throw new Error('Ownership transfer failed');
   broadcast(room, msg);
   return buildState(room);
@@ -3638,15 +4325,20 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
 function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; e2eCfg?: E2ECfg | null; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number }): RoomState {
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; banState?: RoomBanSnapshot; e2eCfg?: E2ECfg | null; keyPages?: RoomKeyPage[]; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number; resources?: RoomResourcePolicy }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
   if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+  if (p.resources) applyResourcePolicy(p.resources);
   let room = rooms.get(p.roomId);
-  if (room) return buildState(room);
+  if (room) { pinRoomOwner(room, p.ownerPin || ''); return buildState(room); }
 
-  try { fs.mkdirSync(p.folder, { recursive: true }); } catch { /* ignore */ }
+  if ((p.manifest?.length || 0) > ROOM_FILE_LIMIT || (p.folders?.length || 0) > ROOM_FOLDER_LIMIT
+    || Object.keys(p.identities || {}).length > ROOM_IDENTITY_LIMIT
+    || Object.keys(p.folderTombs || {}).length > ROOM_FOLDER_TOMB_LIMIT
+    || Object.keys(p.tombstones || {}).length > ROOM_FILE_LIMIT || Object.keys(p.revives || {}).length > ROOM_FILE_LIMIT) throw new Error("Saved room exceeds its manifest or identity limit");
+  fs.mkdirSync(p.folder, { recursive: true });
 
   const iceServers = p.useTurn && p.turnServers && p.turnServers.length
     ? STUN_SERVERS.concat(p.turnServers)
@@ -3683,7 +4375,9 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     // the persisted flag is missing/stale, a "-e2e" code must never run plaintext.
     e2e: p.e2e || codeIsE2E(p.code),
     secret: p.secret || '',
-    prevSecrets: Array.isArray(p.prevSecrets) ? p.prevSecrets.map((x) => clampStr(x, MAX_SECRET)).filter(Boolean).slice(0, MAX_PREV_SECRETS) : [],
+    prevSecrets: mergeContentKeys(p.secret || '', Array.isArray(p.prevSecrets) ? p.prevSecrets.filter(x => typeof x === 'string' && /^[a-f0-9]{64}$/i.test(x)) : []),
+    keyPages: [], keyRequestedAt: new Map(), keySentAt: new Map(),
+    banState: null,
     bans: new Set(Array.isArray(p.bans) ? p.bans.map((x) => clampStr(x, MAX_STR)).filter(Boolean) : []),
     e2eCfg: null,
     e2eSigned: false,
@@ -3716,7 +4410,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     downKbps: Math.max(0, Number(p.downKbps) || 0),
     mutes: new Set(p.mutes || []),
     history: (p.history || []).slice(-200),
-    chat: (p.chat || []).slice(-200),
+    chat: retainRoomChat(p.chat || []),
     typing: {},
     lastTypingSent: 0,
     fileReacts: reactsFromRecord(p.reacts),
@@ -3734,94 +4428,117 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     profileAnnounce: null,
     profileAt: 0,
     srvMirrors: new Map(),
+    pendingServerCommands: new PendingServerCommands(),
     srvCmdAt: new Map(),
     seenGids: new Set(),
     seenGidOrder: [],
     kicked: false,
     kickedBy: '',
     snapshotTimer: null,
+    heartbeatTimer: null,
     lastSnapshot: 0,
   };
   rooms.set(p.roomId, room);
-  room.voice = createVoiceSession(room);
+  try {
+    room.voice = createVoiceSession(room);
 
-  // Ownership-transfer chain: re-verify the persisted chain from the pin/TOFU
-  // root (the store may have been tampered with — same discipline as identities
-  // and e2eCfg) and let IT, not the bare persisted ownerId, decide the owner.
-  // Runs BEFORE the E2E block below so the owner-mint check sees the final id.
-  if (Array.isArray(p.transferChain) && p.transferChain.length) {
-    const fallbackOwner = room.ownerId;
-    room.ownerId = ''; // the chain roots at the pin (or its own root under TOFU)
-    if (!adoptChain(room, p.transferChain, true)) room.ownerId = fallbackOwner; // rejected wholesale — fall back
-  }
+    // Ownership-transfer chain: re-verify the persisted chain from the pin/TOFU
+    // root (the store may have been tampered with — same discipline as identities
+    // and e2eCfg) and let IT, not the bare persisted ownerId, decide the owner.
+    // Runs BEFORE the E2E block below so the owner-mint check sees the final id.
+    if (Array.isArray(p.transferChain) && p.transferChain.length) {
+      const fallbackOwner = room.ownerId;
+      room.ownerId = ''; // the chain roots at the pin (or its own root under TOFU)
+      if (!adoptChain(room, p.transferChain, true)) room.ownerId = fallbackOwner; // rejected wholesale — fall back
+    }
 
-  // E2E authenticity: the owner mints the signed config fresh (it holds the
-  // private key, so no persistence is needed); everyone else restores the
-  // owner's persisted blob — re-verified, since the topic may have rotated or
-  // the store been tampered with — and re-serves it to joiners.
-  if (room.e2e && room.secret && room.ownerId === room.self.memberId) {
-    room.e2eCfg = signE2ECfg(room);
-    room.e2eSigned = !!room.e2eCfg;
-  } else if (p.e2eCfg && verifyE2ECfg(room, p.e2eCfg)) {
-    room.e2eCfg = p.e2eCfg;
-    room.e2eSigned = true;
-  }
+    if (room.bans.size > ROOM_BAN_LIMIT) throw new Error('Room ban history exceeds the supported limit');
+    if (p.banState) adoptBanState(room, p.banState);
+    mintBanState(room);
+    if (room.bans.has(room.self.memberId)) { markKicked(room, '?'); return buildState(room); }
 
-  // The owner logs the room's creation once (its history starts empty).
-  if (room.ownerId && room.ownerId === room.self.memberId && room.history.length === 0) {
-    logEvent(room, { type: 'created', actorId: room.self.memberId, actorName: room.self.name || 'You' });
-  }
+    // E2E authenticity: the owner mints the signed config fresh (it holds the
+    // private key, so no persistence is needed); everyone else restores the
+    // owner's persisted blob — re-verified, since the topic may have rotated or
+    // the store been tampered with — and re-serves it to joiners.
+    if (p.e2eCfg && verifyE2ECfg(room, p.e2eCfg)) {
+      room.e2eCfg = p.e2eCfg; room.e2eSigned = true;
+      for (const page of p.keyPages || []) adoptKeyPage(room, page);
+    }
+    if (room.e2e && room.secret && room.ownerId === room.self.memberId && completeContentKeys(room.e2eCfg, room.secret, room.prevSecrets)) {
+      room.e2eCfg = signE2ECfg(room); room.e2eSigned = !!room.e2eCfg;
+    }
 
-  // Resume the persisted manifest first so the room shows — and re-seeds — its
-  // files immediately, before any peer reconnects. Covers files shared from
-  // outside the room folder (which the folder scan below would miss).
-  for (const pf of p.manifest || []) restoreManifestFile(room, pf);
+    // The owner logs the room's creation once (its history starts empty).
+    if (room.ownerId && room.ownerId === room.self.memberId && room.history.length === 0) {
+      logEvent(room, { type: 'created', actorId: room.self.memberId, actorName: room.self.name || 'You' });
+    }
 
-  // Adopt any files sitting in the room folder that the manifest didn't already
-  // cover (re-share on restart). Skipped for E2E rooms — loose plaintext in the
-  // folder must NOT be seeded as-is (it would leak); E2E files are restored from
-  // the manifest's ciphertext above.
-  if (!room.e2e) {
-    try {
-      const known = new Set(Array.from(room.files.values()).map((f) => f.name));
-      for (const entry of fs.readdirSync(room.folder)) {
-        if (known.has(entry)) continue;
-        const full = path.join(room.folder, entry);
-        if (fs.statSync(full).isFile()) {
-          seedLocal(room, full).then((f) => { mergeFileLocal(room!, f, full); }).catch(() => { /* ignore */ });
-        }
+    // Resume the persisted manifest first so the room shows — and re-seeds — its
+    // files immediately, before any peer reconnects. Covers files shared from
+    // outside the room folder (which the folder scan below would miss).
+    for (const pf of p.manifest || []) restoreManifestFile(room, pf);
+
+    // Adopt any files sitting in the room folder that the manifest didn't already
+    // cover (re-share on restart). Skipped for E2E rooms — loose plaintext in the
+    // folder must NOT be seeded as-is (it would leak); E2E files are restored from
+    // the manifest's ciphertext above.
+    if (!room.e2e) {
+      try {
+        const known = new Set(Array.from(room.files.values()).map((f) => f.name));
+        const scanRoom = room;
+        const entries = fs.readdirSync(room.folder).filter(entry => !known.has(entry)).slice(0, Math.max(0, ROOM_FILE_LIMIT - room.files.size));
+        void (async () => {
+          for (const entry of entries) {
+            if (rooms.get(p.roomId) !== scanRoom || netSuspended || scanRoom.kicked) return;
+            const full = path.join(scanRoom.folder, entry);
+            try {
+              if (fs.statSync(full).isFile()) {
+                const file = await seedLocal(scanRoom, full);
+                if (rooms.get(p.roomId) === scanRoom && !netSuspended && !scanRoom.kicked) mergeFileLocal(scanRoom, file, full);
+              }
+            } catch { /* unreadable files do not stop the room */ }
+            await new Promise<void>(resolve => setTimeout(resolve, 20));
+          }
+        })();
+      } catch { /* folder may be empty */ }
+    }
+
+    // Rendezvous tracker (announces the current topicHash; recreated on rekey).
+    attachTracker(room, true);
+
+    // Heartbeat.
+    const beat = setInterval(() => {
+      const r = rooms.get(p.roomId);
+      if (r !== room) { clearInterval(beat); return; }
+      broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have, roomName: r.name, ownerId: r.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
+      // Voice-roster liveness: a member who dropped offline (crash/sleep — no 'bye',
+      // no voice-state) would otherwise linger in the voice panel with a stale mute
+      // badge, and their MediaPeer would never be reclaimed. onMemberGone is a cheap
+      // no-op for members with no voice footprint.
+      const cutoff = Date.now() - OFFLINE_AFTER;
+      for (const m of r.members.values()) {
+        if (m.lastSeen < cutoff) r.voice.onMemberGone(m.memberId);
       }
-    } catch { /* folder may be empty */ }
+      for (const wire of r.wires.values()) if (wire.peer.connected) void sampleChannelPath(r, wire);
+      // Forget the profile announce for members gone offline (crash — no 'bye'):
+      // their session-only profile cache died with them, so their next greeting
+      // must trigger a fresh announce even when it arrives via a relay.
+      for (const id of r.profileSentTo) {
+        const m = r.members.get(id);
+        if (!m || m.lastSeen < cutoff) r.profileSentTo.delete(id);
+      }
+      pushState(r);
+      requestKeyPages(room);
+    }, PING_INTERVAL);
+    room.heartbeatTimer = beat;
+
+    pushState(room, true);
+    return buildState(room);
+  } catch (e) {
+    void closeRoom(room, false).catch((error) => log('setup cleanup failed: ' + String(error)));
+    throw e;
   }
-
-  // Rendezvous tracker (announces the current topicHash; recreated on rekey).
-  attachTracker(room);
-
-  // Heartbeat.
-  const beat = setInterval(() => {
-    const r = rooms.get(p.roomId);
-    if (!r) { clearInterval(beat); return; }
-    broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have, roomName: r.name, ownerId: r.ownerId });
-    // Voice-roster liveness: a member who dropped offline (crash/sleep — no 'bye',
-    // no voice-state) would otherwise linger in the voice panel with a stale mute
-    // badge, and their MediaPeer would never be reclaimed. onMemberGone is a cheap
-    // no-op for members with no voice footprint.
-    const cutoff = Date.now() - OFFLINE_AFTER;
-    for (const m of r.members.values()) {
-      if (m.lastSeen < cutoff) r.voice.onMemberGone(m.memberId);
-    }
-    // Forget the profile announce for members gone offline (crash — no 'bye'):
-    // their session-only profile cache died with them, so their next greeting
-    // must trigger a fresh announce even when it arrives via a relay.
-    for (const id of r.profileSentTo) {
-      const m = r.members.get(id);
-      if (!m || m.lastSeen < cutoff) r.profileSentTo.delete(id);
-    }
-    pushState(r);
-  }, PING_INTERVAL);
-
-  pushState(room, true);
-  return buildState(room);
 }
 
 /** A locally-seeded file: register in manifest + announce to peers.
@@ -3831,7 +4548,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
 function mergeFileLocal(room: Room, file: RoomFile, localPath?: string): void {
   if (room.tombstones.has(file.fileId)) return;
   if (!room.files.has(file.fileId)) {
-    room.files.set(file.fileId, file);
+    if (!storeRoomManifestFile(room.files, file)) { room.manifestLimited = true; return; }
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, ...(localPath ? { localPath } : {}) });
     const cipherPath = room.transfers.get(file.fileId)?.cipherPath; // set by seedLocal in E2E rooms
     persistManifest(room, file, localPath, cipherPath);
@@ -3942,6 +4659,7 @@ function rendersTopLevel(room: Room, f: RoomFolder): boolean {
 function makeFolder(room: Room, name: string, icon: string, color: string, parentId?: string): RoomFolder {
   // Only nest under a folder that RENDERS top-level (same rule the UI uses to
   // offer targets) — one level, no chains from us. '' = explicit root.
+  if (room.folders.size >= ROOM_FOLDER_LIMIT) throw new Error("Room folder limit reached (512)");
   const parent = parentId ? room.folders.get(parentId) : undefined;
   const validParent = parent && parent.id !== undefined && rendersTopLevel(room, parent) ? parent.id : '';
   const folder: RoomFolder = {
@@ -4009,6 +4727,7 @@ function updateFolder(roomId: string, folderId: string, patch: { name?: string; 
 function deleteFolder(roomId: string, folderId: string): RoomState {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
+  if (!room.folderTombstones.has(folderId) && room.folderTombstones.size >= ROOM_FOLDER_TOMB_LIMIT) throw new Error("Room folder deletion limit reached");
   const at = nextAt(room.folders.get(folderId)?.at ?? room.folderTombstones.get(folderId) ?? 0);
   // Files keep their (now-dangling) folderId → they render Uncategorized via
   // groupFilesByFolder; child folders' dangling parentId renders them at root.
@@ -4075,26 +4794,61 @@ function assignFile(roomId: string, fileId: string, folderId: string | null): Ro
   return buildState(room);
 }
 
-function leaveRoom(roomId: string): void {
-  const room = rooms.get(roomId);
-  if (!room) return;
-  // Tell peers we're leaving so they drop us at once (no 45s offline ghost).
-  try { room.voice.suspend(); } catch { /* ignore */ } // release the mic + close voice PCs
-  teardownLan(room); // revert the LAN adapter + close the helper pipe on leave
-  if (room.profileAnnounce) { clearTimeout(room.profileAnnounce); room.profileAnnounce = null; }
-  broadcast(room, { t: 'bye', memberId: room.self.memberId });
-  rooms.delete(roomId);
-  const c = clients.get(roomId);
+const closingRooms = new Map<string, Promise<void>>();
+
+async function disposeRoom(room: Room, graceful: boolean): Promise<void> {
+  const roomId = room.roomId; receiveQueue.cancelWaiting(room);
+  resetHelloSync(room);
+  try { room.voice?.suspend(); } catch { /* release pending capture too */ }
+  try { teardownLan(room); } catch { /* continue closing other resources */ }
+  if (room.profileAnnounce) clearTimeout(room.profileAnnounce);
+  if (room.snapshotTimer) clearTimeout(room.snapshotTimer);
+  if (room.heartbeatTimer) clearInterval(room.heartbeatTimer);
+  room.profileAnnounce = null; room.snapshotTimer = null; room.heartbeatTimer = null;
+  if (graceful) { try { broadcast(room, { t: 'bye', memberId: room.self.memberId }); } catch { /* peer already gone */ } }
+  if (rooms.get(roomId) === room) rooms.delete(roomId);
+  const client = clients.get(roomId);
   clients.delete(roomId);
   closeStreamServers(roomId);
-  const teardown = (): void => {
-    try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
-    for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
-    // The client is the room's own — tearing it down stops all its transfers.
-    try { c?.destroy(); } catch { /* ignore */ }
-  };
-  // Defer the teardown briefly so the 'bye' flushes on the data channels first.
-  setTimeout(teardown, 200);
+  if (graceful) await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
+  room.tracker = null; room.started = false;
+  for (const wire of room.wires.values()) { try { wire.peer.destroy(); } catch { /* ignore */ } }
+  room.wires.clear();
+  // WebTorrent's callback runs after stores/handles close, not merely after the
+  // destroy method returns. Main may delete the download folder after this ack.
+  try {
+    if (client) await new Promise<void>((resolve, reject) => {
+      try { client.destroy((error?: Error | null) => error ? reject(error) : resolve()); }
+      catch (error) { reject(error); }
+    });
+  } finally { removeFileClient(roomId); refreshFileBudget(); cancelReceives(room); pushResourceStates(); }
+}
+
+async function closeRoom(room: Room, graceful: boolean): Promise<void> {
+  room.pendingServerCommands.cancel();
+  const roomId = room.roomId;
+  const closing = closingRooms.get(roomId);
+  if (closing) return closing;
+  const operation = disposeRoom(room, graceful);
+  closingRooms.set(roomId, operation);
+  try { await operation; }
+  finally { if (closingRooms.get(roomId) === operation) closingRooms.delete(roomId); }
+}
+
+async function leaveRoom(roomId: string): Promise<void> {
+  const closing = closingRooms.get(roomId);
+  if (closing) return closing;
+  const room = rooms.get(roomId);
+  if (room) await closeRoom(room, true);
+}
+
+function pinRoomOwner(room: Room, pin: string): void {
+  if (!pin) return;
+  if (!/^[a-f0-9]{32}$/.test(pin)) throw new Error('Invalid invite owner pin');
+  assertCompatibleOwnerPin(room, pin); // room.transferChain has been verified
+  if (!room.ownerPin) room.ownerPin = pin;
+  pushState(room, true);
 }
 
 /**
@@ -4102,18 +4856,85 @@ function leaveRoom(roomId: string): void {
  * or extract an archive). The file stays on disk and in the manifest — we just
  * remove the torrent from the WebTorrent client. Other members keep it.
  */
-function releaseFile(roomId: string, fileId: string): void {
+async function releaseFile(roomId: string, fileId: string): Promise<void> {
   const room = rooms.get(roomId);
   if (!room) return;
-  // Per-room clients: dropping the torrent here can't affect other rooms.
-  const c = clients.get(roomId);
-  if (c) {
-    const t = findTorrent(c, fileId);
-    if (t) { try { c.remove(t); } catch (e) { log('release failed: ' + String(e)); } }
-  }
+  cancelFileOperation(room, fileId);
   const tr = room.transfers.get(fileId);
   if (tr) { tr.status = 'done'; tr.released = true; tr.downSpeed = 0; tr.peers = 0; }
-  pushState(room, true);
+  const c = clients.get(roomId), t = c && findTorrent(c, fileId);
+  if (t) {
+    await new Promise<void>((resolve, reject) => {
+      try {
+        const result = c.remove(t, (error?: Error) => error ? reject(error) : resolve());
+        void Promise.resolve(result).catch(reject);
+      } catch (error) { reject(error); }
+    });
+  }
+  if (rooms.get(roomId) === room) pushState(room, true);
+}
+
+const cleanupPreviews = new WeakMap<Room, { id: string; at: number; copies: RoomCopy[] }>();
+async function diskUsage(roomId: string): Promise<RoomDiskUsage> {
+  const room = rooms.get(roomId); if (!room) throw new Error('Room not active');
+  const copies: RoomCopy[] = [], files: RoomDiskUsage['files'] = [], seenOriginals = new Set<string>();
+  let originals = 0, skipped = 0, protectedCiphertext = 0;
+  for (const file of room.files.values()) {
+    const tr = room.transfers.get(file.fileId), original = storageFor(room).originals.has(file.fileId);
+    const plain = original ? undefined : managedCopy(room.folder, file.fileId, tr?.localPath, 'plaintext');
+    const cipher = managedCopy(room.cacheDir, file.fileId, tr?.cipherPath, 'ciphertext');
+    if (original && tr?.localPath) { try { const stat = fs.lstatSync(tr.localPath); if (stat.isFile() && !stat.isSymbolicLink() && !seenOriginals.has(path.resolve(tr.localPath))) { originals += stat.size; seenOriginals.add(path.resolve(tr.localPath)); } } catch { skipped++; } }
+    if (!original && tr?.localPath && fs.existsSync(tr.localPath) && !plain || tr?.cipherPath && fs.existsSync(tr.cipherPath) && !cipher) skipped++;
+    if (plain) copies.push(plain); if (cipher && !original) copies.push(cipher);
+    if (cipher && original) protectedCiphertext += cipher.bytes;
+    if (plain || cipher || original) files.push({ fileId: file.fileId, name: file.name, plaintext: plain?.bytes ?? 0, ciphertext: cipher?.bytes ?? 0, removable: (plain?.bytes ?? 0) + (original ? 0 : cipher?.bytes ?? 0), original });
+  }
+  const [plainTree, cipherTree] = await Promise.all([roomTreeBytes(path.join(room.folder, '.havvn-files')), roomTreeBytes(room.cacheDir)]);
+  if (rooms.get(roomId) !== room) throw new Error('Room session ended');
+  const previewId = crypto.randomBytes(16).toString('hex');
+  cleanupPreviews.set(room, { id: previewId, at: Date.now(), copies });
+  const plaintext = copies.filter(c => c.kind === 'plaintext').reduce((n,c)=>n+c.bytes,0);
+  const ciphertext = copies.filter(c => c.kind === 'ciphertext').reduce((n,c)=>n+c.bytes,0);
+  return { previewId, plaintext: plainTree.bytes, ciphertext: cipherTree.bytes, originals, protectedCiphertext, untrackedBytes: Math.max(0, plainTree.bytes - plaintext) + Math.max(0, cipherTree.bytes - ciphertext - protectedCiphertext), removable: plaintext + ciphertext, files, skipped: skipped + plainTree.skipped + cipherTree.skipped };
+}
+async function cleanupCopies(roomId: string, previewId: string, fileIds: unknown): Promise<{ bytes: number; files: number }> {
+  const room = rooms.get(roomId), preview = room && cleanupPreviews.get(room);
+  if (!room || !preview || preview.id !== previewId || Date.now() - preview.at > 300000) throw new Error('Disk preview expired; refresh before cleaning');
+  if (!Array.isArray(fileIds) || !fileIds.length || fileIds.length > ROOM_FILE_LIMIT || fileIds.some(id => typeof id !== 'string' || id.length > 128)) throw new Error('Invalid cleanup selection');
+  const ids = new Set<string>(fileIds), copies = preview.copies.filter(c => ids.has(c.fileId));
+  if ([...ids].some(id => !copies.some(c => c.fileId === id))) throw new Error('No managed local copy in the selection');
+  cleanupPreviews.delete(room); // one-use preview; simultaneous commands cannot reuse it
+  // Validate EVERY target before changing transfers or removing any bytes.
+  for (const copy of copies) if (managedCopy(copy.root, copy.fileId, copy.path, copy.kind)?.stamp !== copy.stamp) throw new Error('Local copy changed; refresh disk usage');
+  let bytes = 0;
+  for (const id of ids) {
+    const state = storageFor(room), file = room.files.get(id);
+    if (!file || state.stopping.has(id)) throw new Error('File is busy; refresh and retry');
+    const jobs = [state.pending.get(id), state.decrypting.get(id)].filter(Boolean);
+    let stopped!: () => void;
+    const barrier = new Promise<void>(resolve => { stopped = resolve; });
+    state.stopping.set(id, barrier);
+    try {
+    closeStreamServers(roomId, id);
+    // Persist a local hold before stopping writers. Auto-fetch stays stopped after restart.
+    setTransfer(room, id, { receivePaused: true }); persistManifest(room, file);
+    await releaseFile(roomId, id);
+    await Promise.allSettled(jobs);
+    if (rooms.get(roomId) !== room || room.files.get(id) !== file) throw new Error('Room file session ended');
+    const selected = copies.filter(c => c.fileId === id);
+    try {
+      for (const copy of selected) {
+        bytes += deleteManagedCopy(copy);
+        if (copy.kind === 'plaintext') { state.proofs.delete(id); state.partialPaths.delete(id); setTransfer(room,id,{ localPath: undefined, localStamp: undefined, haveLocally: false }); }
+        else { state.decryptKeys.delete(id); setTransfer(room,id,{ cipherPath: undefined, cipherReady: false }); }
+      }
+    } finally {
+      setTransfer(room,id,{ status: 'queued', phase: 'paused', released: false, progress: state.originals.has(id) ? 1 : 0, downSpeed: 0, peers: 0 });
+      persistManifest(room,file); pushState(room,true);
+    }
+    } finally { if (state.stopping.get(id) === barrier) state.stopping.delete(id); stopped(); }
+  }
+  return { bytes, files: ids.size };
 }
 
 /** Resume seeding a released file (the row's "Seed again"). */
@@ -4123,7 +4944,9 @@ function reseedFile(roomId: string, fileId: string): void {
   const file = room.files.get(fileId);
   if (!file) return;
   const tr = room.transfers.get(fileId);
-  if (tr) tr.released = false;
+  if (storageFor(room).stopping.has(fileId)) throw new Error('File cleanup is in progress');
+  if (tr) { tr.released = false; tr.receivePaused = false; }
+  persistManifest(room, file);
   ensureLocal(room, file); // idempotent — re-seeds from disk or re-downloads
   pushState(room, true);
 }
@@ -4139,6 +4962,7 @@ function reseedFile(roomId: string, fileId: string): void {
  * carries ciphertext, so there is no plaintext to stream until decrypt.
  */
 async function watchStream(roomId: string, fileId: string): Promise<{ port: number; index: number }> {
+  const startedAt = Date.now();
   if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
@@ -4150,20 +4974,31 @@ async function watchStream(roomId: string, fileId: string): Promise<{ port: numb
   if (existing) return { port: existing.port, index: 0 };
   const c = ensureClient(room);
   let t = findTorrent(c, file.infoHash);
-  if (!t) { ensureLocal(room, file); t = findTorrent(c, file.infoHash); } // manual mode: kick off the fetch
+  if (!t) {
+    if (room.transfers.get(fileId)?.receivePaused) throw new Error('Receiving is paused. Resume this file before starting playback.');
+    const job = ensureLocal(room, file);
+    receiveQueue.prioritize(room, fileId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([job, new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('This file is waiting in the receive queue. Pause another receive or try playback later.')), 5000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+    t = findTorrent(c, file.infoHash);
+  }
   if (!t) throw new Error('Could not start streaming this file');
   // Serving /0 needs the torrent's file list, which arrives with metadata (a
   // magnet download fetches it from peers first). Wait, bounded, for a sleeping room.
   if (!t.ready) {
     await new Promise<void>((resolve, reject) => {
-      const to = setTimeout(() => reject(new Error('Timed out waiting for file info from peers — is anyone online with this file?')), 25000);
+      const to = setTimeout(() => reject(new Error('Timed out waiting for file info from peers — is anyone online with this file?')), Math.max(1, 25000 - (Date.now() - startedAt)));
       const done = () => { clearTimeout(to); resolve(); };
       t.once('ready', done);
       t.once('metadata', done);
     });
   }
   // A room started/torn down while we awaited metadata — don't leak a server.
-  if (netSuspended || !rooms.has(roomId)) throw new Error('The room session ended');
+  if (netSuspended || rooms.get(roomId) !== room) throw new Error('The room session ended');
   const server = createTorrentStreamServer(t);
   await new Promise<void>((resolve, reject) => {
     try { server.listen(0, '127.0.0.1', () => resolve()); server.on('error', reject); }
@@ -4178,63 +5013,93 @@ async function watchStream(roomId: string, fileId: string): Promise<{ port: numb
 }
 
 /** Close every stream server a room opened (leave / kick / VPN suspend). */
-function closeStreamServers(roomId: string): void {
+function closeStreamServers(roomId: string, fileId?: string): void {
   for (const [key, s] of Array.from(streamServers)) {
-    if (key === roomId || key.startsWith(roomId + ':')) {
+    if (fileId ? key === `${roomId}:${fileId}` : key === roomId || key.startsWith(roomId + ':')) {
       try { s.server.close(); } catch { /* ignore */ }
       streamServers.delete(key);
     }
   }
 }
 
-/** Broadcast a chat message to the room and record it locally (so we see our own). */
-function sendChat(roomId: string, rawText: string, replyToId?: string): void {
+const chatSends = new WeakMap<Room, Map<string, { text: string; replyTo?: string; promise: Promise<RoomChatAck> }>>();
+/** Acknowledge only a signed, durable LOCAL copy. Remote delivery is best effort. */
+function sendChat(roomId: string, rawText: string, replyToId?: string, messageId = crypto.randomBytes(16).toString('hex')): Promise<RoomChatAck> {
   const room = rooms.get(roomId);
-  if (!room) return;
-  const text = String(rawText || '').trim().slice(0, 2000);
-  if (!text) return;
+  if (!room || room.kicked || netSuspended) throw new Error('Room not active');
+  const text = String(rawText || '').trim();
+  if (!text || text.length > 2000 || !/^[a-f0-9]{32}$/.test(messageId)) throw new Error('Invalid chat message');
+  if (replyToId !== undefined && !/^[\w-]{1,128}$/.test(replyToId)) throw new Error('Invalid chat reply');
+  let sends = chatSends.get(room);
+  if (!sends) { sends = new Map(); chatSends.set(room, sends); }
+  const pending = sends.get(messageId);
+  if (pending) {
+    if (pending.text !== text || pending.replyTo !== replyToId) throw new Error('Message ID already belongs to different content');
+    return pending.promise;
+  }
+  const promise = (async (): Promise<RoomChatAck> => {
+  const prior = room.chat.find(m => m.id === messageId);
+  if (prior && (prior.memberId !== room.self.memberId || prior.text !== text || (prior.replyTo || undefined) !== replyToId)) throw new Error('Message ID already belongs to different content');
   const msg: RoomChatMessage = {
-    id: crypto.randomBytes(8).toString('hex'),
+    id: messageId,
     at: Date.now(),
     memberId: room.self.memberId,
     name: room.self.name || 'You',
     avatarSeed: room.self.avatarSeed,
     text,
   };
-  // Reply pointer + quote snapshot — UNSIGNED (rides outside the chat canonical).
+  // v2 signs the reply pointer and quote snapshot in addition to the legacy body.
   // Snapshot the parent's CURRENT text (edited if edited) so the quote is stable
   // even if the parent later scrolls out of the capped window.
   const parent = replyToId ? room.chat.find((c) => c.id === replyToId) : undefined;
+  if (replyToId) msg.replyTo = replyToId;
   if (parent) {
     msg.replyTo = parent.id;
-    msg.replyName = parent.name;
+    msg.replyName = parent.name.slice(0, 256);
     msg.replyText = (room.chatEdits.get(parent.id)?.text ?? parent.text).slice(0, 140);
   }
-  const sig = signChat(room, msg); // signs only {topic,id,at,memberId,text} — reply fields are outside it
+  const sig = prior?.sig || signChat(room, msg);
+  if (!sig) throw new Error('Could not sign this chat message');
+  const contextSig = prior?.contextSig || signBytes(room, Buffer.from(chatContextCanonical(room.topic, msg)));
+  if (!contextSig) throw new Error('Could not sign this chat reply');
+  const result: { duplicate: boolean; message?: RoomChatMessage } = await ipcRenderer.invoke('room-persist-chat', { roomId, message: prior ?? { ...msg, pub: room.self.pub, sig, chatV: 2, contextSig } });
+  if (rooms.get(roomId) !== room || room.kicked || netSuspended) throw new Error('Room session ended while saving the message');
   // Bind our own identity locally too, so the roster is complete on our side.
   if (!room.identities.has(room.self.memberId)) room.identities.set(room.self.memberId, room.self.pub);
-  broadcast(room, { t: 'chat', ...msg, pub: room.self.pub, sig });
-  addChat(room, { ...msg, pub: room.self.pub, sig }); // keep our sig so we can re-serve this as backfill
+  if (result.message) {
+    addChat(room, result.message, false, true);
+    try { broadcast(room, { t: 'chat', ...chatEnvelope(result.message)!, pub: result.message.pub!, sig: result.message.sig! }); }
+    catch (error) { log('Locally saved chat will be available through backfill: ' + String(error)); }
+  }
+  return { ok: true, id: messageId, state: 'saved-locally' };
+  })();
+  sends.set(messageId, { text, replyTo: replyToId, promise });
+  void promise.finally(() => { if (sends?.get(messageId)?.promise === promise) sends.delete(messageId); }).catch(() => {});
+  return promise;
 }
 
 /** Edit one of OUR OWN chat messages: sign the new text over editCanonical, apply
  *  the overlay locally, and gossip a 'chat-edit'. Refuses to edit others' messages
  *  (the network enforces this too via the authorship check on receive). */
-function editChat(roomId: string, msgId: string, rawText: string): void {
+async function editChat(roomId: string, msgId: string, rawText: string): Promise<void> {
   const room = rooms.get(roomId);
-  if (!room) throw new Error('Room not active');
-  const text = String(rawText || '').trim().slice(0, 2000);
-  if (!text) throw new Error('Message cannot be empty');
+  if (!room || room.kicked || netSuspended) throw new Error('Room not active');
+  const text = String(rawText || '').trim();
+  if (!text || text.length > 2000) throw new Error('Invalid chat edit');
   const target = room.chat.find((c) => c.id === msgId);
   if (!target) throw new Error('Message not found in this room');
   if (target.memberId !== room.self.memberId) throw new Error('You can only edit your own messages');
   // Strictly newer than the message and any prior edit, so LWW always accepts ours.
   const at = Math.max(Date.now(), (room.chatEdits.get(msgId)?.at ?? target.at) + 1);
+  const existing = room.chatEdits.get(msgId);
   const sig = signBytes(room, editCanonical(room.topic, { msgId, memberId: room.self.memberId, at, text }));
-  const edit = { text, at, by: room.self.memberId, pub: room.self.pub, sig };
+  if (!sig) throw new Error('Could not sign this chat edit');
+  const proposed = existing?.text === text ? existing : { text, at, by: room.self.memberId, pub: room.self.pub, sig };
+  const edit = await ipcRenderer.invoke('room-persist-chat-edit', { roomId, msgId, edit: proposed });
+  if (rooms.get(roomId) !== room || room.kicked || netSuspended) throw new Error('Room session ended while saving the edit');
   if (applyChatEdit(room, msgId, edit)) {
-    persistChatEdits(room);
-    broadcast(room, { t: 'chat-edit', msgId, memberId: room.self.memberId, text, at, pub: room.self.pub, sig });
+    try { broadcast(room, { t: 'chat-edit', msgId, memberId: room.self.memberId, text: edit.text, at: edit.at, pub: edit.pub, sig: edit.sig }); }
+    catch (error) { log('Locally saved chat edit could not be broadcast: ' + String(error)); }
     pushState(room, true);
   }
 }
@@ -4243,6 +5108,7 @@ function editChat(roomId: string, msgId: string, rawText: string): void {
  *  authenticated proof only when WE may delete it for everyone (owner or author);
  *  otherwise it degrades to a local hide (peers drop the unauthorized del). */
 function broadcastDelete(r: Room, fileId: string, at: number): void {
+  if (!r.tombstones.has(fileId) && r.tombstones.size >= ROOM_FILE_LIMIT) throw new Error("Room file deletion limit reached");
   const file = r.files.get(fileId);
   const authorized = (!!r.ownerId && r.self.memberId === r.ownerId) || (!!file && file.addedBy === r.self.memberId);
   const sig = signBytes(r, delCanonical(r.topic, { fileId, memberId: r.self.memberId, at }));
@@ -4302,7 +5168,7 @@ function updateProfile(p: { name?: string; avatarSeed?: string; color?: string; 
     if (typeof p.color === 'string') room.self.color = p.color;
     if (typeof p.status === 'string') room.self.status = p.status;
     if (typeof p.avatarImg === 'string') room.self.avatarImg = p.avatarImg;
-    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: buildState(room).members[0].have, roomName: room.name, ownerId: room.ownerId });
+    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: buildState(room).members[0].have, roomName: room.name, ownerId: room.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
     const pm = selfProfileMsg(room);
     if (pm) broadcast(room, pm);
     pushState(room, true);
@@ -4310,6 +5176,8 @@ function updateProfile(p: { name?: string; avatarSeed?: string; color?: string; 
 }
 
 const pendingJoinEpochs = new Map<string, number>();
+const pendingScreenEpochs = new Map<string, number>();
+function cancelScreenCapture(roomId: string): void { pendingScreenEpochs.set(roomId, (pendingScreenEpochs.get(roomId) ?? 0) + 1); }
 let joinNetworkEpoch = 0;
 
 // ── IPC command router ───────────────────────────────────────────────────────
@@ -4322,6 +5190,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       const epoch = pendingJoinEpochs.get(id) ?? 0;
       const networkEpoch = joinNetworkEpoch;
       await loadNetworkingModules();
+      await closingRooms.get(id);
       if ((pendingJoinEpochs.get(id) ?? 0) !== epoch || networkEpoch !== joinNetworkEpoch) throw new Error('Room join was cancelled');
       data = startRoom(msg.payload);
     }
@@ -4332,12 +5201,26 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'setTopic') data = setRoomTopic(msg.roomId, msg.text);
     else if (type === 'deleteFolder') data = deleteFolder(msg.roomId, msg.folderId);
     else if (type === 'assignFile') data = assignFile(msg.roomId, msg.fileId, msg.folderId ?? null);
-    else if (type === 'leave') { pendingJoinEpochs.set(msg.roomId, (pendingJoinEpochs.get(msg.roomId) ?? 0) + 1); leaveRoom(msg.roomId); data = { ok: true }; }
+    else if (type === 'leave') { pendingJoinEpochs.set(msg.roomId, (pendingJoinEpochs.get(msg.roomId) ?? 0) + 1); cancelScreenCapture(msg.roomId); await leaveRoom(msg.roomId); data = { ok: true }; }
+    else if (type === 'pinOwner') { const r = rooms.get(msg.roomId); if (!r) throw new Error('Room not active'); pinRoomOwner(r, String(msg.ownerPin || '')); data = { ok: true }; }
     else if (type === 'netSuspend') { joinNetworkEpoch++; netSuspended = true; suspendAllNetworking(); data = { ok: true }; }
     else if (type === 'netResume') { netSuspended = false; data = { ok: true }; }
     else if (type === 'profile') { updateProfile(msg.payload || {}); data = { ok: true }; }
-    else if (type === 'releaseFile') { releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }
+    else if (type === 'historyTrim') {
+      const room = rooms.get(msg.roomId); if (!room) throw new Error('Room not active');
+      const days = historyDays(msg.days);
+      room.chat = retainLocalHistory(room.chat, days, m => m.receivedAt ?? m.at);
+      room.history = retainLocalHistory(room.history, days, ev => ev.at);
+      const ids = new Set(room.chat.map(m=>m.id));
+      for (const id of room.chatEdits.keys()) if (!ids.has(id)) room.chatEdits.delete(id);
+      for (const id of room.chatReacts.keys()) if (!ids.has(id)) room.chatReacts.delete(id);
+      pushState(room,true); data = { ok: true };
+    }
+    else if (type === 'diskUsage') { data = await diskUsage(msg.roomId); }
+    else if (type === 'cleanupCopies') { data = await cleanupCopies(msg.roomId, msg.previewId, msg.fileIds); }
+    else if (type === 'releaseFile') { await releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }
     else if (type === 'reseedFile') { reseedFile(msg.roomId, msg.fileId); data = { ok: true }; }
+    else if (type === 'verifiedFile') data = verifiedLocalFile(msg.roomId, msg.fileId);
     else if (type === 'watchStream') data = await watchStream(msg.roomId, String(msg.fileId || ''));
     else if (type === 'removeFile') {
       const r = rooms.get(msg.roomId);
@@ -4365,6 +5248,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       // Future shares from them are ignored (see mergeFile); already-downloaded
       // files are left alone, and unmute lets their shares back in via gossip.
       const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
       if (r) {
         const targetId = String(msg.memberId || '');
         if (msg.muted) r.mutes.add(targetId); else r.mutes.delete(targetId);
@@ -4375,17 +5259,34 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         r.voice.setLocallyMuted(r.mutes);
         pushState(r, true);
       }
-      data = { ok: true };
+      data = buildState(r);
+    }
+    else if (type === 'watchPolicy') {
+      const r = rooms.get(msg.roomId);
+      if (!r || !r.ownerId || r.ownerId !== r.self.memberId) throw new Error('Only the room owner can choose the watch host');
+      const hostId = msg.hostId;
+      if (typeof hostId !== 'string' || hostId.length > 1024 || hostId && (r.bans.has(hostId) || !buildState(r).members.some(m => m.memberId === hostId && m.online && m.capabilities?.includes('watch-host-v1')))) throw new Error('Watch host is unavailable or needs an update');
+      const state = watchState(r);
+      const p: WatchPolicy = { t: 'watch-policy-v1', by: r.ownerId, ownerAt: r.transferAt, hostId, at: Math.max(Date.now(), (state.host.current(r.ownerId, r.transferAt)?.at || 0) + 1), pub: r.self.pub, sig: '' };
+      p.sig = signBytes(r, Buffer.from(watchPolicyCanonical(r.topic, p)));
+      if (!p.sig || !state.host.accept(p, r.ownerId, Date.now(), r.transferAt)) throw new Error('Watch policy signing failed');
+      state.policyTopic = r.topic;
+      broadcast(r, p); pushState(r, true); data = buildState(r);
     }
     else if (type === 'sync') {
       const r = rooms.get(msg.roomId);
       const p = msg.payload || {};
-      if (r) broadcast(r, {
-        t: 'sync', fileId: String(p.fileId || ''), action: p.action || 'state',
-        position: Number(p.position) || 0, rate: Number(p.rate) || 1, at: Date.now(),
-        memberId: r.self.memberId, name: r.self.name || 'You',
-        avatarSeed: r.self.avatarSeed, playing: !!p.playing, together: !!p.together, emoji: String(p.emoji || '').slice(0, 16),
-      });
+      if (!r) throw new Error('Room is not connected');
+      if (!r.files.has(p.fileId)) throw new Error('Unknown watch file');
+      const state = watchState(r);
+      const body = state.sender.next({ ...p, ...state.host.stamp(r.ownerId, r.transferAt) }, r.self.memberId, () => crypto.randomBytes(16).toString('hex'), Date.now(), 3);
+      if (!body) throw new Error('Invalid watch command');
+      const sig = signBytes(r, Buffer.from(watchCanonical(r.topic, body)));
+      if (!sig) throw new Error('Watch signing failed');
+      const hostSig = signBytes(r, Buffer.from(watchHostCanonical(r.topic, body)));
+      const frame: WatchMessage = { ...body, pub: r.self.pub, sig, hostSig };
+      if (!hostSig || !state.host.allows(frame, r.ownerId, r.transferAt)) throw new Error('Only the watch host controls shared playback');
+      broadcast(r, frame);
       data = { ok: true };
     }
     else if (type === 'srvMirror') {
@@ -4409,21 +5310,22 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     }
     else if (type === 'srvCmd') {
       const r = rooms.get(msg.roomId);
-      if (r) {
-        // Strictly newer than our last command, never in the past: receivers hold
-        // a per-member `at` floor against replay, and two commands typed inside
-        // one millisecond would otherwise look like a replay of the first.
+      const request: ServerCommandRequest = msg.request;
+      if (!r || netSuspended || r.kicked || request?.by !== r.self.memberId || !r.members.has(request.hostId) || !validCommandRequest(request)) data = { ok: false, reason: 'room-unavailable' };
+      else {
         const at = Math.max(Date.now(), (r.srvCmdAt.get(r.self.memberId) ?? 0) + 1);
-        r.srvCmdAt.set(r.self.memberId, at);
-        const instanceId = String(msg.instanceId || '').slice(0, 128);
-        const command = String(msg.command || '').slice(0, 512);
-        const sig = signBytes(r, srvCmdCanonical(r.topic, { by: r.self.memberId, instanceId, command, at }));
-        broadcast(r, { t: 'srv-cmd', by: r.self.memberId, instanceId, command, at, pub: r.self.pub, sig });
+        const outgoing = { ...request, at };
+        if (!validCommandRequest(outgoing)) data = { ok: false, reason: 'command-expired' };
+        else {
+          r.srvCmdAt.set(r.self.memberId, at);
+          const result = r.pendingServerCommands.wait(outgoing);
+          broadcast(r, { t: 'srv-cmd-v2', ...outgoing, pub: r.self.pub, sig: signBytes(r, Buffer.from(commandCanonical(r.topic, outgoing))) });
+          data = await result;
+        }
       }
-      data = { ok: true };
     }
-    else if (type === 'chat') { sendChat(msg.roomId, String((msg.payload || {}).text || ''), (msg.payload || {}).replyTo ? String((msg.payload || {}).replyTo) : undefined); data = { ok: true }; }
-    else if (type === 'editChat') { editChat(msg.roomId, String((msg.payload || {}).msgId || ''), String((msg.payload || {}).text || '')); data = { ok: true }; }
+    else if (type === 'chat') { data = await sendChat(msg.roomId, String((msg.payload || {}).text || ''), (msg.payload || {}).replyTo ? String((msg.payload || {}).replyTo) : undefined, msg.payload?.id); }
+    else if (type === 'editChat') { await editChat(msg.roomId, String((msg.payload || {}).msgId || ''), String((msg.payload || {}).text || '')); data = { ok: true }; }
     else if (type === 'typing') {
       // Fire-and-forget liveness: tell peers we're composing. Rate-limited so a
       // keystroke-driven renderer can call this freely. Never persisted.
@@ -4476,21 +5378,28 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       // shell-level call surface (StatusBar cluster, mute/deafen hotkeys)
       // binds to THE active call — two live mics would make it ambiguous.
       for (const [otherId, other] of rooms) {
-        if (otherId !== msg.roomId && other.voice.getState().inVoice) other.voice.leave();
+        if (otherId !== msg.roomId) { cancelScreenCapture(otherId); other.voice.leave(); }
       }
       const warning = await r.voice.join(); // getUserMedia — rejects (→ toast) if the mic is denied
       // The kill-switch may have tripped DURING getUserMedia (suspend can't tear
       // down a session that wasn't active yet) — re-check and undo, or the mic +
       // real-IP ICE would stay live for the whole outage.
       if (netSuspended) { r.voice.leave(); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
-      if (!rooms.has(msg.roomId)) { r.voice.leave(); throw new Error('The room session ended.'); }
+      if (rooms.get(msg.roomId) !== r) { r.voice.leave(); throw new Error('The room session ended.'); }
       // Solicit peers so a (re)joiner learns who is already in voice AND who is
       // sharing a screen (presence/share are only gossiped on change — a hello makes
       // everyone reannounce both). Fixes a missing LIVE badge after leave+rejoin.
       broadcast(r, helloMsg(r));
+      ipcRenderer.send('room-voice-devices');
       data = { ok: true, ...(warning ? { warning } : {}) };
     }
-    else if (type === 'voiceLeave') { rooms.get(msg.roomId)?.voice.leave(); data = { ok: true }; }
+    else if (type === 'voiceReconnect') {
+      const r = rooms.get(msg.roomId);
+      if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
+      if (!r || r.kicked || !r.voice.isActive()) throw new Error('Voice not active');
+      r.voice.reconnect(); broadcast(r, helloMsg(r)); data = { ok: true };
+    }
+    else if (type === 'voiceLeave') { cancelScreenCapture(msg.roomId); rooms.get(msg.roomId)?.voice.leave(); data = { ok: true }; }
     else if (type === 'voiceMute') { rooms.get(msg.roomId)?.voice.setMuted(!!msg.muted); data = { ok: true }; }
     else if (type === 'voiceDeafen') { rooms.get(msg.roomId)?.voice.setDeafened(!!msg.deafened); data = { ok: true }; }
     else if (type === 'voiceVolume') { rooms.get(msg.roomId)?.voice.setVolume(String(msg.memberId || ''), Number(msg.volume)); data = { ok: true }; }
@@ -4514,6 +5423,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         () => { try { ipcRenderer.send('room-mic-level', { level: -1 }); } catch { /* ignore */ } }, // -1 = auto-stopped (60s)
         msg.monitor === true, // play the processed mic back so the user can hear the NS mode
       );
+      ipcRenderer.send('room-voice-devices');
       data = { ok: true };
     }
     else if (type === 'voiceMicTestStop') { micTester.stop(); data = { ok: true }; }
@@ -4522,15 +5432,20 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       if (!r) throw new Error('Room not active');
       if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
       if (!r.voice.isActive()) throw new Error('Join the voice channel before sharing your screen.');
+      cancelScreenCapture(msg.roomId);
+      const epoch = pendingScreenEpochs.get(msg.roomId), networkEpoch = joinNetworkEpoch;
       const stream = await captureScreen(String(msg.sourceId || ''), !!msg.withAudio);
+      if (epoch !== pendingScreenEpochs.get(msg.roomId) || networkEpoch !== joinNetworkEpoch) {
+        stream.getTracks().forEach((t) => t.stop()); throw new Error('Screen sharing was cancelled');
+      }
       // The kill-switch (or a leave/kick) may have tripped DURING capture — same
       // re-check-and-undo pattern as voiceJoin, or the capture would leak.
       if (netSuspended) { stream.getTracks().forEach((t) => t.stop()); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
-      if (!rooms.has(msg.roomId) || !r.voice.isActive()) { stream.getTracks().forEach((t) => t.stop()); throw new Error('The voice session ended.'); }
+      if (rooms.get(msg.roomId) !== r || !r.voice.isActive()) { stream.getTracks().forEach((t) => t.stop()); throw new Error('The voice session ended.'); }
       r.voice.startShare(stream);
       data = { ok: true };
     }
-    else if (type === 'screenShareStop') { rooms.get(msg.roomId)?.voice.stopShare(); data = { ok: true }; }
+    else if (type === 'screenShareStop') { cancelScreenCapture(msg.roomId); rooms.get(msg.roomId)?.voice.stopShare(); data = { ok: true }; }
     else if (type === 'screenWatchStart') {
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');
@@ -4581,9 +5496,20 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     // scoped per-game firewall rule (already-elevated helper, so no new UAC).
     else if (type === 'lanDiagnose') { data = await lanDiagnose(String(msg.roomId || '')); }
     else if (type === 'lanAllowApp') { data = await lanAllowApp(String(msg.roomId || ''), String(msg.exePath || '')); }
+    else if (type === 'retryConnection') {
+      const r = rooms.get(msg.roomId);
+      if (!r || r.kicked || netSuspended) throw new Error('Room connection is not available');
+      observeConnection(r, 'discovery-retry');
+      restartTracker(r, true);
+      for (const wire of r.wires.values()) if (wire.memberId && !r.bans.has(wire.memberId)) {
+        sendTo(r, wire, { ...helloMsg(r, false), manifestRequest: true } as Msg);
+      }
+      pushState(r, true); data = buildState(r);
+    }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
     else if (type === 'setAutoFetch') {
       const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
       if (r) {
         r.autoFetch = msg.autoFetch !== false;
         // Turning auto back ON pulls everything that was left unfetched — except
@@ -4595,7 +5521,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
         }
         pushState(r, true);
       }
-      data = { ok: true };
+      data = buildState(r);
     }
     else if (type === 'setFolderAutoFetch') {
       // Local per-folder override: true/false forces, null inherits the room
@@ -4655,25 +5581,64 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       if (!r) throw new Error('Room not active');
       const f = r.files.get(String(msg.fileId || ''));
       if (!f) throw new Error('File not found in this room');
+      await storageFor(r).stopping.get(f.fileId);
+      if (rooms.get(r.roomId) !== r || r.files.get(f.fileId) !== f) throw new Error('Room file session ended');
+      setTransfer(r, f.fileId, { receivePaused: false }); persistManifest(r, f);
       ensureLocal(r, f);
       pushState(r, true);
       data = buildState(r);
     }
+    else if (type === 'pauseReceive') {
+      const r = rooms.get(msg.roomId), f = r?.files.get(String(msg.fileId || ''));
+      if (!r || !f) throw new Error('File not found in an active room');
+      const state = storageFor(r);
+      let stop = state.stopping.get(f.fileId);
+      if (!stop) {
+        const tr = r.transfers.get(f.fileId);
+        if (tr?.haveLocally || tr?.cipherReady || tr?.phase === 'verifying' || tr?.phase === 'decrypting') throw new Error('This file is no longer receiving network data');
+        const lease = state.receives.get(f.fileId);
+        closeStreamServers(r.roomId, f.fileId);
+        cancelFileOperation(r, f.fileId, true);
+        setTransfer(r, f.fileId, { receivePaused: true, phase: 'paused', status: 'queued', error: undefined, downSpeed: 0, peers: 0 });
+        persistManifest(r, f);
+        const c = clients.get(r.roomId), torrent = c && findTorrent(c, f.infoHash);
+        stop = (torrent ? new Promise<void>((resolve, reject) => {
+          try { void Promise.resolve(c.remove(torrent, (error?: Error) => error ? reject(error) : resolve())).catch(reject); }
+          catch (error) { reject(error); }
+        }) : Promise.resolve()).finally(() => lease?.release());
+        state.stopping.set(f.fileId, stop);
+      }
+      try { await stop; }
+      catch (error) {
+        if (rooms.get(r.roomId) === r && r.files.get(f.fileId) === f) fileFailure(r, f, 'transfer', error, { receivePaused: true });
+        throw error;
+      }
+      finally { if (state.stopping.get(f.fileId) === stop) state.stopping.delete(f.fileId); }
+      if (rooms.get(r.roomId) !== r) throw new Error('Room session ended');
+      pushState(r, true); data = buildState(r);
+    }
+    else if (type === 'prioritizeReceive') {
+      const r = rooms.get(msg.roomId);
+      if (!r || !r.files.has(String(msg.fileId || ''))) throw new Error('File not found in an active room');
+      receiveQueue.prioritize(r, String(msg.fileId)); data = buildState(r);
+    }
+    else if (type === 'retryDecrypt') {
+      retryDecrypt(msg.roomId, String(msg.fileId || ''));
+      data = { ok: true }; // accepted; completion is published in room-update
+    }
+    else if (type === 'resourceSettings') {
+      applyResourcePolicy(msg.policy); data = { ok: true };
+    }
     else if (type === 'setLimits') {
       const r = rooms.get(msg.roomId);
-      if (r) {
-        r.upKbps = Math.max(0, Number(msg.upKbps) || 0);
-        r.downKbps = Math.max(0, Number(msg.downKbps) || 0);
-        // Throttle the room's live client; a not-yet-created client picks the
-        // limits up at construction (ensureClient reads them from the room).
-        const c = clients.get(r.roomId);
-        if (c) {
-          try { c.throttleUpload(kbpsToLimit(r.upKbps)); } catch (e) { log('throttleUpload failed: ' + String(e)); }
-          try { c.throttleDownload(kbpsToLimit(r.downKbps)); } catch (e) { log('throttleDownload failed: ' + String(e)); }
-        }
-        pushState(r, true);
+      if (!r) throw new Error('Room not active');
+      {
+        const up = normalizeRoomRate(msg.upKbps), down = normalizeRoomRate(msg.downKbps);
+        trafficBudget.setLimits(r.roomId, up, down);
+        r.upKbps = up; r.downKbps = down;
+        pushResourceStates();
       }
-      data = { ok: true };
+      data = buildState(r);
     }
     else throw new Error('Unknown room command: ' + type);
     ipcRenderer.send('room-res', { reqId, ok: true, data });

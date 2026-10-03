@@ -15,6 +15,11 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { deriveMemberId, deriveKey, topicHash, encrypt } from './room-crypto';
+import { chatCanonical, chatContextCanonical, editCanonical, voiceStateCanonical, voiceStateV2Canonical } from '../../shared/room-canonicals';
+import { decrypt } from './room-crypto';
+import { GuestRoom } from '../../guest/mesh';
+import { generateIdentityWeb } from '../../shared/room-web-crypto';
+vi.mock('../../guest/voice', () => ({ GuestVoice: class { participants() { return []; } reannounce() {} leave() {} } }));
 
 // Stable Ed25519 identity per simulated member — a member's key is persistent
 // across rejoins, so its signed deletes verify against the pub peers TOFU-bound
@@ -45,13 +50,15 @@ const H = vi.hoisted(() => ({
   trackers: [] as any[],   // FakeTracker instances in creation order
 }));
 
-// WebTorrent stand-in: infoHash is the sha1 of the file content, so the fileId
+// WebTorrent stand-in: infoHash comes from real single-file torrent metadata, so the fileId
 // is deterministic from content — the exact property behind the original bug.
 vi.mock('webtorrent', async () => {
   const { default: fsMod } = await import('node:fs');
-  const { createHash } = await import('node:crypto');
+  const { default: createTorrent } = await import('create-torrent');
+  const { default: parseTorrent } = await import('parse-torrent');
   class FakeTorrent {
     handlers: Record<string, any[]> = {};
+    torrentFile?: Buffer;
     infoHash: string; magnetURI: string; length: number; progress: number; done: boolean;
     constructor(infoHash: string, length: number, done: boolean) {
       this.infoHash = infoHash;
@@ -62,6 +69,8 @@ vi.mock('webtorrent', async () => {
     once(ev: string, fn: any): void { this.on(ev, fn); }
   }
   class FakeWebTorrent {
+    throttleUpload(): void { /* no-op */ }
+    throttleDownload(): void { /* no-op */ }
     torrents = new Map<string, FakeTorrent>();
     handlers: Record<string, any[]> = {};
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
@@ -69,23 +78,28 @@ vi.mock('webtorrent', async () => {
     removeListener(ev: string, fn: any): void {
       this.handlers[ev] = (this.handlers[ev] ?? []).filter((f) => f !== fn);
     }
-    seed(p: string, _opts: any, cb: (t: any) => void): void {
-      const content = fsMod.readFileSync(p);
-      const infoHash = createHash('sha1').update(content).digest('hex');
-      const t = this.torrents.get(infoHash) ?? new FakeTorrent(infoHash, content.length, true);
-      this.torrents.set(infoHash, t);
-      cb(t);
+    seed(p: string, opts: any, cb: (t: any) => void): void {
+      createTorrent(p, { name: opts.name, announce: [] }, (error, bytes) => {
+        if (error) throw error;
+        const raw = Buffer.from(bytes!), meta = parseTorrent(raw);
+        const t = this.torrents.get(meta.infoHash) ?? new FakeTorrent(meta.infoHash, meta.length, true);
+        t.torrentFile = raw;
+        this.torrents.set(meta.infoHash, t); cb(t);
+      });
     }
-    add(magnet: string, _opts: any, cb: (t: any) => void): void {
-      const infoHash = /btih:([0-9a-f]+)/.exec(magnet)?.[1] ?? '';
-      const t = new FakeTorrent(infoHash, 0, false); // download never completes
-      this.torrents.set(infoHash, t);
-      cb(t);
+    add(source: string | Buffer, _opts: any, cb: (t: any) => void): FakeTorrent {
+      const meta = parseTorrent(source);
+      const t = new FakeTorrent(meta.infoHash, meta.length || 0, Buffer.isBuffer(source));
+      this.torrents.set(meta.infoHash, t);
+      // A magnet has not received metadata yet, so it cannot call onready.
+      if (Buffer.isBuffer(source)) { t.torrentFile = source; cb(t); }
+      return t;
     }
     get(infoHash: string): FakeTorrent | null {
       return (infoHash && this.torrents.get(infoHash)) || null;
     }
-    remove(t: FakeTorrent): void { this.torrents.delete(t.infoHash); }
+    remove(t: FakeTorrent, done?: () => void): void { this.torrents.delete(t.infoHash); done?.(); }
+    destroy(done?: () => void): void { this.torrents.clear(); done?.(); }
   }
   return { default: FakeWebTorrent };
 });
@@ -95,7 +109,8 @@ vi.mock('webtorrent', async () => {
 vi.mock('bittorrent-tracker', () => {
   class FakeTracker {
     handlers: Record<string, any[]> = {};
-    constructor() { H.trackers.push(this); }
+    peerId: unknown;
+    constructor(opts: { peerId: unknown }) { this.peerId = opts.peerId; H.trackers.push(this); }
     on(ev: string, fn: any): void { (this.handlers[ev] ??= []).push(fn); }
     emitPeer(peer: any): void { for (const fn of this.handlers['peer'] ?? []) fn(peer); }
     start(): void { /* no-op */ }
@@ -123,11 +138,14 @@ class FakePeer {
   }
 }
 
+// Rekey recreates the rendezvous tracker with the same local peer ID. Network
+// injections must target that current instance rather than the captured old one.
+const currentTracker = (inst: { tracker: { peerId: unknown } }) => H.trackers.findLast(t => t.peerId === inst.tracker.peerId) ?? inst.tracker;
 function connect(a: { tracker: any }, b: { tracker: any }): [FakePeer, FakePeer] {
   const pA = new FakePeer(); const pB = new FakePeer();
   pA.other = pB; pB.other = pA;
-  a.tracker.emitPeer(pA);
-  b.tracker.emitPeer(pB);
+  currentTracker(a).emitPeer(pA);
+  currentTracker(b).emitPeer(pB);
   return [pA, pB];
 }
 
@@ -136,7 +154,7 @@ function connect(a: { tracker: any }, b: { tracker: any }): [FakePeer, FakePeer]
 function hostilePeer(inst: { tracker: any }): FakePeer {
   const pEngine = new FakePeer(); const pTest = new FakePeer();
   pEngine.other = pTest; pTest.other = pEngine;
-  inst.tracker.emitPeer(pEngine);
+  currentTracker(inst).emitPeer(pEngine);
   return pTest;
 }
 
@@ -168,11 +186,20 @@ async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise
  *  and every engine would share the first context. */
 async function makeEngine(): Promise<Engine> {
   const ctx: Engine = { listeners: {}, sent: [] };
+  const savedChat = new Map<string, any>();
   vi.resetModules();
   vi.doMock('electron', () => ({
     ipcRenderer: {
       on: (channel: string, fn: any) => { ctx.listeners[channel] = fn; },
       send: (channel: string, ...args: any[]) => { ctx.sent.push({ channel, payload: args[0] }); },
+      invoke: async (channel: string, payload: any) => {
+        if (channel === 'room-persist-chat-edit') return payload.edit;
+        if (channel !== 'room-persist-chat') throw new Error('Unexpected persistence channel: ' + channel);
+        const key = payload.roomId + ':' + payload.message.id, prior = savedChat.get(key);
+        if (prior && (prior.text !== payload.message.text || prior.replyTo !== payload.message.replyTo)) throw new Error('Conflicting message ID');
+        if (!prior) savedChat.set(key, payload.message);
+        return { duplicate: !!prior, message: prior ?? payload.message };
+      },
     },
   }));
   await import('./room-engine');
@@ -488,6 +515,70 @@ describe('chat backfill: messages said while offline arrive on reconnect', () =>
   }
   const texts = (s: any) => s.chat.map((m: any) => m.text);
 
+  it('restores 150 clock-skewed messages, quotes and an edit before its original after reconnect', async () => {
+    const A = await makeEngine(); await cmd(A, cp('CA')); A.tracker = H.trackers.at(-1);
+    const B = await makeEngine(); await cmd(B, cp('CB')); B.tracker = H.trackers.at(-1);
+    const author = keysFor('ClockAuthor'), topic = topicHash(CODE), wireKey = deriveKey(CODE);
+    const signed = (i: number, at: number, quote = false) => {
+      const m = { id: 'offline-' + i, memberId: author.memberId, name: 'CA', avatarSeed: 'CA', at, text: 'missed ' + i,
+        ...(quote ? { replyTo: 'offline-0', replyName: 'CA', replyText: 'edited original' } : {}) };
+      return { ...m, pub: author.pub, sig: crypto.sign(null, Buffer.from(chatCanonical(topic, m)), author.priv).toString('base64'), chatV: 2,
+        contextSig: crypto.sign(null, Buffer.from(chatContextCanonical(topic, m)), author.priv).toString('base64') };
+    };
+    const rawA = hostilePeer(A);
+    rawA.send(encrypt(wireKey, { t: 'chat', ...signed(999, Date.now() + 3600000) }));
+    const [wireA, wireB] = connect(A, B); await flush();
+    expect((await cmd(B, cp('CB'))).chat).toHaveLength(1);
+    wireA.destroy(); wireB.destroy();
+    const messages = Array.from({ length: 150 }, (_, i) => signed(i, 1000 - i, i === 80));
+    const edit = { msgId: messages[0].id, memberId: author.memberId, at: 2000, text: 'edited original' };
+    rawA.send(encrypt(wireKey, { t: 'chat-edit', ...edit, pub: author.pub, sig: crypto.sign(null, Buffer.from(editCanonical(topic, edit)), author.priv).toString('base64') }));
+    for (const m of messages) rawA.send(encrypt(wireKey, { t: 'chat', ...m }));
+    await flush();
+    expect((await cmd(A, cp('CA'))).chat).toHaveLength(151); // full snapshot beyond the old 100-message tail
+    const rawB = hostilePeer(B), quoted = messages[80];
+    rawB.send(encrypt(wireKey, { t: 'chat', ...quoted, replyText: 'forged' }));
+    await flush();
+    expect((await cmd(B, cp('CB'))).chat).toHaveLength(1);
+    // A legacy relay can remove the additive signature. It must be marked legacy
+    // and must not prevent the authenticated context arriving on reconciliation.
+    const legacy = { ...quoted } as any; delete legacy.chatV; delete legacy.contextSig;
+    rawB.send(encrypt(wireKey, { t: 'chat', ...legacy, replyTo: 'forged-parent' }));
+    await flush();
+    expect((await cmd(B, cp('CB'))).chat.at(-1).chatV).toBeUndefined();
+    connect(A, B); await flush();
+    const snapshot = await cmd(B, cp('CB'));
+    expect(snapshot.chat.map((m: any) => m.id)).toEqual(['offline-999', quoted.id, ...messages.filter(m => m.id !== quoted.id).map(m => m.id)]);
+    expect(snapshot.chat[1]).toMatchObject({ replyTo: 'offline-0', replyName: 'CA', replyText: 'edited original', chatV: 2 });
+    expect(snapshot.chatEdits['offline-0'].text).toBe('edited original');
+    connect(A, B); await flush();
+    expect((await cmd(B, cp('CB'))).chat).toHaveLength(151);
+  }, 30000);
+
+  it('exchanges signed replies and history with the actual browser guest mesh', async () => {
+    const A = await makeEngine(); await cmd(A, cp('CA')); A.tracker = H.trackers.at(-1);
+    for (let i = 0; i < 150; i++) await cmd(A, { type: 'chat', roomId: ROOMC, payload: { text: 'desktop ' + i, id: i.toString(16).padStart(32, '0') } });
+    const guest = new GuestRoom({ identity: await generateIdentityWeb(), name: 'Web guest', avatarSeed: 'guest', trackers: [], onChange() {} });
+    const g = guest as any;
+    g.key = new Uint8Array(deriveKey(CODE)); g.topic = topicHash(CODE); g.ownerId = idFor('CA');
+    g.identities.set(guest.identity.memberId, guest.identity.pub);
+    const pEngine = new FakePeer(), pGuest = new FakePeer();
+    pEngine.other = pGuest; pGuest.other = pEngine;
+    g.attach({ get connected() { return pGuest.connected; }, send: (raw: string) => pGuest.send(raw), destroy: () => pGuest.destroy(),
+      onData: (cb: (raw: string) => void) => pGuest.on('data', (raw: string) => cb(String(raw))), onClose: (cb: () => void) => pGuest.on('close', cb) });
+    A.tracker.emitPeer(pEngine);
+    await vi.waitFor(() => expect(guest.snapshot().chat).toHaveLength(150), { timeout: 5000 });
+    const parent = guest.snapshot().chat[0];
+    await guest.sendChat('reply from browser', parent.id);
+    await vi.waitFor(async () => expect(texts(await cmd(A, cp('CA')))).toContain('reply from browser'), { timeout: 5000 });
+    const snapshot = await cmd(A, cp('CA'));
+    expect(snapshot.chat.at(-1)).toMatchObject({ replyTo: parent.id, replyText: parent.text, chatV: 2, memberId: guest.identity.memberId });
+    await cmd(A, { type: 'chat', roomId: ROOMC, payload: { text: 'desktop reply', replyTo: snapshot.chat.at(-1).id } });
+    await vi.waitFor(() => expect(guest.snapshot().chat.at(-1)?.text).toBe('desktop reply'), { timeout: 5000 });
+    expect(guest.snapshot().chat.at(-1)).toMatchObject({ chatV: 2, replyText: 'reply from browser' });
+    pEngine.destroy(); pGuest.destroy();
+  }, 30000);
+
   it('a member that was offline receives the messages it missed', async () => {
     fs.mkdirSync(path.join(dir, 'chat-ca'), { recursive: true }); fs.mkdirSync(path.join(dir, 'chat-cb'), { recursive: true });
     const A = await makeEngine(); await cmd(A, cp('CA')); A.tracker = H.trackers[H.trackers.length - 1];
@@ -496,9 +587,13 @@ describe('chat backfill: messages said while offline arrive on reconnect', () =>
     await flush();
 
     // A speaks while B is online — B gets it live.
-    await cmd(A, { type: 'chat', roomId: ROOMC, payload: { text: 'hello while online' } });
+    const chatId = 'a'.repeat(32);
+    const acknowledgment = await cmd(A, { type: 'chat', roomId: ROOMC, payload: { id: chatId, text: 'hello while online' } });
+    expect(acknowledgment).toEqual({ ok: true, id: chatId, state: 'saved-locally' });
+    await cmd(A, { type: 'chat', roomId: ROOMC, payload: { id: chatId, text: 'hello while online' } });
     await flush();
     expect(texts(await cmd(B, cp('CB')))).toContain('hello while online');
+    expect(texts(await cmd(B, cp('CB'))).filter((text: string) => text === 'hello while online')).toHaveLength(1);
 
     // B goes offline; A keeps talking.
     aWire.destroy(); bWire.destroy();
@@ -514,4 +609,151 @@ describe('chat backfill: messages said while offline arrive on reconnect', () =>
     expect(after).toContain('hello while online');
     expect(after).toContain('you missed this one'); // backfilled + signature re-verified
   }, 30000);
+});
+
+
+describe('desktop room protocol boundary', () => {
+  it('drops malformed/forged gossip before relay and still accepts the valid frame with that id', async () => {
+    const A = await makeEngine(); await cmd(A, joinPayload('A', path.join(dir, 'a'))); A.tracker = H.trackers.at(-1);
+    const B = await makeEngine(); await cmd(B, joinPayload('B', path.join(dir, 'b'))); B.tracker = H.trackers.at(-1);
+    const [, wireB] = connect(A, B); await flush();
+    const relayed: any[] = []; wireB.on('data', (raw: any) => relayed.push(decrypt(deriveKey(CODE), raw)));
+    const raw = hostilePeer(A), k = keysFor('WireAuthor');
+    const body = { id: 'valid-after-malformed', at: Date.now(), memberId: k.memberId, name: 'Author', avatarSeed: 'author', text: 'valid' };
+    const m = { t: 'chat', ...body, pub: k.pub, sig: crypto.sign(null, Buffer.from(chatCanonical(topicHash(CODE), body)), k.priv).toString('base64'), _g: 'shared-gossip-id', _t: 4 };
+    for (const value of [null, false, 7, [], 'frame', { t: 'unknown', _g: 'future' }, { ...m, text: 'forged' }]) raw.send(encrypt(deriveKey(CODE), value));
+    await flush();
+    expect(relayed.filter(x => x.t === 'chat')).toEqual([]);
+    raw.send(encrypt(deriveKey(CODE), m)); await flush();
+    expect(relayed.filter(x => x.t === 'chat')).toEqual([{ ...m, _t: 3 }]);
+    expect((await cmd(B, { type: 'snapshot', roomId: ROOM_ID })).chat.at(-1).text).toBe('valid');
+  }, 15000);
+  it('keeps local history after rekey and sends current manifests/chat to a late joiner without stale proofs', async () => {
+    const roomId = 'protocol-rotation', join = (label: string, code = CODE) => {
+      const p = joinPayload(label, path.join(dir, 'a')); p.payload.roomId = roomId; p.payload.code = code; return p;
+    };
+    const A = await makeEngine(); await cmd(A, join('A')); A.tracker = H.trackers.at(-1);
+    const B = await makeEngine(); await cmd(B, join('B')); B.tracker = H.trackers.at(-1);
+    connect(A, B); await flush();
+    await cmd(A, { type: 'addFiles', roomId, paths: [sourceFile] });
+    await cmd(A, { type: 'setTopic', roomId, text: 'topic before rotation' });
+    const old = await cmd(A, { type: 'chat', roomId, payload: { text: 'old history' } });
+    await cmd(A, { type: 'editChat', roomId, payload: { msgId: old.id, text: 'old edited' } });
+    await cmd(A, { type: 'kick', roomId, memberId: idFor('C') });
+    await new Promise(resolve => setTimeout(resolve, 400)); await flush();
+    const code = A.sent.filter(x => x.channel === 'room-rekey').at(-1)?.payload.code;
+    expect(code).toBeTruthy();
+    await cmd(A, { type: 'chat', roomId, payload: { text: 'current history' } }); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId })).chat).toHaveLength(2);
+    const C = await makeEngine(); await cmd(C, join('FreshJoiner', code)); C.tracker = H.trackers.at(-1);
+    connect(B, C); await flush(100);
+    const late = await cmd(C, { type: 'snapshot', roomId });
+    expect(late.files).toHaveLength(1);
+    expect(late.chat.map((m: any) => m.text)).toEqual(['current history']);
+  }, 20000);
+  it('exchanges signed watch controls with the browser guest and refuses replay, forgery and legacy controls', async () => {
+    const A = await makeEngine(); await cmd(A, joinPayload('A', path.join(dir, 'a'))); A.tracker = H.trackers.at(-1);
+    const state = await cmd(A, { type: 'addFiles', roomId: ROOM_ID, paths: [sourceFile] });
+    const fileId = state.files[0].fileId;
+    const guest = new GuestRoom({ identity: await generateIdentityWeb(), name: 'Guest', avatarSeed: 'guest', trackers: [], onChange() {} });
+    const internals = guest as any; internals.key = new Uint8Array(deriveKey(CODE)); internals.topic = topicHash(CODE); internals.code = CODE;
+    const pEngine = new FakePeer(), pGuest = new FakePeer(); pEngine.other = pGuest; pGuest.other = pEngine;
+    internals.attach({ get connected() { return pGuest.connected; }, send: (raw: string) => pGuest.send(raw),
+      destroy: () => pGuest.destroy(), onData: (fn: any) => pGuest.on('data', fn), onClose: (fn: any) => pGuest.on('close', fn) });
+    A.tracker.emitPeer(pEngine); await flush(100);
+    const events: any[] = []; guest.onSync = ev => events.push(ev);
+    const control = { fileId, action: 'play', position: 42, rate: 1.5, playing: true, together: true };
+    await cmd(A, { type: 'sync', roomId: ROOM_ID, payload: control }); await flush(30);
+    expect(events.at(-1)).toMatchObject({ ...control, memberId: idFor('A') });
+    await guest.sendSync({ ...control, action: 'seek', at: Date.now() }); await flush(30);
+    expect(A.sent.filter(x => x.channel === 'room-sync').at(-1)?.payload).toMatchObject({ ...control, action: 'seek', memberId: guest.identity.memberId });
+    const captured: any[] = []; pEngine.on('data', (raw: any) => captured.push(decrypt(deriveKey(CODE), raw)));
+    await guest.sendSync({ ...control, action: 'beat', at: Date.now() }); await flush(30);
+    const beat = captured.find(x => x.t === 'sync-v2'), count = A.sent.filter(x => x.channel === 'room-sync').length;
+    pGuest.send(encrypt(deriveKey(CODE), { ...beat, _g: 'replay' }));
+    pGuest.send(encrypt(deriveKey(CODE), { ...beat, _g: 'forged', position: 999 }));
+    pGuest.send(encrypt(deriveKey(CODE), { ...beat, _g: 'legacy', t: 'sync' })); await flush(30);
+    expect(A.sent.filter(x => x.channel === 'room-sync')).toHaveLength(count);
+    guest.leave(); await flush();
+  }, 20000);
+});
+
+
+describe('desktop and browser authority convergence', () => {
+  async function attachGuest(engine: Engine, pin: string) {
+    const guest = new GuestRoom({ identity: await generateIdentityWeb(), name: 'Guest', avatarSeed: 'guest', trackers: [], onChange() {} });
+    const internals = guest as any; internals.key = new Uint8Array(deriveKey(CODE)); internals.topic = topicHash(CODE); internals.code = CODE;
+    guest.ownerPin = pin;
+    const desktop = new FakePeer(), browser = new FakePeer(); desktop.other = browser; browser.other = desktop;
+    internals.attach({ get connected() { return browser.connected; }, send: (raw: string) => browser.send(raw), destroy: () => browser.destroy(),
+      onData: (fn: any) => browser.on('data', fn), onClose: (fn: any) => browser.on('close', fn) });
+    engine.tracker.emitPeer(desktop); await flush(100);
+    return guest;
+  }
+  it('converges on author delete/revive, live transfer and late root/current invite; refuses assigning management to a browser', async () => {
+    const A = await makeEngine(); await cmd(A, joinPayload('A', path.join(dir, 'a'))); A.tracker = H.trackers.at(-1);
+    const B = await makeEngine(); await cmd(B, joinPayload('B', path.join(dir, 'b'))); B.tracker = H.trackers.at(-1);
+    connect(A, B); await flush(50);
+    const state = await cmd(B, { type: 'addFiles', roomId: ROOM_ID, paths: [sourceFile] }); await flush(50);
+    const id = state.files[0].fileId, guest = await attachGuest(A, idFor('A'));
+    expect(guest.snapshot().files[0].addedBy).toBe(idFor('B'));
+    await cmd(B, { type: 'removeFile', roomId: ROOM_ID, fileId: id }); await flush(50);
+    expect(guest.snapshot().files).toEqual([]);
+    await cmd(B, { type: 'addFiles', roomId: ROOM_ID, paths: [sourceFile] }); await flush(50);
+    expect(guest.snapshot().files).toHaveLength(1);
+    await cmd(A, { type: 'transferOwner', roomId: ROOM_ID, memberId: idFor('B') }); await flush(50);
+    expect(guest.ownerId).toBe(idFor('B'));
+    await cmd(B, { type: 'rename', roomId: ROOM_ID, name: 'Browser follows new owner' }); await flush(50);
+    expect(guest.roomName).toBe('Browser follows new owner');
+    await expect(cmd(B, { type: 'transferOwner', roomId: ROOM_ID, memberId: guest.identity.memberId })).rejects.toThrow(/desktop|management/i);
+    const rootGuest = await attachGuest(B, idFor('A')), currentGuest = await attachGuest(B, idFor('B'));
+    for (const g of [rootGuest, currentGuest]) {
+      expect(g.ownerId).toBe(idFor('B')); expect(g.snapshot().files).toHaveLength(1);
+      expect(g.snapshot().members.find(m => m.memberId === idFor('B'))?.capabilities).toContain('owner-manage');
+    }
+    await cmd(B, { type: 'pinOwner', roomId: ROOM_ID, ownerPin: idFor('A') });
+    await cmd(B, { type: 'pinOwner', roomId: ROOM_ID, ownerPin: idFor('B') });
+    await expect(cmd(B, { type: 'pinOwner', roomId: ROOM_ID, ownerPin: idFor('C') })).rejects.toThrow(/conflict/i);
+    expect((await cmd(B, { type: 'snapshot', roomId: ROOM_ID })).ownerId).toBe(idFor('B'));
+    for (const g of [guest, rootGuest, currentGuest]) g.leave(); await flush();
+    await cmd(A, { type: 'leave', roomId: ROOM_ID }); await cmd(B, { type: 'leave', roomId: ROOM_ID });
+  }, 20000);
+
+  it('does not accept a foreign pending tomb as authority to protect a revived manifest from owner deletion', async () => {
+    const A = await makeEngine(), join = joinPayload('D', path.join(dir, 'a')); (join.payload as any).autoFetch = false;
+    await cmd(A, join); A.tracker = H.trackers.at(-1);
+    const wire = hostilePeer(A), c = keysFor('C'), owner = keysFor('A'), fileId = 'f'.repeat(40), topic = topicHash(CODE);
+    const signed = (who: { priv: string }, body: unknown[]) => crypto.sign(null, Buffer.from(JSON.stringify(body)), who.priv).toString('base64');
+    wire.send(encrypt(deriveKey(CODE), { t: 'del', fileId, memberId: c.memberId, at: 40, pub: c.pub, sig: signed(c, ['del', topic, fileId, c.memberId, 40]) }));
+    wire.send(encrypt(deriveKey(CODE), { t: 'add', file: { fileId, infoHash: fileId, name: 'pending.mkv', magnetURI: 'magnet:?xt=urn:btih:' + fileId,
+      size: 10, addedBy: idFor('B'), addedByName: 'B', addedAt: 1, revAt: 40, revBy: c.memberId, revPub: c.pub,
+      revSig: signed(c, ['revive', topic, fileId, 40, c.memberId]) } })); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).files).toHaveLength(1);
+    wire.send(encrypt(deriveKey(CODE), { t: 'del', fileId, memberId: owner.memberId, at: 30, pub: owner.pub, sig: signed(owner, ['del', topic, fileId, owner.memberId, 30]) })); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).files).toEqual([]);
+    await cmd(A, { type: 'leave', roomId: ROOM_ID });
+  });
+
+  it('requires known voice membership, authenticates deafened, and refuses replay or a downgrade', async () => {
+    const A = await makeEngine(); await cmd(A, joinPayload('A', path.join(dir, 'a'))); A.tracker = H.trackers.at(-1);
+    const wire = hostilePeer(A), k = keysFor('C'), topic = topicHash(CODE);
+    const send = (msg: any) => wire.send(encrypt(deriveKey(CODE), msg));
+    const state = (at: number, extra: any = {}, v2 = true) => {
+      const m = { memberId: k.memberId, inVoice: true, muted: false, deafened: false, at, ...extra };
+      const sign = (bytes: Uint8Array) => crypto.sign(null, bytes, k.priv).toString('base64');
+      return { t: 'voice-state', ...m, pub: k.pub, sig: sign(voiceStateCanonical(topic, m)),
+        ...(v2 ? { voiceV: 2, stateSig: sign(voiceStateV2Canonical(topic, m)) } : {}) };
+    };
+    send(state(10)); await flush(); expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants).toEqual([]);
+    send({ t: 'hello', memberId: k.memberId, pub: k.pub, name: 'C', avatarSeed: 'C' }); await flush();
+    send(state(10, { deafened: true }, false)); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants[0].deafened).toBe(false);
+    const signed = state(20, { deafened: true }); send({ ...signed, deafened: false }); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants[0].deafened).toBe(false);
+    send(signed); await flush(); expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants[0].deafened).toBe(true);
+    send(state(21, {}, false)); await flush(); expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants[0].deafened).toBe(true);
+    send(state(30, { inVoice: false })); send({ ...signed, _g: 'new-gossip-id' }); await flush();
+    expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants).toEqual([]);
+    await cmd(A, { type: 'leave', roomId: ROOM_ID });
+  }, 20000);
 });

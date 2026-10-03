@@ -1,3 +1,4 @@
+import { commandCanonical, commandReplyCanonical } from '../../shared/server-command';
 /**
  * Integration test for the operator console command (`srv-cmd`) anti-replay floor.
  *
@@ -36,7 +37,7 @@ function keysFor(label: string): { pub: string; priv: string; memberId: string }
 const idFor = (label: string): string => keysFor(label).memberId;
 
 type Sent = { channel: string; payload: any };
-type EngineCtx = { listeners: Record<string, (e: any, msg: any) => void>; sent: Sent[] };
+type EngineCtx = { listeners: Record<string, (e: any, msg: any) => void>; sent: Sent[]; reply?: Promise<unknown> };
 
 const H = vi.hoisted(() => ({ trackers: [] as any[] }));
 
@@ -117,6 +118,7 @@ type Engine = EngineCtx & { tracker?: any };
 let reqSeq = 7000;
 async function cmd<T = any>(inst: Engine, msg: Record<string, unknown>): Promise<T> {
   const reqId = ++reqSeq;
+  if (msg.type === 'srvCmd' && !msg.request) msg = { ...msg, request: { by: idFor('B'), hostId: idFor('A'), instanceId: msg.instanceId, command: msg.command, commandId: crypto.randomUUID(), at: Date.now(), expiresAt: Date.now() + 30000 } };
   inst.listeners['room-cmd'](null, { reqId, ...msg });
   const res = await vi.waitFor(() => {
     const response = inst.sent
@@ -135,6 +137,7 @@ async function makeEngine(): Promise<Engine> {
   vi.resetModules();
   vi.doMock('electron', () => ({
     ipcRenderer: {
+      invoke: async (channel: string, payload: any) => { ctx.sent.push({ channel, payload: { roomId: payload.roomId, ...payload.request } }); return ctx.reply ?? { ok: true }; },
       on: (channel: string, fn: any) => { ctx.listeners[channel] = fn; },
       send: (channel: string, ...args: any[]) => { ctx.sent.push({ channel, payload: args[0] }); },
     },
@@ -164,7 +167,7 @@ function joinPayload(label: string, folder: string) {
 
 /** Exactly the bytes room-engine signs for a srv-cmd. */
 function srvCmdCanonical(m: { by: string; instanceId: string; command: string; at: number }): Buffer {
-  return Buffer.from(JSON.stringify(['srv-cmd', TOPIC, m.by, m.instanceId, m.command, m.at]), 'utf8');
+  return Buffer.from(commandCanonical(TOPIC, m as any), 'utf8');
 }
 
 /** Decrypt a FakePeer's outbound frames and keep those of one gossip type. */
@@ -217,7 +220,7 @@ describe('srv-cmd: an operator command reaches the host exactly once', () => {
     // The attacker is a viewer: they hold the room code (so they can decrypt and
     // re-encrypt) but no operator grant. They cannot forge B's signature — they
     // do not need to. They replay B's.
-    const captured = sentMsgs(pB, 'srv-cmd')[0];
+    const captured = sentMsgs(pB, 'srv-cmd-v2')[0];
     expect(captured).toBeTruthy();
 
     const before = forwarded(A).length;
@@ -268,17 +271,43 @@ describe('srv-cmd: an operator command reaches the host exactly once', () => {
     // shape a captured-and-edited frame takes once the signature is re-made.
     const k = keysFor('B');
     const stale = 1;
-    const body = { by: k.memberId, instanceId: 'inst-1', command: 'op attacker', at: stale };
+    const body = { by: k.memberId, hostId: idFor('A'), commandId: crypto.randomUUID(), expiresAt: Date.now() + 30000, instanceId: 'inst-1', command: 'op attacker', at: stale };
     const sig = crypto.sign(null, srvCmdCanonical(body), crypto.createPrivateKey(k.priv)).toString('base64');
 
     const before = forwarded(A).length;
     const attacker = hostilePeer(A);
     attacker.send(encrypt(KEY, {
-      t: 'srv-cmd', ...body, pub: k.pub, sig,
+      t: 'srv-cmd-v2', ...body, pub: k.pub, sig,
       _g: crypto.randomBytes(6).toString('hex'), _t: 4,
     }));
     await flush();
 
     expect(forwarded(A).length).toBe(before);
   });
+  it('rejects forged, cross-room and miscorrelated ACKs, then surfaces the actual host refusal', async () => {
+    let finish!: (value: unknown) => void;
+    A.reply = new Promise(resolve => { finish = resolve; });
+    let settled = false;
+    const result = cmd(B, { type: 'srvCmd', roomId: ROOM_ID, instanceId: 'inst-1', command: 'list' }).then(value => { settled = true; return value; });
+    await flush(); const request = sentMsgs(pB, 'srv-cmd-v2').at(-1);
+    const attacker = hostilePeer(B); const k = keysFor('A');
+    const base = { hostId: idFor('A'), to: idFor('B'), instanceId: request.instanceId, commandId: request.commandId, ok: true, at: Date.now() };
+    for (const [patch, topic] of [[{ instanceId: 'another-server' }, TOPIC], [{ commandId: crypto.randomUUID() }, TOPIC], [{ to: idFor('A') }, TOPIC], [{}, 'wrong-room-topic']] as const) {
+      const body = { ...base, ...patch };
+      const sig = crypto.sign(null, Buffer.from(commandReplyCanonical(topic, body)), crypto.createPrivateKey(k.priv)).toString('base64');
+      attacker.send(encrypt(KEY, { t: 'srv-result-v2', ...body, pub: k.pub, sig, _g: crypto.randomBytes(6).toString('hex'), _t: 4 }));
+    }
+    const sig = crypto.sign(null, Buffer.from(commandReplyCanonical(TOPIC, { ...base, ok: false })), crypto.createPrivateKey(k.priv)).toString('base64');
+    attacker.send(encrypt(KEY, { t: 'srv-result-v2', ...base, pub: k.pub, sig, _g: crypto.randomBytes(6).toString('hex'), _t: 4 }));
+    await flush(); expect(settled).toBe(false);
+    finish({ ok: false, reason: 'viewer-only' }); await expect(result).resolves.toEqual({ ok: false, reason: 'viewer-only' }); A.reply = undefined;
+  });
+  it('does not execute legacy unacknowledged requests', async () => {
+    const k = keysFor('B'); const body = { by: k.memberId, instanceId: 'inst-1', command: 'stop', at: Date.now() };
+    const sig = crypto.sign(null, Buffer.from(JSON.stringify(['srv-cmd', TOPIC, body.by, body.instanceId, body.command, body.at])), crypto.createPrivateKey(k.priv)).toString('base64');
+    const before = forwarded(A).length;
+    hostilePeer(A).send(encrypt(KEY, { t: 'srv-cmd', ...body, pub: k.pub, sig, _g: crypto.randomBytes(6).toString('hex'), _t: 4 }));
+    await flush(); expect(forwarded(A)).toHaveLength(before);
+  });
+
 });

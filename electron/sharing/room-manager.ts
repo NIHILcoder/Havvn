@@ -1,3 +1,4 @@
+import type { ServerCommandRequest, ServerCommandResult } from '../../shared/server-command';
 /**
  * RoomManager — main-process proxy for friend swarms (Phase 3).
  *
@@ -13,15 +14,20 @@
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { BrowserWindow, ipcMain, app, shell } from 'electron';
+import { pathToFileURL } from 'url';
+import { BrowserWindow, ipcMain, app, shell, type IpcMainEvent } from 'electron';
 import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
 import { t } from '../i18n';
 import * as db from '../db/store';
-import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo, RoomEngineStatus, RoomChatMessage, RoomChatAck, RoomChatDraft, RoomPreferenceResult } from '../../shared/types';
+import { readRoomResources, validateRoomResources, type RoomResourcePolicy, type RoomResourceResult } from '../../shared/room-resources';
+import { buildRoomDiagnosticReport, type RoomConnectionDiagnostics, type RoomDiagnosticReport } from '../../shared/room-diagnostics';
+import { normalizeRoomRate } from '../../shared/room-chat-delivery';
 import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-crypto';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torrent/subtitle-probe';
+import { roomFileStamp } from './room-file-storage';
 import { generateRoomSecret } from './room-e2e';
 import { serializeMirrorBody } from '../gameserver/server-mirror';
 import { decideGlobalPtt, isGlobalPttAvailable, resolveUiohookKeycode, startGlobalPtt, stopGlobalPtt } from '../utils/global-ptt';
@@ -33,6 +39,8 @@ import {
   reusableSessionId, sessionFloor, withSession, noteSessionFloor, rotateSession,
 } from '../../shared/lan-prefs';
 import type { LanRoomPrefs } from '../../shared/lan-prefs';
+import { installRoomEnginePolicy, ROOM_ENGINE_PARTITION } from './room-engine-policy';
+import { assertCompatibleOwnerPin } from '../../shared/room-owner-pin';
 
 const log = logger.child('RoomManager');
 
@@ -41,25 +49,67 @@ const log = logger.child('RoomManager');
 import { customTurnToIce, resolveTrackers } from './ice-servers';
 import { showOsNotification } from '../utils/os-notify';
 
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+type Pending = { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; type: string; roomId?: string; withAudio?: boolean };
+const ENGINE_START_TIMEOUT_MS = 20_000;
+const COMMAND_TIMEOUT_MS = 30_000;
+const RECOVERY_DELAYS_MS = [1_000, 3_000, 10_000];
 
 function slugify(s: string): string {
   return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'room';
+}
+
+function offlineRoom(state: RoomState): RoomState {
+  return {
+    ...state, connected: false, peerCount: 0,
+    members: state.members.map((m) => ({ ...m, online: false })),
+    transfers: {}, typingMemberIds: [], srvMirrors: [],
+    voice: { ...state.voice, inVoice: false, transmitting: false, sharing: false, participants: [] },
+    lan: { ...state.lan, active: false, isHost: false, selfVip: undefined, selfAdmitted: false, relayFor: [], participants: [] },
+  };
 }
 
 export class RoomManager {
   private win: BrowserWindow | null = null;
   private mainWindow: BrowserWindow | null = null;
   private ready = false;
-  private readyWaiters: Array<() => void> = [];
+  private startup: {
+    win: BrowserWindow; promise: Promise<void>; resolve: () => void; reject: (e: Error) => void;
+    timer: ReturnType<typeof setTimeout>; loaded: boolean;
+  } | null = null;
+  private engineStatus: RoomEngineStatus = { state: 'stopped' };
+  private destroyed = false;
+  private recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+  private recoveryAttempts = 0;
+  private recoveryWanted = false;
+  private reactivating = new Map<string, Promise<RoomState>>();
+  private restoring: Promise<void> | null = null;
+  private voiceIntentSeq = 0;
+  private voiceIntents = new Map<string, number>();
+  private micTestIntent = 0;
+  private micTestAllowedUntil = 0;
+  private screenIntentSeq = 0;
+  private screenIntents = new Map<string, number>();
+  private creating = new Map<string, Promise<RoomState>>();
+  private joining = new Map<string, { pin: string; promise: Promise<RoomState> }>();
+  private setups = new Map<string, { draft: db.PersistedRoom; state?: RoomState; events: Array<() => void> }>();
+  private roomEpochs = new Map<string, number>();
+  private leaving = new Map<string, { deleteFiles: boolean; serverMode: 'stop' | 'local'; promise: Promise<{ ok: boolean }> }>();
   private pending = new Map<number, Pending>();
+  private preferenceQueues = new Map<string, Promise<RoomPreferenceResult>>();
   private reqSeq = 0;
   private ipcWired = false;
   private cache = new Map<string, RoomState>();
+  private connectionHistory = new Map<string, RoomConnectionDiagnostics>();
+  private connectionRetries = new Map<string, Promise<RoomDiagnosticReport>>();
+  private unsavedRooms = new Map<string, db.PersistedRoom>();
   // Set by the VPN kill-switch: while true, no room may (re)join the network —
   // every lazy reactivation funnels through reactivate(), so gating it there
   // closes every re-leak path at once.
   private networkSuspended = false;
+  private networkPauses = new Map<string, number>();
+  private networkPauseSeq = 0;
+  private networkQueue: Promise<void> = Promise.resolve();
+  private unavailableHooks = new Set<(roomId: string, reason: string) => void | Promise<void>>();
   // Last global voice settings the renderer sent — re-asserted on engine respawn
   // (the engine's own store is session-only and would reset to defaults).
   private voiceSettingsCache: VoiceSettings | null = null;
@@ -68,6 +118,10 @@ export class RoomManager {
   // session-only, so a respawned window would come back willing to relay after
   // the user switched it off. null = not read from the store yet.
   private lanRelayCache: boolean | null = null;
+  private resourcePolicy: RoomResourcePolicy | null = null;
+  private resourceWindow: BrowserWindow | null = null;
+  private resourceRevision = 0;
+  private resourceQueue: Promise<unknown> = Promise.resolve();
   // Global push-to-talk config (renderer prefs) + what the hook is currently
   // tuned to. The OS key hook runs ONLY while some room is in voice in PTT mode.
   private globalPtt: { enabled: boolean; keycode: number | null } = { enabled: false, keycode: null };
@@ -82,7 +136,39 @@ export class RoomManager {
   /** Hooks fired after every live RoomState push (prev may be undefined). */
   private roomUpdateHooks = new Set<(state: RoomState, prev: RoomState | undefined) => void>();
 
+  private historyTimer: ReturnType<typeof setInterval>;
   constructor() {
+    const pruneHistory = () => {
+      try {
+        for (const roomId of db.pruneRoomLocalHistory()) if (this.cache.has(roomId)) {
+          void this.call('historyTrim', { roomId, days: db.getRoomHistoryRetention(roomId) }).catch(error => log.warn('Room history view refresh failed', { roomId, error: String(error) }));
+        }
+      } catch (error) { log.warn('Room history retention failed', { error: String(error) }); }
+    };
+    pruneHistory();
+    this.historyTimer = setInterval(pruneHistory, 60 * 60 * 1000);
+    this.historyTimer.unref();
+    ipcMain.handle('room-persist-chat', (event, payload: { roomId: string; message: RoomChatMessage }) => {
+      this.assertEnginePersistence(event, payload?.roomId);
+      const m = payload?.message;
+      if (!m || !/^[a-f0-9]{32}$/.test(m.id) || !m.text?.trim() || m.text.length > 2000
+        || m.memberId !== db.getRoomProfile().memberId || !m.pub || !m.sig || !Number.isSafeInteger(m.at)) throw new Error('Invalid local chat message');
+      return db.commitRoomChat(payload.roomId, m);
+    });
+    ipcMain.handle('room-persist-chat-edit', (event, payload: { roomId: string; msgId: string; edit: { text: string; at: number; by: string; pub: string; sig: string } }) => {
+      this.assertEnginePersistence(event, payload?.roomId);
+      const edit = payload?.edit, self = db.getRoomProfile().memberId;
+      const chats = db.getRoomChats(payload.roomId);
+      const target = chats.find(m => m.id === payload.msgId);
+      if (!target || target.memberId !== self || !edit || edit.by !== self || !edit.pub || !edit.sig
+        || !edit.text?.trim() || edit.text.length > 2000 || !Number.isSafeInteger(edit.at)) throw new Error('Invalid local chat edit');
+      const edits = db.getRoomChatEdits(payload.roomId), prior = edits[payload.msgId];
+      if (prior?.text === edit.text && prior.by === self) return prior;
+      if (prior && edit.at <= prior.at) throw new Error('Chat edit is stale');
+      const retained = new Set(chats.map(m => m.id));
+      db.setRoomChatEdits(payload.roomId, { ...Object.fromEntries(Object.entries(edits).filter(([id]) => retained.has(id))), [payload.msgId]: edit });
+      return edit;
+    });
     // Renderer-facing liveness channels live HERE (not ipc/handlers.ts): they
     // are room-stack plumbing end to end, and the singleton constructor makes
     // the ipcMain.handle registration run exactly once.
@@ -98,6 +184,7 @@ export class RoomManager {
     getLanManager().configure({
       isNetSuspended: () => this.networkSuspended,
       requestEngineShutdown: () => {
+        if (this.destroyed || !this.win || this.win.isDestroyed() || !this.ready) return;
         const rid = getLanManager().activeRoomId();
         if (rid) { try { void this.call('lanStop', { roomId: rid }, 5000).catch(() => { /* engine gone */ }); } catch { /* ignore */ } }
       },
@@ -108,7 +195,35 @@ export class RoomManager {
     });
   }
 
-  setMainWindow(win: BrowserWindow): void { this.mainWindow = win; }
+  private assertEnginePersistence(event: Pick<IpcMainEvent, 'sender' | 'senderFrame'>, roomId: string): void {
+    const contents = this.win?.webContents;
+    if (this.destroyed || !contents || this.win?.isDestroyed() || event.sender !== contents || event.senderFrame !== contents.mainFrame
+      || !roomId || this.leaving.has(roomId) || !this.roomRecord(roomId) || !this.cache.has(roomId)) throw new Error('Room persistence request is not from the active engine');
+  }
+
+  setMainWindow(win: BrowserWindow): void { this.mainWindow = win; this.setEngineStatus(this.engineStatus); }
+
+  getEngineStatus(): RoomEngineStatus { return { ...this.engineStatus }; }
+
+  private setEngineStatus(status: RoomEngineStatus): void {
+    this.engineStatus = status;
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:engineStatus', status);
+  }
+
+  /** Only the current engine's top frame can mutate room state or settle commands. */
+  private onEngine(channel: string, listener: (event: IpcMainEvent, ...args: any[]) => void): void {
+    ipcMain.on(channel, (event, ...args) => {
+      const contents = this.win?.webContents;
+      if (!contents || this.win?.isDestroyed() || event.sender !== contents || event.senderFrame !== contents.mainFrame) return;
+      const roomId = (args[0] as { roomId?: unknown } | undefined)?.roomId;
+      if (typeof roomId === 'string' && (this.leaving.has(roomId) || !this.roomRecord(roomId))) return;
+      const setup = typeof roomId === 'string' ? this.setups.get(roomId) : undefined;
+      if (setup && !['room-update', 'room-owner', 'room-transfer', 'room-rekey', 'room-bans', 'room-e2e', 'room-name', 'room-topic'].includes(channel)) {
+        setup.events.push(() => listener(event, ...args)); return;
+      }
+      listener(event, ...args);
+    });
+  }
 
   /** Subscribe to room state pushes. Returns an unsubscribe function. */
   onRoomUpdate(hook: (state: RoomState, prev: RoomState | undefined) => void): () => void {
@@ -119,66 +234,60 @@ export class RoomManager {
   private wireIpc(): void {
     if (this.ipcWired) return;
     this.ipcWired = true;
-    ipcMain.on('room-res', (_e, msg: any) => {
+    this.onEngine('room-res', (_e, msg: any) => {
       const p = this.pending.get(msg?.reqId);
       if (!p) return;
       this.pending.delete(msg.reqId);
+      clearTimeout(p.timer);
       if (msg.ok) p.resolve(msg.data); else p.reject(new Error(msg.error || 'Room error'));
     });
-    ipcMain.on('room-ready', () => {
+    this.onEngine('room-ready', () => {
       this.ready = true;
-      const waiters = this.readyWaiters; this.readyWaiters = [];
-      waiters.forEach((f) => f());
+      if (this.startup?.loaded) this.startup.resolve();
     });
-    ipcMain.on('room-update', (_e, state: RoomState) => {
-      const prev = state?.roomId ? this.cache.get(state.roomId) : undefined;
-      if (state?.roomId) this.cache.set(state.roomId, state);
-      this.reevalGlobalPtt(); // voice/inputMode may have changed — retune the OS key hook
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-        this.mainWindow.webContents.send('rooms:update', state);
-      }
-      for (const hook of this.roomUpdateHooks) {
-        try { hook(state, prev); } catch (e) { log.warn('room update hook failed', { err: String(e) }); }
-      }
+    this.onEngine('room-update', (_e, state: RoomState) => {
+      const setup = state?.roomId ? this.setups.get(state.roomId) : undefined;
+      if (setup) { setup.state = state; return; }
+      this.publishRoomState(state);
     });
-    ipcMain.on('room-log', (_e, m: any) => log.info('Engine', { msg: String(m) }));
+    this.onEngine('room-log', (_e, m: any) => log.info('Engine', { msg: String(m) }));
     // Watch-together: forward a peer's playback control to the renderer player.
-    ipcMain.on('room-sync', (_e, payload: any) => {
+    this.onEngine('room-sync', (_e, payload: any) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:sync', payload);
       }
     });
     // Live mic level while a settings-modal mic test runs (≈10 Hz, fire-and-forget).
-    ipcMain.on('room-mic-level', (_e, payload: { level: number }) => {
+    this.onEngine('room-mic-level', (_e, payload: { level: number }) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:micLevel', Number(payload?.level) || 0);
       }
     });
     // Screen-watch loopback signaling: engine forwarder → visible renderer.
-    ipcMain.on('room-screen-signal', (_e, payload: { roomId: string; memberId: string; kind: string; data?: unknown }) => {
+    this.onEngine('room-screen-signal', (_e, payload: { roomId: string; memberId: string; kind: string; data?: unknown }) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:screenSignal', payload);
       }
     });
     // Audio hardware changed in the engine window — the UI should refresh pickers.
-    ipcMain.on('room-voice-devices', () => {
+    this.onEngine('room-voice-devices', () => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:voiceDevicesChanged');
       }
     });
     // A folder was deleted — drop its persisted auto-fetch override too.
-    ipcMain.on('room-folder-fetch-del', (_e, payload: { roomId: string; folderId: string }) => {
+    this.onEngine('room-folder-fetch-del', (_e, payload: { roomId: string; folderId: string }) => {
       try { if (payload?.roomId && payload?.folderId) db.setRoomFolderFetch(payload.roomId, payload.folderId, null); } catch { /* ignore */ }
     });
     // Transient voice warning from the engine (e.g. a mid-call mic fell back).
-    ipcMain.on('room-voice-warn', (_e, payload: { msg: string }) => {
+    this.onEngine('room-voice-warn', (_e, payload: { msg: string }) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:voiceWarn', String(payload?.msg || ''));
       }
     });
     // Transient virtual-LAN warning from the engine (UAC cancelled, helper crashed,
     // driver missing, direct-connect failed) — surfaced as a renderer toast.
-    ipcMain.on('room-lan-warn', (_e, payload: { msg: string }) => {
+    this.onEngine('room-lan-warn', (_e, payload: { msg: string }) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.webContents.send('rooms:lanWarn', String(payload?.msg || ''));
       }
@@ -189,7 +298,7 @@ export class RoomManager {
     // id gate normally closes. Rare (a handful per session: admits at start, an
     // invite, an evict, a rekey re-mint); noteSessionFloor ignores anything for
     // another session and never moves the number backwards.
-    ipcMain.on('room-lan-floor', (_e, payload: { roomId: string; sessionId: string; at: number }) => {
+    this.onEngine('room-lan-floor', (_e, payload: { roomId: string; sessionId: string; at: number }) => {
       const roomId = String(payload?.roomId || '');
       const sessionId = String(payload?.sessionId || '');
       const at = Number(payload?.at);
@@ -199,7 +308,7 @@ export class RoomManager {
     // A file was deleted — persist the tombstone so it stays gone after restart,
     // plus its author/owner signature (when present) so the deletion re-verifies
     // as it gossips and survives our own restart as an authenticated tombstone.
-    ipcMain.on('room-tomb', (_e, payload: { roomId: string; fileId: string; at?: number; by?: string; pub?: string; sig?: string }) => {
+    this.onEngine('room-tomb', (_e, payload: { roomId: string; fileId: string; at?: number; by?: string; pub?: string; sig?: string }) => {
       try {
         if (!payload?.roomId || !payload?.fileId) return;
         db.addRoomTombstone(payload.roomId, payload.fileId, Number(payload.at) || Date.now());
@@ -210,7 +319,7 @@ export class RoomManager {
     });
     // A file was explicitly re-shared after deletion — lift the persisted
     // tombstone (and its proof) so the revive survives restart.
-    ipcMain.on('room-tomb-del', (_e, payload: { roomId: string; fileId: string }) => {
+    this.onEngine('room-tomb-del', (_e, payload: { roomId: string; fileId: string }) => {
       try {
         if (!payload?.roomId || !payload?.fileId) return;
         db.removeRoomTombstone(payload.roomId, payload.fileId);
@@ -219,30 +328,42 @@ export class RoomManager {
     });
     // A VERIFIED revive — persist its revAt so the re-deletion guard survives a
     // restart (a re-gossiped equal/older tombstone can't silently re-delete it).
-    ipcMain.on('room-revive', (_e, payload: { roomId: string; fileId: string; revAt?: number }) => {
+    this.onEngine('room-revive', (_e, payload: { roomId: string; fileId: string; revAt?: number }) => {
       try { if (payload?.roomId && payload?.fileId && Number.isFinite(payload.revAt)) db.addRoomRevive(payload.roomId, payload.fileId, Number(payload.revAt)); } catch { /* ignore */ }
     });
     // A strictly-newer deletion superseded the revive — drop the persisted guard.
-    ipcMain.on('room-revive-del', (_e, payload: { roomId: string; fileId: string }) => {
+    this.onEngine('room-revive-del', (_e, payload: { roomId: string; fileId: string }) => {
       try { if (payload?.roomId && payload?.fileId) db.removeRoomRevive(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
     // A file entered/changed in a room's manifest — persist it so the room shows
     // and re-seeds it immediately on the next launch, before peers reconnect.
-    ipcMain.on('room-manifest-add', (_e, payload: { roomId: string; file: import('../../shared/types.js').PersistedRoomFile }) => {
+    this.onEngine('room-manifest-add', (_e, payload: { roomId: string; file: import('../../shared/types.js').PersistedRoomFile }) => {
       try { if (payload?.roomId && payload?.file?.fileId) db.upsertRoomManifestFile(payload.roomId, payload.file); } catch { /* ignore */ }
     });
-    ipcMain.on('room-manifest-del', (_e, payload: { roomId: string; fileId: string }) => {
+    this.onEngine('room-manifest-batch', (_e, payload: { roomId: string; files: import('../../shared/types.js').PersistedRoomFile[]; events?: import('../../shared/types.js').RoomEvent[] }) => {
+      if (!payload?.roomId || !Array.isArray(payload.files) || payload.files.length > 64
+        || payload.events && (!Array.isArray(payload.events) || payload.events.length > 64)) return;
+      try {
+        db.upsertRoomManifestFiles(payload.roomId, payload.files);
+        if (payload.events?.length) {
+          db.appendRoomEvents(payload.roomId, payload.events);
+          const ev = payload.events.find(e => e.type === 'file-added' && e.actorId && e.actorId !== db.getRoomProfile().memberId);
+          if (ev) this.notifyRoomActivity(payload.roomId, ev.actorName || t('notify.room.someone'), t('notify.room.sharedFile', { file: ev.fileName || t('notify.room.aFile') }));
+        }
+      } catch { /* engine sender is checked by onEngine */ }
+    });
+    this.onEngine('room-manifest-del', (_e, payload: { roomId: string; fileId: string }) => {
       try { if (payload?.roomId && payload?.fileId) db.removeRoomManifestFile(payload.roomId, payload.fileId); } catch { /* ignore */ }
     });
     // A folder was created/edited (ours or a peer's) — persist so it (and the
     // file grouping) survives restart, before peers reconnect.
-    ipcMain.on('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types.js').PersistedRoomFolder }) => {
+    this.onEngine('room-folder-upsert', (_e, payload: { roomId: string; folder: import('../../shared/types.js').PersistedRoomFolder }) => {
       try { if (payload?.roomId && payload?.folder?.id) db.upsertRoomFolder(payload.roomId, payload.folder); } catch { /* ignore */ }
     });
     // A folder was deleted — persist the tombstone; drop it from the set ONLY if
     // the engine actually removed it (an edit-after-delete keeps a newer folder
     // live, and dropping it here would make it vanish on the next restart).
-    ipcMain.on('room-folder-del', (_e, payload: { roomId: string; id: string; at?: number; removed?: boolean }) => {
+    this.onEngine('room-folder-del', (_e, payload: { roomId: string; id: string; at?: number; removed?: boolean }) => {
       try {
         if (payload?.roomId && payload?.id) {
           db.addRoomFolderTombstone(payload.roomId, payload.id, Number(payload.at) || Date.now());
@@ -252,7 +373,7 @@ export class RoomManager {
     });
     // A new activity-log event was observed — persist it (capped) so the room's
     // history survives restart.
-    ipcMain.on('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types.js').RoomEvent }) => {
+    this.onEngine('room-history-add', (_e, payload: { roomId: string; event: import('../../shared/types.js').RoomEvent }) => {
       try {
         if (!payload?.roomId || !payload?.event?.id) return;
         db.appendRoomEvents(payload.roomId, [payload.event]);
@@ -265,7 +386,7 @@ export class RoomManager {
     });
     // A chat message (sent or received) — persist it (capped, deduped by id) and,
     // if it's from someone else and not the room you're looking at, OS-notify.
-    ipcMain.on('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types.js').RoomChatMessage; backfill?: boolean }) => {
+    this.onEngine('room-chat-add', (_e, payload: { roomId: string; message: import('../../shared/types.js').RoomChatMessage; backfill?: boolean }) => {
       try {
         if (!payload?.roomId || !payload?.message?.id) return;
         const isNew = db.appendRoomChats(payload.roomId, [payload.message]);
@@ -292,59 +413,67 @@ export class RoomManager {
     });
     // A file reaction toggled (ours or a peer's) — persist the room's whole
     // reaction map (toggles don't append well) so it survives restart.
-    ipcMain.on('room-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
+    this.onEngine('room-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
       try { if (payload?.roomId && payload?.reacts) db.setRoomReacts(payload.roomId, payload.reacts); } catch { /* ignore */ }
     });
-    ipcMain.on('room-chat-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
+    this.onEngine('room-chat-reacts', (_e, payload: { roomId: string; reacts: Record<string, Record<string, string[]>> }) => {
       try { if (payload?.roomId && payload?.reacts) db.setRoomChatReacts(payload.roomId, payload.reacts); } catch { /* ignore */ }
     });
-    ipcMain.on('room-chat-edits', (_e, payload: { roomId: string; edits: Record<string, { text: string; at: number; by: string; pub: string; sig: string }> }) => {
+    this.onEngine('room-chat-edits', (_e, payload: { roomId: string; edits: Record<string, { text: string; at: number; by: string; pub: string; sig: string }> }) => {
       try { if (payload?.roomId && payload?.edits) db.setRoomChatEdits(payload.roomId, payload.edits); } catch { /* ignore */ }
     });
     // The engine TOFU-bound a member's public key — persist so the binding (and
     // thus anti-impersonation) survives restarts.
-    ipcMain.on('room-identity-add', (_e, payload: { roomId: string; memberId: string; pub: string }) => {
+    this.onEngine('room-identity-add', (_e, payload: { roomId: string; memberId: string; pub: string }) => {
       try { if (payload?.roomId && payload?.memberId && payload?.pub) db.addRoomIdentity(payload.roomId, payload.memberId, payload.pub); } catch { /* ignore */ }
     });
     // A joiner learned who the room owner is from a peer — persist it.
-    ipcMain.on('room-owner', (_e, payload: { roomId: string; ownerId: string }) => {
+    this.onEngine('room-owner', (_e, payload: { roomId: string; ownerId: string }) => {
       try {
         if (!payload?.roomId || !payload?.ownerId) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         if (r && r.ownerId !== payload.ownerId) {
-          db.savePersistedRoom({ ...r, ownerId: payload.ownerId });
+          this.saveRoomRecord({ ...r, ownerId: payload.ownerId });
           log.info('Room owner learned from peer', { roomId: payload.roomId });
         }
       } catch { /* ignore */ }
     });
     // An ownership transfer applied (or the chain grew) — persist the WHOLE
     // chain (capped) so a restart re-verifies and re-serves it to joiners.
-    ipcMain.on('room-transfer', (_e, payload: { roomId: string; chain: db.PersistedRoom['transferChain'] }) => {
+    this.onEngine('room-transfer', (_e, payload: { roomId: string; chain: db.PersistedRoom['transferChain'] }) => {
       try {
         if (!payload?.roomId || !Array.isArray(payload.chain)) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         if (!r) return;
         const chain = payload.chain.slice(0, 8).map((l) => ({
           newOwnerId: String(l?.newOwnerId || ''), at: Number(l?.at) || 0,
           by: String(l?.by || ''), pub: String(l?.pub || ''), sig: String(l?.sig || ''),
         })).filter((l) => l.newOwnerId && l.by && l.pub && l.sig && l.at > 0);
         if (JSON.stringify(r.transferChain || []) !== JSON.stringify(chain)) {
-          db.savePersistedRoom({ ...r, transferChain: chain });
+          this.saveRoomRecord({ ...r, transferChain: chain });
           log.info('Room ownership-transfer chain persisted', { roomId: payload.roomId, links: chain.length });
         }
       } catch { /* ignore */ }
     });
     // The room was rekeyed (a member was kicked) — persist the new invite code so
     // reconnecting/restarting lands on the new swarm, not the abandoned one.
-    ipcMain.on('room-rekey', (_e, payload: { roomId: string; code: string; banId?: string }) => {
+    this.onEngine('room-bans', (_e, payload: { roomId: string; bans: string[]; banState: db.PersistedRoom['banState'] }) => {
+      if (!payload?.roomId || !Array.isArray(payload.bans)) return;
+      const r = this.roomRecord(payload.roomId);
+      if (r && (JSON.stringify(r.bans || []) !== JSON.stringify(payload.bans) || r.banState?.sig !== payload.banState?.sig)) {
+        try { this.saveRoomRecord({ ...r, bans: payload.bans, banState: payload.banState || undefined }); } catch { /* retained for retry */ }
+      }
+    });
+
+    this.onEngine('room-rekey', (_e, payload: { roomId: string; code: string; banId?: string }) => {
       try {
         if (!payload?.roomId || !payload?.code) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         if (!r) return;
         const banId = String(payload.banId || '');
         const bans = banId && !(r.bans || []).includes(banId) ? [...(r.bans || []), banId] : r.bans;
         if (r.code !== payload.code || bans !== r.bans) {
-          db.savePersistedRoom({ ...r, code: payload.code, ...(bans ? { bans } : {}) });
+          this.saveRoomRecord({ ...r, code: payload.code, ...(bans ? { bans } : {}) });
           log.info('Room rekeyed', { roomId: payload.roomId, banned: !!banId });
         }
       } catch { /* ignore */ }
@@ -352,15 +481,15 @@ export class RoomManager {
     // A joiner learned the room's E2E mode + content secret from a peer — persist
     // them (with the owner-signed config blob, so it can be re-verified and
     // re-served after restart) so encrypted files keep decrypting.
-    ipcMain.on('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string; prevSecrets?: string[]; cfg?: db.PersistedRoom['e2eCfg'] }) => {
+    this.onEngine('room-e2e', (_e, payload: { roomId: string; e2e: boolean; secret: string; prevSecrets?: string[]; cfg?: db.PersistedRoom['e2eCfg']; keyPages?: db.PersistedRoom['keyPages'] }) => {
       try {
         if (!payload?.roomId) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         const cfg = payload.cfg || undefined;
-        const prev = Array.isArray(payload.prevSecrets) ? payload.prevSecrets.slice(0, 8) : [];
+        const prev = Array.isArray(payload.prevSecrets) ? payload.prevSecrets : [];
         if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret || r.e2eCfg?.sig !== cfg?.sig
-          || JSON.stringify(r.prevSecrets || []) !== JSON.stringify(prev))) {
-          db.savePersistedRoom({ ...r, e2e: payload.e2e, secret: payload.secret, prevSecrets: prev, e2eCfg: cfg });
+          || JSON.stringify(r.prevSecrets || []) !== JSON.stringify(prev) || JSON.stringify(r.keyPages || []) !== JSON.stringify(payload.keyPages || []))) {
+          this.saveRoomRecord({ ...r, e2e: payload.e2e, secret: payload.secret, prevSecrets: prev, e2eCfg: cfg, keyPages: payload.keyPages || [] });
           log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e, signed: !!cfg, keyring: prev.length });
         }
       } catch { /* ignore */ }
@@ -368,26 +497,26 @@ export class RoomManager {
     // A joiner learned the room's friendly name from a peer (it had only the
     // code) — persist it so the name survives restart and shows in the list even
     // before the room reconnects. Live UI updates ride the normal room-update.
-    ipcMain.on('room-name', (_e, payload: { roomId: string; name: string; at?: number }) => {
+    this.onEngine('room-name', (_e, payload: { roomId: string; name: string; at?: number }) => {
       try {
         if (!payload?.roomId || !payload?.name) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         const at = Math.min(Number(payload.at) || 0, Date.now() + 60_000); // never persist a future clock (LWW-wedge guard)
         if (r && (r.name !== payload.name || at > (r.nameAt ?? 0))) {
-          db.savePersistedRoom({ ...r, name: payload.name, ...(at ? { nameAt: at } : {}) });
+          this.saveRoomRecord({ ...r, name: payload.name, ...(at ? { nameAt: at } : {}) });
           log.info('Room name updated', { roomId: payload.roomId, name: payload.name });
         }
       } catch { /* ignore */ }
     });
     // Topic changed (signed gossip / owner set / hello bootstrap) — persist it.
-    ipcMain.on('room-topic', (_e, payload: { roomId: string; text?: string; at?: number; by?: string; pub?: string; sig?: string }) => {
+    this.onEngine('room-topic', (_e, payload: { roomId: string; text?: string; at?: number; by?: string; pub?: string; sig?: string }) => {
       try {
         if (!payload?.roomId) return;
-        const r = db.getPersistedRooms().find((x) => x.roomId === payload.roomId);
+        const r = this.roomRecord(payload.roomId);
         const at = Math.min(Number(payload.at) || 0, Date.now() + 60_000); // never persist a future clock (LWW-wedge guard)
         const text = String(payload.text ?? '').slice(0, 300);
         if (r && (r.topic !== text || at > (r.topicAt ?? 0))) {
-          db.savePersistedRoom({
+          this.saveRoomRecord({
             ...r, topic: text, ...(at ? { topicAt: at } : {}),
             // The signature travels with the topic so we can re-serve it in
             // HELLOs after a restart (receivers re-verify — never trusted).
@@ -398,65 +527,186 @@ export class RoomManager {
     });
   }
 
+  onRoomUnavailable(hook: (roomId: string, reason: string) => void | Promise<void>): () => void {
+    this.unavailableHooks.add(hook);
+    return () => { this.unavailableHooks.delete(hook); };
+  }
+
+  private async roomUnavailable(roomId: string, reason: string): Promise<void> {
+    await Promise.all([...this.unavailableHooks].map(hook => hook(roomId, reason)));
+  }
+
+  isRoomAvailable(roomId: string): boolean {
+    return !this.destroyed && !this.networkSuspended && !this.leaving.has(roomId) &&
+      !!this.roomRecord(roomId) && !!this.cache.get(roomId) && !this.cache.get(roomId)?.kicked && this.ready;
+  }
+
+  private publishRoomState(state: RoomState): void {
+    if (state.connection) this.connectionHistory.set(state.roomId, state.connection);
+    const prev = this.cache.get(state.roomId);
+    this.cache.set(state.roomId, state);
+    if (state.kicked && !prev?.kicked) {
+      void this.roomUnavailable(state.roomId, 'removed').catch(error => log.warn('Room server stop failed', { error: String(error) }));
+      void getLanManager().stopRoom(state.roomId).catch(error => log.warn('Room LAN stop failed', { error: String(error) }));
+    }
+    this.reevalGlobalPtt();
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:update', state);
+    for (const hook of this.roomUpdateHooks) {
+      try { hook(state, prev); } catch (e) { log.warn('room update hook failed', { err: String(e) }); }
+    }
+  }
+
+  private roomRecord(roomId: string): db.PersistedRoom | undefined {
+    return this.setups.get(roomId)?.draft ?? this.unsavedRooms.get(roomId) ?? db.getPersistedRooms().find((r) => r.roomId === roomId);
+  }
+
+  private saveRoomRecord(record: db.PersistedRoom): void {
+    const setup = this.setups.get(record.roomId);
+    if (setup) setup.draft = record;
+    else {
+      try { db.savePersistedRoom(record); this.unsavedRooms.delete(record.roomId); }
+      catch (error) { this.unsavedRooms.set(record.roomId, record); log.warn('Room record not saved; retry required', { roomId: record.roomId }); throw error; }
+    }
+  }
+
+  private assertRoomOperation(roomId: string, epoch: number): void {
+    this.assertNotSuspended();
+    if (this.destroyed || this.leaving.has(roomId) || (this.roomEpochs.get(roomId) ?? 0) !== epoch) throw new Error('Room operation was cancelled');
+  }
+
+  private async stopEngineRoom(roomId: string): Promise<void> {
+    const win = this.win;
+    if (!win || win.isDestroyed() || this.destroyed) return;
+    try { await this.call('leave', { roomId }, 8000); }
+    catch (e) { this.engineGone(win, 'Room teardown failed: ' + String(e), true); }
+  }
+
+  private clearRoomData(roomId: string): void {
+    const errors: unknown[] = [];
+    for (const clear of [db.clearRoomTombstones, db.clearRoomTombstoneProofs, db.clearRoomRevives,
+      db.clearRoomManifest, db.clearRoomFolders, db.clearRoomHistory, db.clearRoomMutes, db.clearRoomLanPrefs,
+      db.clearRoomFolderFetch, db.clearRoomChats, db.clearRoomLastRead, db.clearRoomReacts,
+      db.clearRoomChatReacts, db.clearRoomChatEdits, db.clearRoomIdentities]) {
+      try { clear(roomId); } catch (error) { errors.push(error); }
+    }
+    try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
+    if (errors.length) throw errors[0];
+  }
+
   private failAll(message: string): void {
-    for (const [, p] of this.pending) p.reject(new Error(message));
+    if (this.startup) {
+      clearTimeout(this.startup.timer);
+      this.startup.reject(new Error(message));
+      this.startup = null;
+    }
+    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error(message)); }
     this.pending.clear();
   }
 
+  private engineGone(win: BrowserWindow, message: string, crashed = false): void {
+    if (this.win !== win) return;
+    this.win = null;
+    this.ready = false;
+    this.failAll(message);
+    getLanManager().onEngineGone();
+    for (const record of db.getPersistedRooms()) {
+      void this.roomUnavailable(record.roomId, 'engine-failed').catch(error => log.warn('Room server stop failed', { error: String(error) }));
+    }
+    // A final offline snapshot clears stale voice, screen and LAN state in all UIs.
+    for (const state of this.cache.values()) {
+      const offline = offlineRoom(state);
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:update', offline);
+      for (const hook of this.roomUpdateHooks) {
+        try { hook(offline, state); } catch (e) { log.warn('room offline hook failed', { err: String(e) }); }
+      }
+    }
+    if (crashed && this.cache.size > 0) this.recoveryWanted = true;
+    this.cache.clear();
+    this.reactivating.clear();
+    this.voiceIntents.clear();
+    this.screenIntents.clear(); this.micTestIntent++; this.micTestAllowedUntil = 0;
+    this.reevalGlobalPtt();
+    this.setEngineStatus({ state: this.destroyed ? 'stopped' : 'failed', message });
+    if (!win.isDestroyed()) { try { win.destroy(); } catch { /* best effort */ } }
+    this.scheduleRecovery();
+  }
+
+  private scheduleRecovery(): void {
+    if (!this.recoveryWanted || this.destroyed || this.networkSuspended || this.recoveryTimer || this.recoveryAttempts >= RECOVERY_DELAYS_MS.length) return;
+    const delay = RECOVERY_DELAYS_MS[this.recoveryAttempts++];
+    this.recoveryTimer = setTimeout(() => {
+      this.recoveryTimer = null;
+      void this.restoreAll().then(() => {
+        if (this.cache.size > 0) { this.recoveryWanted = false; this.recoveryAttempts = 0; }
+        else this.scheduleRecovery();
+      }).catch(() => { this.scheduleRecovery(); });
+    }, delay);
+  }
+
   private async ensureWindow(): Promise<BrowserWindow> {
+    if (this.destroyed) throw new Error('RoomManager is shut down');
     this.wireIpc();
     if (this.win && !this.win.isDestroyed()) {
-      if (this.ready) return this.readied(this.win);
-      await new Promise<void>((res) => this.readyWaiters.push(res));
-      return this.readied(this.win);
+      const win = this.win;
+      if (this.startup) await this.startup.promise;
+      if (this.win !== win || !this.ready || win.isDestroyed()) throw new Error('Room engine stopped during startup');
+      return this.readied(win);
     }
     this.ready = false;
+    this.setEngineStatus({ state: 'starting' });
     const preload = path.join(__dirname, 'room-engine.js');
-    const win = new BrowserWindow({
+    let win: BrowserWindow;
+    try { win = new BrowserWindow({
       show: false,
       webPreferences: {
-        preload,
-        nodeIntegration: false,
-        contextIsolation: true, // route dynamic imports through the Node loader in the isolated preload
-        sandbox: false,
-        backgroundThrottling: false,
+        preload, nodeIntegration: false, contextIsolation: true,
+        partition: ROOM_ENGINE_PARTITION,
+        sandbox: false, backgroundThrottling: false,
       },
-    });
+    }); } catch (e) {
+      this.setEngineStatus({ state: 'failed', message: 'Room engine window could not be created' });
+      this.scheduleRecovery();
+      throw e;
+    }
+    this.win = win;
+    let resolve!: () => void, reject!: (e: Error) => void;
+    const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+    const startup = {
+      win, promise, resolve, reject, loaded: false,
+      timer: setTimeout(() => this.engineGone(win, 'Room engine did not start within 20 seconds'), ENGINE_START_TIMEOUT_MS),
+    };
+    this.startup = startup;
     win.webContents.on('render-process-gone', (_e, details) => {
       log.warn('Room window renderer gone', { reason: details?.reason });
-      this.failAll('Room networking stopped unexpectedly (the engine crashed).');
-      this.ready = false;
-      if (this.win === win) this.win = null;
-      // The engine window owned the LAN session's pipe; with it gone the helper is
-      // orphaned. Tear it down (its own PID-watchdog is the backstop).
-      getLanManager().onEngineGone();
-      // The cached RoomStates are now stale (their engine is gone); leaving them
-      // would keep decideGlobalPtt seeing voice.inVoice=true and the OS key hook
-      // installed with no session behind it. Clear + re-evaluate so the hook stops.
-      this.cache.clear();
-      this.reevalGlobalPtt();
+      this.engineGone(win, 'Room networking stopped unexpectedly (the engine crashed).', true);
     });
-    win.on('closed', () => {
-      if (this.win === win) { this.win = null; this.ready = false; this.cache.clear(); this.reevalGlobalPtt(); }
+    win.webContents.on('preload-error', (_e, _preloadPath, error) => {
+      log.warn('Room engine preload failed', { error: String(error) });
+      this.engineGone(win, 'Room engine preload failed');
     });
-    this.win = win;
-    // Load a blank file:// page, NOT about:blank: file:// is a SECURE CONTEXT, so
-    // navigator.mediaDevices exists and the engine can capture the mic for voice
-    // chat (a top-level about:blank is not trustworthy → getUserMedia is undefined).
-    // The page is just a host for the preload (which does all the work).
-    let enginePage = '';
+    win.on('closed', () => this.engineGone(win, 'Room engine window closed unexpectedly', true));
+    // file:// is required for microphone capture. Reject load errors instead of
+    // falling back to about:blank (which silently disables getUserMedia).
     try {
-      enginePage = path.join(app.getPath('userData'), 'room-engine.html');
-      if (!fs.existsSync(enginePage)) {
-        fs.writeFileSync(enginePage, '<!doctype html><html><head><meta charset="utf-8"><title>engine</title></head><body></body></html>');
-      }
-    } catch { enginePage = ''; }
-    if (enginePage) {
-      try { await win.loadFile(enginePage); } catch { await win.loadURL('about:blank'); }
-    } else {
-      await win.loadURL('about:blank');
+      const enginePage = path.join(__dirname, 'room-engine.html');
+      installRoomEnginePolicy(win, pathToFileURL(enginePage).href, () => this.captureAccess());
+      void win.loadFile(enginePage).then(() => {
+        if (this.win !== win || this.startup !== startup) return;
+        startup.loaded = true;
+        if (this.ready) startup.resolve();
+      }).catch((e) => {
+        log.warn('Room engine page failed to load', { error: String(e) });
+        this.engineGone(win, 'Room engine page failed to load');
+      });
+    } catch (e) {
+      log.warn('Room engine startup failed', { error: String(e) });
+      this.engineGone(win, 'Room engine startup failed');
     }
-    if (!this.ready) await new Promise<void>((res) => this.readyWaiters.push(res));
+    await promise;
+    clearTimeout(startup.timer);
+    if (this.startup === startup) this.startup = null;
+    if (this.win !== win || !this.ready || win.isDestroyed()) throw new Error('Room engine stopped during startup');
+    this.setEngineStatus({ state: 'ready' });
     log.info('Room window ready');
     return this.readied(win);
   }
@@ -483,22 +733,61 @@ export class RoomManager {
     if (this.lanRelayCache !== null) {
       win.webContents.send('room-cmd', { type: 'lanSettings', reqId: ++this.reqSeq, relayEnabled: this.lanRelayCache });
     }
+    if (this.resourcePolicy && this.resourceWindow !== win) {
+      win.webContents.send('room-cmd', { type: 'resourceSettings', reqId: ++this.reqSeq, policy: this.resourcePolicy });
+      this.resourceWindow = win;
+    }
     return win;
   }
 
-  private async call<T = any>(type: string, payload: Record<string, unknown> = {}, timeoutMs = 0): Promise<T> {
+  private async call<T = any>(type: string, payload: Record<string, unknown> = {}, timeoutMs = COMMAND_TIMEOUT_MS,
+    options: { guard?: () => void; cancel?: (win: BrowserWindow) => void } = {}): Promise<T> {
     const win = await this.ensureWindow();
+    options.guard?.();
     const reqId = ++this.reqSeq;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(reqId, { resolve, reject });
-      if (timeoutMs > 0) setTimeout(() => { if (this.pending.delete(reqId)) reject(new Error('Room engine did not respond')); }, timeoutMs);
-      win.webContents.send('room-cmd', { type, reqId, ...payload });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(reqId)) return;
+        // A permission prompt can outlive the command's deadline. Cancel capture
+        // in the same engine so it cannot open a microphone after the UI failed.
+        try { options.cancel?.(win); } catch { /* still reject if cleanup IPC has closed */ }
+        reject(new Error('Room engine did not respond: ' + type));
+      }, Math.max(1, timeoutMs));
+      this.pending.set(reqId, { resolve, reject, timer, type, roomId: typeof payload.roomId === 'string' ? payload.roomId : undefined, withAudio: payload.withAudio === true });
+      try { win.webContents.send('room-cmd', { type, reqId, ...payload }); }
+      catch (e) { clearTimeout(timer); this.pending.delete(reqId); reject(e); }
     });
+  }
+
+  /** Cleanup never creates a new engine after a crash or while shutting down. */
+  private callIfRunning(type: string, payload: Record<string, unknown> = {}): Promise<{ ok: boolean }> {
+    if (!this.win || this.win.isDestroyed() || this.destroyed) return Promise.resolve({ ok: true });
+    return this.call<{ ok: boolean }>(type, payload);
+  }
+
+  private sendCaptureStop(win: BrowserWindow, type: string, roomId?: string): void {
+    if (this.win !== win || win.isDestroyed() || this.destroyed) return;
+    win.webContents.send('room-cmd', { type, reqId: ++this.reqSeq, ...(roomId ? { roomId } : {}) });
+  }
+
+  private captureAccess(): { audio: boolean; video: boolean } {
+    let audio = Date.now() < this.micTestAllowedUntil, video = false;
+    if (this.destroyed) return { audio: false, video: false };
+    if (!this.networkSuspended) {
+      audio ||= [...this.cache.values()].some((room) => room.voice.inVoice);
+      for (const p of this.pending.values()) {
+        if (p.type === 'voiceJoin' && p.roomId && this.voiceIntents.has(p.roomId)) audio = true;
+        if (p.type === 'screenShareStart' && p.roomId && this.screenIntents.has(p.roomId)) {
+          video = true; audio ||= p.withAudio === true;
+        }
+      }
+    }
+    return { audio, video };
   }
 
   private async roomsBase(): Promise<string> {
     let base: string;
-    try { base = (await db.getSettings()).defaultDownloadDir; }
+    try { base = (await db.getSettings()).defaultDownloadDir; if (!base) throw new Error('No download directory'); }
     catch { base = path.join(app.getPath('downloads'), 'Havvn'); }
     return path.join(base, 'Rooms');
   }
@@ -511,12 +800,14 @@ export class RoomManager {
   private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string, e2eCfg?: db.PersistedRoom['e2eCfg'], ownerPin?: string) {
     const profile = db.getRoomProfile();
     const identity = db.getRoomIdentity();
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = this.roomRecord(roomId);
     let useTurn = true;
     let turnServers: ReturnType<typeof customTurnToIce> = [];
     let trackers = resolveTrackers();
+    const resourceRevision = this.resourceRevision;
     try {
       const s = await db.getSettings();
+      if (resourceRevision === this.resourceRevision) this.resourcePolicy = readRoomResources(s.roomResources);
       useTurn = s.shareUseTurn !== false;
       turnServers = customTurnToIce(s.customTurnUrl, s.customTurnUsername, s.customTurnCredential);
       trackers = resolveTrackers(s.customTrackers);
@@ -525,7 +816,7 @@ export class RoomManager {
     return {
       type: 'join',
       payload: {
-        roomId, name, code, folder,
+        roomId, name, code, folder, resources: this.resourcePolicy ?? readRoomResources(),
         self: { memberId: profile.memberId, name: profile.name, avatarSeed: profile.avatarSeed, color: profile.color ?? '', status: profile.status ?? '', avatarImg: profile.avatarImg ?? '', pub: identity.pub, priv: identity.priv },
         useTurn,
         turnServers,
@@ -562,10 +853,13 @@ export class RoomManager {
         e2e: e2e ?? false,
         secret: secret ?? '',
         prevSecrets: persisted?.prevSecrets ?? [],
+        keyPages: persisted?.keyPages ?? [],
         bans: persisted?.bans ?? [],
+        banState: persisted?.banState,
         e2eCfg: e2eCfg ?? null,
         cacheDir: this.encCacheDir(roomId),
-        // Per-room preferences (absent → auto-download on, no speed limits).
+        // Legacy absent autoFetch remains on; new drafts store an explicit choice.
+        // Zero per-room ceilings inherit the shared file budget.
         autoFetch: persisted?.autoFetch !== false,
         folderFetch: db.getRoomFolderFetch(roomId),
         upKbps: persisted?.upKbps ?? 0,
@@ -594,56 +888,111 @@ export class RoomManager {
    *  createRoom/joinRoom drive the engine's 'join' directly, bypassing the
    *  reactivate() gate, so they must check here too or they'd start leaking. */
   private assertNotSuspended(): void {
-    if (this.networkSuspended) throw new Error('Rooms are paused: the VPN is down. Reconnect it first.');
+    if (this.networkSuspended) throw new Error('Rooms are paused: networking is unavailable (VPN or sleep). Restore the connection first.');
   }
 
-  async createRoom(name: string, e2e = false): Promise<RoomState> {
+  async createRoom(name: string, e2e = false, autoFetch = false): Promise<RoomState> {
     this.assertNotSuspended();
-    const roomId = uuidv4();
-    const code = generateRoomCode(e2e); // E2E rooms carry the marker in the code itself
-    const folder = path.join(await this.roomsBase(), slugify(name) + '-' + roomId.slice(0, 6));
-    fs.mkdirSync(folder, { recursive: true });
-    const createdAt = Date.now();
-    const ownerId = db.getRoomProfile().memberId; // the creator owns the room
-    // E2E rooms get a content secret (separate from the rotating gossip key) so a
-    // later kick/rekey doesn't strand access to already-shared files.
-    const secret = e2e ? generateRoomSecret() : undefined;
-    // We ARE the owner, so pin ourselves — our shared invite carries this id and
-    // joiners will only accept us as owner (no self-declared-owner hijack).
-    db.savePersistedRoom({ roomId, name, code, folder, createdAt, ownerId, ownerPin: ownerId, e2e, secret });
-    const { type, payload } = await this.joinPayload(roomId, name, code, folder, ownerId, e2e, secret, undefined, ownerId);
-    const state = await this.call<RoomState>(type, { payload });
-    state.createdAt = createdAt;
-    this.cache.set(roomId, state);
-    return state;
+    name = name.trim();
+    if (!name) throw new Error('Empty room name');
+    const key = JSON.stringify([name, e2e, autoFetch]);
+    const inflight = this.creating.get(key);
+    if (inflight) return inflight;
+    const ownerId = db.getRoomProfile().memberId;
+    const operation = this.setupRoom(name, generateRoomCode(e2e), e2e, ownerId, ownerId, autoFetch);
+    this.creating.set(key, operation);
+    try { return await operation; }
+    finally { if (this.creating.get(key) === operation) this.creating.delete(key); }
   }
 
-  async joinRoom(rawCode: string): Promise<RoomState> {
+  async joinRoom(rawCode: string, autoFetch = false): Promise<RoomState> {
     this.assertNotSuspended();
-    // The invite may pin the owner ("<code>~<ownerId>"); the pin is not part of the
-    // KDF, so bare-code and pinned joiners derive the same key.
     const { code, ownerPin } = parseInvite(rawCode);
     if (!code) throw new Error('Empty room code');
-    // Already joined this code? Return the existing room.
+    if (rawCode.includes('~') && !ownerPin) throw new Error('Invalid invite owner pin');
+    const inflight = this.joining.get(code);
+    if (inflight) {
+      const state = await inflight.promise;
+      if (ownerPin && ownerPin !== inflight.pin) return this.joinExisting(this.roomRecord(state.roomId)!, ownerPin);
+      return state;
+    }
     const existing = db.getPersistedRooms().find((r) => normalizeCode(r.code) === code);
-    if (existing) return this.getRoom(existing.roomId).then((s) => s || this.reactivate(existing));
-    const roomId = uuidv4();
-    const name = code; // placeholder until a peer's HELLO/PING carries the real name
-    const folder = path.join(await this.roomsBase(), slugify(code) + '-' + roomId.slice(0, 6));
+    const operation = existing ? this.joinExisting(existing, ownerPin) : this.setupRoom(code, code, codeIsE2E(code), undefined, ownerPin, autoFetch);
+    const entry = { pin: ownerPin, promise: operation };
+    this.joining.set(code, entry);
+    try { return await operation; }
+    finally { if (this.joining.get(code) === entry) this.joining.delete(code); }
+  }
+
+  private async joinExisting(record: db.PersistedRoom, pin: string): Promise<RoomState> {
+    if (!record) throw new Error('Room operation was cancelled');
+    assertCompatibleOwnerPin(record, pin);
+    const epoch = this.roomEpochs.get(record.roomId) ?? 0;
+    this.assertRoomOperation(record.roomId, epoch);
+    const state = await this.getRoom(record.roomId);
+    if (!state) throw new Error('Room operation was cancelled');
+    this.assertRoomOperation(record.roomId, epoch);
+    if (pin) {
+      await this.call('pinOwner', { roomId: record.roomId, ownerPin: pin }, COMMAND_TIMEOUT_MS,
+        { guard: () => this.assertRoomOperation(record.roomId, epoch) });
+      this.assertRoomOperation(record.roomId, epoch);
+      const current = this.roomRecord(record.roomId)!;
+      if (!current.ownerPin) db.savePersistedRoom({ ...current, ownerPin: pin });
+    }
+    return this.cache.get(record.roomId) ?? state;
+  }
+
+  private async setupRoom(name: string, code: string, e2e: boolean, ownerId?: string, ownerPin?: string, autoFetch = false): Promise<RoomState> {
+    const roomId = uuidv4(), epoch = this.roomEpochs.get(roomId) ?? 0;
+    const folder = path.join(await this.roomsBase(), slugify(name) + '-' + roomId.slice(0, 6));
+    this.assertRoomOperation(roomId, epoch);
+    const existed = fs.existsSync(folder);
     fs.mkdirSync(folder, { recursive: true });
-    const createdAt = Date.now();
-    // A "-e2e" code tells us the room is end-to-end encrypted before any peer
-    // does — so the engine refuses to seed plaintext even into an empty swarm.
-    const e2e = codeIsE2E(code);
-    db.savePersistedRoom({ roomId, name, code, folder, createdAt, e2e, ownerPin: ownerPin || undefined });
-    const { type, payload } = await this.joinPayload(roomId, name, code, folder, undefined, e2e, undefined, undefined, ownerPin);
-    const state = await this.call<RoomState>(type, { payload });
-    state.createdAt = createdAt;
-    this.cache.set(roomId, state);
-    return state;
+    const setup = { draft: { roomId, name, code, folder, createdAt: Date.now(), ownerId, ownerPin: ownerPin || undefined,
+      e2e, autoFetch, secret: e2e && ownerId ? generateRoomSecret() : undefined } as db.PersistedRoom, state: undefined as RoomState | undefined, events: [] as Array<() => void> };
+    this.setups.set(roomId, setup);
+    let commitAttempted = false;
+    try {
+      const { type, payload } = await this.joinPayload(roomId, name, code, folder, ownerId, e2e, setup.draft.secret, undefined, ownerPin);
+      const state = await this.call<RoomState>(type, { payload }, COMMAND_TIMEOUT_MS,
+        { guard: () => this.assertRoomOperation(roomId, epoch) });
+      this.assertRoomOperation(roomId, epoch);
+      if (state?.roomId !== roomId || !Array.isArray(state.members) || !Array.isArray(state.files)) throw new Error('Invalid room setup response');
+      commitAttempted = true;
+      db.savePersistedRoom(setup.draft);
+      this.setups.delete(roomId);
+      for (const event of setup.events) { try { event(); } catch (error) { log.warn('Room setup event failed', { err: String(error) }); } }
+      const confirmed = setup.state ?? state;
+      confirmed.createdAt = setup.draft.createdAt;
+      this.publishRoomState(confirmed);
+      return confirmed;
+    } catch (e) {
+      const leaving = this.leaving.get(roomId);
+      if (leaving) { try { await leaving.promise; } catch (error) { log.warn('Room leave during setup failed', { err: String(error) }); } }
+      else if ((this.roomEpochs.get(roomId) ?? 0) === epoch) await this.stopEngineRoom(roomId);
+      this.setups.delete(roomId);
+      this.cache.delete(roomId);
+      this.connectionHistory.delete(roomId);
+      if (commitAttempted) { try { db.deletePersistedRoom(roomId); } catch (error) { log.warn('Room setup record rollback failed', { err: String(error) }); } }
+      try { this.clearRoomData(roomId); } catch (error) { log.warn('Room setup data rollback failed', { err: String(error) }); }
+      if (!existed) { try { fs.rmdirSync(folder); } catch { /* retained if files appeared */ } }
+      throw e;
+    }
   }
 
   private async reactivate(r: db.PersistedRoom): Promise<RoomState> {
+    const pending = this.unsavedRooms.get(r.roomId);
+    if (pending) { this.saveRoomRecord(pending); r = pending; }
+    const inflight = this.reactivating.get(r.roomId);
+    if (inflight) return inflight;
+    const operation = this.reactivateOnce(r);
+    this.reactivating.set(r.roomId, operation);
+    try { return await operation; }
+    finally { if (this.reactivating.get(r.roomId) === operation) this.reactivating.delete(r.roomId); }
+  }
+
+  private async reactivateOnce(r: db.PersistedRoom): Promise<RoomState> {
+    if (r.storageError) throw new Error(t('rooms.storage.' + r.storageError));
     // The VPN is down (kill-switch). Never rejoin the network — hand back the
     // last-known state if we have it, otherwise fail closed.
     if (this.networkSuspended) {
@@ -651,8 +1000,12 @@ export class RoomManager {
       if (cached) return cached;
       throw new Error('Rooms are paused: the VPN is down (kill-switch)');
     }
+    const epoch = this.roomEpochs.get(r.roomId) ?? 0;
+    this.assertRoomOperation(r.roomId, epoch);
     const { type, payload } = await this.joinPayload(r.roomId, r.name, r.code, r.folder, r.ownerId, r.e2e, r.secret, r.e2eCfg, r.ownerPin);
-    const state = await this.call<RoomState>(type, { payload });
+    const state = await this.call<RoomState>(type, { payload }, COMMAND_TIMEOUT_MS,
+      { guard: () => this.assertRoomOperation(r.roomId, epoch) });
+    this.assertRoomOperation(r.roomId, epoch);
     state.createdAt = r.createdAt;
     this.cache.set(r.roomId, state);
     return state;
@@ -663,36 +1016,37 @@ export class RoomManager {
    * `deleteFiles` to also remove the room's download folder (files a member
    * shared from their ORIGINAL location outside the folder are untouched).
    */
-  async leaveRoom(roomId: string, deleteFiles = false): Promise<{ ok: boolean }> {
-    // Resolve the folder BEFORE the db entry is deleted below.
-    const folder = deleteFiles ? this.folderOf(roomId) : null;
-    try { await this.call('leave', { roomId }, 8000); } catch { /* engine may be down */ }
+  async leaveRoom(roomId: string, deleteFiles = false, serverMode: 'stop' | 'local' = 'stop'): Promise<{ ok: boolean }> {
+    const inflight = this.leaving.get(roomId);
+    if (inflight) { inflight.deleteFiles ||= deleteFiles; return inflight.promise; }
+    const record = this.roomRecord(roomId);
+    if (!record) return { ok: true };
+    this.roomEpochs.set(roomId, (this.roomEpochs.get(roomId) ?? 0) + 1);
+    this.voiceIntents.delete(roomId); this.screenIntents.delete(roomId);
+    const entry = { deleteFiles, serverMode, promise: Promise.resolve({ ok: true }) };
+    this.leaving.set(roomId, entry);
+    entry.promise = this.leaveRoomOnce(roomId, record.folder, entry);
+    try { return await entry.promise; }
+    finally { if (this.leaving.get(roomId) === entry) this.leaving.delete(roomId); }
+  }
+
+  private async leaveRoomOnce(roomId: string, folder: string, entry: { deleteFiles: boolean; serverMode: 'stop' | 'local' }): Promise<{ ok: boolean }> {
+    const serversStopped = this.roomUnavailable(roomId, entry.serverMode === 'local' ? 'left-local' : 'left');
+    const lanStopped = getLanManager().stopRoom(roomId);
+    try { await Promise.all([serversStopped, lanStopped, this.stopEngineRoom(roomId)]); }
+    finally {
+      // A failed process stop keeps the room record for retry, but clears capture.
+      const cached = this.cache.get(roomId);
+      try { if (cached) this.publishRoomState(offlineRoom(cached)); }
+      finally { this.cache.delete(roomId); this.reevalGlobalPtt(); }
+    }
     db.deletePersistedRoom(roomId);
-    db.clearRoomTombstones(roomId);
-    db.clearRoomTombstoneProofs(roomId);
-    db.clearRoomRevives(roomId);
-    db.clearRoomManifest(roomId);
-    db.clearRoomFolders(roomId);
-    db.clearRoomHistory(roomId);
-    db.clearRoomMutes(roomId);
-    db.clearRoomLanPrefs(roomId);
-    db.clearRoomFolderFetch(roomId);
-    db.clearRoomChats(roomId);
-    db.clearRoomLastRead(roomId);
-    db.clearRoomReacts(roomId);
-    db.clearRoomChatReacts(roomId);
-    db.clearRoomChatEdits(roomId);
-    db.clearRoomIdentities(roomId);
-    try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
-    // The engine's 'leave' above destroys the room's WebTorrent client, so the
-    // file handles should be released by now; best-effort delete (a Windows AV
-    // lock can still hold one, in which case the folder simply stays).
-    if (folder) {
+    this.unsavedRooms.delete(roomId);
+    this.clearRoomData(roomId); this.connectionHistory.delete(roomId);
+    if (entry.deleteFiles) {
       try { fs.rmSync(folder, { recursive: true, force: true }); }
       catch (e) { log.warn('leaveRoom: could not delete room folder', { roomId, err: String(e) }); }
     }
-    this.cache.delete(roomId);
-    this.reevalGlobalPtt(); // the left room may have been the PTT hook's target
     return { ok: true };
   }
 
@@ -701,17 +1055,18 @@ export class RoomManager {
     return db.getPersistedRooms().map((r) => {
       const s = this.cache.get(r.roomId);
       const lastRead = db.getRoomLastRead(r.roomId);
-      const unread = db.getRoomChats(r.roomId).filter((m) => m.at > lastRead && m.memberId !== self).length;
+      const unread = db.getRoomChats(r.roomId).filter((m) => (m.receivedAt ?? m.at) > lastRead && m.memberId !== self).length;
       return {
         roomId: r.roomId,
         name: r.name,
         code: r.code,
         folder: r.folder,
         memberCount: s ? s.members.length : 1,
-        onlineCount: s ? s.members.filter((m) => m.online).length : 1,
+        onlineCount: s ? s.members.filter((m) => m.online).length : 0,
         fileCount: s ? s.files.length : 0,
         createdAt: r.createdAt,
         e2e: r.e2e ?? false,
+        storageError: this.unsavedRooms.has(r.roomId) ? 'write-failed' : r.storageError,
         suspended: this.networkSuspended,
         lan: s?.lan?.active === true, // rail-collapsed LAN badge (built per-field)
         unread,
@@ -754,12 +1109,7 @@ export class RoomManager {
     if (!state || !folder) return [];
     return state.files.map((f) => {
       const tr = state.transfers?.[f.fileId];
-      let localPath: string | undefined;
-      if (tr?.localPath && fs.existsSync(tr.localPath)) localPath = tr.localPath;
-      else {
-        const flat = path.join(folder, f.name);
-        if (fs.existsSync(flat)) localPath = flat;
-      }
+      const localPath = tr?.haveLocally && tr.localPath && tr.localStamp && roomFileStamp(tr.localPath) === tr.localStamp ? tr.localPath : undefined;
       return {
         fileId: f.fileId,
         name: f.name,
@@ -771,19 +1121,55 @@ export class RoomManager {
     });
   }
 
+  /** Read-only: diagnostics must never create an engine, join a room or open capture. */
+  diagnoseRoom(roomId: string): RoomDiagnosticReport {
+    if (this.leaving.has(roomId) || !this.roomRecord(roomId)) throw new Error('Room not available');
+    return buildRoomDiagnosticReport(this.cache.get(roomId), this.engineStatus, this.networkSuspended,
+      app.getVersion?.() ?? 'unknown', this.connectionHistory.get(roomId));
+  }
+
+  retryConnection(roomId: string): Promise<RoomDiagnosticReport> {
+    const pending = this.connectionRetries.get(roomId);
+    if (pending) return pending;
+    const job = (async () => {
+      this.assertNotSuspended();
+      const record = this.roomRecord(roomId), epoch = this.roomEpochs.get(roomId) ?? 0;
+      if (!record || this.leaving.has(roomId) || this.destroyed) throw new Error('Room not available');
+      this.assertRoomOperation(roomId, epoch);
+      this.recoveryAttempts = 0; this.recoveryWanted = false;
+      if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+      let state = this.cache.get(roomId);
+      if (!state || !this.win || this.win.isDestroyed() || !this.ready) state = await this.reactivate(record);
+      this.assertRoomOperation(roomId, epoch);
+      if (state.kicked) throw new Error('You were removed from this room');
+      state = await this.call<RoomState>('retryConnection', { roomId }, 8000,
+        { guard: () => this.assertRoomOperation(roomId, epoch) });
+      this.assertRoomOperation(roomId, epoch);
+      if (state?.roomId !== roomId || !Array.isArray(state.members) || !Array.isArray(state.files)) throw new Error('Invalid room retry response');
+      state.createdAt = record.createdAt; this.publishRoomState(state);
+      return this.diagnoseRoom(roomId);
+    })();
+    this.connectionRetries.set(roomId, job);
+    void job.finally(() => { if (this.connectionRetries.get(roomId) === job) this.connectionRetries.delete(roomId); }).catch(() => {});
+    return job;
+  }
+
   async getRoom(roomId: string): Promise<RoomState | null> {
+    if (this.leaving.has(roomId)) return null;
+    const unsaved = this.unsavedRooms.get(roomId);
+    if (unsaved) this.saveRoomRecord(unsaved);
     const cached = this.cache.get(roomId);
     if (cached) return cached;
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     if (!persisted) return null;
-    return this.reactivate(persisted).catch(() => null);
+    return this.reactivate(persisted);
   }
 
   async addFiles(roomId: string, paths: string[], opts?: { folderId?: string; folderName?: string }): Promise<RoomState> {
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     if (!persisted) throw new Error('Room not found');
-    if (!this.cache.has(roomId)) await this.reactivate(persisted);
-    const state = await this.call<RoomState>('addFiles', { roomId, paths, opts });
+    if (!this.cache.has(roomId) || !this.win || this.win.isDestroyed() || !this.ready) await this.reactivate(persisted);
+    const state = await this.call<RoomState>('addFiles', { roomId, paths, opts }, 10 * 60_000);
     state.createdAt = persisted.createdAt;
     this.cache.set(roomId, state);
     return state;
@@ -799,18 +1185,11 @@ export class RoomManager {
    * the file is being shared), then opens it with the OS default app.
    */
   async openFile(roomId: string, fileId: string): Promise<void> {
-    const state = this.cache.get(roomId);
-    const file = state?.files.find((f) => f.fileId === fileId);
-    const folder = this.folderOf(roomId);
-    try { await this.call('releaseFile', { roomId, fileId }, 8000); } catch { /* engine may be down */ }
-    // Prefer the engine-known on-disk path (a folder subdir for foldered files,
-    // or a shared file's original location); fall back to the flat room join.
-    const tr = state?.transfers?.[fileId];
-    const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath
-      : (folder && file) ? path.join(folder, file.name) : null;
-    if (abs) {
-      try { await shell.openPath(abs); } catch { /* ignore */ }
-    }
+    await this.resolveLocalPath(roomId, fileId);
+    await this.call('releaseFile', { roomId, fileId }, 10000);
+    const abs = await this.resolveLocalPath(roomId, fileId);
+    const error = await shell.openPath(abs);
+    if (error) throw new Error(error);
   }
 
   /**
@@ -820,13 +1199,12 @@ export class RoomManager {
    */
   async revealFile(roomId: string, fileId: string): Promise<void> {
     const state = this.cache.get(roomId);
-    const file = state?.files.find((f) => f.fileId === fileId);
-    const folder = this.folderOf(roomId);
     const tr = state?.transfers?.[fileId];
-    const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath
-      : (folder && file) ? path.join(folder, file.name) : null;
-    if (abs && fs.existsSync(abs)) shell.showItemInFolder(abs);
-    else if (folder) await shell.openPath(folder); // not on disk yet — open the room folder
+    if (tr?.haveLocally) shell.showItemInFolder(await this.resolveLocalPath(roomId, fileId));
+    else {
+      const folder = this.folderOf(roomId);
+      if (folder) await shell.openPath(folder);
+    }
   }
 
   /**
@@ -850,7 +1228,7 @@ export class RoomManager {
       const { port, index } = await this.call<{ port: number; index: number }>('watchStream', { roomId, fileId }, 30000);
       return { directUrl: `http://127.0.0.1:${port}/${index}`, hlsUrl: '', playerUrl: '', direct: true, kind: classifyMediaKind(file.name), name: file.name, streaming: true };
     }
-    const abs = this.resolveLocalPath(roomId, fileId);
+    const abs = await this.resolveLocalPath(roomId, fileId);
     // The cast server runs in the torrent host; publish the room file there.
     const { getTorrentManager } = await import('../torrent/index.js');
     return getTorrentManager().castPublishDiskFile(abs);
@@ -860,7 +1238,7 @@ export class RoomManager {
    *  for an in-app <img> (row thumbnail + lightbox). Throws until the file is
    *  fully on disk (resolveLocalPath). */
   async imageUrl(roomId: string, fileId: string): Promise<{ url: string }> {
-    const abs = this.resolveLocalPath(roomId, fileId);
+    const abs = await this.resolveLocalPath(roomId, fileId);
     const { getTorrentManager } = await import('../torrent/index.js');
     return getTorrentManager().castPublishImage(abs);
   }
@@ -870,29 +1248,44 @@ export class RoomManager {
    * path: a *shared* file is seeded from its original location (not the room
    * folder), while a *downloaded* one lives in the room folder.
    */
-  private resolveLocalPath(roomId: string, fileId: string): string {
+  private async resolveLocalPath(roomId: string, fileId: string): Promise<string> {
     const state = this.cache.get(roomId);
-    const file = state?.files.find((f) => f.fileId === fileId);
-    const folder = this.folderOf(roomId);
-    if (!file || !folder) throw new Error('File not available in this room');
-    const tr = state?.transfers?.[fileId];
-    const abs = (tr?.localPath && fs.existsSync(tr.localPath)) ? tr.localPath : path.join(folder, file.name);
-    if (!fs.existsSync(abs)) throw new Error('This file is not fully downloaded yet');
-    return abs;
+    if (!state?.files.some(f => f.fileId === fileId)) throw new Error('File not available in this room');
+    return this.call<string>('verifiedFile', { roomId, fileId });
   }
 
   /** Subtitle tracks for a downloaded room file (embedded text + sidecars). */
   async subtitleList(roomId: string, fileId: string): Promise<SubtitleTrackItem[]> {
-    const abs = this.resolveLocalPath(roomId, fileId);
+    const abs = await this.resolveLocalPath(roomId, fileId);
     const { getTorrentManager } = await import('../torrent/index.js');
     return listSubtitleTracks(getTorrentManager().ffmpegBinary, abs);
   }
 
   /** A chosen subtitle track as WebVTT text (renderer wraps it in a blob URL). */
   async subtitleGet(roomId: string, fileId: string, key: string): Promise<string> {
-    const abs = this.resolveLocalPath(roomId, fileId);
+    const abs = await this.resolveLocalPath(roomId, fileId);
     const { getTorrentManager } = await import('../torrent/index.js');
     return getSubtitleVtt(getTorrentManager().ffmpegBinary, abs, key);
+  }
+
+  async diskUsage(roomId: string): Promise<import('../../shared/room-local-data').RoomDiskUsage> {
+    const record = this.roomRecord(roomId); if (!record) throw new Error('Room not found');
+    if (!this.cache.has(roomId)) await this.reactivate(record);
+    return this.call('diskUsage', { roomId }, 15000);
+  }
+  async cleanupCopies(roomId: string, previewId: string, fileIds: string[]): Promise<{ bytes: number; files: number }> {
+    if (!this.roomRecord(roomId) || this.leaving.has(roomId)) throw new Error('Room not found');
+    return this.call('cleanupCopies', { roomId, previewId, fileIds }, 120000);
+  }
+  localHistory(roomId: string, kind: 'chat' | 'event', before?: string) {
+    if (!this.roomRecord(roomId)) throw new Error('Room not found');
+    return db.getRoomLocalHistoryPage(roomId, kind, before);
+  }
+  async setHistoryRetention(roomId: string, days: import('../../shared/room-local-data').RoomHistoryDays) {
+    if (!this.roomRecord(roomId)) throw new Error('Room not found');
+    const saved = db.setRoomHistoryRetention(roomId, days);
+    if (this.cache.has(roomId)) await this.call('historyTrim', { roomId, days: saved });
+    return saved;
   }
 
   /** Stop seeding one room file (keeps the local copy; reversible). */
@@ -948,22 +1341,45 @@ export class RoomManager {
   }
   /** Per-folder auto-fetch override (local pref): true/false forces, null inherits
    *  the room-wide toggle again. Persisted, and re-applied on every (re)join. */
-  setFolderAutoFetch(roomId: string, folderId: string, mode: boolean | null): Promise<RoomState> {
-    db.setRoomFolderFetch(roomId, folderId, mode);
-    return this.folderCmd(roomId, 'setFolderAutoFetch', { folderId, mode });
+  setFolderAutoFetch(roomId: string, folderId: string, mode: boolean | null): Promise<RoomPreferenceResult> {
+    if (mode !== null && typeof mode !== 'boolean') return Promise.reject(new Error('Invalid folder download preference'));
+    return this.savePreference(roomId, 'setFolderAutoFetch', { folderId, mode }, () => db.setRoomFolderFetch(roomId, folderId, mode));
   }
 
   // ── Voice ─────────────────────────────────────────────────────────────────
   /** Join a room's serverless mesh voice channel (captures the mic). Rejects if
    *  the VPN kill-switch is up or mic permission is denied — the caller toasts it. */
   async voiceJoin(roomId: string): Promise<{ ok: boolean }> {
-    this.assertNotSuspended(); // a voice call leaks the real IP just like seeding
-    await this.ensureMicAccess();
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
-    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
-    return this.call<{ ok: boolean }>('voiceJoin', { roomId }, 15000);
+    this.assertNotSuspended();
+    const intent = ++this.voiceIntentSeq;
+    this.voiceIntents.clear(); this.voiceIntents.set(roomId, intent);
+    try {
+      await this.ensureMicAccess();
+      if (this.voiceIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
+      const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+      if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+      if (this.voiceIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
+      return await this.call<{ ok: boolean }>('voiceJoin', { roomId }, 15000, {
+        guard: () => {
+          this.assertNotSuspended();
+          if (this.voiceIntents.get(roomId) !== intent || this.leaving.has(roomId)) throw new Error('Voice join was cancelled');
+        },
+        cancel: (win) => {
+          if (this.voiceIntents.get(roomId) !== intent) return;
+          this.voiceIntents.delete(roomId); this.sendCaptureStop(win, 'voiceLeave', roomId);
+        },
+      });
+    } finally { if (this.voiceIntents.get(roomId) === intent) this.voiceIntents.delete(roomId); }
   }
-  voiceLeave(roomId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceLeave', { roomId }); }
+  async voiceReconnect(roomId: string): Promise<{ ok: boolean }> {
+    this.assertNotSuspended();
+    if (!this.cache.get(roomId)?.voice.inVoice || !this.win || this.win.isDestroyed()) return Promise.reject(new Error('Voice not active'));
+    return this.callIfRunning('voiceReconnect', { roomId });
+  }
+  voiceLeave(roomId: string): Promise<{ ok: boolean }> {
+    this.voiceIntents.delete(roomId); this.screenIntents.delete(roomId);
+    return this.callIfRunning('voiceLeave', { roomId });
+  }
   voiceMute(roomId: string, muted: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceMute', { roomId, muted }); }
   voiceDeafen(roomId: string, deafened: boolean): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceDeafen', { roomId, deafened }); }
   voiceVolume(roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceVolume', { roomId, memberId, volume }); }
@@ -1012,10 +1428,23 @@ export class RoomManager {
    *  the capture pipeline uses — main-renderer ids would not match). */
   voiceDevices(): Promise<VoiceDeviceInfo[]> { return this.call<VoiceDeviceInfo[]>('voiceDevices', {}, 15000); }
   async voiceMicTestStart(settings: VoiceSettings, monitor = false): Promise<{ ok: boolean }> {
+    const intent = ++this.micTestIntent;
     await this.ensureMicAccess(); // macOS TCC prompt, same as joining voice
-    return this.call<{ ok: boolean }>('voiceMicTestStart', { settings, monitor }, 15000);
+    if (intent !== this.micTestIntent || this.destroyed) return { ok: true };
+    this.micTestAllowedUntil = Date.now() + 75_000;
+    try { return await this.call<{ ok: boolean }>('voiceMicTestStart', { settings, monitor }, 15000, {
+      guard: () => { if (intent !== this.micTestIntent) throw new Error('Mic test was cancelled'); },
+      cancel: (win) => {
+        if (intent !== this.micTestIntent) return;
+        this.micTestIntent++; this.micTestAllowedUntil = 0; this.sendCaptureStop(win, 'voiceMicTestStop');
+      },
+    }); }
+    catch (e) { if (intent === this.micTestIntent) this.micTestAllowedUntil = 0; throw e; }
   }
-  voiceMicTestStop(): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('voiceMicTestStop', {}); }
+  voiceMicTestStop(): Promise<{ ok: boolean }> {
+    this.micTestIntent++; this.micTestAllowedUntil = 0;
+    return this.callIfRunning('voiceMicTestStop');
+  }
 
   // ── Screenshare ───────────────────────────────────────────────────────────
   /** Shareable screens/windows with picker thumbnails (data URLs). */
@@ -1027,12 +1456,29 @@ export class RoomManager {
 
   async screenShareStart(roomId: string, sourceId: string, withAudio = false): Promise<{ ok: boolean }> {
     this.assertNotSuspended(); // a share leg leaks the real IP just like voice
+    const intent = ++this.screenIntentSeq;
+    this.screenIntents.set(roomId, intent);
     await this.ensureScreenAccess();
-    return this.call<{ ok: boolean }>('screenShareStart', { roomId, sourceId, withAudio }, 15000);
+    if (this.screenIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
+    this.assertNotSuspended();
+    try { return await this.call<{ ok: boolean }>('screenShareStart', { roomId, sourceId, withAudio }, 15000, {
+      guard: () => {
+        this.assertNotSuspended();
+        if (this.screenIntents.get(roomId) !== intent || this.leaving.has(roomId)) throw new Error('Screen sharing was cancelled');
+      },
+      cancel: (win) => {
+        if (this.screenIntents.get(roomId) !== intent) return;
+        this.screenIntents.delete(roomId); this.sendCaptureStop(win, 'screenShareStop', roomId);
+      },
+    }); }
+    finally { if (this.screenIntents.get(roomId) === intent) this.screenIntents.delete(roomId); }
   }
-  screenShareStop(roomId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenShareStop', { roomId }); }
+  screenShareStop(roomId: string): Promise<{ ok: boolean }> {
+    this.screenIntents.delete(roomId);
+    return this.callIfRunning('screenShareStop', { roomId });
+  }
   screenWatchStart(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenWatchStart', { roomId, memberId }, 8000); }
-  screenWatchStop(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenWatchStop', { roomId, memberId }); }
+  screenWatchStop(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.callIfRunning('screenWatchStop', { roomId, memberId }); }
   /** The renderer's loopback answer/ICE back to the engine forwarder. */
   screenSignal(roomId: string, memberId: string, kind: string, data: unknown): Promise<{ ok: boolean }> {
     return this.call<{ ok: boolean }>('screenSignal', { roomId, memberId, kind, data });
@@ -1045,9 +1491,11 @@ export class RoomManager {
    *  window which pins genesis + admits the picks. If the engine push fails after
    *  the helper spawned, the helper is torn down so nothing leaks. */
   async lanStart(roomId: string, memberIds: string[]): Promise<{ ok: boolean; sessionId?: string; warning?: string }> {
-    this.assertNotSuspended(); // a LAN adapter exposes the real interface just like seeding
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    this.assertRoomOperation(roomId, epoch); // a LAN adapter exposes the real interface just like seeding
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
-    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+    if (!persisted || this.leaving.has(roomId)) throw new Error('Room not available');
+    if (!this.cache.has(roomId)) await this.reactivate(persisted);
     const selfMemberId = db.getRoomProfile().memberId;
     const prefs = db.getRoomLanPrefs(roomId);
     // RE-ENTER the room's own session when we have one, so the subnet and every
@@ -1066,15 +1514,18 @@ export class RoomManager {
     const relayEnabled = await this.lanRelayPref();
     const handle = await getLanManager().start({ roomId, sessionId, hostId: selfMemberId, selfMemberId });
     try {
+      this.assertRoomOperation(roomId, epoch);
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit, isHost: true,
         relayEnabled, floor,
-      }, 30000);
+      }, 30000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      this.assertRoomOperation(roomId, epoch);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
       throw e;
     }
+    this.assertRoomOperation(roomId, epoch);
     // Remember only what actually took: the admit list rode a start that succeeded.
     this.updateLanPrefs(roomId, (p) => withPicks(withSession(p, sessionId), admit, selfMemberId));
     this.reapplyLanApps(roomId);
@@ -1084,10 +1535,18 @@ export class RoomManager {
   /** Stop the LAN session: cooperative engine teardown (reverts the adapter via the
    *  pipe shutdown verb) then release the main-side helper handle. */
   async lanStop(roomId: string): Promise<{ ok: boolean }> {
-    try { await this.call('lanStop', { roomId }, 8000); } catch { /* engine may be down */ }
-    const sid = getLanManager().activeSessionId();
-    if (sid) { try { await getLanManager().stop(sid); } catch { /* ignore */ } }
+    if (this.win && !this.win.isDestroyed() && this.ready && this.cache.has(roomId)) {
+      try { await this.call('lanStop', { roomId }, 8000); } catch { /* engine may be down */ }
+    }
+    await getLanManager().stopRoom(roomId);
     return { ok: true };
+  }
+
+  async lanRetry(roomId: string): Promise<{ ok: boolean }> {
+    this.assertNotSuspended();
+    if (!this.isRoomAvailable(roomId) || !this.cache.get(roomId)?.lan?.active) throw new Error('LAN session not active');
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    return this.call('lanSignal', { roomId, kind: 'retry' }, 8000, { guard: () => this.assertRoomOperation(roomId, epoch) });
   }
 
   /** Host admits one more member into an already-live session. Remembered too, so
@@ -1280,9 +1739,11 @@ export class RoomManager {
    *  advertised (its scope comes from the cached RoomState.lan), wire the engine,
    *  then accept. Tears the helper down if the engine push fails. */
   async lanAccept(roomId: string): Promise<{ ok: boolean; warning?: string }> {
-    this.assertNotSuspended();
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    this.assertRoomOperation(roomId, epoch);
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
-    if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
+    if (!persisted || this.leaving.has(roomId)) throw new Error('Room not available');
+    if (!this.cache.has(roomId)) await this.reactivate(persisted);
     const lan = this.cache.get(roomId)?.lan;
     if (!lan?.sessionId || !lan.hostId) throw new Error('No LAN session to join yet.');
     if (!lan.selfAdmitted) throw new Error('The host has not invited you to this LAN session yet.');
@@ -1293,16 +1754,20 @@ export class RoomManager {
     const floor = sessionFloor(db.getRoomLanPrefs(roomId), lan.sessionId);
     const handle = await getLanManager().start({ roomId, sessionId: lan.sessionId, hostId: lan.hostId, selfMemberId });
     try {
+      this.assertRoomOperation(roomId, epoch);
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit: [], isHost: false,
         relayEnabled, floor,
-      }, 30000);
-      await this.call('lanSignal', { roomId, kind: 'accept' }, 8000);
+      }, 30000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      this.assertRoomOperation(roomId, epoch);
+      await this.call('lanSignal', { roomId, kind: 'accept' }, 8000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      this.assertRoomOperation(roomId, epoch);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
       throw e;
     }
+    this.assertRoomOperation(roomId, epoch);
     // Record the session we joined, so our next visit seeds the same watermark
     // (and so a host that rotates leaves us starting cleanly on the new id).
     this.updateLanPrefs(roomId, (p) => withSession(p, lan.sessionId as string));
@@ -1434,22 +1899,14 @@ export class RoomManager {
   }
 
   /** Locally hide/ignore a member on this install (reversible, never broadcast). */
-  async setMuted(roomId: string, memberId: string, muted: boolean): Promise<{ ok: boolean }> {
-    db.setRoomMute(roomId, memberId, muted);
-    if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'mute', reqId: ++this.reqSeq, roomId, memberId, muted });
-    }
-    return { ok: true };
+  async setMuted(roomId: string, memberId: string, muted: boolean): Promise<RoomPreferenceResult> {
+    return this.savePreference(roomId, 'mute', { memberId, muted }, () => db.setRoomMute(roomId, memberId, muted));
   }
 
   /** Auto-download files peers share into this room (persisted per room).
    *  Turning it back on also pulls everything left unfetched. */
-  async setAutoFetch(roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> {
-    db.setRoomAutoFetch(roomId, autoFetch);
-    if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'setAutoFetch', reqId: ++this.reqSeq, roomId, autoFetch });
-    }
-    return { ok: true };
+  async setAutoFetch(roomId: string, autoFetch: boolean): Promise<RoomPreferenceResult> {
+    return this.savePreference(roomId, 'setAutoFetch', { autoFetch }, () => db.setRoomAutoFetch(roomId, autoFetch));
   }
 
   /** Per-room OS-notification mute (db-only — the engine isn't involved). */
@@ -1463,22 +1920,73 @@ export class RoomManager {
     return this.call<RoomState>('fetchFile', { roomId, fileId }, 8000);
   }
 
+  async pauseReceive(roomId: string, fileId: string): Promise<RoomState> {
+    return this.call<RoomState>('pauseReceive', { roomId, fileId }, 8000);
+  }
+
+  async prioritizeReceive(roomId: string, fileId: string): Promise<RoomState> {
+    return this.call<RoomState>('prioritizeReceive', { roomId, fileId }, 8000);
+  }
+
+  async retryDecrypt(roomId: string, fileId: string): Promise<{ ok: boolean }> {
+    return this.call<{ ok: boolean }>('retryDecrypt', { roomId, fileId }, 8000);
+  }
+
   /** Per-room speed ceilings in KB/s, 0 = unlimited (persisted + applied live). */
-  async setLimits(roomId: string, upKbps: number, downKbps: number): Promise<{ ok: boolean }> {
-    const up = Math.max(0, Math.floor(Number(upKbps) || 0));
-    const down = Math.max(0, Math.floor(Number(downKbps) || 0));
-    db.setRoomLimits(roomId, up, down);
-    if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'setLimits', reqId: ++this.reqSeq, roomId, upKbps: up, downKbps: down });
-    }
-    return { ok: true };
+  setResources(value: unknown): Promise<RoomResourceResult> {
+    const policy = validateRoomResources(value);
+    const job = this.resourceQueue.catch(() => {}).then(async (): Promise<RoomResourceResult> => {
+      await db.updateSettings({ roomResources: policy });
+      this.resourcePolicy = policy; ++this.resourceRevision;
+      if (!this.win || this.win.isDestroyed() || !this.ready) return { ok: true, saved: true, applied: false, policy };
+      try {
+        await this.call('resourceSettings', { policy }, 8000);
+        this.resourceWindow = this.win;
+        return { ok: true, saved: true, applied: true, policy };
+      } catch (error) {
+        return { ok: true, saved: true, applied: false, policy, error: error instanceof Error ? error.message : String(error) };
+      }
+    });
+    this.resourceQueue = job;
+    return job;
+  }
+
+  async setLimits(roomId: string, upKbps: number, downKbps: number): Promise<RoomPreferenceResult> {
+    const up = normalizeRoomRate(upKbps), down = normalizeRoomRate(downKbps);
+    return this.savePreference(roomId, 'setLimits', { upKbps: up, downKbps: down }, () => db.setRoomLimits(roomId, up, down));
+  }
+
+  private savePreference(roomId: string, type: string, payload: Record<string, unknown>, save: () => void): Promise<RoomPreferenceResult> {
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    const job = (this.preferenceQueues.get(roomId)?.catch(() => {}) ?? Promise.resolve()).then(async (): Promise<RoomPreferenceResult> => {
+      const record = this.roomRecord(roomId);
+      if (this.destroyed || !record || this.leaving.has(roomId) || (this.roomEpochs.get(roomId) ?? 0) !== epoch) throw new Error('Room not available');
+      save(); // a disk failure rejects before any live setting is changed
+      if (!this.win || this.win.isDestroyed() || !this.ready || this.networkSuspended || !this.cache.has(roomId)) return { ok: true, saved: true, applied: false, state: this.cache.get(roomId) };
+      try {
+        const state = await this.call<RoomState>(type, { roomId, ...payload }, 8000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+        this.assertRoomOperation(roomId, epoch);
+        state.createdAt = record.createdAt;
+        this.publishRoomState(state);
+        return { ok: true, saved: true, applied: true, state };
+      } catch (error) {
+        return { ok: true, saved: true, applied: false, state: this.cache.get(roomId), error: String(error instanceof Error ? error.message : error) };
+      }
+    });
+    this.preferenceQueues.set(roomId, job);
+    void job.finally(() => { if (this.preferenceQueues.get(roomId) === job) this.preferenceQueues.delete(roomId); }).catch(() => {});
+    return job;
   }
 
   /** Watch-together: broadcast a local playback action to the room's peers. */
-  broadcastSync(roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; emoji?: string }): void {
+  broadcastSync(roomId: string, payload: import('../../shared/room-watch-sync').WatchInput): void {
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'sync', reqId: ++this.reqSeq, roomId, payload });
     }
+  }
+
+  setWatchHost(roomId: string, hostId: string): Promise<RoomState> {
+    return this.call<RoomState>('watchPolicy', { roomId, hostId });
   }
 
   /** Host: gossip game-server mirror state to peers. */
@@ -1491,11 +1999,17 @@ export class RoomManager {
   }
 
   /** Operator: relay a console command to the host over gossip. */
-  publishRemoteCommand(roomId: string, instanceId: string, command: string): void {
-    if (!roomId || !instanceId || !command) return;
-    if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'srvCmd', reqId: ++this.reqSeq, roomId, instanceId, command });
-    }
+  async publishRemoteCommand(roomId: string, request: ServerCommandRequest): Promise<ServerCommandResult> {
+    if (!this.isRoomAvailable(roomId)) return { ok: false, reason: 'room-unavailable' };
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    try { return await this.call<ServerCommandResult>('srvCmd', { roomId, request }, 10000, { guard: () => this.assertRoomOperation(roomId, epoch) }); }
+    catch { return { ok: false, reason: 'command-unknown' }; }
+  }
+
+  /** Privileged stdin accepts only the current engine's main frame and room. */
+  assertEngineServerCommand(event: Pick<IpcMainEvent, 'sender' | 'senderFrame'>, roomId: string): void {
+    this.assertEnginePersistence(event, roomId);
+    if (!this.isRoomAvailable(roomId)) throw new Error('Room unavailable');
   }
 
   /** Every peer mirror in this room — one per member currently hosting. */
@@ -1504,16 +2018,25 @@ export class RoomManager {
   }
 
   /** Send a chat message to a room (broadcast to peers + recorded locally). */
-  async sendChat(roomId: string, text: string, replyTo?: string): Promise<{ ok: boolean }> {
+  async sendChat(roomId: string, text: string, replyTo?: string, messageId = crypto.randomBytes(16).toString('hex')): Promise<RoomChatAck> {
     const body = String(text || '').trim();
-    if (!body) return { ok: false };
+    if (!body || body.length > 2000 || !/^[a-f0-9]{32}$/.test(messageId)) throw new Error('Invalid chat message');
+    this.assertNotSuspended();
     const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
     if (!persisted) throw new Error('Room not found');
-    if (!this.cache.has(roomId)) await this.reactivate(persisted);
-    if (this.win && !this.win.isDestroyed() && this.ready) {
-      this.win.webContents.send('room-cmd', { type: 'chat', reqId: ++this.reqSeq, roomId, payload: { text: body, ...(replyTo ? { replyTo: String(replyTo) } : {}) } });
-    }
-    return { ok: true };
+    if (!this.cache.has(roomId) || !this.win || this.win.isDestroyed() || !this.ready) await this.reactivate(persisted);
+    const epoch = this.roomEpochs.get(roomId) ?? 0;
+    return this.call<RoomChatAck>('chat', { roomId, payload: { id: messageId, text: body, ...(replyTo ? { replyTo: String(replyTo) } : {}) } }, 10000,
+      { guard: () => this.assertRoomOperation(roomId, epoch) });
+  }
+
+  async chatDraft(roomId: string): Promise<RoomChatDraft> {
+    if (!this.roomRecord(roomId)) throw new Error('Room not found');
+    return db.getRoomChatDraft(roomId);
+  }
+  async saveChatDraft(roomId: string, draft: RoomChatDraft): Promise<{ ok: boolean }> {
+    if (this.destroyed || !this.roomRecord(roomId) || this.leaving.has(roomId)) throw new Error('Room not found');
+    db.setRoomChatDraft(roomId, draft); return { ok: true };
   }
 
   /** Edit one of OUR own chat messages (engine re-signs + gossips the edit).
@@ -1551,55 +2074,93 @@ export class RoomManager {
    * isn't even running there is nothing seeding — just set the flag (and don't
    * spawn the engine merely to suspend it).
    */
-  async suspendNetworking(): Promise<void> {
-    if (this.networkSuspended) return;
-    this.networkSuspended = true;
-    log.warn('VPN dropped — suspending all room networking');
-    // Tear the LAN session down too (the adapter holds a real interface). resume
-    // does NOT auto-restart it — LAN membership is explicit (plan §7).
+  suspendNetworking(reason = 'vpn'): Promise<void> {
+    const first = !this.networkSuspended;
+    this.networkPauses.set(reason, ++this.networkPauseSeq);
+    this.networkSuspended = true; // synchronous gate, before sleep / a queued IPC
+    this.voiceIntents.clear(); this.screenIntents.clear();
+    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
+    if (!first) return this.networkQueue;
     getLanManager().onVpnSuspend();
-    // Only if the engine window already exists — never spawn it merely to
-    // suspend (nothing is seeding if it was never started). ensureWindow (inside
-    // call) waits for readiness, so a drop during engine startup still tears down
-    // every room that finishes joining.
-    if (this.win && !this.win.isDestroyed()) {
-      try { await this.call('netSuspend', {}, 8000); } catch (e) { log.warn('netSuspend failed', { err: String(e) }); }
+    for (const record of db.getPersistedRooms()) {
+      void this.roomUnavailable(record.roomId, reason).catch(error => log.warn('Room server stop failed', { error: String(error) }));
     }
-    this.cache.clear();
-    this.reevalGlobalPtt(); // no rooms left in voice → the OS key hook must stop
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: true });
+    return this.enqueueNetwork(async () => {
+      if (this.destroyed) return;
+      if (this.win && !this.win.isDestroyed()) {
+        const win = this.win;
+        try { await this.call('netSuspend', {}, 8000); }
+        catch (e) { this.engineGone(win, 'Room engine did not confirm the network pause: ' + String(e), true); }
+      }
+      for (const state of [...this.cache.values()]) this.publishRoomState(offlineRoom(state));
+      this.cache.clear(); this.reevalGlobalPtt();
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: true });
+    });
   }
 
-  /** VPN restored: lift the freeze and re-join every room from the persisted
-   *  state (the same path as startup). */
-  async resumeNetworking(): Promise<void> {
-    if (!this.networkSuspended) return;
-    this.networkSuspended = false;
-    log.info('VPN restored — resuming room networking');
-    // Lift the ENGINE's gate first (if the window survived the outage) so the
-    // re-joins below are allowed through; a fresh window starts un-suspended.
-    if (this.win && !this.win.isDestroyed()) {
-      try { await this.call('netResume', {}, 8000); } catch (e) { log.warn('netResume failed', { err: String(e) }); }
-    }
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: false });
-    await this.restoreAll();
+  resumeNetworking(reason = 'vpn'): Promise<void> {
+    const pause = this.networkPauses.get(reason);
+    return this.enqueueNetwork(async () => {
+      if (this.networkPauses.get(reason) === pause) this.networkPauses.delete(reason);
+      if (this.destroyed || this.networkPauses.size || !this.networkSuspended) return;
+      this.networkSuspended = false;
+      if (this.win && !this.win.isDestroyed()) {
+        const win = this.win;
+        try { await this.call('netResume', {}, 8000); }
+        catch (e) { this.engineGone(win, 'Room engine did not confirm reconnecting: ' + String(e), true); }
+      }
+      // Another pause may have arrived while the engine was acknowledging.
+      if (this.networkPauses.size) { this.networkSuspended = true; return; }
+      if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: false });
+      await this.restoreAll();
+    });
+  }
+
+  private enqueueNetwork(action: () => Promise<void>): Promise<void> {
+    const job = this.networkQueue.then(action);
+    this.networkQueue = job.catch(() => {});
+    return job;
+  }
+
+  async reconnectAfterNetworkChange(): Promise<void> {
+    await this.suspendNetworking('network-change');
+    await this.resumeNetworking('network-change');
   }
 
   /** Re-join all persisted rooms on startup so swarms reconnect automatically. */
   async restoreAll(): Promise<void> {
+    if (this.destroyed || this.networkSuspended) return;
+    if (this.restoring) return this.restoring;
+    const operation = this.restoreRoomsOnce();
+    this.restoring = operation;
+    try { await operation; }
+    finally { if (this.restoring === operation) this.restoring = null; }
+  }
+
+  private async restoreRoomsOnce(): Promise<void> {
     const persisted = db.getPersistedRooms();
     if (!persisted.length) return;
     log.info('Restoring rooms', { count: persisted.length });
     for (const r of persisted) {
+      if (this.destroyed || this.networkSuspended) break;
+      if (this.cache.has(r.roomId) || this.leaving.has(r.roomId)) continue;
       try { await this.reactivate(r); } catch (e) { log.warn('Room restore failed', { roomId: r.roomId, error: String(e) }); }
     }
   }
 
   destroy(): void {
+    this.destroyed = true;
+    clearInterval(this.historyTimer);
+    this.voiceIntents.clear();
+    this.screenIntents.clear(); this.micTestIntent++; this.micTestAllowedUntil = 0;
+    this.recoveryWanted = false;
+    if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
     this.failAll('Shutting down');
     void getLanManager().shutdown().catch(() => { /* best-effort teardown */ }); // revert any LAN adapter/firewall/route
     if (this.win && !this.win.isDestroyed()) { try { this.win.destroy(); } catch { /* ignore */ } }
     this.win = null; this.ready = false;
+    this.cache.clear(); this.reevalGlobalPtt();
+    this.setEngineStatus({ state: 'stopped' });
     log.info('RoomManager destroyed');
   }
 }
