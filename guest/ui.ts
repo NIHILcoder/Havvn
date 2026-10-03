@@ -1,9 +1,12 @@
+import { watchReadiness, type WatchReadiness } from '../shared/room-watch-host';
 /**
  * Guest page UI — Blaze HUD, three regions (People+Voice | Stage | Chat).
  * The room shell is mounted once; subsequent gossip only patches dirty panes
  * so a VAD tick cannot remount the video or wipe the composer.
  */
 
+import { RoomPlaybackController, watchQueueDriver, observeWatchPlayback } from '../shared/room-playback';
+import { classifyMediaKind } from '../shared/media';
 import { GuestRoom, type GuestSnapshot, type GuestFile, type SyncEvent } from './mesh';
 import { identiconSvg, makeAvatarSeed, randomAvatarBase } from './identicon';
 import { t, detectLang, persistLang, type GuestLang, type GuestKey } from './i18n';
@@ -11,6 +14,7 @@ import { parseGuestLocation, PUBLIC_STUN_SERVERS } from '../shared/room-guest-ur
 import { generateIdentityWeb, type GuestIdentity } from '../shared/room-web-crypto';
 import { parseChatSegments, splitLinks, isCopyworthy } from '../shared/chat-format';
 import { CHAT_REACT_EMOJIS } from '../shared/reactions';
+import { roomChatPage } from '../shared/room-chat-history';
 import { playMagnet, webtorrentOk, type WatchHandle } from './watch';
 
 const ID_KEY = 'havvn.guest.identity.v1';
@@ -90,10 +94,17 @@ export class GuestApp {
   private watch: WatchHandle | null = null;
   private watching: GuestFile | null = null;
   private together = true;
-  private applyingRemote = false;
+  private readiness: WatchReadiness = 'buffering';
+  private hostStamp = '';
+  private requests: Array<SyncEvent & { receivedAt: number }> = [];
+  private playback = new RoomPlaybackController();
+  private mediaCleanup: (() => void) | null = null;
+  private watchSession = false;
+  private watchResume: { position: number; rate: number; playing: boolean } | undefined;
   private replyTo: string | null = null;
+  private historyAnchor: string | undefined;
   private tab: 'people' | 'watch' | 'chat' = 'chat';
-  private watchers: Record<string, { name: string; avatarSeed: string; at: number }> = {};
+  private watchers: Record<string, { name: string; avatarSeed: string; at: number; together: boolean; readiness?: WatchReadiness }> = {};
   private view: 'gate' | 'room' | 'kicked' | null = null;
   private voiceNote = '';
   private hostWait = false;
@@ -129,6 +140,9 @@ export class GuestApp {
     document.documentElement.lang = lang;
     this.last = { header: '', members: '', voice: '', files: '', chat: '', typing: '', reply: '', watchers: '' };
     if (this.view === 'room' && this.room) {
+      const media = $('#media', this.root) as HTMLMediaElement | null;
+      if (media && this.watching) this.watchResume = { position: media.currentTime, rate: this.playback.rate, playing: !media.paused };
+      this.stopMedia();
       this.view = null;
       this.mountRoom(this.room.snapshot());
       this.syncRoom();
@@ -136,15 +150,22 @@ export class GuestApp {
     else this.gate();
   }
 
+  private stopMedia(): void {
+    this.mediaCleanup?.(); this.mediaCleanup = null;
+    if (this.beatTimer) clearInterval(this.beatTimer); this.beatTimer = null;
+    const media = $('#media', this.root) as HTMLMediaElement | null;
+    if (media) { media.pause(); media.removeAttribute('src'); media.load(); }
+    this.watch?.destroy(); this.watch = null;
+  }
+
+  private endWatching(): void {
+    if (this.watchSession && this.watching && this.room) void this.room.sendSync({ ...this.playback.snapshot('leave'), fileId: this.watching.fileId });
+    this.watchSession = false; this.stopMedia(); this.playback.dispose();
+    this.watching = null; this.watchers = {}; this.requests = []; this.hostStamp = ''; this.watchResume = undefined;
+  }
+
   private shutdown(): void {
-    if (this.watching && this.room) {
-      void this.room.sendSync({
-        fileId: this.watching.fileId, action: 'leave',
-        position: 0, rate: 1, at: Date.now(), playing: false, together: this.together,
-      });
-    }
-    this.watch?.destroy();
-    this.watch = null;
+    this.endWatching();
     this.room?.leave();
   }
 
@@ -165,6 +186,9 @@ export class GuestApp {
           <label class="lbl">${this.L('name')}<input id="name" maxlength="64" placeholder="${esc(this.L('namePh'))}" value="${esc(name)}" autocomplete="nickname"/></label>
           <label class="lbl">${this.L('invite')}<input id="invite" placeholder="${esc(this.L('invitePh'))}" value="${esc(loc.invite)}" autocomplete="off" spellcheck="false"/></label>
           <button type="button" class="btn" data-act="join">${this.L('join')}</button>
+          <p class="hint">${this.L('browserCapabilities')}</p>
+          <p class="hint">${this.L('inviteTrust')}</p>
+          <p class="hint">${this.L('inviteAccess')}</p>
           <p class="hint" id="hint">${this.L('needHost')}</p>
         </div>
       </div>`;
@@ -218,6 +242,7 @@ export class GuestApp {
         if (location.hash !== hash) history.replaceState(null, '', location.pathname + location.search + hash);
       } catch { /* ignore */ }
       this.room = room;
+      this.historyAnchor = undefined;
       this.hostWait = false;
       if (this.hostTimer) clearTimeout(this.hostTimer);
       this.hostTimer = setTimeout(() => {
@@ -287,9 +312,7 @@ export class GuestApp {
     if (!this.room) return;
     const s = this.room.snapshot();
     if (s.kicked) {
-      this.watch?.destroy();
-      this.watch = null;
-      this.watching = null;
+      this.endWatching();
       this.kicked();
       return;
     }
@@ -342,8 +365,9 @@ export class GuestApp {
 
   private patchMembers(s: GuestSnapshot): void {
     const html = s.members.map((m) => {
+      const version = m.protocolVersion ? this.L('protocolVersion', { n: m.protocolVersion }) : this.L('protocolLegacy');
       const presence = !m.online ? this.L('offline') : m.relayed ? this.L('relayed') : this.L('direct');
-      return `<div class="member ${m.online ? '' : 'off'}" title="${esc(presence)}">
+      return `<div class="member ${m.online ? '' : 'off'}" title="${esc(presence + ' · ' + version)}">
         ${identiconSvg(m.avatarSeed, 28, m.online)}
         <span class="nm">${esc(m.isSelf ? (m.name || this.L('you')) : m.name)}</span>
         ${m.role === 'owner' ? `<span class="tag">${this.L('owner')}</span>` : ''}
@@ -363,6 +387,7 @@ export class GuestApp {
       return `<div class="vtile ${p.speaking ? 'talk' : ''} ${p.muted ? 'muted' : ''}">
         ${identiconSvg(m?.avatarSeed || p.memberId, 36, true)}
         <span>${esc(m?.name || p.memberId.slice(0, 6))}</span>
+        ${p.waitingForSlot ? '<small>'+this.L('voiceWaitingForSlot')+'</small>' : p.connection === 'connecting' || p.connection === 'reconnecting' && !p.reconnectAttempts ? '<small>'+this.L('connecting')+'</small>' : p.connection === 'reconnecting' ? '<small>'+this.L('voiceRetryAttempt', { n: p.reconnectAttempts ?? 0 })+'</small>' : p.connection === 'failed' ? '<small>'+this.L('voiceLinkLost')+'</small>' : ''}
       </div>`;
     }).join('');
     const html = `
@@ -373,7 +398,10 @@ export class GuestApp {
           <button type="button" class="ghost" data-act="vdeaf">${v.deafened ? this.L('undeafen') : this.L('deafen')}</button>
         ` : ''}
       </div>
+      ${v.inVoice && v.participants.some(p => p.memberId === this.room?.identity.memberId && p.waitingForSlot) ? `<p class="hint" role="status">${this.L('voiceWaitingForSlot')}</p>` : ''}
+      ${v.inVoice && (v.micUnavailable || v.participants.some(p => p.connection === 'failed')) ? `<p class="hint error" role="status">${this.L(v.micUnavailable ? 'micUnavailable' : 'voiceLinkFailed')}</p><button type="button" class="ghost" data-act="vretry">${this.L('voiceRetry')}</button>` : ''}
       ${this.voiceNote ? `<p class="hint error">${esc(this.voiceNote)}</p>` : ''}
+      ${s.members.some(m => !m.isSelf && m.online && !m.capabilities?.includes('voice-state-v2')) ? `<p class="hint">${this.L('voiceLegacy')}</p>` : ''}
       <div class="vtiles">${tiles}</div>`;
     if (html === this.last.voice) return;
     this.last.voice = html;
@@ -399,8 +427,15 @@ export class GuestApp {
   private patchPlayer(): void {
     const host = $('#player-host', this.root);
     if (!host) return;
-    const names = Object.values(this.watchers).map((w) => w.name).join(', ');
-    const watchSig = names + '|' + this.together + '|' + (this.watching?.fileId || '');
+    const policy = this.room?.snapshot().watchPolicy;
+    const hostId = policy?.hostId || '';
+    const stamp = `${policy?.by || ''}:${policy?.at || 0}:${policy?.ownerAt || 0}`;
+    if (stamp !== this.hostStamp) { this.hostStamp = stamp; this.requests = this.requests.filter(r => r.policyBy === policy?.by && r.policyAt === policy?.at && r.policyOwnerAt === policy?.ownerAt); }
+    this.playback.setHost(hostId, this.room?.identity.memberId || '', stamp);
+    const self = this.room?.identity.memberId || '';
+    const names = [this.room?.name || this.L('you'), ...Object.values(this.watchers).map(w => `${w.name} · ${this.L(!w.together ? 'watchLocal' : w.readiness === 'ready' ? 'watchReady' : w.readiness === 'error' ? 'watchMediaError' : w.readiness === 'buffering' ? 'watchBuffering' : 'watchUnknown')}`)].join(', ');
+    const legacy = this.room?.snapshot().members.some(m => m.online && !m.isSelf && m.watchSync !== true);
+    const watchSig = stamp + JSON.stringify(this.requests) + this.readiness + String(legacy) + names + '|' + this.together + '|' + (this.watching?.fileId || '');
     if (!this.watching) {
       if (host.innerHTML) host.innerHTML = '';
       this.last.watchers = '';
@@ -414,6 +449,10 @@ export class GuestApp {
             <button type="button" class="ghost ${this.together ? 'on' : ''}" data-act="together">${this.together ? this.L('togetherOn') : this.L('togetherOff')}</button>
           </div>
           <div class="watchers" id="watchers"></div>
+          <p class="hint" id="watch-host" role="status"></p>
+          <div id="watch-requests" class="watch-requests"></div>
+          <p class="hint" id="watch-compat" role="status" hidden></p>
+          <p class="hint" id="watch-phase" role="status" hidden></p>
         </div>`;
       const media = $('#media', this.root) as HTMLMediaElement | null;
       if (media) this.bindMedia(media);
@@ -428,13 +467,27 @@ export class GuestApp {
     if (watchSig !== this.last.watchers) {
       this.last.watchers = watchSig;
       const el = $('#watchers', this.root);
-      if (el) el.textContent = names ? `${this.L('watching')}: ${names}` : '';
+      if (el) el.textContent = `${this.L('watching')}: ${names} · ${this.L(!this.together ? 'watchLocal' : this.readiness === 'ready' ? 'watchReady' : this.readiness === 'error' ? 'watchMediaError' : 'watchBuffering')}`;
+      const hostStatus = $('#watch-host', this.root);
+      if (hostStatus) hostStatus.textContent = !hostId ? this.L('watchShared') : hostId === self ? this.L('watchYouLead') : !this.watchers[hostId]?.together ? this.L('watchHostAbsent') : `${this.L('watchHost')}: ${this.watchers[hostId].name}. ${this.L('watchFollowHint')}`;
+      const requestList = $('#watch-requests', this.root);
+      if (requestList) requestList.innerHTML = hostId === self ? this.requests.map(r => `<div class="watch-request"><span>${esc(r.name)}: ${esc(this.L(r.requested === 'play' ? 'watchRequestPlay' : r.requested === 'pause' ? 'watchRequestPause' : r.requested === 'seek' ? 'watchRequestSeek' : r.requested === 'rate' ? 'watchRequestRate' : 'watchRequestTrack'))} ${r.requested === 'track' ? esc(this.room?.snapshot().files.find(f => f.fileId === r.fileId)?.name || '?') : r.requested === 'seek' ? Math.floor(r.position) + 's' : r.requested === 'rate' ? r.rate + '×' : ''}</span><button type="button" class="ghost" data-act="watch-accept" data-who="${esc(r.memberId)}" ${this.together ? '' : 'disabled'}>${this.L('watchAccept')}</button><button type="button" class="ghost" data-act="watch-dismiss" data-who="${esc(r.memberId)}">${this.L('watchDismiss')}</button></div>`).join('') : '';
+      const compat = $('#watch-compat', this.root);
+      if (compat) { const unsupported = !!hostId && this.room?.snapshot().members.some(m => m.online && !m.isSelf && !m.capabilities?.includes('watch-host-v1')); compat.hidden = !legacy && !unsupported; compat.textContent = this.L(unsupported ? 'watchHostLegacy' : 'watchLegacy'); }
     }
+  }
+
+  private reportReadiness(ready: WatchReadiness): void {
+    if (ready === this.readiness) return;
+    this.readiness = ready;
+    if (this.watching) void this.room?.sendSync({ ...this.playback.snapshot('beat'), readiness: ready });
+    this.last.watchers = ''; this.queuePaint();
   }
 
   private startWatch(f: GuestFile, media: HTMLMediaElement | null): void {
     if (!media) return;
     if (!webtorrentOk()) {
+      this.reportReadiness('error');
       const host = $('#player-host', this.root);
       if (host) host.insertAdjacentHTML('beforeend', `<p class="hint error">${esc(this.L('webtorrentFail'))}</p>`);
       return;
@@ -445,12 +498,12 @@ export class GuestApp {
     try {
       this.watch = playMagnet(f.magnetURI, f.fileId, f.name, media, loc.trackers);
     } catch {
-      this.watch = null;
+      this.watch = null; this.reportReadiness('error');
     }
   }
 
   private patchChat(s: GuestSnapshot): void {
-    const sig = JSON.stringify(s.chat.map((m) => [m.id, s.chatEdits[m.id] || m.text, s.chatReacts[m.id]])) + this.lang;
+    const sig = JSON.stringify(s.chat.map((m) => [m.id, s.chatEdits[m.id] || m.text, s.chatReacts[m.id], m.replyTo, m.replyName, m.replyText, m.chatV])) + this.lang + this.historyAnchor;
     if (sig === this.last.chat) return;
     this.last.chat = sig;
     const log = $('#log', this.root);
@@ -465,22 +518,29 @@ export class GuestApp {
     let lastAt = 0;
     const parts: string[] = [];
     const selfId = this.room!.identity.memberId;
-    for (const m of s.chat) {
+    const index = this.historyAnchor ? s.chat.findIndex(m => m.id === this.historyAnchor) : -1;
+    const shown = this.historyAnchor ? s.chat.slice(Math.max(0, index)) : roomChatPage(s.chat).messages;
+    if (shown.length < s.chat.length) parts.push(`<button type="button" class="ghost history-earlier" data-act="earlier">${esc(this.L('showEarlier'))}</button>`);
+    else parts.push(`<p class="hint history-window">${esc(this.L('historyWindow'))}</p>`);
+    for (const m of shown) {
       const day = dayLabel(m.at, this.lang);
       if (day !== lastDay) { parts.push(`<div class="day">${esc(day)}</div>`); lastDay = day; lastAuthor = ''; }
       const text = s.chatEdits[m.id] || m.text;
-      const group = m.memberId === lastAuthor && m.at - lastAt < 5 * 60_000;
+      const group = m.memberId === lastAuthor && m.at >= lastAt && m.at - lastAt < 5 * 60_000;
       lastAuthor = m.memberId;
       lastAt = m.at;
       const reacts = s.chatReacts[m.id] || {};
       const pills = Object.entries(reacts).filter(([, ids]) => ids.length).map(([em, ids]) =>
         `<button type="button" class="pill ${ids.includes(selfId) ? 'mine' : ''}" data-react="${esc(m.id)}" data-emoji="${em}">${em} ${ids.length}</button>`
       ).join('');
+      const parent = s.chat.find(p => p.id === m.replyTo);
+      const quoteName = parent?.name || m.replyName || '';
+      const quoteText = parent ? (s.chatEdits[parent.id] ?? parent.text) : (m.replyText || '');
       parts.push(`<article class="msg ${group ? 'grp' : ''} ${m.memberId === selfId ? 'self' : ''}" data-id="${esc(m.id)}">
         ${group ? '' : identiconSvg(m.avatarSeed, 26)}
         <div class="bubble">
           ${group ? '' : `<header><b>${esc(m.name)}</b><time>${esc(timeLabel(m.at))}</time></header>`}
-          ${m.replyTo ? `<div class="quote">${esc(m.replyName || '')}: ${esc((m.replyText || '').slice(0, 80))}</div>` : ''}
+          ${m.replyTo ? `<div class="quote">${esc(quoteName)}: ${esc(quoteText.slice(0, 80))}${m.chatV !== 2 ? `<small class="quote-legacy" title="${esc(this.L('legacyQuoteHint'))}">${esc(this.L('legacyQuote'))}</small>` : ''}</div>` : ''}
           <div class="body">${renderBody(text, this.lang)}</div>
           <div class="acts">
             <button type="button" class="reply" data-reply="${esc(m.id)}">${this.L('reply')}</button>
@@ -544,10 +604,32 @@ export class GuestApp {
       }
       return;
     }
+    if (t.dataset.act === 'vretry') { this.room?.voice.reconnect(); return; }
     if (t.dataset.act === 'vmute') { this.room?.voice.setMuted(!this.room.voice.muted); return; }
     if (t.dataset.act === 'vdeaf') { this.room?.voice.setDeafened(!this.room.voice.deafened); return; }
-    if (t.dataset.act === 'together') { this.together = !this.together; this.last.watchers = ''; this.patchPlayer(); return; }
+    if (t.dataset.act === 'watch-accept' || t.dataset.act === 'watch-dismiss') {
+      const request = this.requests.find(r => r.memberId === t.dataset.who);
+      const policy = this.room?.snapshot().watchPolicy;
+      if (request && t.dataset.act === 'watch-accept' && this.together && policy?.hostId === this.room?.identity.memberId && request.policyBy === policy?.by && request.policyAt === policy?.at && request.policyOwnerAt === policy?.ownerAt && Date.now() - request.receivedAt < 20_000) {
+        if (request.requested === 'track') { const f = this.room?.snapshot().files.find(x => x.fileId === request.fileId && x.playable); if (f) this.openFile(f); }
+        else if (request.fileId === this.watching?.fileId && request.requested) this.playback.execute({ ...request, action: request.requested });
+      }
+      this.requests = this.requests.filter(r => r !== request); this.last.watchers = ''; this.patchPlayer(); return;
+    }
+    if (t.dataset.act === 'together') { this.together = !this.together; this.playback.setTogether(this.together); if (this.watching) void this.room?.sendSync({ ...this.playback.snapshot('beat'), readiness: this.readiness }); this.last.watchers = ''; this.patchPlayer(); return; }
     if (t.dataset.act === 'reply-x') { this.replyTo = null; if (this.room) this.patchReply(this.room.snapshot()); return; }
+    if (t.dataset.act === 'earlier' && this.room) {
+      const snapshot = this.room.snapshot(), log = $('#log', this.root);
+      const index = this.historyAnchor ? snapshot.chat.findIndex(m => m.id === this.historyAnchor) : -1;
+      const shown = this.historyAnchor ? snapshot.chat.slice(Math.max(0, index)) : roomChatPage(snapshot.chat).messages;
+      const page = roomChatPage(snapshot.chat, shown[0]?.id);
+      if (!page.messages.length) return;
+      const height = log?.scrollHeight || 0, top = log?.scrollTop || 0;
+      this.historyAnchor = page.messages[0].id;
+      this.patchChat(snapshot);
+      if (log) log.scrollTop = top + log.scrollHeight - height;
+      return;
+    }
     if (t.dataset.file) {
       const f = this.room?.snapshot().files.find((x) => x.fileId === t.dataset.file);
       if (f?.playable) this.openFile(f);
@@ -589,94 +671,82 @@ export class GuestApp {
   }
 
   private bindMedia(media: HTMLMediaElement): void {
-    const send = (action: string) => {
-      if (!this.together || this.applyingRemote || !this.watching || !this.room) return;
-      void this.room.sendSync({
-        fileId: this.watching.fileId, action, position: media.currentTime,
-        rate: media.playbackRate, at: Date.now(), playing: !media.paused, together: true,
-      });
+    if (!this.watching) return;
+    this.playback.setTogether(this.together);
+    this.playback.beginSource(this.watching.fileId, this.watchResume); this.watchResume = undefined;
+    this.readiness = 'buffering';
+    const detach = this.playback.attach(media, input => { void this.room?.sendSync({ ...input, readiness: this.readiness }); });
+    const stopStatus = observeWatchPlayback(media, phase => {
+      this.reportReadiness(watchReadiness(phase));
+      const status = $('#watch-phase', this.root);
+      if (status) {
+        status.hidden = phase === 'playing' || phase === 'ended';
+        status.textContent = this.L(phase === 'paused' ? 'watchPaused' : phase === 'seeking' ? 'watchSeeking'
+          : phase === 'decodeError' || phase === 'networkError' ? 'watchMediaError' : 'watchBuffering');
+      }
+    });
+    const ended = () => {
+      if (!this.watching || !this.room || this.playback.applying || classifyMediaKind(this.watching.name) !== 'audio') return;
+      const viewers = Object.entries(this.watchers).map(([memberId, w]) => ({ memberId, together: w.together, lastSeen: w.at }));
+      const host = this.room.snapshot().watchPolicy?.hostId;
+      if (this.together && host && host !== this.room.identity.memberId) return;
+      if (this.together && !host && watchQueueDriver(this.room.identity.memberId, viewers) !== this.room.identity.memberId) return;
+      const queue = this.room.snapshot().files.filter(f => f.playable && classifyMediaKind(f.name) === 'audio');
+      const index = queue.findIndex(f => f.fileId === this.watching?.fileId);
+      if (index >= 0 && queue[index + 1]) this.openFile(queue[index + 1]);
     };
-    media.addEventListener('play', () => send('play'));
-    media.addEventListener('pause', () => send('pause'));
-    media.addEventListener('seeked', () => send('seek'));
-    media.addEventListener('ratechange', () => send('rate'));
+    media.addEventListener('ended', ended);
+    this.mediaCleanup = () => { detach(); stopStatus(); media.removeEventListener('ended', ended); };
     if (this.beatTimer) clearInterval(this.beatTimer);
     this.beatTimer = setInterval(() => {
       if (!this.watching || !this.room) return;
-      void this.room.sendSync({
-        fileId: this.watching.fileId, action: 'beat',
-        position: media.currentTime, rate: media.playbackRate,
-        at: Date.now(), playing: !media.paused, together: this.together,
-      });
+      for (const [id, watcher] of Object.entries(this.watchers)) {
+        if (Date.now() - watcher.at > 16_000) { delete this.watchers[id]; this.last.watchers = ''; this.queuePaint(); }
+      }
+      this.requests = this.requests.filter(r => Date.now() - r.receivedAt < 20_000); this.last.watchers = ''; this.queuePaint();
+      void this.room.sendSync({ ...this.playback.snapshot('beat'), readiness: this.readiness });
     }, 5000);
-    void this.room?.sendSync({
-      fileId: this.watching!.fileId, action: 'join',
-      position: 0, rate: 1, at: Date.now(), playing: false, together: this.together,
-    });
+    if (!this.watchSession) {
+      this.watchSession = true;
+      void this.room?.sendSync({ ...this.playback.snapshot('join'), readiness: this.readiness });
+    }
   }
 
-  private openFile(f: GuestFile): void {
-    if (this.watching?.fileId === f.fileId) { this.tab = 'watch'; this.syncRoom(); return; }
-    if (this.watching && this.room) {
-      void this.room.sendSync({
-        fileId: this.watching.fileId, action: 'leave',
-        position: 0, rate: 1, at: Date.now(), playing: false, together: this.together,
-      });
+  private openFile(f: GuestFile, announce = true): void {
+    if (announce && this.watching && this.playback.followingHost) {
+      void this.room?.sendSync({ fileId: f.fileId, action: 'request', requested: 'track', position: 0, rate: this.playback.rate, together: true, readiness: this.readiness }); return;
     }
-    this.watch?.destroy();
-    this.watch = null;
-    this.watching = f;
-    this.tab = 'watch';
+    if (this.watching?.fileId === f.fileId) { this.tab = 'watch'; this.syncRoom(); return; }
+    if (announce && this.watching && this.together) void this.room?.sendSync({
+      fileId: f.fileId, action: 'track', position: 0, rate: this.playback.rate, playing: true, together: true,
+    });
+    this.stopMedia();
+    if (announce) this.playback.chooseSource(f.fileId);
+    this.watching = f; this.watchResume = undefined;
+    this.watchers = {}; this.tab = 'watch';
     const host = $('#player-host', this.root);
     if (host) host.innerHTML = '';
-    this.last.files = '';
-    this.last.watchers = '';
+    this.last.files = ''; this.last.watchers = '';
     this.syncRoom();
   }
 
   private onSync(ev: SyncEvent): void {
-    if (ev.action === 'leave') {
-      delete this.watchers[ev.memberId];
-      this.last.watchers = '';
-      this.queuePaint();
+    if (!this.watching || ev.memberId === this.room?.identity.memberId) return;
+    if (ev.action === 'request') {
+      if (this.room?.snapshot().watchPolicy?.hostId === this.room?.identity.memberId && this.together) this.requests = [...this.requests.filter(r => r.memberId !== ev.memberId && Date.now() - r.receivedAt < 20_000).slice(-7), { ...ev, receivedAt: Date.now() }];
+      this.last.watchers = ''; this.queuePaint(); return;
+    }
+    if (ev.action === 'track' || this.room?.snapshot().watchPolicy?.hostId === ev.memberId && ev.fileId !== this.watching.fileId && ['beat', 'join', 'state'].includes(ev.action)) {
+      const f = this.room?.snapshot().files.find(x => x.fileId === ev.fileId && x.playable);
+      if (f && this.playback.receive(ev)) { this.openFile(f, false); this.watchers[ev.memberId] = { name: ev.name, avatarSeed: ev.avatarSeed || ev.memberId, at: Date.now(), together: ev.together, readiness: ev.v === 3 ? ev.readiness : undefined }; }
       return;
     }
-    this.watchers[ev.memberId] = { name: ev.name, avatarSeed: ev.avatarSeed, at: Date.now() };
-    if (ev.action === 'react') { this.queuePaint(); return; }
-    const media = $('#media', this.root) as HTMLMediaElement | null;
-    if (!media || !this.together || ev.memberId === this.room?.identity.memberId) {
-      if (ev.action === 'join' || ev.action === 'beat') this.queuePaint();
-      return;
+    if (ev.fileId !== this.watching.fileId) {
+      delete this.watchers[ev.memberId]; this.last.watchers = ''; this.queuePaint(); return;
     }
-    if (this.watching && ev.fileId !== this.watching.fileId) {
-      const f = this.room?.snapshot().files.find((x) => x.fileId === ev.fileId && x.playable);
-      if (f && ev.action === 'track') this.openFile(f);
-      return;
-    }
-    if ((ev.action === 'beat' || ev.action === 'join') && ev.together && ev.playing) {
-      const ahead = ev.position + Math.max(0, (Date.now() - ev.at) / 1000);
-      const joiner = media.paused && media.currentTime < 5;
-      if (ahead - media.currentTime > 1.8 && (!media.paused || joiner)) {
-        this.applyingRemote = true;
-        try { media.currentTime = ahead; if (media.paused) void media.play().catch(() => {}); }
-        finally { setTimeout(() => { this.applyingRemote = false; }, 250); }
-      }
-      this.queuePaint();
-      return;
-    }
-    if (ev.action !== 'play' && ev.action !== 'pause' && ev.action !== 'seek' && ev.action !== 'rate') {
-      this.queuePaint();
-      return;
-    }
-    this.applyingRemote = true;
-    const expected = ev.position + (ev.action === 'play' ? Math.max(0, (Date.now() - ev.at) / 1000) : 0);
-    try {
-      if (Number.isFinite(ev.rate) && ev.rate > 0) media.playbackRate = ev.rate;
-      media.currentTime = expected;
-      if (ev.action === 'play') void media.play().catch(() => {});
-      if (ev.action === 'pause') media.pause();
-    } finally {
-      setTimeout(() => { this.applyingRemote = false; }, 250); }
-    this.queuePaint();
+    if (ev.action === 'leave') delete this.watchers[ev.memberId];
+    else this.watchers[ev.memberId] = { name: ev.name, avatarSeed: ev.avatarSeed || ev.memberId, at: Date.now(), together: ev.together, readiness: ev.v === 3 ? ev.readiness : undefined };
+    this.playback.receive(ev);
+    this.last.watchers = ''; this.queuePaint();
   }
 }

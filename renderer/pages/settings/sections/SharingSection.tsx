@@ -1,3 +1,4 @@
+import { RoomBackupModal } from '../../rooms/RoomBackupModal';
 /**
  * Sharing settings section (NEW tab) — ported from the old SettingsPage
  * monolith:
@@ -11,8 +12,9 @@
  * original classNames — their styles stay in SettingsPage.css.
  */
 import React from 'react';
+import { readRoomResources } from '../../../../shared/room-resources';
 import { useSettings } from '../SettingsContext';
-import { SettingsCard, SettingRow, TextField } from '../controls';
+import { SettingsCard, SettingRow, TextField, NumberField } from '../controls';
 import { Toggle, Button, Icon, QRCode } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { NetworkProfile } from '../../../../shared/types';
@@ -32,37 +34,24 @@ export const SharingSection: React.FC = () => {
     setMessage,
   } = ctx;
 
+  const [resources, setResources] = React.useState(() => readRoomResources(ctx.settings?.roomResources));
+  const [resourceSaving, setResourceSaving] = React.useState(false);
+  React.useEffect(() => { setResources(readRoomResources(ctx.settings?.roomResources)); }, [ctx.settings?.roomResources]);
+  const saveResources = async () => {
+    setResourceSaving(true);
+    try {
+      const result = await window.api.rooms.setResources(resources);
+      ctx.setSettings(prev => prev ? { ...prev, roomResources: result.policy } : prev);
+      setMessage({ type: result.error ? 'error' : 'success', text: result.error
+        ? t('settings.roomResources.failed') + ': ' + result.error
+        : t(result.applied ? 'settings.roomResources.applied' : 'settings.roomResources.saved') });
+    } catch (error) {
+      setMessage({ type: 'error', text: t('settings.roomResources.failed') + ': ' + String(error) });
+    } finally { setResourceSaving(false); }
+  };
+
   // ── Room identity backup (reinstall insurance) ────────────────────────────
-  const [identityBusy, setIdentityBusy] = React.useState<'export' | 'import' | null>(null);
-
-  const exportRoomIdentity = async () => {
-    setIdentityBusy('export');
-    try {
-      const res = await window.api.rooms.exportIdentity();
-      if (res.success) setMessage({ type: 'success', text: t('settings.roomIdentity.exported') });
-    } catch {
-      setMessage({ type: 'error', text: t('settings.msg.exportFailed') });
-    } finally {
-      setIdentityBusy(null);
-    }
-  };
-
-  const importRoomIdentity = async () => {
-    setIdentityBusy('import');
-    try {
-      const res = await window.api.rooms.importIdentity();
-      if (res.success) {
-        setMessage({
-          type: 'success',
-          text: `${t('settings.roomIdentity.imported')}: ${res.rooms ?? 0}. ${t('settings.roomIdentity.restartHint')}`,
-        });
-      }
-    } catch {
-      setMessage({ type: 'error', text: t('settings.msg.importFailed') });
-    } finally {
-      setIdentityBusy(null);
-    }
-  };
+  const [identityMode, setIdentityMode] = React.useState<'export' | 'import' | null>(null);
 
   // ── Network-profile helpers (ported verbatim from the old monolith) ───────
   const overrideSummary = (p: NetworkProfile): string => {
@@ -84,9 +73,8 @@ export const SharingSection: React.FC = () => {
         </label>
         {on && (
           <div className="speed-input-compact">
-            <input type="number" className="input-compact input-mono" min="0" value={o[key] as number}
-              onChange={(e) => setOverrideValue(key, parseInt(e.target.value) || 0)} />
-            {unit && <span className="input-unit">{unit}</span>}
+            <NumberField min={0} value={o[key] as number} unit={unit} ariaLabel={label}
+              onChange={(value) => setOverrideValue(key, Math.trunc(value) || 0)} />
           </div>
         )}
       </div>
@@ -258,13 +246,30 @@ export const SharingSection: React.FC = () => {
       </SettingsCard>
 
       {/* ── Room identity backup ─────────────────────────────────────────── */}
+      <SettingsCard title={t('settings.roomResources.title')} icon="download" description={t('settings.roomResources.scope')}>
+        <SettingRow label={t('settings.roomResources.upload')} description={t('settings.roomResources.shared')}
+          control={<NumberField value={resources.maxUpKbps} min={0} max={1000000} unit="KB/s" ariaLabel={t('settings.roomResources.upload')}
+            onChange={value => setResources(prev => ({ ...prev, maxUpKbps: value }))} />} />
+        <SettingRow label={t('settings.roomResources.download')} description={t('settings.roomResources.zero')}
+          control={<NumberField value={resources.maxDownKbps} min={0} max={1000000} unit="KB/s" ariaLabel={t('settings.roomResources.download')}
+            onChange={value => setResources(prev => ({ ...prev, maxDownKbps: value }))} />} />
+        <SettingRow label={t('settings.roomResources.voice')} description={t('settings.roomResources.voiceHint')}
+          control={<Toggle checked={resources.voicePriority} disabled={resourceSaving}
+            onChange={value => setResources(prev => ({ ...prev, voicePriority: value }))} />} />
+        <SettingRow label={t('settings.roomResources.screen')} description={t('settings.roomResources.screenHint')}
+          control={<NumberField value={resources.screenBitrateKbps} min={250} max={20000} step={250} unit="kbit/s" ariaLabel={t('settings.roomResources.screen')}
+            onChange={value => setResources(prev => ({ ...prev, screenBitrateKbps: value }))} />} />
+        <div className="stg-sub"><Button variant="primary" size="sm" loading={resourceSaving} onClick={saveResources}>{t('common.save')}</Button></div>
+      </SettingsCard>
+
+      {identityMode && <RoomBackupModal mode={identityMode} onClose={() => setIdentityMode(null)} onDone={rooms => setMessage({ type: 'success', text: t(rooms === undefined ? 'settings.roomIdentity.exported' : 'settings.roomIdentity.imported') })} />}
       <SettingsCard title={t('settings.card.roomIdentity')} icon="shield">
         <SettingRow
           label={t('settings.roomIdentity.export')}
           description={t('settings.roomIdentity.export.desc')}
           control={
-            <Button variant="secondary" size="sm" loading={identityBusy === 'export'}
-              icon={<Icon name="upload" size={14} />} onClick={exportRoomIdentity}>
+            <Button variant="secondary" size="sm"
+              icon={<Icon name="upload" size={14} />} onClick={() => setIdentityMode('export')}>
               {t('settings.roomIdentity.exportBtn')}
             </Button>
           }
@@ -273,8 +278,8 @@ export const SharingSection: React.FC = () => {
           label={t('settings.roomIdentity.import')}
           description={t('settings.roomIdentity.import.desc')}
           control={
-            <Button variant="secondary" size="sm" loading={identityBusy === 'import'}
-              icon={<Icon name="download" size={14} />} onClick={importRoomIdentity}>
+            <Button variant="secondary" size="sm"
+              icon={<Icon name="download" size={14} />} onClick={() => setIdentityMode('import')}>
               {t('settings.roomIdentity.importBtn')}
             </Button>
           }

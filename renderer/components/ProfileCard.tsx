@@ -10,6 +10,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { RoomMember } from '../../shared/types';
+import { Button } from './Button';
 import { Avatar } from './Avatar';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
@@ -20,6 +21,7 @@ interface ProfileCardProps {
   totalFiles: number;
   anchor: HTMLElement;
   canManage: boolean;
+  disabled?: boolean;
   onClose: () => void;
   onMuteToggle?: () => void;
   onKick?: () => void;
@@ -28,7 +30,7 @@ interface ProfileCardProps {
 
 const CARD_W = 240;
 
-export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, anchor, canManage, onClose, onMuteToggle, onKick, onTransfer }) => {
+export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, anchor, canManage, disabled = false, onClose, onMuteToggle, onKick, onTransfer }) => {
   const { t } = useTranslation();
   const doc = anchor.ownerDocument;
   const win = doc.defaultView ?? window;
@@ -77,6 +79,9 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
           </span>
         </div>
       </div>
+      <div className="profile-card-status">{member.protocolVersion
+        ? t('rooms.protocolVersion').replace('{version}', String(member.protocolVersion))
+        : t('rooms.protocolLegacy')}</div>
       {member.status ? <div className="profile-card-status">{member.status}</div> : null}
       <div className="profile-card-meta">
         <span title={t('rooms.memberHaveHint').replace('{n}', String(member.have.length)).replace('{total}', String(totalFiles))}>
@@ -88,19 +93,19 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
       {!member.isSelf && (onMuteToggle || onKick || onTransfer) && (
         <div className="profile-card-acts">
           {onMuteToggle && (
-            <button type="button" className="profile-card-act" onClick={() => { onMuteToggle(); onClose(); }}>
+            <Button size="sm" disabled={disabled} type="button" className="profile-card-act" onClick={() => { onMuteToggle(); onClose(); }}>
               <Icon name={member.muted ? 'eye' : 'eye-off'} size={12} /> {member.muted ? t('rooms.unmute') : t('rooms.mute')}
-            </button>
+            </Button>
           )}
           {onTransfer && canManage && member.role !== 'owner' && member.online && (
-            <button type="button" className="profile-card-act danger" onClick={() => { onTransfer(); onClose(); }}>
+            <Button size="sm" disabled={disabled} type="button" className="profile-card-act danger" onClick={() => { onTransfer(); onClose(); }}>
               <Icon name="star" size={12} /> {t('rooms.transferOwner')}
-            </button>
+            </Button>
           )}
           {onKick && canManage && member.role !== 'owner' && (
-            <button type="button" className="profile-card-act danger" onClick={() => { onKick(); onClose(); }}>
+            <Button size="sm" disabled={disabled} type="button" className="profile-card-act danger" onClick={() => { onKick(); onClose(); }}>
               <Icon name="x-circle" size={12} /> {t('rooms.kick')}
-            </button>
+            </Button>
           )}
         </div>
       )}

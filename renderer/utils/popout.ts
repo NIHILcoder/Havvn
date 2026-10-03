@@ -26,8 +26,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { HostWindowProvider } from './hostWindow';
+import { APPEARANCE_MIRROR_ATTRS } from '../../shared/appearance';
+import { installAppearanceMotion } from './appearance';
 
-const MIRROR_ATTRS = ['style', 'data-theme', 'data-density', 'data-reduce-motion'];
+const MIRROR_ATTRS = ['style', 'data-theme', 'data-density', 'data-reduce-motion', ...APPEARANCE_MIRROR_ATTRS];
 
 const SHEET_SELECTOR = 'style, link[rel="stylesheet"]';
 
@@ -85,6 +87,7 @@ function cloneSheet(node: Element): HTMLElement {
  */
 const BASE_CSS = `
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--color-bg-primary); }
+html[data-acrylic="active"], html[data-acrylic="active"] body { background: transparent; }
 .popout-root { height: 100%; min-height: 0; display: flex; flex-direction: column; container-type: inline-size; }
 `;
 
@@ -180,6 +183,7 @@ export function usePopout(frameName: string, title: string, containerName?: stri
   // Theme/token mirroring + user-closed detection.
   useEffect(() => {
     if (!popout) return;
+    const stopMotion = installAppearanceMotion(popout.document);
     const src = document.documentElement;
     const sync = () => {
       if (popout.closed) return;
@@ -204,7 +208,7 @@ export function usePopout(frameName: string, title: string, containerName?: stri
       setTimeout(() => { try { if (w && !w.closed) w.close(); } catch { /* gone */ } }, 0);
     };
     popout.addEventListener('beforeunload', onGone);
-    return () => { mo.disconnect(); popout.removeEventListener('beforeunload', onGone); };
+    return () => { stopMotion(); mo.disconnect(); popout.removeEventListener('beforeunload', onGone); };
   }, [popout]);
 
   // Late stylesheets. The clone in openPopout is a SNAPSHOT: a React.lazy chunk
