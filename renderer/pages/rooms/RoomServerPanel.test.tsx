@@ -72,3 +72,9 @@ describe('resolveTab', () => {
     }
   });
 });
+
+it('withholds room content and remote access controls from a detached local instance', () => {
+  const tabs = visibleTabsFor({ local: true, moduleId: 'minecraft' });
+  expect(tabs).not.toContain('content'); expect(tabs).not.toContain('access');
+  expect(tabs).toContain('schedule'); expect(tabs).toContain('backup'); expect(tabs).toContain('console');
+});

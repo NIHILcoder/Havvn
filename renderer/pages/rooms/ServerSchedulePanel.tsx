@@ -1,6 +1,8 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * Per-instance start/stop/restart schedule editor.
  */
+import { Button } from '../../components/Button';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Icon, Select, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
@@ -43,23 +45,19 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const reload = useCallback(async () => {
-    const next = await api.schedule(instanceId);
-    setState(next);
-    setDirty(false);
-  }, [api, instanceId]);
-
-  useEffect(() => {
-    void reload().catch(() => { /* instance gone */ });
-  }, [reload]);
+  const [arming, setArming] = useState(false);
+  const load = useCallback(() => api.schedule(instanceId), [api, instanceId]);
+  const { data, loading, error, reload, ready } = useServerPanelData(load);
+  useEffect(() => { if (data) { setState(data); setDirty(false); } }, [data]);
 
   const setEnabled = async (enabled: boolean) => {
+    if (saving || arming || !ready || (dirty && enabled)) return;
+    setArming(true);
     try {
       await api.setScheduleEnabled(instanceId, enabled);
-      setState((s) => ({ ...s, enabled }));
-    } catch (err) {
-      toast.error(errorText(err));
-    }
+      setState(s => ({ ...s, enabled }));
+    } catch (err) { toast.error(errorText(err)); }
+    finally { setArming(false); }
   };
 
   /**
@@ -99,6 +97,7 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
   };
 
   const save = async () => {
+    if (saving || arming || !canSave || !ready) return;
     setSaving(true);
     try {
       await api.saveSchedule(instanceId, state.rules);
@@ -110,6 +109,8 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
       setSaving(false);
     }
   };
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   return (
     <div className="room-server-schedule">
@@ -126,7 +127,7 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
         <Toggle
           checked={state.enabled}
           ariaLabel={t('rooms.server.schedule.enabled')}
-          disabled={dirty && !state.enabled}
+          disabled={saving || arming || (dirty && !state.enabled)}
           onChange={(v) => void setEnabled(v)}
         />
       </div>
@@ -139,36 +140,43 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
           <li key={rule.id} className={`room-server-schedule-rule${badTime || noDays ? ' is-invalid' : ''}`}>
             <div className="room-server-schedule-rule-top">
               <Select
+                ariaLabel={t('rooms.server.schedule.actionLabel')}
+                disabled={saving || arming}
                 value={rule.action}
                 options={ACTION_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey as never) }))}
                 onChange={(v) => updateRule(rule.id, { action: v as ServerScheduleAction })}
               />
               <input
                 type="time"
+                aria-label={t('rooms.server.schedule.timeLabel')}
+                disabled={saving || arming}
                 className={`room-server-schedule-time${badTime ? ' is-invalid' : ''}`}
                 value={rule.time}
                 aria-invalid={badTime}
                 onChange={(e) => updateRule(rule.id, { time: e.target.value })}
               />
               <Toggle
+                disabled={saving || arming}
                 checked={rule.enabled}
                 ariaLabel={t('rooms.server.schedule.ruleEnabled')}
                 onChange={(v) => updateRule(rule.id, { enabled: v })}
               />
-              <button type="button" className="room-server-tool is-danger" onClick={() => removeRule(rule.id)}>
+              <Button size="sm" type="button" className="room-server-tool is-danger" disabled={saving || arming} aria-label={t('rooms.server.schedule.remove')} title={t('rooms.server.schedule.remove')} onClick={() => removeRule(rule.id)}>
                 <Icon name="trash" size={12} />
-              </button>
+              </Button>
             </div>
             <div className="room-server-schedule-days" role="group" aria-label={t('rooms.server.schedule.days')}>
               {DAY_KEYS.map((key, day) => (
-                <button
+                <Button size="sm"
                   key={key}
+                  disabled={saving || arming}
+                  aria-pressed={rule.days.includes(day)}
                   type="button"
                   className={`room-server-schedule-day${rule.days.includes(day) ? ' is-on' : ''}`}
                   onClick={() => toggleDay(rule.id, day)}
                 >
                   {t(`rooms.server.schedule.day.${key}` as never)}
-                </button>
+                </Button>
               ))}
             </div>
             {(badTime || noDays) && (
@@ -182,24 +190,24 @@ export const ServerSchedulePanel: React.FC<ServerSchedulePanelProps> = ({ instan
       </ul>
 
       <div className="room-server-schedule-actions">
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-tool"
+          className="room-server-tool" disabled={saving || arming}
           onClick={() => { setState((s) => ({ ...s, rules: [...s.rules, newRule()] })); setDirty(true); }}
         >
           <Icon name="plus" size={12} />
           {t('rooms.server.schedule.add')}
-        </button>
+        </Button>
         {dirty && (
-          <button
+          <Button size="sm"
             type="button"
-            className="room-server-primary"
-            disabled={saving || !canSave}
+            variant="primary" className="room-server-primary" loading={saving}
+            disabled={arming || !canSave}
             title={canSave ? undefined : t('rooms.server.schedule.fixFirst')}
             onClick={() => void save()}
           >
             {saving ? t('rooms.server.schedule.saving') : t('rooms.server.schedule.save')}
-          </button>
+          </Button>
         )}
         {dirty && <span className="room-server-muted">{t('rooms.server.schedule.unsaved')}</span>}
       </div>

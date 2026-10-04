@@ -353,9 +353,9 @@ export function isValidLanState(m: any): boolean {
   );
 }
 
-/** Narrowing helper: is `k` one of the three signaling kinds. */
+/** Narrowing helper: RTC signaling or an explicit, signed LAN retry. */
 export function isLanSignalKind(k: unknown): k is LanSignalKind {
-  return k === 'offer' || k === 'answer' || k === 'ice';
+  return k === 'offer' || k === 'answer' || k === 'ice' || k === 'retry';
 }
 
 export function isValidLanSignal(m: any): boolean {

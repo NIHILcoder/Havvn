@@ -1507,6 +1507,11 @@
   gap: 5px;
   min-width: 0;
 }
+.server-config-field .number-input { width: 100%; }
+.server-config-field .number-input > input { padding-right: 28px; }
+.room-panel-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px; color: var(--color-text-secondary); }
+.room-panel-status.is-error { color: var(--color-error); background: var(--color-error-bg); border-radius: var(--radius-md); }
+.room-panel-status > span { min-width: 0; flex: 1 1 160px; overflow-wrap: anywhere; }
 
 /* A boolean reads as a row — label left, switch right — instead of a switch
    orphaned under a label. */
@@ -1940,3 +1945,13 @@
 .room-server-setting-hint.is-warn {
   color: var(--color-warning);
 }
+
+.room-server-local-note, .server-console-command-status {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+  margin: var(--space-2) 0;
+}
+.room-local-servers-modal .um-body { min-height: min(440px, 60vh); }
+.rooms-leave-servers { margin-bottom: var(--space-4); }
+.rooms-leave-servers ul { padding-left: var(--space-5); overflow-wrap: anywhere; }

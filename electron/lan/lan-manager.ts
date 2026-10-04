@@ -188,6 +188,10 @@ interface ActiveSession extends LanHelperHandle {
 
 export class LanManager {
   private active: ActiveSession | null = null;
+  private starting: { roomId: string; promise: Promise<LanHelperHandle> } | null = null;
+  private generation = 0;
+  private stopping: Promise<void> | null = null;
+  private helperStopping = false;
   private cfg: LanManagerConfig = {};
   /** Cached availability probe (koffi + wintun.dll resolvable). */
   private availability: { ok: boolean; reason?: string } | null = null;
@@ -223,7 +227,7 @@ export class LanManager {
   }
 
   isBusy(): boolean {
-    return this.active !== null;
+    return this.active !== null || this.starting !== null || this.stopping !== null;
   }
 
   activeSessionId(): string | null {
@@ -237,7 +241,7 @@ export class LanManager {
   /** Beta single-global-session gate: a room may start only if nothing is active
    *  or the active session is already ITS own (idempotent restart). */
   canStart(roomId: string): boolean {
-    return this.active === null || this.active.roomId === roomId;
+    return !this.helperStopping && !this.stopping && (!this.starting || this.starting.roomId === roomId) && (this.active === null || this.active.roomId === roomId);
   }
 
   // ── start ─────────────────────────────────────────────────────────────────
@@ -253,7 +257,16 @@ export class LanManager {
    *   'elevation-denied'  UAC cancelled (exit 1223 / "canceled by the user")
    *   'spawn-failed'      Start-Process error
    */
-  async start(p: LanStartParams): Promise<LanHelperHandle> {
+  start(p: LanStartParams): Promise<LanHelperHandle> {
+    if (this.starting) return this.starting.roomId === p.roomId ? this.starting.promise : Promise.reject(new Error('busy'));
+    const promise = this.startOnce(p, this.generation);
+    const entry = { roomId: p.roomId, promise };
+    this.starting = entry;
+    void promise.finally(() => { if (this.starting === entry) this.starting = null; }).catch(() => {});
+    return promise;
+  }
+
+  private async startOnce(p: LanStartParams, generation: number): Promise<LanHelperHandle> {
     if (!this.canStart(p.roomId)) throw new Error('busy');
     if (this.active && this.active.roomId === p.roomId) return this.active; // idempotent
 
@@ -315,14 +328,14 @@ export class LanManager {
 
     // Gate #2: the UAC prompt is an unbounded await — re-check the kill-switch and
     // revert the just-spawned helper if the VPN dropped during it (plan §7).
-    if (this.cfg.isNetSuspended?.()) {
+    if (this.cfg.isNetSuspended?.() || generation !== this.generation) {
       this.safeUnlink(handshakePath);
       // The helper is elevated and self-reverts when main asks it to shut down OR
       // when its PID-watchdog sees main die; we cannot kill it here. Best effort:
       // leave the handshake removed and let the engine never connect → the helper
       // times out its connect-wait and reverts. Also flag for orphan-sweep.
       this.cfg.log?.('warn', 'LAN start aborted: VPN dropped during UAC prompt');
-      throw new Error('net-suspended');
+      throw new Error(generation !== this.generation ? 'start-cancelled' : 'net-suspended');
     }
 
     const session: ActiveSession = {
@@ -352,11 +365,27 @@ export class LanManager {
    *  send the pipe `shutdown` verb; the helper reverts adapter/route/firewall and
    *  exits on its own (or via its PID-watchdog if the engine is already gone).
    *  Main cannot force-kill the elevated helper. */
-  async stop(sessionId?: string): Promise<void> {
+  stopRoom(roomId: string): Promise<void> {
+    if (this.starting?.roomId === roomId) this.generation++;
+    return this.active?.roomId === roomId ? this.stop(this.active.sessionId) : Promise.resolve();
+  }
+
+  stop(sessionId?: string): Promise<void> {
+    if (sessionId && this.active?.sessionId !== sessionId) return Promise.resolve();
+    this.generation++;
+    if (this.stopping) return this.stopping;
+    const promise = this.stopOnce(sessionId);
+    this.stopping = promise;
+    void promise.finally(() => { if (this.stopping === promise) this.stopping = null; }).catch(() => {});
+    return promise;
+  }
+
+  private async stopOnce(sessionId?: string): Promise<void> {
     const s = this.active;
     if (!s) return;
     if (sessionId && s.sessionId !== sessionId) return; // not the active one
 
+    this.helperStopping = true;
     this.cfg.log?.('info', 'Stopping LAN session', { sessionId: s.sessionId });
     if (s.watchTimer) { clearInterval(s.watchTimer); s.watchTimer = null; }
 
@@ -366,6 +395,14 @@ export class LanManager {
     // Wait (bounded) for the helper to actually exit — it reverts before exiting.
     await this.awaitHelperExit(s.helperPid, HELPER_EXIT_GRACE_MS);
 
+    if (this.isPidAlive(s.helperPid)) {
+      // Elevated teardown may exceed the UI's wait budget. Retain the handle
+      // and exclusion until exit; a second adapter must not overlap this one.
+      this.watchHelper(s);
+      this.cfg.log?.('warn', 'LAN helper shutdown pending; new sessions remain blocked');
+      return;
+    }
+    this.helperStopping = false;
     this.safeUnlink(s.handshakePath);
     lanSubnets.clear(s.sessionId); // stop excluding a torn-down /16 (never hide a real VPN)
     if (this.active === s) this.active = null;
@@ -376,7 +413,6 @@ export class LanManager {
 
   /** VPN kill-switch: tear the active session down with the rest of networking. */
   onVpnSuspend(): void {
-    if (!this.active) return;
     this.cfg.log?.('warn', 'VPN suspend — tearing down LAN session');
     void this.stop();
   }
@@ -385,8 +421,7 @@ export class LanManager {
    *  but the adapter/firewall/helper survive. Trigger teardown so the helper
    *  reverts (its watchdog also self-reverts once the engine pipe closes). */
   onEngineGone(roomId?: string): void {
-    if (!this.active) return;
-    if (roomId && this.active.roomId !== roomId) return;
+    if (roomId) { void this.stopRoom(roomId); return; }
     this.cfg.log?.('warn', 'Engine gone — tearing down LAN session');
     void this.stop();
   }
@@ -548,7 +583,7 @@ export class LanManager {
         this.safeUnlink(s.handshakePath);
         lanSubnets.clear(s.sessionId); // helper gone → its /16 is no longer active
         if (this.active === s) {
-          this.active = null;
+          this.active = null; this.helperStopping = false;
           this.cfg.onWarning?.('helper-exited');
         }
       }

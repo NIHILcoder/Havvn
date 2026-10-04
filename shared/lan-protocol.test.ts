@@ -453,10 +453,11 @@ describe('validators', () => {
     expect(isValidLanSignal({ ...base, data: null })).toBe(true); // null is a valid (present) blob
   });
 
-  it('isLanSignalKind narrows exactly the three kinds', () => {
+  it('isLanSignalKind accepts RTC signals and explicit LAN retry', () => {
     expect(isLanSignalKind('offer')).toBe(true);
     expect(isLanSignalKind('answer')).toBe(true);
     expect(isLanSignalKind('ice')).toBe(true);
+    expect(isLanSignalKind('retry')).toBe(true);
     expect(isLanSignalKind('candidate')).toBe(false);
     expect(isLanSignalKind(0)).toBe(false);
   });

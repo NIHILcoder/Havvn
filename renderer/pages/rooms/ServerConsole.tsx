@@ -21,6 +21,7 @@
  */
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../../components';
+import { useServerError } from './serverErrors';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
@@ -43,6 +44,16 @@ interface ServerConsoleProps {
 export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId, canSend, remote }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
+  const errorText = useServerError();
+  const [sending, setSending] = useState(false);
+  const [commandStatus, setCommandStatus] = useState('');
+  const sendPending = useRef(false);
+  const sendEpoch = useRef(0);
+  useEffect(() => {
+    setCommandStatus(''); setSending(false); sendPending.current = false;
+    const epoch = ++sendEpoch.current;
+    return () => { sendEpoch.current = epoch + 1; };
+  }, [instanceId]);
   const host = useHostWindow();
   const [lines, setLines] = useState<ConsoleLine[]>([]);
   const [command, setCommand] = useState('');
@@ -128,7 +139,10 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId
 
   const send = useCallback(async () => {
     const text = command.trim();
-    if (!text) return;
+    if (!text || !canSend || sendPending.current) return;
+    sendPending.current = true; setSending(true);
+    const epoch = sendEpoch.current;
+    setCommandStatus(t('rooms.server.console.pending'));
     setCommand('');
     historyRef.current = [text, ...historyRef.current.filter((c) => c !== text)].slice(0, 50);
     historyPos.current = -1;
@@ -136,11 +150,14 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId
     setFollowing(true);
     try {
       const res = await window.api.rooms.servers.command(instanceId, text, roomId);
-      if (!res.ok && res.reason) toast.error(res.reason);
+      if (epoch !== sendEpoch.current) return;
+      const status = res.ok ? t('rooms.server.console.accepted') : errorText(res.reason || 'command-unknown');
+      setCommandStatus(status);
+      if (!res.ok) toast.error(status);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
-    }
-  }, [command, instanceId, roomId, toast]);
+      if (epoch === sendEpoch.current) { const message = errorText(err); setCommandStatus(message); toast.error(message); }
+    } finally { if (epoch === sendEpoch.current) { sendPending.current = false; setSending(false); } }
+  }, [command, instanceId, roomId, toast, errorText, t, canSend]);
 
   const copyLog = useCallback(() => {
     // The clipboard of the window this console is REALLY in. A detached panel
@@ -233,13 +250,14 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId
         </button>
       )}
 
-      <div className="server-console-input">
+      {commandStatus && <p className="server-console-command-status" role="status">{commandStatus}</p>}
+      <div className="server-console-input" aria-busy={sending}>
         <span className="server-console-prompt">
           <span className="server-console-prompt-sigil" aria-hidden="true">&gt;</span>
           <input
             type="text"
             value={command}
-            disabled={!canSend}
+            disabled={!canSend || sending}
             maxLength={512}
             placeholder={t('rooms.server.commandPlaceholder')}
             onChange={(e) => setCommand(e.target.value)}
@@ -249,7 +267,7 @@ export const ServerConsole: React.FC<ServerConsoleProps> = ({ instanceId, roomId
         <button
           type="button"
           className="server-console-send"
-          disabled={!canSend || !command.trim()}
+          disabled={!canSend || sending || !command.trim()}
           onClick={() => void send()}
         >
           {t('rooms.server.send')}

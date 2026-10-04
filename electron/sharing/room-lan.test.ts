@@ -707,10 +707,9 @@ describe('LanSession — Phase 2B: a terminal peer is routed through a relay', (
     const { s, feedTun, rbPc } = relayFixture();
     expect(s.buildState().participants.find((x) => x.memberId === RA)!.relayVia).toBe(RB);
 
-    // A fresh admit rebuilds the leg (a re-invite is the real-world trigger); the
-    // rebuilt PC connecting clears the terminal latch. `at` must clear the admit
-    // floor set when the session started, or applyAdmit rejects it as a replay.
-    s.onAdmit(RH, RA, Date.now() + 60_000, RSID);
+    // A local explicit retry rebuilds the direct leg; authority re-floods and
+    // incoming ICE must not reset a terminal failure's automatic retry budget.
+    s.retryFailedPeers();
     FakePC.last!.connect();
 
     const p = s.buildState().participants.find((x) => x.memberId === RA)!;
@@ -903,4 +902,35 @@ describe('LanSession — Phase 2B: forwarding for others (we are the relay)', ()
     expect(rbPc.ch!.sent.length).toBe(0);
     s.stop();
   });
+});
+
+describe('LAN explicit terminal retry', () => {
+  it('keeps a terminal leg closed across incoming ICE/presence and re-arms only on explicit retry', () => {
+    const { adapter, calls } = makeAdapter(HOST, SID, true); const s = new LanSession(adapter as never);
+    s.startAsHost([A]); FakePC.last!.fail(); FakePC.last!.fail(); FakePC.last!.fail();
+    expect(s.buildState().participants.find(p => p.memberId === A)?.terminal).toBe(true);
+    const count = FakePC.count;
+    s.onSignal(A, 'ice', {}); s.onPeerState(stateClaim(SID, A, 0, Date.now() + 100));
+    expect(FakePC.count).toBe(count);
+    s.retryFailedPeers(); expect(FakePC.count).toBe(count + 1);
+    expect(calls.signal.some(c => c.to === A && c.kind === 'retry')).toBe(true);
+    expect(s.buildState().participants.find(p => p.memberId === A)?.terminal).toBeFalsy(); s.stop();
+  });
+  it('rejects retry from an unadmitted member and rate limits admitted retries', () => {
+    const { adapter } = makeAdapter(HOST, SID, true); const s = new LanSession(adapter as never); s.startAsHost([A]);
+    const count = FakePC.count; s.onSignal(B, 'retry', { at: Date.now() }); expect(FakePC.count).toBe(count);
+    s.onSignal(A, 'retry', { at: Date.now() }); expect(FakePC.count).toBe(count + 1);
+    s.onSignal(A, 'retry', { at: Date.now() }); expect(FakePC.count).toBe(count + 1); s.stop();
+  });
+});
+
+it('rejects stale and replayed signed retry requests even after the rate-limit window', () => {
+  vi.useFakeTimers();
+  const { adapter } = makeAdapter(HOST, SID, true); const s = new LanSession(adapter as never); s.startAsHost([A]);
+  const at = Date.now(); s.onSignal(A, 'retry', { at }); const count = FakePC.count;
+  vi.advanceTimersByTime(6000); s.onSignal(A, 'retry', { at }); expect(FakePC.count).toBe(count);
+  s.onSignal(A, 'retry', { at: Date.now() - 31_000 }); expect(FakePC.count).toBe(count);
+  s.onSignal(A, 'retry', { at: Date.now() + 31_000 }); expect(FakePC.count).toBe(count);
+  s.onSignal(A, 'retry', { at: Date.now() }); expect(FakePC.count).toBe(count + 1);
+  s.stop(); vi.useRealTimers();
 });

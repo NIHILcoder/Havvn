@@ -1,3 +1,4 @@
+import { ServerCommandLedger, SERVER_COMMAND_TTL, validCommandRequest, type ServerCommandRequest, type ServerCommandResult } from '../../shared/server-command';
 /**
  * ServerManager — the main-process facade for game servers, in the same role
  * RoomManager plays for rooms: it owns the live objects, mediates every IPC
@@ -31,10 +32,11 @@ import {
   ensureInstanceDirs, importStagingDir, instancePaths, listTree, removeInstanceDir, resolveUnder,
 } from './paths';
 import { estimateInstallBytes, findFreePort, freeBytes } from './host-resources';
+import { hasInterruptedMaintenance } from './maintenance-files';
 import {
   getInstance, getInstances, listInstancesForRoom, upsertInstance, removeInstance,
   isLegalAccepted, acceptLegal, hasContentConsent, recordContentConsent,
-  listOperators, grantOperator, revokeOperator, roleFor,
+  listOperators, grantOperator, revokeOperator, clearOperators, roleFor,
   type PersistedInstance,
 } from '../db/servers-store';
 import type {
@@ -67,6 +69,7 @@ const SCHEDULE_TICK_MS = 15_000;
 const MIRROR_TAIL_LINES = 8;
 
 interface Entry {
+  runEpoch: number;
   persisted: PersistedInstance;
   module: GameModule;
   supervisor: Supervisor;
@@ -94,6 +97,8 @@ interface Entry {
 export interface ServerManagerDeps {
   /** Virtual-LAN address for a room, when a session is up. */
   getRoomVip(roomId: string): string | undefined;
+  isRoomAvailable?(roomId: string): boolean;
+  getKnownRoomIds?(): string[];
   /** Our own memberId, for role checks. */
   getSelfId(): string;
   /** Push updated state for a room to the renderer. */
@@ -108,13 +113,16 @@ export interface ServerManagerDeps {
   /** Host publishes instance state to peers. */
   publishServerMirror?(roomId: string, payload: ServerMirrorState): void;
   /** Operator sends a console command to the host. */
-  publishRemoteCommand?(roomId: string, instanceId: string, command: string): void;
+  publishRemoteCommand?(roomId: string, request: ServerCommandRequest): Promise<ServerCommandResult>;
   /** Surface crash/OOM/disk alerts in the renderer. */
   onServerAlert?(roomId: string, alert: ServerAlert): void;
 }
 
 export class ServerManager extends EventEmitter {
+  private readonly maintenance = new Set<string>();
   private readonly entries = new Map<string, Entry>();
+  private readonly commandLedger = new ServerCommandLedger();
+  private readonly commandsAfter = Date.now();
   private deps: ServerManagerDeps | null = null;
   private disposed = false;
   private scheduleTimer: NodeJS.Timeout | null = null;
@@ -148,6 +156,12 @@ export class ServerManager extends EventEmitter {
   private restoreAll(): void {
     for (const persisted of Object.values(getInstances())) {
       try {
+        // Adopt old orphaned instances as stopped local servers, never auto-start.
+        const known = this.deps?.getKnownRoomIds?.();
+        if (persisted.roomId && known && !known.includes(persisted.roomId)) {
+          Object.assign(persisted, { roomId: '', lifecyclePaused: 'room-removed', scheduleEnabled: false, autoRestart: false, contentBindings: {}, contentAutoSync: false });
+          upsertInstance(persisted); clearOperators(persisted.instanceId);
+        }
         this.attach(persisted);
       } catch (err) {
         log.warn('could not restore instance', { instanceId: persisted.instanceId, err: String(err) });
@@ -172,9 +186,10 @@ export class ServerManager extends EventEmitter {
       },
       onEvent: (e) => this.onGameEvent(persisted.instanceId, e),
     });
-    supervisor.autoRestart = persisted.autoRestart;
+    supervisor.autoRestart = persisted.autoRestart && !persisted.lifecyclePaused;
 
     const entry: Entry = {
+      runEpoch: 0,
       persisted,
       module,
       supervisor,
@@ -256,7 +271,7 @@ export class ServerManager extends EventEmitter {
   }
 
   private findRemoteInRoom(roomId: string, instanceId: string): { hostId: string; row: MirroredServerInstance } | null {
-    for (const mirror of this.deps?.getServerMirrors?.(roomId) ?? []) {
+    for (const mirror of (roomId ? this.deps?.getServerMirrors?.(roomId) : []) ?? []) {
       if (mirror.hostId === this.selfId) continue;
       const row = mirror.instances.find((i) => i.instanceId === instanceId);
       if (row) return { hostId: mirror.hostId, row };
@@ -303,8 +318,9 @@ export class ServerManager extends EventEmitter {
    * hosted anything publishes nothing at all.
    */
   private publishMirror(roomId: string): void {
+    if (!roomId) return;
     const publish = this.deps?.publishServerMirror;
-    if (!publish) return;
+    if (!publish || this.deps?.isRoomAvailable?.(roomId) === false) return;
     const local: RoomServerInstance[] = [];
     const tails: Record<string, ConsoleTailSample> = {};
     for (const entry of this.entries.values()) {
@@ -337,16 +353,17 @@ export class ServerManager extends EventEmitter {
    * instance in room A could drive it from room B, where the host never offered
    * them anything. Refusing is free and keeps the grant where it was made.
    */
-  handleRemoteCommand(by: string, roomId: string, instanceId: string, command: string): { ok: true; command: string } | { ok: false; reason: string } {
+  handleRemoteCommand(by: string, roomId: string, instanceId: string, command: string, request?: ServerCommandRequest): ServerCommandResult {
     const entry = this.entries.get(instanceId);
-    if (!entry) return { ok: false, reason: 'unknown-instance' };
-    if (entry.persisted.roomId !== roomId) return { ok: false, reason: 'unknown-instance' };
+    if (!entry || entry.persisted.roomId !== roomId || !roomId) return { ok: false, reason: 'unknown-instance' };
+    if (this.disposed || this.deps?.isRoomAvailable?.(roomId) === false) return { ok: false, reason: 'room-unavailable' };
     if (!listOperators(instanceId).includes(by)) return { ok: false, reason: 'viewer-only' };
-    // The audit trail operator write access was always meant to ship with: the
-    // host's own console records WHO typed it, before the server sees it, so a
-    // grant that turns out to be a mistake is legible after the fact.
-    entry.supervisor.console.system(`remote command from ${by}: ${command}`);
-    return entry.supervisor.sendCommand(command);
+    if (!request || request.by !== by || request.hostId !== this.selfId || request.instanceId !== instanceId || request.command !== command) return { ok: false, reason: 'command-expired' };
+    if (request.at < this.commandsAfter) return { ok: false, reason: 'command-expired' };
+    return this.commandLedger.execute(roomId, request, () => {
+      entry.supervisor.console.system(`remote command from ${by}: ${command}`);
+      return entry.supervisor.sendCommand(command);
+    });
   }
 
   /** Build the read-only facts a module plans against. */
@@ -367,7 +384,7 @@ export class ServerManager extends EventEmitter {
         // values still form a usable view.
       }
     }
-    const vip = this.deps?.getRoomVip(persisted.roomId);
+    const vip = persisted.roomId ? this.deps?.getRoomVip(persisted.roomId) : undefined;
     return {
       instanceId: persisted.instanceId,
       moduleId: persisted.moduleId,
@@ -697,6 +714,9 @@ export class ServerManager extends EventEmitter {
 
   async install(instanceId: string): Promise<void> {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
+    if (hasInterruptedMaintenance(instancePaths(instanceId).root)) throw new ServerActionError('maintenance-recovery');
+    if (entry.supervisor.pid) throw new ServerActionError('stop-first');
     if (entry.installing) throw new ServerActionError('install-running');
     if (entry.supervisor.status !== 'idle' && entry.supervisor.status !== 'stopped' && entry.supervisor.status !== 'crashed') {
       throw new ServerActionError('stop-first');
@@ -851,22 +871,20 @@ export class ServerManager extends EventEmitter {
     const entry = this.entry(instanceId);
     const pending = entry.pendingUpdate;
     if (!pending) throw new ServerActionError('no-update-source');
-    if (entry.supervisor.status === 'running' || entry.supervisor.status === 'starting') {
-      throw new ServerActionError('stop-first');
-    }
+    await this.withMaintenance(entry, async () => {
+      const backup = await backupWorldDir(instanceId, `pre-update-${backupTagNow()}`);
+      if (backup) {
+        log.info('world backed up before update', { instanceId, backup });
+        entry.supervisor.console.system(`world backed up to ${path.basename(path.dirname(backup))}`);
+      }
 
-    const backup = await backupWorldDir(instanceId, `pre-update-${backupTagNow()}`);
-    if (backup) {
-      log.info('world backed up before update', { instanceId, backup });
-      entry.supervisor.console.system(`world backed up to ${path.basename(path.dirname(backup))}`);
-    }
-
-    entry.persisted.ref = pending;
-    entry.persisted.installed = false;
-    upsertInstance(entry.persisted);
-    entry.pendingUpdate = undefined;
-    this.refreshView(entry);
-    log.info('instance updated', { instanceId, ref: pending.id });
+      entry.persisted.ref = pending;
+      entry.persisted.installed = false;
+      upsertInstance(entry.persisted);
+      entry.pendingUpdate = undefined;
+      this.refreshView(entry);
+      log.info('instance updated', { instanceId, ref: pending.id });
+    });
     await this.install(instanceId);
   }
 
@@ -879,7 +897,7 @@ export class ServerManager extends EventEmitter {
    */
   private async requestFirewallRule(entry: Entry): Promise<void> {
     const allow = this.deps?.allowFirewallApp;
-    if (!allow) return;
+    if (!allow || !entry.persisted.roomId) return;
     const exe = this.resolveRuntimeFor(entry.persisted, (entry.persisted.ref as GameVersionRef).runtime);
     if (!exe) return;
     try {
@@ -898,21 +916,30 @@ export class ServerManager extends EventEmitter {
 
   start(instanceId: string): { ok: true } | { ok: false; reason: string } {
     const entry = this.entry(instanceId);
+    if (this.disposed || (entry.persisted.roomId && this.deps?.isRoomAvailable?.(entry.persisted.roomId) === false)) return { ok: false, reason: 'room-unavailable' };
     if (!entry.persisted.installed) return { ok: false, reason: 'not-installed' };
     if (entry.installing) return { ok: false, reason: 'install-running' };
+    if (this.maintenance.has(instanceId)) return { ok: false, reason: 'maintenance-busy' };
+    if (hasInterruptedMaintenance(instancePaths(instanceId).root)) return { ok: false, reason: 'maintenance-recovery' };
+    if (entry.contentSync === 'conflict') return { ok: false, reason: 'content-pending' };
 
     const paths = instancePaths(instanceId);
     const diskAlert = alertOnLowDisk(instanceId, entry.persisted.name, freeBytes(paths.base));
     if (diskAlert) this.raiseAlert(entry.persisted.roomId, diskAlert);
 
     this.refreshView(entry);
+    entry.supervisor.autoRestart = entry.persisted.autoRestart;
     const res = entry.supervisor.start();
+    if (res.ok && entry.persisted.lifecyclePaused) {
+      delete entry.persisted.lifecyclePaused; upsertInstance(entry.persisted); this.pushUpdate(entry.persisted.roomId);
+    }
     if (res.ok) this.startProbing(entry);
     return res;
   }
 
   stop(instanceId: string): { ok: true } | { ok: false; reason: string } {
     const entry = this.entry(instanceId);
+    entry.runEpoch++;
     this.stopProbing(entry);
     entry.announcer.stop();
     return entry.supervisor.stop();
@@ -920,6 +947,7 @@ export class ServerManager extends EventEmitter {
 
   restart(instanceId: string): { ok: true } | { ok: false; reason: string } {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) return { ok: false, reason: 'maintenance-busy' };
     if (entry.supervisor.status === 'idle' || entry.supervisor.status === 'stopped' || entry.supervisor.status === 'crashed') {
       return this.start(instanceId);
     }
@@ -927,14 +955,16 @@ export class ServerManager extends EventEmitter {
     if (!stopped.ok) return stopped;
     // Wait for the exit rather than racing it: starting while the old process
     // still holds the port produces a confusing "address in use".
+    const epoch = entry.runEpoch;
     entry.supervisor.once('exit', () => {
+      if (entry.runEpoch !== epoch || entry.persisted.lifecyclePaused || this.disposed) return;
       const res = this.start(instanceId);
       if (!res.ok) entry.supervisor.console.system(`restart failed: ${res.reason}`);
     });
     return { ok: true };
   }
 
-  sendCommand(instanceId: string, command: string, roomId?: string): { ok: true; command: string } | { ok: false; reason: string } {
+  async sendCommand(instanceId: string, command: string, roomId?: string): Promise<ServerCommandResult> {
     const local = this.entries.get(instanceId);
     if (local) {
       const role = this.roleOf(local);
@@ -945,8 +975,12 @@ export class ServerManager extends EventEmitter {
     const remote = rid ? this.findRemoteInRoom(rid, instanceId) : null;
     if (!remote) return { ok: false, reason: 'unknown-instance' };
     if (this.remoteRole(remote.hostId, remote.row) === 'viewer') return { ok: false, reason: 'viewer-only' };
-    this.deps?.publishRemoteCommand?.(rid, instanceId, command);
-    return { ok: true, command };
+    if (!this.deps?.publishRemoteCommand || this.deps.isRoomAvailable?.(rid) === false) return { ok: false, reason: 'room-unavailable' };
+    const at = Date.now();
+    const request = { commandId: uuidv4(), by: this.selfId, hostId: remote.hostId, instanceId, command, at, expiresAt: at + SERVER_COMMAND_TTL };
+    if (!validCommandRequest(request, at)) return { ok: false, reason: 'empty-command' };
+    try { return await this.deps.publishRemoteCommand(rid, request); }
+    catch { return { ok: false, reason: 'command-unknown' }; }
   }
 
   clearFailure(instanceId: string): void {
@@ -957,14 +991,17 @@ export class ServerManager extends EventEmitter {
 
   setAutoRestart(instanceId: string, enabled: boolean): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     entry.persisted.autoRestart = enabled;
-    entry.supervisor.autoRestart = enabled;
+    if (enabled && !entry.persisted.lifecyclePaused) entry.supervisor.autoRestart = true;
+    else entry.supervisor.pauseAutoRestart();
     upsertInstance(entry.persisted);
     this.pushUpdate(entry.persisted.roomId);
   }
 
   async deleteInstance(instanceId: string, opts: { deleteFiles: boolean }): Promise<void> {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     const { roomId } = entry.persisted;
     entry.installAbort?.abort();
     this.stopProbing(entry);
@@ -1011,6 +1048,7 @@ export class ServerManager extends EventEmitter {
    */
   saveConfig(instanceId: string, values: Record<string, string>): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     if (entry.supervisor.status === 'running' || entry.supervisor.status === 'starting') {
       // Most servers read their config once at boot; writing under a live
       // process would show settings that are not actually in effect.
@@ -1112,9 +1150,60 @@ export class ServerManager extends EventEmitter {
 
   /** (Re)build the local-link advertisement from current state. */
   private updateAnnouncement(entry: Entry): void {
+    if (!entry.persisted.roomId) { entry.announcer.stop(); return; }
     const view = this.viewOf(entry.persisted, entry.module);
     const plan = entry.module.announcePlan?.(view) ?? null;
     entry.announcer.set(plan, view.vip);
+  }
+
+  /** Stop room-bound listeners and restart timers, retaining world/config files.
+   * The persisted latch also prevents schedules from reviving them on app boot. */
+  async onRoomUnavailable(roomId: string, reason: string): Promise<void> {
+    if (!roomId) return;
+    const linked = [...this.entries.values()].filter(entry => entry.persisted.roomId === roomId && !!roomId);
+    if (reason === 'left-local') {
+      // A pending install cannot be safely turned into a background process.
+      if (linked.some(entry => entry.installing)) throw new ServerActionError('install-running');
+      for (const entry of linked) this.detachEntry(entry, true);
+      this.lastMirrorSent.delete(roomId); this.pushUpdate(roomId); this.pushUpdate('');
+      return;
+    }
+    const exits: Promise<void>[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.persisted.roomId !== roomId) continue;
+      entry.runEpoch++;
+      entry.persisted.lifecyclePaused = reason;
+      entry.supervisor.autoRestart = false;
+      entry.installAbort?.abort();
+      this.stopProbing(entry); entry.announcer.stop();
+      exits.push(entry.supervisor.stopAndWait());
+      try { upsertInstance(entry.persisted); }
+      catch (error) { log.warn('Could not persist server pause', { instanceId: entry.persisted.instanceId, error: String(error) }); }
+    }
+    this.lastMirrorSent.delete(roomId);
+    this.pushUpdate(roomId);
+    await Promise.all(exits);
+    // Kept worlds must still have an accessible management surface after leave.
+    if (reason === 'left') {
+      for (const entry of linked) if (this.entries.get(entry.persisted.instanceId) === entry) this.detachEntry(entry, false);
+      this.pushUpdate('');
+    }
+  }
+
+  private detachEntry(entry: Entry, keepRunning: boolean): void {
+    const persisted: PersistedInstance = { ...entry.persisted, roomId: '', contentBindings: {}, contentAutoSync: false, scheduleEnabled: false, autoRestart: false };
+    if (keepRunning && entry.supervisor.status === 'running') delete persisted.lifecyclePaused;
+    else persisted.lifecyclePaused = 'detached';
+    upsertInstance(persisted);
+    entry.runEpoch++; entry.supervisor.pauseAutoRestart(); entry.announcer.stop();
+    // Supervisor callbacks retain this object; update it in place so subsequent
+    // status pushes and runtime preferences follow the local binding too.
+    Object.assign(entry.persisted, persisted);
+    if (persisted.lifecyclePaused === undefined) delete entry.persisted.lifecyclePaused;
+    clearOperators(persisted.instanceId);
+    // stop() with no child also cancels a delayed crash-restart ticket.
+    if (keepRunning && entry.supervisor.status !== 'running' && entry.supervisor.status !== 'starting') entry.supervisor.stop();
+    this.refreshView(entry);
   }
 
   /** Called by main when a room's LAN session comes up or goes away. */
@@ -1135,7 +1224,7 @@ export class ServerManager extends EventEmitter {
       this.refreshContentStatus(entry);
       if (entry.persisted.contentAutoSync && entry.contentSync === 'missing') {
         const st = entry.supervisor.status;
-        if (st !== 'running' && st !== 'starting' && !entry.installing) {
+        if (!['running', 'starting', 'stopping'].includes(st) && !entry.supervisor.pid && !entry.installing && !this.maintenance.has(entry.persisted.instanceId)) {
           void this.syncContent(entry.persisted.instanceId).catch((err) => {
             log.warn('auto content sync failed', { instanceId: entry.persisted.instanceId, err: String(err) });
           });
@@ -1216,6 +1305,7 @@ export class ServerManager extends EventEmitter {
 
   setContentFolder(instanceId: string, slotId: string, folderId: string): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     const slots = this.contentSlotsOf(entry);
     if (!slots.some((s) => s.id === slotId)) throw new ServerActionError('unknown-instance', slotId);
     const bindings = this.bindingsOf(entry);
@@ -1228,6 +1318,7 @@ export class ServerManager extends EventEmitter {
 
   clearContentFolder(instanceId: string, slotId: string): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     const bindings = this.bindingsOf(entry);
     delete bindings[slotId];
     entry.persisted.contentBindings = Object.keys(bindings).length ? bindings : undefined;
@@ -1245,6 +1336,11 @@ export class ServerManager extends EventEmitter {
   }
 
   async syncContent(instanceId: string): Promise<ServerContentState> {
+    const entry = this.entry(instanceId);
+    return this.withMaintenance(entry, () => this.syncContentStopped(instanceId));
+  }
+
+  private async syncContentStopped(instanceId: string): Promise<ServerContentState> {
     const entry = this.entry(instanceId);
     if (!entry.module.caps.content) throw new ServerActionError('unknown-module', entry.persisted.moduleId);
     const slots = this.contentSlotsOf(entry);
@@ -1273,6 +1369,7 @@ export class ServerManager extends EventEmitter {
       });
     } catch (err) {
       entry.contentSync = 'missing';
+      this.pushUpdate(entry.persisted.roomId);
       if (String(err).includes('stop-first')) throw new ServerActionError('stop-first');
       throw err;
     }
@@ -1303,18 +1400,31 @@ export class ServerManager extends EventEmitter {
     return listWorldBackups(instanceId);
   }
 
+  private assertStopped(entry: Entry): void {
+    if (entry.installing) throw new ServerActionError('install-running');
+    if (this.maintenance.has(entry.persisted.instanceId)) throw new ServerActionError('maintenance-busy');
+    if (hasInterruptedMaintenance(instancePaths(entry.persisted.instanceId).root)) throw new ServerActionError('maintenance-recovery');
+    if (entry.supervisor.pid || ['running', 'starting', 'stopping'].includes(entry.supervisor.status)) throw new ServerActionError('stop-first');
+  }
+
+  private async withMaintenance<T>(entry: Entry, work: () => Promise<T>): Promise<T> {
+    this.assertStopped(entry);
+    const id = entry.persisted.instanceId;
+    this.maintenance.add(id);
+    entry.runEpoch++;
+    entry.supervisor.pauseAutoRestart();
+    try { return await work(); }
+    finally { this.maintenance.delete(id); this.pushUpdate(entry.persisted.roomId); }
+  }
+
   async createBackup(instanceId: string, label?: string): Promise<WorldBackupEntry> {
     const entry = this.entry(instanceId);
-    const st = entry.supervisor.status;
-    if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
-    return createWorldBackup(instanceId, label);
+    return this.withMaintenance(entry, () => createWorldBackup(instanceId, label));
   }
 
   async restoreBackup(instanceId: string, backupId: string): Promise<void> {
     const entry = this.entry(instanceId);
-    const st = entry.supervisor.status;
-    if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
-    await restoreWorldBackup(instanceId, backupId);
+    await this.withMaintenance(entry, () => restoreWorldBackup(instanceId, backupId));
     entry.supervisor.console.system(`world restored from backup ${backupId}`);
     this.pushUpdate(entry.persisted.roomId);
   }
@@ -1322,8 +1432,9 @@ export class ServerManager extends EventEmitter {
   async removeBackup(instanceId: string, backupId: string): Promise<void> {
     // Resolved BEFORE the delete: an unknown instance must fail without having
     // already removed the directory.
-    const roomId = this.entry(instanceId).persisted.roomId;
-    await deleteWorldBackup(instanceId, backupId);
+    const entry = this.entry(instanceId);
+    const roomId = entry.persisted.roomId;
+    await this.withMaintenance(entry, () => deleteWorldBackup(instanceId, backupId));
     this.pushUpdate(roomId);
   }
 
@@ -1386,6 +1497,7 @@ export class ServerManager extends EventEmitter {
 
   setContentAutoSync(instanceId: string, enabled: boolean): void {
     const entry = this.entry(instanceId);
+    if (enabled && !entry.persisted.roomId) throw new ServerActionError('no-content-bindings');
     entry.persisted.contentAutoSync = enabled === true;
     upsertInstance(entry.persisted);
     this.pushUpdate(entry.persisted.roomId);
@@ -1433,7 +1545,7 @@ export class ServerManager extends EventEmitter {
     if (!minutes.length) return;
 
     for (const entry of this.entries.values()) {
-      if (!entry.persisted.scheduleEnabled) continue;
+      if (!entry.persisted.scheduleEnabled || entry.persisted.lifecyclePaused || (entry.persisted.roomId && this.deps?.isRoomAvailable?.(entry.persisted.roomId) === false)) continue;
       const rules = entry.persisted.schedules ?? [];
       if (!rules.length) continue;
       // One instance's bad rule must not stop the others from being evaluated.
@@ -1545,6 +1657,8 @@ export class ServerManager extends EventEmitter {
       contentRev: entry.persisted.contentRev,
       ...(entry.module.caps.content && entry.contentSync !== 'ok' ? { contentSync: entry.contentSync } : {}),
       autoRestart: entry.persisted.autoRestart,
+      ...(!entry.persisted.roomId ? { local: true } : {}),
+      ...(entry.persisted.lifecyclePaused ? { lifecyclePaused: entry.persisted.lifecyclePaused } : {}),
       updatable: (entry.persisted.ref as GameVersionRef).flavour !== 'imported' && Boolean(entry.module.resolve),
       ...(entry.persisted.scheduleEnabled ? { scheduleEnabled: true } : {}),
       ...(entry.persisted.schedules?.length

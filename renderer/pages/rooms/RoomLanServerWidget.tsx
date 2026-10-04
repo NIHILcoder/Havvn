@@ -1,6 +1,7 @@
 /**
  * Compact list of running game servers — shown in the LAN panel when a session is up.
  */
+import { Button } from '../../components/Button';
 import React, { useEffect, useRef, useState } from 'react';
 import { Icon } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
@@ -62,14 +63,14 @@ export const RoomLanServerWidget: React.FC<RoomLanServerWidgetProps> = ({ roomId
                 {inst.players.online}/{inst.players.max}
               </span>
             )}
-            <button
+            <Button size="sm"
               type="button"
               className="room-lan-copy"
               title={t('rooms.lan.copyIp')}
               onClick={() => copyAddress(inst.address!)}
             >
               <Icon name="copy" size={12} />
-            </button>
+            </Button>
           </li>
         ))}
       </ul>

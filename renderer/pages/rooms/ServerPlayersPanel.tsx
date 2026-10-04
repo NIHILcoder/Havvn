@@ -1,6 +1,8 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * Whitelist and ban list editor for Minecraft servers.
  */
+import { Button } from '../../components/Button';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
@@ -26,19 +28,17 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
   const errorText = useServerError();
   const api = window.api.rooms.servers;
 
-  const [state, setState] = useState<ServerPlayersState>(EMPTY);
+  const load = useCallback(() => api.players(instanceId), [api, instanceId]);
+  const { data, reload, loading, error, ready } = useServerPanelData(load);
+  const state = data ?? EMPTY;
   const [newName, setNewName] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const reload = useCallback(async () => {
-    setState(await api.players(instanceId));
-  }, [api, instanceId]);
 
   // `locked` comes from whether the server is running, so this has to follow the
   // instance: fetching once on mount left every control enabled after a start,
   // and the save then failed with `stop-first` instead of being greyed out.
   useEffect(() => {
-    void reload().catch(() => { /* instance may be gone */ });
     const off = api.onUpdate((payload) => {
       if (payload.state.instances.some((i) => i.instanceId === instanceId)) {
         void reload().catch(() => { /* ignore */ });
@@ -48,13 +48,16 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
   }, [api, instanceId, reload]);
 
   const save = async (patch: Parameters<typeof api.savePlayers>[1]) => {
+    if (busy || state.locked || !ready) return false;
     setBusy(true);
     try {
       await api.savePlayers(instanceId, patch);
       await reload();
       toast.success(t('rooms.server.players.saved'));
+      return true;
     } catch (err) {
       toast.error(errorText(err));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -64,9 +67,11 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
     const name = newName.trim();
     if (!name || state.locked) return;
     if (state.whitelist.some((e) => e.name.toLowerCase() === name.toLowerCase())) return;
-    void save({ whitelist: [...state.whitelist, { uuid: '', name }], whitelistEnabled: state.whitelistEnabled });
-    setNewName('');
+    void save({ whitelist: [...state.whitelist, { uuid: '', name }], whitelistEnabled: state.whitelistEnabled })
+      .then(ok => { if (ok) setNewName(''); });
   };
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   return (
     <div className="room-server-section">
@@ -95,16 +100,16 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
         <input
           type="text"
           className="room-server-input"
-          placeholder={t('rooms.server.players.namePlaceholder')}
+          placeholder={t('rooms.server.players.namePlaceholder')} aria-label={t('rooms.server.players.namePlaceholder')}
           value={newName}
           disabled={busy || state.locked}
           onChange={(e) => setNewName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') addWhitelist(); }}
         />
-        <button type="button" className="room-server-btn" disabled={busy || state.locked} onClick={addWhitelist}>
+        <Button size="sm" type="button" className="room-server-btn" loading={busy} disabled={state.locked || !newName.trim()} onClick={addWhitelist}>
           <Icon name="user" size={12} />
           {t('rooms.server.players.add')}
-        </button>
+        </Button>
       </div>
       <h4 className="room-server-subhead">{t('rooms.server.players.whitelist')}</h4>
       {state.whitelist.length === 0 ? (
@@ -114,7 +119,7 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
           {state.whitelist.map((p) => (
             <li key={p.uuid || p.name} className="room-server-player-item">
               <span>{p.name}</span>
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-tool is-danger"
                 disabled={busy || state.locked}
@@ -124,7 +129,7 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
                 })}
               >
                 {t('rooms.server.players.remove')}
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -137,14 +142,14 @@ export const ServerPlayersPanel: React.FC<ServerPlayersPanelProps> = ({ instance
           {state.banned.map((p) => (
             <li key={p.uuid || p.name} className="room-server-player-item">
               <span>{p.name}</span>
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-tool"
                 disabled={busy || state.locked}
                 onClick={() => void save({ banned: state.banned.filter((e) => e.name !== p.name) })}
               >
                 {t('rooms.server.players.unban')}
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

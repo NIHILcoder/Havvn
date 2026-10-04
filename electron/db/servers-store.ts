@@ -17,7 +17,7 @@ import type { ServerRole, ServerScheduleRule } from '../../shared/gameserver-typ
 export interface PersistedInstance {
   instanceId: string;
   moduleId: string;
-  /** Room this instance belongs to. */
+  /** Room this instance belongs to; empty string means an explicitly local server. */
   roomId: string;
   name: string;
   /** The resolved catalog entry, so an instance can be relaunched offline.
@@ -30,6 +30,8 @@ export interface PersistedInstance {
   installed: boolean;
   /** Restart automatically after an unexpected exit. */
   autoRestart: boolean;
+  /** Explicit Start is needed after a room/network interruption. */
+  lifecyclePaused?: string;
   /** Bumped whenever the required content set changes. */
   contentRev: number;
   /** slotId → room folder id ('' = uncategorized). Absent slot = unbound. */
@@ -189,4 +191,12 @@ export function revokeOperator(instanceId: string, memberId: string): void {
 export function roleFor(instanceId: string, hostId: string, selfId: string): ServerRole {
   if (hostId === selfId) return 'host';
   return listOperators(instanceId).includes(selfId) ? 'operator' : 'viewer';
+}
+
+/** Detaching a server revokes all room-scoped console grants. */
+export function clearOperators(instanceId: string): void {
+  const granted = serversStore.get('operators') ?? {};
+  const revoked = serversStore.get('operatorRevokes') ?? {};
+  delete granted[instanceId]; delete revoked[instanceId];
+  serversStore.set('operators', granted); serversStore.set('operatorRevokes', revoked);
 }

@@ -1,3 +1,4 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * Grant or revoke operator console access for room members.
  */
@@ -5,7 +6,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
-import type { RoomMember, RoomState } from '../../../shared/types';
+import type { RoomState } from '../../../shared/types';
 import { useServerError } from './serverErrors';
 import './RoomServerPanel.css';
 
@@ -20,23 +21,15 @@ export const ServerAccessPanel: React.FC<ServerAccessPanelProps> = ({ roomId, in
   const errorText = useServerError();
   const api = window.api.rooms.servers;
 
-  const [operators, setOperators] = useState<string[]>([]);
-  const [members, setMembers] = useState<RoomMember[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    const [access, room] = await Promise.all([
-      api.access(instanceId),
-      window.api.rooms.get(roomId),
-    ]);
-    setOperators(access.operators);
-    setMembers((room as RoomState | null)?.members?.filter((m) => !m.isSelf) ?? []);
-  }, [api, instanceId, roomId]);
+  const load = useCallback(() => Promise.all([api.access(instanceId), window.api.rooms.get(roomId)]), [api, instanceId, roomId]);
+  const { data, setData, reload, loading, error, ready } = useServerPanelData(load);
+  const operators = data?.[0].operators ?? [];
+  const members = (data?.[1] as RoomState | null)?.members.filter(m => !m.isSelf) ?? [];
 
   useEffect(() => {
-    void reload().catch(() => { /* ignore */ });
     const offRoom = window.api.onRoomUpdate((state) => {
-      if (state.roomId === roomId) setMembers(state.members.filter((m) => !m.isSelf));
+      if (state.roomId === roomId) setData(prev => prev ? [prev[0], state] : prev);
     });
     const offSrv = api.onUpdate((payload) => {
       if (payload.state.instances.some((i) => i.instanceId === instanceId)) {
@@ -44,9 +37,10 @@ export const ServerAccessPanel: React.FC<ServerAccessPanelProps> = ({ roomId, in
       }
     });
     return () => { offRoom(); offSrv(); };
-  }, [api, instanceId, reload, roomId]);
+  }, [api, instanceId, reload, roomId, setData]);
 
   const setOperator = async (memberId: string, on: boolean) => {
+    if (busy !== null || !ready) return;
     setBusy(memberId);
     try {
       if (on) await api.grantOperator(instanceId, memberId);
@@ -58,6 +52,8 @@ export const ServerAccessPanel: React.FC<ServerAccessPanelProps> = ({ roomId, in
       setBusy(null);
     }
   };
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   return (
     <div className="room-server-access">
@@ -71,7 +67,7 @@ export const ServerAccessPanel: React.FC<ServerAccessPanelProps> = ({ roomId, in
           {members.map((m) => {
             const isOp = operators.includes(m.memberId);
             return (
-              <li key={m.memberId} className="room-server-access-row">
+              <li key={m.memberId} className="room-server-access-row" aria-busy={busy === m.memberId}>
                 <span className="room-server-access-name">
                   <span className={`room-server-access-dot${m.online ? ' is-online' : ''}`} />
                   {m.name}
@@ -82,7 +78,7 @@ export const ServerAccessPanel: React.FC<ServerAccessPanelProps> = ({ roomId, in
                 </span>
                 <Toggle
                   checked={isOp}
-                  disabled={busy === m.memberId}
+                  disabled={busy !== null}
                   ariaLabel={t('rooms.server.access.toggle').replace('{name}', m.name)}
                   onChange={(v) => void setOperator(m.memberId, v)}
                 />

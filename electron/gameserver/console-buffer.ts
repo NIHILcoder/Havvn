@@ -56,9 +56,11 @@ export class ConsoleBuffer {
       ensureDir(this.logsDir);
       const file = path.join(this.logsDir, 'console.log');
       this.rotateIfNeeded(file);
-      this.stream = fs.createWriteStream(file, { flags: 'a' });
-      // A failed log write must never take the server down with it.
-      this.stream.on('error', (err) => {
+      const stream = fs.createWriteStream(file, { flags: 'a' });
+      this.stream = stream;
+      // Retired writes may fail after close/reopen; they must not disable the new log.
+      stream.on('error', (err) => {
+        if (this.stream !== stream) return;
         log.warn('console log write failed', { err: String(err) });
         this.stream = null;
       });

@@ -1,11 +1,12 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * List, create, restore, and delete world backups for one server instance.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '../../components/Button';
+import React, { useCallback, useState } from 'react';
 import { Icon } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
-import type { WorldBackupEntry } from '../../../shared/gameserver-types';
 import { useServerError } from './serverErrors';
 import './RoomServerPanel.css';
 
@@ -26,31 +27,14 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
   const errorText = useServerError();
   const api = window.api.rooms.servers;
 
-  const [backups, setBackups] = useState<WorldBackupEntry[]>([]);
+  const load = useCallback(() => api.backups(instanceId), [api, instanceId]);
+  const { data: backups, reload, loading, error, ready } = useServerPanelData(load);
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; };
-  }, []);
-
-  const reload = useCallback(async () => {
-    const list = await api.backups(instanceId);
-    if (alive.current) setBackups(list);
-  }, [api, instanceId]);
-
-  // Loaded on mount and after our own actions ONLY. Subscribing to onUpdate here
-  // meant every server state push — one per probe tick, every 15s while a server
-  // runs — re-listed the backups, and listing has to stat a directory per entry.
-  // Nothing else on this machine creates backups, so there is nothing to miss.
-  useEffect(() => {
-    void reload().catch(() => { /* instance may be gone */ });
-  }, [reload]);
-
   const run = async (fn: () => Promise<void>) => {
+    if (busy || !ready) return;
     setBusy(true);
     try {
       await fn();
@@ -62,6 +46,8 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
     }
   };
 
+  if (!ready || !backups) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
+
   return (
     <div className="room-server-section">
       <p className="room-server-section-intro">{t('rooms.server.backup.intro')}</p>
@@ -72,15 +58,15 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
         <input
           type="text"
           className="room-server-input"
-          placeholder={t('rooms.server.backup.labelPlaceholder')}
+          placeholder={t('rooms.server.backup.labelPlaceholder')} aria-label={t('rooms.server.backup.labelPlaceholder')}
           value={label}
           disabled={locked || busy}
           onChange={(e) => setLabel(e.target.value)}
         />
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-btn"
-          disabled={locked || busy}
+          className="room-server-btn" loading={busy}
+          disabled={locked}
           onClick={() => void run(async () => {
             await api.createBackup(instanceId, label.trim() || undefined);
             setLabel('');
@@ -89,16 +75,16 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
         >
           <Icon name="archive" size={12} />
           {t('rooms.server.backup.create')}
-        </button>
-        <button
+        </Button>
+        <Button size="sm"
           type="button"
           className="room-server-tool"
           disabled={busy}
-          onClick={() => void api.openBackupsFolder(instanceId)}
+          onClick={() => void api.openBackupsFolder(instanceId).catch(err => toast.error(errorText(err)))}
         >
           <Icon name="folder-open" size={12} />
           {t('rooms.server.backup.openFolder')}
-        </button>
+        </Button>
       </div>
       {backups.length === 0 ? (
         <p className="room-server-empty">{t('rooms.server.backup.empty')}</p>
@@ -116,7 +102,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
               <div className="room-server-backup-actions">
                 {confirmId === b.id ? (
                   <>
-                    <button
+                    <Button size="sm"
                       type="button"
                       className="room-server-btn is-danger"
                       disabled={locked || busy}
@@ -127,22 +113,22 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
                       })}
                     >
                       {t('rooms.server.backup.confirmRestore')}
-                    </button>
-                    <button type="button" className="room-server-tool" onClick={() => setConfirmId(null)}>
+                    </Button>
+                    <Button size="sm" type="button" className="room-server-tool" onClick={() => setConfirmId(null)}>
                       {t('rooms.server.cancel')}
-                    </button>
+                    </Button>
                   </>
                 ) : (
                   <>
-                    <button
+                    <Button size="sm"
                       type="button"
                       className="room-server-tool"
                       disabled={locked || busy}
                       onClick={() => setConfirmId(b.id)}
                     >
                       {t('rooms.server.backup.restore')}
-                    </button>
-                    <button
+                    </Button>
+                    <Button size="sm"
                       type="button"
                       className="room-server-tool is-danger"
                       disabled={busy}
@@ -152,7 +138,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
                       })}
                     >
                       {t('rooms.server.delete')}
-                    </button>
+                    </Button>
                   </>
                 )}
               </div>

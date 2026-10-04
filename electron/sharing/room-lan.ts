@@ -95,7 +95,7 @@ import type {
   RoomLanState, RoomLanParticipant, LanPeerStatus, LanIceFailReason,
 } from '../../shared/lan-types';
 
-export type LanSignalKind = 'offer' | 'answer' | 'ice';
+export type LanSignalKind = 'offer' | 'answer' | 'ice' | 'retry';
 
 /** DROP backpressure threshold (plan §2): once the channel's send buffer exceeds
  *  this, further frames are dropped rather than queued — a game tunnel wants drop,
@@ -483,6 +483,8 @@ export class LanSession {
    *  across the reap/rebuild churn. A merely connecting/reconnecting leg is never
    *  relayed, so the fast path stays untouched for every healthy pair. */
   private terminal = new Set<string>();
+  private retryAt = new Map<string, number>();
+  private remoteRetryAt = new Map<string, number>();
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   // ── Phase 2B: one-hop peer relay ──────────────────────────────────────────
   /** THIS install is willing to spend uplink forwarding for others (the
@@ -619,7 +621,7 @@ export class LanSession {
     this.quality.clear();
     this.failReasons.clear();
     this.failCounts.clear();
-    this.terminal.clear();
+    this.terminal.clear(); this.retryAt.clear(); this.remoteRetryAt.clear();
     // Phase 2B: forget every relay ROUTE and everything we were forwarding, and
     // reset the advert change-detector so a restart re-publishes immediately.
     // The LanReachTable's per-member anti-replay FLOORS are deliberately kept —
@@ -732,6 +734,26 @@ export class LanSession {
     else if (kind === 'evict' && memberId && this.a.isHost) this.hostEvict(memberId);
     else if (kind === 'relay-on') this.setRelayEnabled(true);
     else if (kind === 'relay-off') this.setRelayEnabled(false);
+    else if (kind === 'retry') this.retryFailedPeers();
+  }
+
+  retryFailedPeers(): void {
+    if (!this.active) return;
+    for (const id of [...this.terminal]) {
+      if (!this.core.isAdmitted(id) || !this.allowRetry(id)) continue;
+      this.forgetFailure(id); this.dropPeer(id);
+      this.a.sendSignal(id, 'retry', { at: this.now() });
+      this.ensurePeer(id);
+    }
+    this.a.onChange();
+  }
+
+  private allowRetry(id: string): boolean {
+    const at = this.now();
+    const previous = this.retryAt.get(id);
+    if (previous !== undefined && at - previous < 5000) return false;
+    this.retryAt.set(id, at);
+    return true;
   }
 
   // ── Phase 2B: relay willingness, adverts and selection ─────────────────────
@@ -957,6 +979,16 @@ export class LanSession {
   onSignal(from: string, kind: LanSignalKind, data: unknown): void {
     if (!this.active || from === this.a.selfId) return;
     if (!this.core.isAdmitted(from)) return; // GATE — no LanPeer for the unadmitted
+    if (kind === 'retry') {
+      const at = (data as { at?: unknown } | null)?.at;
+      // Retry is destructive; unlike ICE it must not be replayed to repeatedly
+      // reset a good leg. Signed timestamp, short TTL and per-member floor.
+      if (typeof at !== 'number' || !Number.isSafeInteger(at) || Math.abs(this.now() - at) > 30_000 ||
+        at <= (this.remoteRetryAt.get(from) ?? -Infinity) || !this.allowRetry(from)) return;
+      this.remoteRetryAt.set(from, at);
+      this.dropPeer(from); this.forgetFailure(from); this.ensurePeer(from);
+      this.a.onChange(); return;
+    }
     void this.ensurePeer(from)?.onSignal(kind, data);
   }
 
@@ -965,6 +997,7 @@ export class LanSession {
   /** A member left the ROOM (applyLocalRekey / prune): release their vIP/route and
    *  close their leg. Anti-replay floors are KEPT inside the core (replay defence). */
   onMemberGone(memberId: string): void {
+    this.retryAt.delete(memberId); this.remoteRetryAt.delete(memberId);
     this.core.onMemberGone(memberId);
     this.dropPeer(memberId);
     this.forgetFailure(memberId); // genuinely gone — clear the latches, not just the leg
@@ -1192,7 +1225,7 @@ export class LanSession {
    *  not host-admitted or the mesh cap is reached. Roster membership is
    *  necessary-but-NOT-sufficient — only a host-signed admit populates admittedSet. */
   private ensurePeer(memberId: string): LanPeer | undefined {
-    if (memberId === this.a.selfId) return undefined;
+    if (memberId === this.a.selfId || this.terminal.has(memberId)) return undefined;
     const existing = this.peers.get(memberId);
     if (existing) return existing;
     if (!this.core.isAdmitted(memberId)) return undefined; // must-fix #1

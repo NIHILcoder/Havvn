@@ -1,3 +1,4 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * RoomServerPanel — the room's game servers: create one, run it, watch its
  * console, edit its settings.
@@ -27,6 +28,7 @@
  * preload bridge of its own, and the React tree runs in the main renderer either
  * way.
  */
+import { Button } from '../../components/Button';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DropdownMenu, Icon, Select, Toggle } from '../../components';
 import type { DropdownMenuItem, IconName } from '../../components';
@@ -41,7 +43,7 @@ import { IMPORT_JAVA_MAJORS } from '../../../shared/gameserver-types';
 import { GamePicker } from './GamePicker';
 import { ServerConsole } from './ServerConsole';
 import { ServerConfigForm } from './ServerConfigForm';
-import { ServerConfigField } from './ServerConfigField';
+import { ServerConfigField, validServerConfigValue } from './ServerConfigField';
 import { ServerContentPanel } from './ServerContentPanel';
 import { ServerSchedulePanel } from './ServerSchedulePanel';
 import { ServerAccessPanel } from './ServerAccessPanel';
@@ -79,9 +81,9 @@ const EMPTY_STATE: RoomServerState = { available: true, modules: [], instances: 
  * A remote instance is a mirror: there is no local directory to configure, no
  * schedule to arm, nobody here to grant. Only Minecraft has player lists.
  */
-export function visibleTabsFor(instance: Pick<RoomServerInstance, 'remote' | 'moduleId'>): Tab[] {
+export function visibleTabsFor(instance: Pick<RoomServerInstance, 'remote' | 'moduleId' | 'local'>): Tab[] {
   if (instance.remote === true) return ['overview', 'console'];
-  const tabs: Tab[] = ['overview', 'console', 'content', 'schedule', 'access', 'backup'];
+  const tabs: Tab[] = instance.local ? ['overview', 'console', 'schedule', 'backup'] : ['overview', 'console', 'content', 'schedule', 'access', 'backup'];
   if (instance.moduleId === 'minecraft') tabs.push('players');
   tabs.push('settings');
   return tabs;
@@ -125,7 +127,9 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   const errorText = useServerError();
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  const [state, setState] = useState<RoomServerState>(EMPTY_STATE);
+  const load = useCallback(() => window.api.rooms.servers.state(roomId), [roomId]);
+  const { data, setData: setState, loading, error, reload, ready } = useServerPanelData(load);
+  const state = data ?? EMPTY_STATE;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   /** Creating is now two steps: the picker names the game, then the form fills
@@ -134,12 +138,12 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
    *  it cannot silently fall back to modules[0] when the picker is bypassed. */
   const [gamePickerOpen, setGamePickerOpen] = useState(false);
   const [creatingModule, setCreatingModule] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const actionPending = useRef(false);
 
   // ── state sync ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    let alive = true;
-    void window.api.rooms.servers.state(roomId).then((s) => { if (alive) setState(s); }).catch(() => { /* room gone */ });
     const off = window.api.rooms.servers.onUpdate((payload) => {
       if (payload.roomId === roomId) setState(payload.state);
     });
@@ -149,8 +153,8 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
       const msg = t(key as never).replace('{name}', payload.name);
       toast.error(payload.detail ? `${msg}: ${payload.detail}` : msg);
     });
-    return () => { alive = false; off(); offAlert?.(); };
-  }, [roomId, t, toast]);
+    return () => { off(); offAlert?.(); };
+  }, [roomId, t, toast, setState]);
 
   const instances = state.instances;
   const selected = useMemo(
@@ -183,6 +187,8 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   const run = useCallback(async (
     action: () => Promise<{ ok: boolean; reason?: string }>,
   ): Promise<void> => {
+    if (actionPending.current) return;
+    actionPending.current = true; setWorking(true);
     try {
       const res = await action();
       // `reason` arrives as a BARE code here — it came back as a value rather than
@@ -190,7 +196,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
       if (!res.ok && res.reason) toast.error(errorText(res.reason));
     } catch (err) {
       toast.error(errorText(err));
-    }
+    } finally { actionPending.current = false; setWorking(false); }
   }, [errorText, toast]);
 
   const copyAddress = useCallback((address: string) => {
@@ -205,6 +211,8 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   }, [host, t, toast]);
 
   // ── render ─────────────────────────────────────────────────────────────────
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   if (creatingModule) {
     return (
@@ -232,7 +240,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
         </span>
         <span className="room-server-head-actions">
           {soloHandle}
-          <button
+          {!!roomId && <Button size="sm"
             type="button"
             className="room-server-new"
             title={t('rooms.server.create')}
@@ -240,28 +248,28 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
           >
             <Icon name="plus" size={13} />
             {t('rooms.server.create')}
-          </button>
+          </Button>}
         </span>
       </div>
 
       {instances.length === 0 ? (
         <div className="room-server-empty">
           <span className="room-server-empty-mark"><Icon name="server" size={22} /></span>
-          <p className="room-server-empty-title">{t('rooms.server.empty')}</p>
-          <p className="room-server-empty-hint">{t('rooms.server.emptyHint')}</p>
+          <p className="room-server-empty-title">{t(roomId ? 'rooms.server.empty' : 'rooms.server.local.empty')}</p>
+          <p className="room-server-empty-hint">{t(roomId ? 'rooms.server.emptyHint' : 'rooms.server.local.emptyHint')}</p>
           {/* The CTA belongs here too: the header pill is easy to miss on a panel
               whose whole body says "there is nothing yet". */}
-          <button type="button" className="room-server-primary" onClick={() => setGamePickerOpen(true)}>
+          {!!roomId && <Button size="sm" type="button" variant="primary" className="room-server-primary" onClick={() => setGamePickerOpen(true)}>
             <Icon name="plus" size={14} />
             {t('rooms.server.create')}
-          </button>
+          </Button>}
         </div>
       ) : (
         <>
           {instances.length > 1 && (
             <div className="room-server-rail" role="tablist">
               {instances.map((i) => (
-                <button
+                <Button size="sm"
                   key={i.instanceId}
                   type="button"
                   role="tab"
@@ -272,7 +280,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
                 >
                   <span className={`room-server-dot is-${statusTone(i.status)}`} />
                   <span className="room-server-rail-name">{i.name}</span>
-                </button>
+                </Button>
               ))}
             </div>
           )}
@@ -283,6 +291,7 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
               instance={selected}
               tab={tab}
               onTab={setTab}
+              working={working}
               onRun={run}
               onCopyAddress={copyAddress}
               {...(moduleName ? { moduleName } : {})}
@@ -309,6 +318,7 @@ interface ServerDetailProps {
   instance: RoomServerInstance;
   tab: Tab;
   onTab: (t: Tab) => void;
+  working: boolean;
   onRun: (action: () => Promise<{ ok: boolean; reason?: string }>) => Promise<void>;
   onCopyAddress: (address: string) => void;
   /** The module's own display name, for the card chip. Absent if the module that
@@ -327,7 +337,7 @@ const TAB_ICONS: Record<Tab, IconName> = {
   settings: 'sliders',
 };
 
-const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTab, onRun, onCopyAddress, moduleName }) => {
+const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTab, onRun, onCopyAddress, moduleName, working }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const errorParts = useServerErrorParts();
@@ -336,7 +346,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
   const { instanceId, status } = instance;
 
   const live = status === 'running' || status === 'starting' || status === 'stopping';
-  const busy = status === 'installing' || status === 'starting' || status === 'stopping';
+  const busy = working || status === 'installing' || status === 'starting' || status === 'stopping';
   const tone = statusTone(status);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -427,8 +437,8 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
   }, [api, busy, canUpdate, checkUpdate, instanceId, isRemote, live, t, toast, update]);
 
   const visibleTabs = useMemo(
-    () => visibleTabsFor({ remote: instance.remote, moduleId: instance.moduleId }),
-    [instance.remote, instance.moduleId],
+    () => visibleTabsFor({ remote: instance.remote, moduleId: instance.moduleId, local: instance.local }),
+    [instance.remote, instance.moduleId, instance.local],
   );
 
   useEffect(() => {
@@ -478,14 +488,14 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
               <div className="room-server-progress-fill" style={{ width: `${instance.installPct ?? 0}%` }} />
             </div>
             <span className="room-server-install-pct">{instance.installPct ?? 0}%</span>
-            <button type="button" className="room-server-link" onClick={() => void api.cancelInstall(instanceId)}>
+            <Button size="sm" type="button" className="room-server-link" onClick={() => void api.cancelInstall(instanceId)}>
               {t('rooms.server.cancelInstall')}
-            </button>
+            </Button>
           </div>
         )}
 
         {address && (
-          <button
+          <Button size="sm"
             type="button"
             className="room-server-addr"
             title={t('rooms.server.copyAddress')}
@@ -493,7 +503,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
           >
             <span className="room-server-addr-text">{address}</span>
             <Icon name="copy" size={12} />
-          </button>
+          </Button>
         )}
 
         {/*
@@ -505,7 +515,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         {address && !shareable && (
           <p className="room-server-addr-note">
             <Icon name="info" size={11} />
-            {live ? t('rooms.server.noAddress') : t('rooms.server.addrOffline')}
+            {instance.local ? t('rooms.server.local.addressHint') : live ? t('rooms.server.noAddress') : t('rooms.server.addrOffline')}
           </p>
         )}
 
@@ -527,6 +537,13 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         specific explanation, and failDetail carries the actual log line or exit
         code underneath — so "it broke" is never the whole message.
       */}
+      {instance.local && <p className="room-server-local-note" role="status">{t('rooms.server.local.note')}</p>}
+      {instance.lifecyclePaused && (
+        <div className="room-server-failure" role="status">
+          <Icon name="pause" size={14} />
+          <span>{t('rooms.server.lifecyclePaused')}</span>
+        </div>
+      )}
       {instance.failReason && (
         <div className="room-server-failure" role="alert">
           <Icon name="alert-triangle" size={14} />
@@ -551,7 +568,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
               again" — so it needs to be a button and not a rebuild from scratch.
             */}
             {instance.failReason === 'install-failed' && (
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-link is-strong"
                 disabled={busy}
@@ -562,11 +579,11 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
               >
                 <Icon name="refresh-cw" size={12} />
                 {t('rooms.server.retryInstall')}
-              </button>
+              </Button>
             )}
-            <button type="button" className="room-server-link" onClick={() => void api.clearFailure(instanceId)}>
+            <Button size="sm" type="button" className="room-server-link" onClick={() => void api.clearFailure(instanceId)}>
               {t('rooms.server.dismiss')}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -574,25 +591,25 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
       {/* ONE primary action, full width. Start and Stop are the reason the panel
           is open; Restart / folder / delete are not, and used to shout as loudly. */}
       {live ? (
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-primary is-stop"
-          disabled={status === 'stopping' || isRemote}
+          variant="primary" className="room-server-primary is-stop"
+          disabled={working || status === 'stopping' || isRemote} aria-busy={working}
           onClick={() => void onRun(() => api.stop(instanceId))}
         >
           <Icon name="pause" size={13} />
           {t('rooms.server.stop')}
-        </button>
+        </Button>
       ) : (
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-primary"
+          variant="primary" className="room-server-primary"
           disabled={busy || isRemote}
-          onClick={() => void onRun(() => api.start(instanceId))}
+          aria-busy={working} onClick={() => void onRun(() => api.start(instanceId))}
         >
           <Icon name="play" size={13} />
           {t('rooms.server.start')}
-        </button>
+        </Button>
       )}
 
       {/*
@@ -620,7 +637,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
               <span className="room-server-update-note">
                 {t('rooms.server.updateFound').replace('{v}', update.label)}
               </span>
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-link is-strong"
                 onClick={() => void onRun(async () => {
@@ -630,7 +647,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
                 })}
               >
                 {t('rooms.server.updateApply')}
-              </button>
+              </Button>
             </>
           )}
         </div>
@@ -649,10 +666,10 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
       {(showRestart || moreItems.length > 0) && (
         <div className="room-server-tools">
           {showRestart && (
-            <button type="button" className="room-server-tool" disabled={busy} onClick={() => void onRun(() => api.restart(instanceId))}>
+            <Button size="sm" type="button" className="room-server-tool" disabled={busy} onClick={() => void onRun(() => api.restart(instanceId))}>
               <Icon name="refresh-cw" size={12} />
               {t('rooms.server.restart')}
-            </button>
+            </Button>
           )}
           {moreItems.length > 0 && (
             <DropdownMenu
@@ -663,7 +680,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
               menuClassName="dropdown-menu dropdown-menu-right"
               items={moreItems}
               renderTrigger={({ open, toggle }) => (
-                <button
+                <Button size="sm"
                   type="button"
                   className={`room-server-tool is-more${open ? ' is-open' : ''}`}
                   aria-haspopup="menu"
@@ -673,7 +690,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
                   onClick={toggle}
                 >
                   <Icon name="more-horizontal" size={14} />
-                </button>
+                </Button>
               )}
             />
           )}
@@ -686,25 +703,22 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
             {t('rooms.server.deleteConfirm').replace('{name}', instance.name)}
           </span>
           <p className="room-server-danger-hint">{t('rooms.server.deleteHint')}</p>
-          <label className="room-server-check">
-            <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} />
-            <span>{t('rooms.server.deleteFiles')}</span>
-          </label>
+          <Toggle checked={deleteFiles} disabled={working} onChange={setDeleteFiles} label={t('rooms.server.deleteFiles')} size="small" />
           <div className="room-server-danger-actions">
-            <button
+            <Button size="sm"
               type="button"
               className="room-server-btn is-danger"
-              onClick={() => {
-                setConfirmDelete(false);
-                void api.remove(instanceId, deleteFiles).catch((err: unknown) => toast.error(errorText(err)));
-              }}
+              loading={working}
+              onClick={() => void onRun(async () => {
+                await api.remove(instanceId, deleteFiles); setConfirmDelete(false); return { ok: true };
+              })}
             >
               <Icon name="trash" size={12} />
               {t('rooms.server.delete')}
-            </button>
-            <button type="button" className="room-server-btn" onClick={() => setConfirmDelete(false)}>
+            </Button>
+            <Button size="sm" type="button" className="room-server-btn" disabled={working} onClick={() => setConfirmDelete(false)}>
               {t('rooms.server.cancel')}
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -713,7 +727,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         {visibleTabs.map((id) => {
           const label = t(`rooms.server.${id}` as never);
           return (
-            <button
+            <Button size="sm"
               key={id}
               type="button"
               role="tab"
@@ -728,7 +742,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
             >
               <Icon name={TAB_ICONS[id]} size={11} />
               <span className="room-server-viewtab-label">{label}</span>
-            </button>
+            </Button>
           );
         })}
       </div>
@@ -822,7 +836,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
                 />
               </div>
             )}
-            {!isRemote && (
+            {!isRemote && !instance.local && (
               <div className="room-server-setting">
                 <span className="room-server-setting-text">
                   <span className="room-server-setting-title">{t('rooms.server.contentAutoSync')}</span>
@@ -1067,8 +1081,9 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
     }
   }, [api, errorText, javaMajor, mode, moduleId, name, onDone, refId, roomId, scan, selectedCandidate, setup, toast]);
 
+  const setupValid = setupSchema.every(field => validServerConfigValue(field, setup[field.key] ?? ''));
   const canSubmit = mode === 'catalog'
-    ? Boolean(refId) && !needsLegal && !submitting
+    ? Boolean(refId) && setupValid && !needsLegal && !submitting
     : Boolean(scan && selectedCandidate) && !needsLegal && !submitting;
 
   const formatBytes = (n: number): string => {
@@ -1089,7 +1104,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
         </span>
         <span className="room-server-head-actions">
           {soloHandle}
-          <button
+          <Button size="sm"
             type="button"
             className="room-server-new"
             title={t('rooms.server.cancel')}
@@ -1097,7 +1112,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
           >
             <Icon name="x" size={13} />
             {t('rooms.server.cancel')}
-          </button>
+          </Button>
         </span>
       </div>
 
@@ -1105,7 +1120,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
       <div className="room-server-create-scroll">
         {canImport && (
           <div className="room-server-mode" role="tablist">
-            <button
+            <Button size="sm"
               type="button"
               role="tab"
               aria-selected={mode === 'catalog'}
@@ -1113,8 +1128,8 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
               onClick={() => { clearScan(); setMode('catalog'); }}
             >
               {t('rooms.server.source.catalog')}
-            </button>
-            <button
+            </Button>
+            <Button size="sm"
               type="button"
               role="tab"
               aria-selected={mode === 'import'}
@@ -1122,7 +1137,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
               onClick={() => setMode('import')}
             >
               {t('rooms.server.source.import')}
-            </button>
+            </Button>
           </div>
         )}
 
@@ -1183,12 +1198,12 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
                     .replace('{files}', String(scan.fileCount))
                     .replace('{size}', formatBytes(scan.bytes))}
                 </span>
-                <button type="button" className="room-server-link" onClick={clearScan}>
+                <Button size="sm" type="button" className="room-server-link" onClick={clearScan}>
                   {t('rooms.server.import.replace')}
-                </button>
+                </Button>
               </div>
             ) : (
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-pick"
                 disabled={needsLegal || picking}
@@ -1196,7 +1211,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
               >
                 <Icon name="upload" size={18} />
                 {picking ? t('rooms.server.import.scanning') : t('rooms.server.import.pick')}
-              </button>
+              </Button>
             )}
 
             {scan && selectedCandidate && (
@@ -1238,6 +1253,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
           <input
             type="text"
             value={name}
+            disabled={submitting}
             maxLength={60}
             placeholder={t('rooms.server.namePlaceholder')}
             onChange={(e) => setName(e.target.value)}
@@ -1262,6 +1278,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
                   key={field.key}
                   field={field}
                   value={setup[field.key] ?? ''}
+                  disabled={submitting}
                   idPrefix="new-server"
                   onChange={(v) => setSetup((prev) => ({ ...prev, [field.key]: v }))}
                 />
@@ -1287,14 +1304,14 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
             <p>{t('rooms.server.legalBody')}</p>
             <p className="room-server-legal-name">{t(gate.labelKey as never)}</p>
             <div className="room-server-legal-actions">
-              <button
+              <Button size="sm"
                 type="button"
                 className="room-server-btn"
-                onClick={() => void api.acceptLegal(moduleId).then(() => setGate({ ...gate, accepted: true }))}
+                onClick={() => void api.acceptLegal(moduleId).then(() => setGate({ ...gate, accepted: true })).catch(err => setError(errorText(err)))}
               >
                 <Icon name="check" size={12} />
                 {t('rooms.server.legalAccept')}
-              </button>
+              </Button>
               <a href={gate.url} target="_blank" rel="noreferrer noopener" className="room-server-link">
                 {t('rooms.server.legalRead')}
               </a>
@@ -1311,14 +1328,14 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
       </div>
 
       <div className="room-server-create-foot">
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-primary"
+          variant="primary" className="room-server-primary"
           disabled={!canSubmit}
           onClick={() => void submit()}
         >
           {submitting ? t('rooms.server.creating') : <><Icon name="download" size={13} />{t('rooms.server.createAction')}</>}
-        </button>
+        </Button>
       </div>
     </div>
   );

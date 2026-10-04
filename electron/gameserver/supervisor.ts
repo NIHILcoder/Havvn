@@ -108,7 +108,7 @@ export class Supervisor extends EventEmitter {
   // ── start ──────────────────────────────────────────────────────────────────
 
   start(): { ok: true } | { ok: false; reason: string } {
-    if (!this.fsm.beginStart(Date.now())) {
+    if (this.child || !this.fsm.beginStart(Date.now())) {
       // The FSM only refuses a start when the process is already up or in
       // transition, which reads to a user as "it is already running".
       return { ok: false, reason: 'stop-first' };
@@ -226,6 +226,9 @@ export class Supervisor extends EventEmitter {
   stop(): { ok: true } | { ok: false; reason: string } {
     this.cancelRestart();
     if (!this.child) {
+      // A cancelled delayed restart must release its reserved 'starting' slot.
+      this.fsm.prepareRestart(Date.now());
+      this.deps.onChange();
       return { ok: false, reason: 'not-running' };
     }
     if (!this.fsm.beginStop(Date.now())) {
@@ -252,6 +255,21 @@ export class Supervisor extends EventEmitter {
 
     this.deps.onChange();
     return { ok: true };
+  }
+
+  /** Await the real exit, including an already pending graceful stop. */
+  async stopAndWait(): Promise<void> {
+    this.autoRestart = false;
+    if (!this.child) { this.stop(); return; }
+    await new Promise<void>((resolve, reject) => {
+      const exited = () => { clearTimeout(timeout); this.off('exit', exited); resolve(); };
+      const timeout = setTimeout(() => {
+        this.kill(); this.off('exit', exited);
+        reject(new Error('Server process did not confirm shutdown'));
+      }, this.module.stopPlan().graceMs + KILL_GRACE_MS + 12_000);
+      this.once('exit', exited);
+      this.stop();
+    });
   }
 
   /** Immediate termination, for app shutdown. */
@@ -284,7 +302,9 @@ export class Supervisor extends EventEmitter {
     if (!pid) return;
     if (process.platform === 'win32') {
       try {
-        spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10_000 });
+        const tool = path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'taskkill.exe');
+        const result = spawnSync(tool, ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 10_000 });
+        if (result.error || result.status !== 0) throw result.error ?? new Error('taskkill did not confirm termination');
       } catch (err) {
         log.warn('taskkill failed, falling back to signal', { pid, err: String(err) });
         this.signal();
@@ -338,6 +358,14 @@ export class Supervisor extends EventEmitter {
 
     this.deps.onChange();
     this.emit('exit', { code, signal, expected, disposition });
+  }
+
+  /** Detach/settings can cancel a delayed restart without stopping a live child. */
+  pauseAutoRestart(): void {
+    this.autoRestart = false;
+    const pending = this.restartTimer !== null;
+    this.cancelRestart();
+    if (pending && !this.child) { this.fsm.prepareRestart(Date.now()); this.deps.onChange(); }
   }
 
   private cancelRestart(): void {

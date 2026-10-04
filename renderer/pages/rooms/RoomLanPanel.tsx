@@ -64,7 +64,7 @@
  * dock zone and `.popout-root` above it both do.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Avatar, Icon, Toggle } from '../../components';
+import { Avatar, Button, Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
 import { useHostToast } from '../../utils/hostToast';
@@ -173,6 +173,7 @@ export interface RoomLanPanelProps {
   onStart: (memberIds: string[]) => void | Promise<void>;
   /** Stop / leave the session. */
   onStop: () => void | Promise<void>;
+  onRetry?: () => void | Promise<void>;
   /** Non-host: join a session we've been admitted to. */
   onAccept?: () => void | Promise<void>;
   /** Host: admit one more member into a live session. */
@@ -257,7 +258,7 @@ const pct = (v: number) => (v < 10 ? Math.round(v * 10) / 10 : Math.round(v)).to
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
-  roomId, lan, members, selfId, onStart, onStop, onAccept, onInvite, onEvict, onOpenSettings,
+  roomId, lan, members, selfId, onStart, onStop, onRetry, onAccept, onInvite, onEvict, onOpenSettings,
   onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled, onLoadPrefs, showTitle = true,
 }) => {
   const { t } = useTranslation();
@@ -270,6 +271,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   // panel is portalled into a realm its React-tree provider knows nothing about.
   const rootRef = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [pickerMode, setPickerMode] = useState<null | 'start' | 'invite'>(null);
   /** Remembered players for the picker that is about to open — resolved BEFORE the
    *  picker mounts, since the picker seeds its selection once at mount. */
@@ -291,8 +293,9 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   const seedOf = (id: string) => memberOf(id)?.avatarSeed || id;
   const fail = (e: unknown) => toast.error(String(e instanceof Error ? e.message : e));
   const wrap = (fn: () => void | Promise<unknown>) => async () => {
-    setBusy(true);
-    try { await fn(); } catch (e) { fail(e); } finally { setBusy(false); }
+    if (busyRef.current) return;
+    busyRef.current = true; setBusy(true);
+    try { await fn(); } catch (e) { fail(e); } finally { busyRef.current = false; setBusy(false); }
   };
 
   /**
@@ -351,7 +354,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
         // permanently dead and defeat the retry the transport was built around.
         const failed = p.terminal === true;
         if (failed && !(p.memberId in next)) { next[p.memberId] = p.failReason || 'unknown'; changed = true; }
-        else if (p.status === 'connected' && p.memberId in next) { delete next[p.memberId]; changed = true; }
+        else if ((p.status === 'connected' || p.terminal !== true) && p.memberId in next) { delete next[p.memberId]; changed = true; }
       }
       // Evicted / departed members must not keep a stale failure line alive.
       for (const id of Object.keys(next)) if (!present.has(id)) { delete next[id]; changed = true; }
@@ -483,9 +486,9 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
           </span>
         )}
         {onOpenSettings && (
-          <button className="room-lan-gear" onClick={onOpenSettings} title={t('rooms.lan.settings')} type="button">
+          <Button size="sm" className="room-lan-gear" onClick={onOpenSettings} title={t('rooms.lan.settings')} aria-label={t('rooms.lan.settings')} type="button">
             <Icon name="settings" size={14} />
-          </button>
+          </Button>
         )}
       </div>
 
@@ -493,7 +496,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
         <>
           <div className="room-lan-self">
             <span className="room-lan-self-label">{t('rooms.lan.yourIp')}</span>
-            <button
+            <Button size="sm"
               className="room-lan-ip"
               onClick={() => copyIp(lan.selfVip || '')}
               title={t('rooms.lan.copyIp')}
@@ -502,12 +505,12 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             >
               <span className="room-lan-ip-text">{lan.selfVip || t('rooms.lan.connecting')}</span>
               <Icon name="copy" size={12} />
-            </button>
+            </Button>
           </div>
           <RoomLanServerWidget roomId={roomId} lanActive={lan.active} />
           <div className="room-lan-ctl">
             {lan.isHost && onInvite && (
-              <button
+              <Button size="sm"
                 className="room-lan-btn"
                 onClick={() => { void openPicker('invite'); }}
                 disabled={busy}
@@ -515,9 +518,9 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                 type="button"
               >
                 <Icon name="plus" size={15} />
-              </button>
+              </Button>
             )}
-            <button
+            <Button size="sm"
               className="room-lan-btn stop"
               onClick={wrap(onStop)}
               disabled={busy}
@@ -525,14 +528,14 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               type="button"
             >
               <Icon name="power" size={15} /> {t('rooms.lan.stop')}
-            </button>
+            </Button>
           </div>
 
           {/* Self-service row: the two things that actually unstick a session. */}
           {(onDiagnostics || onAllowApp) && (
             <div className="room-lan-tools">
               {onAllowApp && (
-                <button
+                <Button size="sm"
                   className="room-lan-tool"
                   onClick={allowApp}
                   disabled={busy}
@@ -540,17 +543,17 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                   type="button"
                 >
                   <Icon name="shield" size={12} /> {t('rooms.lan.fwAction')}
-                </button>
+                </Button>
               )}
               {onDiagnostics && (
-                <button
+                <Button size="sm"
                   className="room-lan-tool"
                   onClick={() => setDiagOpen(true)}
                   title={t('rooms.lan.diagHint')}
                   type="button"
                 >
                   <Icon name="activity" size={12} /> {t('rooms.lan.diagAction')}
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -595,10 +598,16 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                   only applies to the NEXT session — say so rather than let the user
                   stare at an unchanged red dot. */}
               <span className="room-lan-fail-body">{t('rooms.lan.failTurnHint')}</span>
+              {onRetry && (
+                <Button variant="secondary" size="sm" disabled={busy || !!startBlockedReason}
+                  onClick={wrap(() => onRetry())} type="button">
+                  <Icon name="refresh-cw" size={13} /> {t('rooms.lan.retry')}
+                </Button>
+              )}
               {onOpenTurnSettings && (
-                <button className="room-lan-link" onClick={onOpenTurnSettings} type="button">
+                <Button size="sm" className="room-lan-link" onClick={onOpenTurnSettings} type="button">
                   {t('rooms.lan.failOpenSettings')}
-                </button>
+                </Button>
               )}
             </div>
           )}
@@ -646,13 +655,13 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             // (joiner path). Decided by session STATE, not by the callback's presence
             // — the panel always receives onAccept, so keying off it made this button
             // always call lanAccept and the Start path was unreachable.
-            <button className="room-lan-join" onClick={wrap(onAccept)} disabled={busy} type="button">
+            <Button size="sm" className="room-lan-join" onClick={wrap(onAccept)} disabled={busy} type="button">
               <Icon name="network" size={14} /> {t('rooms.lan.accept')}
-            </button>
+            </Button>
           ) : (
             // No incoming invite → Start our OWN session (host path opens the picker
             // → onStart → lanStart, which broadcasts genesis + admits).
-            <button
+            <Button size="sm"
               className="room-lan-join"
               onClick={() => { void openPicker('start'); }}
               disabled={!canStart}
@@ -660,20 +669,20 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               type="button"
             >
               <Icon name="network" size={14} /> {t('rooms.lan.start')}
-            </button>
+            </Button>
           )}
           {/* Diagnostics is useful precisely when Start is greyed out — it is the
               surface that names the missing driver / kill-switch / busy session. */}
           {onDiagnostics && (
             <div className="room-lan-tools">
-              <button
+              <Button size="sm"
                 className="room-lan-tool"
                 onClick={() => setDiagOpen(true)}
                 title={t('rooms.lan.diagHint')}
                 type="button"
               >
                 <Icon name="activity" size={12} /> {t('rooms.lan.diagAction')}
-              </button>
+              </Button>
             </div>
           )}
         </>
@@ -700,7 +709,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                   </span>
                 )}
                 {lan.isHost && onEvict && (
-                  <button
+                  <Button size="sm"
                     className="room-lan-evict"
                     onClick={wrap(() => onEvict(p.memberId))}
                     disabled={busy}
@@ -708,7 +717,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                     type="button"
                   >
                     <Icon name="x" size={10} />
-                  </button>
+                  </Button>
                 )}
               </span>
               <span
@@ -717,7 +726,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               >
                 {nameOf(p.memberId)}
               </span>
-              <button
+              <Button size="sm"
                 className="room-lan-pip"
                 onClick={() => copyIp(p.vip)}
                 title={t('rooms.lan.copyIp')}
@@ -725,7 +734,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                 disabled={!p.vip}
               >
                 {p.vip || '···'}
-              </button>
+              </Button>
               {/* "via <name>" caption — the one fact the dot cannot carry. */}
               {p.relayVia && (
                 <span

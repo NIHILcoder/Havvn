@@ -9,10 +9,14 @@
  * long as the copy took, and blocked the schedule ticker long enough to skip
  * the minute it was waiting for.
  */
+import crypto from 'crypto';
 import fs from 'fs';
+import { ServerActionError } from '../../shared/gameserver-errors';
 import fsp from 'fs/promises';
 import path from 'path';
 import { ensureDir, instancePaths } from './paths';
+import { assertCopySpace, assertPlainPath, treeBytes, treeFingerprint } from './maintenance-files';
+import { parseProperties } from './modules/minecraft/properties';
 import type { WorldBackupEntry } from '../../shared/gameserver-types';
 
 /** What `backupTagNow` produces, plus room for a `pre-update-` prefix. */
@@ -40,49 +44,54 @@ function resolveBackupDir(instanceId: string, backupId: string): string {
 }
 
 async function exists(p: string): Promise<boolean> {
-  try { await fsp.access(p); return true; } catch { return false; }
+  try { await fsp.lstat(p); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
 }
 
-/** Copy `world/` to `backups/<tag>/world`. Returns the backup path or null. */
-export async function backupWorldDir(instanceId: string, tag: string): Promise<string | null> {
-  const paths = instancePaths(instanceId);
-  const world = path.join(paths.root, 'world');
-  if (!(await exists(world))) return null;
-  const dest = path.join(resolveBackupDir(instanceId, tag), 'world');
-  ensureDir(path.dirname(dest));
-  await fsp.cp(world, dest, { recursive: true, force: true });
-  return dest;
+/** The configured world and Paper's separate dimension directories. */
+function worldPaths(instanceId: string): { root: string; names: string[] } {
+  const { root } = instancePaths(instanceId);
+  let name = 'world';
+  try { name = parseProperties(fs.readFileSync(path.join(root, 'server.properties'), 'utf8'))['level-name'] || name; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (name.includes('/') || name.includes('\\') || name === '.' || name === '..' || /[:<>"|?*]/.test(name)) throw new Error('unsafe world name');
+  const names = [name, name + '_nether', name + '_the_end'];
+  for (const n of names) assertPlainPath(root, path.join(root, n));
+  return { root, names };
+}
+
+/** Publish a backup only after every world and its metadata has been copied. */
+export async function backupWorldDir(instanceId: string, tag: string, label?: string): Promise<string | null> {
+  const { root, names } = worldPaths(instanceId);
+  if (!(await exists(path.join(root, names[0])))) return null;
+  const destination = resolveBackupDir(instanceId, tag);
+  assertPlainPath(instancePaths(instanceId).base, destination);
+  ensureDir(path.dirname(destination));
+  if (await exists(destination)) throw new ServerActionError('files-busy', 'backup already exists');
+  const selected: number[] = [];
+  let bytes = 0;
+  for (let i = 0; i < names.length; i++) {
+    if (await exists(path.join(root, names[i]))) { selected.push(i); bytes += await treeBytes(path.join(root, names[i])); }
+  }
+  assertCopySpace(destination, bytes);
+  const stage = await fsp.mkdtemp(path.join(path.dirname(destination), '.backup-'));
+  try {
+    for (const i of selected) await fsp.cp(path.join(root, names[i]), path.join(stage, ['world', 'world_nether', 'world_the_end'][i]), { recursive: true, errorOnExist: true, force: false });
+    const digests: Record<string, string> = {};
+    for (const i of selected) digests[String(i)] = await treeFingerprint(path.join(stage, ['world', 'world_nether', 'world_the_end'][i]));
+    await fsp.writeFile(path.join(stage, 'meta.json'), JSON.stringify({ label: label || tag, createdAt: Date.now(), auto: tag.startsWith('pre-update-'), bytes, dimensions: selected, digests }));
+    await fsp.rename(stage, destination);
+  } finally { await fsp.rm(stage, { recursive: true, force: true }); }
+  return path.join(destination, 'world');
 }
 
 /** ISO-ish tag safe for directory names. */
 export function backupTagNow(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-');
+  return new Date().toISOString().replace(/[:.]/g, '-') + '-' + crypto.randomBytes(4).toString('hex');
 }
 
 function backupsRoot(instanceId: string): string {
   return path.join(instancePaths(instanceId).base, 'backups');
-}
-
-async function dirSize(root: string): Promise<number> {
-  let total = 0;
-  const stack = [root];
-  while (stack.length) {
-    const cur = stack.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = await fsp.readdir(cur, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) {
-      const p = path.join(cur, e.name);
-      if (e.isDirectory()) stack.push(p);
-      else {
-        try { total += (await fsp.stat(p)).size; } catch { /* ignore */ }
-      }
-    }
-  }
-  return total;
 }
 
 async function parseBackupMeta(dir: string, id: string): Promise<WorldBackupEntry | null> {
@@ -111,7 +120,7 @@ async function parseBackupMeta(dir: string, id: string): Promise<WorldBackupEntr
     id,
     createdAt,
     label,
-    bytes: bytes ?? await dirSize(world),
+    bytes: bytes ?? await treeBytes(world),
     ...(auto ? { auto: true } : {}),
   };
 }
@@ -122,7 +131,7 @@ export async function listWorldBackups(instanceId: string): Promise<WorldBackupE
   if (!(await exists(root))) return [];
   const names = await fsp.readdir(root);
   const parsed = await Promise.all(
-    names.map((name) => parseBackupMeta(path.join(root, name), name).catch(() => null)),
+    names.filter(isValidBackupId).map((name) => parseBackupMeta(path.join(root, name), name).catch(() => null)),
   );
   return parsed.filter((e): e is WorldBackupEntry => e !== null).sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -130,18 +139,10 @@ export async function listWorldBackups(instanceId: string): Promise<WorldBackupE
 /** Manual backup with optional label. Server must be stopped by the caller. */
 export async function createWorldBackup(instanceId: string, label?: string): Promise<WorldBackupEntry> {
   const tag = backupTagNow();
-  const dest = await backupWorldDir(instanceId, tag);
-  if (!dest) throw new Error('no-world');
-  const dir = path.dirname(dest);
   const cleanLabel = String(label || '').trim().slice(0, 80) || tag;
-  const createdAt = Date.now();
-  const bytes = await dirSize(dest);
-  await fsp.writeFile(
-    path.join(dir, 'meta.json'),
-    JSON.stringify({ label: cleanLabel, createdAt, auto: false, bytes }),
-    'utf8',
-  );
-  return { id: tag, createdAt, label: cleanLabel, bytes };
+  const dest = await backupWorldDir(instanceId, tag, cleanLabel);
+  if (!dest) throw new Error('no-world');
+  return (await parseBackupMeta(path.dirname(dest), tag))!;
 }
 
 /**
@@ -154,27 +155,74 @@ export async function createWorldBackup(instanceId: string, label?: string): Pro
  * replaces.
  */
 export async function restoreWorldBackup(instanceId: string, backupId: string): Promise<void> {
-  const paths = instancePaths(instanceId);
-  const src = path.join(resolveBackupDir(instanceId, backupId), 'world');
-  if (!(await exists(src))) throw new Error('backup-not-found');
-  const dest = path.join(paths.root, 'world');
-  const aside = path.join(paths.root, `world.restore-${Date.now()}`);
-
-  const hadWorld = await exists(dest);
-  if (hadWorld) await fsp.rename(dest, aside);
-  try {
-    await fsp.cp(src, dest, { recursive: true, force: true });
-  } catch (err) {
-    // Put the player's world back exactly where it was, then report the failure.
-    await fsp.rm(dest, { recursive: true, force: true }).catch(() => { /* best effort */ });
-    if (hadWorld) await fsp.rename(aside, dest).catch(() => { /* nothing left to try */ });
-    throw err;
+  const backup = resolveBackupDir(instanceId, backupId);
+  assertPlainPath(instancePaths(instanceId).base, backup);
+  if (!(await exists(path.join(backup, 'world')))) throw new Error('backup-not-found');
+  const { root, names } = worldPaths(instanceId);
+  const keys = ['world', 'world_nether', 'world_the_end'];
+  const selected: number[] = [];
+  let bytes = 0;
+  for (let i = 0; i < keys.length; i++) {
+    if (await exists(path.join(backup, keys[i]))) { selected.push(i); bytes += await treeBytes(path.join(backup, keys[i])); }
   }
-  if (hadWorld) await fsp.rm(aside, { recursive: true, force: true }).catch(() => { /* stale copy, harmless */ });
+  let managedDimensions = false;
+  let digests: Record<string, string> | undefined;
+  try {
+    const meta = JSON.parse(await fsp.readFile(path.join(backup, 'meta.json'), 'utf8')) as { dimensions?: number[]; digests?: Record<string, string> };
+    if (meta.dimensions !== undefined) {
+      if (JSON.stringify(meta.dimensions) !== JSON.stringify(selected)) throw new ServerActionError('backup-damaged');
+      managedDimensions = true;
+    }
+    digests = meta.digests;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (digests) for (const i of selected) {
+    if (digests[String(i)] !== await treeFingerprint(path.join(backup, keys[i]))) throw new ServerActionError('backup-damaged');
+  }
+  assertCopySpace(root, bytes);
+  const stage = await fsp.mkdtemp(path.join(root, '.restore-'));
+  const moved: { dest: string; aside: string; published: boolean; hadWorld: boolean }[] = [];
+  let preserveStage = false;
+  try {
+    // All expensive / fallible copies happen while the original world is intact.
+    for (const i of selected) {
+      await fsp.cp(path.join(backup, keys[i]), path.join(stage, keys[i]), { recursive: true, force: false, errorOnExist: true });
+      if (digests && digests[String(i)] !== await treeFingerprint(path.join(stage, keys[i]))) throw new ServerActionError('backup-damaged');
+    }
+    for (let i = 0; i < keys.length; i++) {
+      // Older backups captured only world/. Never delete dimensions that an old
+      // Havvn build did not know how to back up.
+      if (!managedDimensions && !selected.includes(i)) continue;
+      const dest = path.join(root, names[i]), aside = path.join(stage, 'previous-' + keys[i]);
+      const hadWorld = await exists(dest);
+      const record = { dest, aside, published: false, hadWorld };
+      await fsp.writeFile(path.join(stage, 'recovery.json'), JSON.stringify({ kind: 'world', directories: [...moved, record].map(item => ({
+        destination: path.basename(item.dest), previous: path.basename(item.aside), hadWorld: item.hadWorld,
+      })) }));
+      if (hadWorld) await fsp.rename(dest, aside);
+      moved.push(record);
+      if (selected.includes(i)) { await fsp.rename(path.join(stage, keys[i]), dest); record.published = true; }
+    }
+  } catch (error) {
+    try {
+      for (const record of moved.reverse()) {
+        if (record.published) await fsp.rm(record.dest, { recursive: true, force: true });
+        if (record.hadWorld) await fsp.rename(record.aside, record.dest);
+      }
+    } catch (rollback) {
+      preserveStage = true;
+      throw new ServerActionError('files-busy', 'Restore rollback failed; original world retained at ' + stage + ': ' + String(rollback));
+    }
+    throw error;
+  } finally {
+    if (!preserveStage) await fsp.rm(stage, { recursive: true, force: true });
+  }
 }
 
 export async function deleteWorldBackup(instanceId: string, backupId: string): Promise<void> {
   const dir = resolveBackupDir(instanceId, backupId);
+  assertPlainPath(instancePaths(instanceId).base, dir);
   if (!(await exists(dir))) throw new Error('backup-not-found');
   await fsp.rm(dir, { recursive: true, force: true });
 }

@@ -36,9 +36,13 @@
 export type ServerErrorCode =
   // Lifecycle refusals
   | 'not-installed'          // start attempted before a successful install
+  | 'maintenance-busy' | 'content-pending'
+  | 'maintenance-recovery' | 'backup-damaged'
   | 'install-running'        // an install is in flight
+  | 'room-unavailable'
   | 'stop-first'             // the operation needs the process down
   | 'not-running'            // console command with no live process
+  | 'command-unknown' | 'command-expired' | 'command-conflict' | 'command-busy'
   | 'no-console'             // module has no console capability
   | 'empty-command'
   | 'runtime-missing'        // the JRE went away after install
@@ -68,7 +72,10 @@ export type ServerErrorCode =
 export const SERVER_ERR_PREFIX = 'havvn-server-err:';
 
 const CODES = new Set<string>([
-  'not-installed', 'install-running', 'stop-first', 'not-running', 'no-console',
+  'maintenance-busy', 'content-pending',
+  'maintenance-recovery', 'backup-damaged',
+  'command-unknown', 'command-expired', 'command-conflict', 'command-busy',
+  'not-installed', 'install-running', 'room-unavailable', 'stop-first', 'not-running', 'no-console',
   'empty-command', 'runtime-missing', 'host-only', 'legal-pending',
   'unknown-module', 'unknown-version', 'no-import-support', 'import-expired',
   'nothing-recognised', 'disk-space', 'port-exhausted', 'files-busy',

@@ -1,3 +1,4 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * Settings form, generated from the module's ConfigField descriptors.
  *
@@ -11,11 +12,12 @@
  * which asks for a few of these same settings before the first boot and must ask
  * with the same ranges, the same translations and the same warnings.
  */
+import { Button } from '../../components/Button';
 import React, { useCallback, useEffect, useState } from 'react';
 import { Icon } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
-import { ServerConfigField } from './ServerConfigField';
+import { ServerConfigField, validServerConfigValue } from './ServerConfigField';
 import { useServerError } from './serverErrors';
 import type { ConfigField } from '../../../shared/types';
 
@@ -39,20 +41,14 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
   const [dirty, setDirty] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
+  const valid = schema.every(field => validServerConfigValue(field, values[field.key] ?? ''));
 
+  const load = useCallback(() => window.api.rooms.servers.getConfig(instanceId), [instanceId]);
+  const { data, loading, error, reload, ready } = useServerPanelData(load);
   useEffect(() => {
-    let alive = true;
-    void window.api.rooms.servers.getConfig(instanceId)
-      .then((cfg) => {
-        if (!alive) return;
-        setSchema(cfg.schema);
-        setValues(cfg.values);
-        setSaved(cfg.values);
-        setDirty(false);
-      })
-      .catch(() => { /* not installed yet */ });
-    return () => { alive = false; };
-  }, [instanceId]);
+    if (!data) return;
+    setSchema(data.schema); setValues(data.values); setSaved(data.values); setDirty(false);
+  }, [data]);
 
   const set = useCallback((key: string, value: string) => {
     setValues((prev) => ({ ...prev, [key]: value }));
@@ -60,6 +56,7 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
   }, []);
 
   const save = useCallback(async () => {
+    if (saving || locked || !ready || !valid) return;
     setSaving(true);
     try {
       await window.api.rooms.servers.saveConfig(instanceId, values);
@@ -71,7 +68,7 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
     } finally {
       setSaving(false);
     }
-  }, [errorText, instanceId, t, toast, values]);
+  }, [errorText, instanceId, t, toast, values, saving, locked, ready, valid]);
 
   const basic = schema.filter((f) => !f.advanced);
   const advanced = schema.filter((f) => f.advanced);
@@ -81,11 +78,13 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
       key={field.key}
       field={field}
       value={values[field.key] ?? ''}
-      disabled={locked}
+      disabled={locked || saving}
       idPrefix={`cfg-${instanceId}`}
       onChange={(v) => set(field.key, v)}
     />
   );
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   return (
     <div className="server-config">
@@ -104,7 +103,7 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
         {advanced.length > 0 && (
           <>
             <div className="server-config-advanced">
-              <button
+              <Button size="sm"
                 type="button"
                 className="server-config-advanced-toggle"
                 aria-expanded={showAdvanced}
@@ -112,7 +111,7 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
               >
                 <Icon name={showAdvanced ? 'chevron-down' : 'chevron-right'} size={12} />
                 {t('rooms.server.advanced')}
-              </button>
+              </Button>
             </div>
             {showAdvanced && advanced.map(renderField)}
           </>
@@ -122,24 +121,24 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
       <div className="server-config-foot">
         {dirty && !locked && <span className="server-config-dirty">{t('rooms.server.unsaved')}</span>}
         {dirty && !locked && (
-          <button
+          <Button size="sm"
             type="button"
             className="room-server-btn"
             disabled={saving}
             onClick={() => { setValues(saved); setDirty(false); }}
           >
             {t('rooms.server.revert')}
-          </button>
+          </Button>
         )}
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-primary"
-          disabled={locked || !dirty || saving}
+          variant="primary" className="room-server-primary" loading={saving}
+          disabled={locked || !dirty || !valid}
           onClick={() => void save()}
         >
           <Icon name="check" size={13} />
           {t('rooms.server.saveSettings')}
-        </button>
+        </Button>
       </div>
     </div>
   );

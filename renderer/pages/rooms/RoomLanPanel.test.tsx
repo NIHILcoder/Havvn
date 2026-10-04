@@ -172,11 +172,11 @@ describe('the dock panels in this directory stay in their own realm', () => {
     // panel is covered the moment it lands, and this assertion is what makes
     // that arrival visible in review rather than silent.
     expect(files).toEqual([
-      'AudioSettings.tsx', 'GamePicker.tsx', 'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomLanPanel.tsx',
-      'RoomLanServerWidget.tsx', 'RoomServerPanel.tsx', 'ServerAccessPanel.tsx',
+      'AudioSettings.tsx', 'GamePicker.tsx', 'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomBackupModal.tsx', 'RoomDataModal.tsx', 'RoomLanPanel.tsx',
+      'RoomLanServerWidget.tsx', 'RoomServerLeaveOptions.tsx', 'RoomServerPanel.tsx', 'ServerAccessPanel.tsx',
       'ServerBackupPanel.tsx', 'ServerConfigField.tsx', 'ServerConfigForm.tsx',
       'ServerConsole.tsx', 'ServerContentPanel.tsx', 'ServerPlayersPanel.tsx',
-      'ServerSchedulePanel.tsx',
+      'ServerSchedulePanel.tsx', 'useServerPanelData.tsx',
     ]);
   });
 

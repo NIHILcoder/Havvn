@@ -18,6 +18,7 @@
  */
 import React from 'react';
 import { Icon, Select, Toggle } from '../../components';
+import { NumberInput } from '../../components/NumberInput';
 import { useTranslation } from '../../utils/i18nContext';
 import type { ConfigField } from '../../../shared/types';
 
@@ -31,11 +32,19 @@ interface ServerConfigFieldProps {
   onChange: (value: string) => void;
 }
 
+export function validServerConfigValue(field: ConfigField, value: string): boolean {
+  if (field.t !== 'int') return true;
+  if (!/^[+-]?\d+$/.test(value.trim())) return false;
+  const n = Number(value);
+  return Number.isSafeInteger(n) && (field.min === undefined || n >= field.min) && (field.max === undefined || n <= field.max);
+}
+
 export const ServerConfigField: React.FC<ServerConfigFieldProps> = ({
   field, value, disabled = false, idPrefix, onChange,
 }) => {
   const { t } = useTranslation();
   const id = `${idPrefix}-${field.key}`;
+  const invalid = !validServerConfigValue(field, value);
 
   return (
     // A boolean is a ROW — label left, switch right — because a switch sitting
@@ -47,6 +56,8 @@ export const ServerConfigField: React.FC<ServerConfigFieldProps> = ({
 
       {field.t === 'bool' ? (
         <Toggle
+          id={id}
+          ariaDescribedBy={field.helpKey ? `${id}-help` : undefined}
           checked={value === 'true'}
           disabled={disabled}
           ariaLabel={t(field.labelKey as never)}
@@ -54,20 +65,24 @@ export const ServerConfigField: React.FC<ServerConfigFieldProps> = ({
         />
       ) : field.t === 'select' ? (
         <Select
+          id={id}
+          ariaLabel={t(field.labelKey as never)}
+          ariaDescribedBy={field.helpKey ? `${id}-help` : undefined}
           value={value}
           disabled={disabled}
           options={field.options.map((o) => ({ value: o.value, label: t(o.labelKey as never) }))}
           onChange={onChange}
         />
       ) : field.t === 'int' ? (
-        <input
+        <NumberInput
           id={id}
-          type="number"
+          aria-describedby={field.helpKey ? `${id}-help` : undefined}
+          aria-invalid={invalid}
           value={value}
           disabled={disabled}
           {...(field.min !== undefined ? { min: field.min } : {})}
           {...(field.max !== undefined ? { max: field.max } : {})}
-          onChange={(e) => onChange(e.target.value)}
+          onValueChange={onChange}
         />
       ) : (
         <input
@@ -81,7 +96,8 @@ export const ServerConfigField: React.FC<ServerConfigFieldProps> = ({
         />
       )}
 
-      {field.helpKey && <p className="server-config-help">{t(field.helpKey as never)}</p>}
+      {field.helpKey && <p id={`${id}-help`} className="server-config-help">{t(field.helpKey as never)}</p>}
+      {invalid && <p className="server-config-warn" role="status">{t('rooms.server.invalidNumber')}</p>}
       {field.warnKey && (
         <p className="server-config-warn">
           <Icon name="alert-triangle" size={12} />

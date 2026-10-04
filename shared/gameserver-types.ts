@@ -629,6 +629,8 @@ export interface ServerContentState {
 
 /** One instance as the renderer sees it. */
 export interface RoomServerInstance {
+  /** Runs locally without room gossip, LAN advertisements or remote operators. */
+  local?: boolean;
   instanceId: string;
   moduleId: string;
   /** User-visible name (defaults to the module label + version). */
@@ -667,6 +669,7 @@ export interface RoomServerInstance {
    * exactly what it used to do.
    */
   autoRestart: boolean;
+  lifecyclePaused?: string;
   /**
    * Whether there is an upstream that could have a newer build of this.
    *

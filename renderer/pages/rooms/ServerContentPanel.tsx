@@ -1,8 +1,10 @@
+import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
 /**
  * Bind room file folders to server content slots (mods/plugins/datapacks) and
  * sync them into the instance directory.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Button } from '../../components/Button';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Icon, Select } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
@@ -24,31 +26,17 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
   const errorText = useServerError();
   const api = window.api.rooms.servers;
 
-  const [state, setState] = useState<ServerContentState>(EMPTY);
-  const [folders, setFolders] = useState<Array<{ id: string; name: string }>>([]);
+  const load = useCallback(() => Promise.all([api.content(instanceId), api.roomFolders(roomId)]), [api, instanceId, roomId]);
+  const { data, setData, reload, loading, error, ready } = useServerPanelData(load);
+  const state = data?.[0] ?? EMPTY;
+  const folders = data?.[1] ?? [];
+  const setState = (next: ServerContentState) => setData(prev => prev ? [next, prev[1]] : prev);
   const [busy, setBusy] = useState(false);
-
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => { alive.current = false; };
-  }, []);
-
-  const reload = useCallback(async () => {
-    const [content, roomFolders] = await Promise.all([
-      api.content(instanceId),
-      api.roomFolders(roomId),
-    ]);
-    if (!alive.current) return;
-    setState(content);
-    setFolders(roomFolders);
-  }, [api, instanceId, roomId]);
 
   // Follows the instance: both the sync status and `locked` move when the room
   // manifest changes or the server starts, and this panel used to show whatever
   // it read at mount until the user navigated away and back.
   useEffect(() => {
-    void reload().catch(() => { /* panel may mount before instance exists */ });
     const off = api.onUpdate((payload) => {
       if (payload.state.instances.some((i) => i.instanceId === instanceId)) {
         void reload().catch(() => { /* ignore */ });
@@ -63,24 +51,29 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
   ];
 
   const onBind = async (slotId: string, folderId: string) => {
+    if (busy || locked || !ready) return;
+    setBusy(true);
     try {
       await api.setContentFolder(instanceId, slotId, folderId);
       await reload();
     } catch (err) {
       toast.error(errorText(err));
-    }
+    } finally { setBusy(false); }
   };
 
   const onUnbind = async (slotId: string) => {
+    if (busy || locked || !ready) return;
+    setBusy(true);
     try {
       await api.clearContentFolder(instanceId, slotId);
       await reload();
     } catch (err) {
       toast.error(errorText(err));
-    }
+    } finally { setBusy(false); }
   };
 
   const onSync = async () => {
+    if (busy || locked || !ready) return;
     setBusy(true);
     try {
       const next = await api.syncContent(instanceId);
@@ -99,19 +92,22 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
 
   const onConsentAll = async () => {
     const hashes = state.pending.map((p) => p.sha256);
-    if (!hashes.length) return;
+    if (!hashes.length || busy || locked || !ready) return;
     setBusy(true);
     try {
       await api.consentContent(hashes);
       const next = await api.syncContent(instanceId);
       setState(next);
-      toast.success(t('rooms.server.content.synced'));
+      if (next.pending.length === 0 && next.sync === 'ok') toast.success(t('rooms.server.content.synced'));
+      else toast.error(t(`rooms.server.content.sync.${next.sync}` as never));
     } catch (err) {
       toast.error(errorText(err));
     } finally {
       setBusy(false);
     }
   };
+
+  if (!ready) return <ServerPanelStatus loading={loading} error={error} reload={reload} />;
 
   if (!state.slots.length) {
     return <p className="room-server-muted">{t('rooms.server.content.none')}</p>;
@@ -140,6 +136,7 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
                 )}
               </div>
               <Select
+                ariaLabel={t(slot.labelKey as never)}
                 value={slot.bound ? slot.folderId : '__unbound__'}
                 options={[
                   { value: '__unbound__', label: t('rooms.server.content.unbound') },
@@ -170,9 +167,9 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
               <li key={p.sha256}>{p.name}</li>
             ))}
           </ul>
-          <button type="button" className="room-server-btn" disabled={busy} onClick={() => void onConsentAll()}>
+          <Button size="sm" type="button" className="room-server-btn" loading={busy} disabled={locked} onClick={() => void onConsentAll()}>
             {t('rooms.server.content.consentAccept')}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -182,15 +179,15 @@ export const ServerContentPanel: React.FC<ServerContentPanelProps> = ({ roomId, 
       <p className="room-server-note is-warn">{t('rooms.server.content.mirrorWarning')}</p>
 
       <div className="room-server-content-actions">
-        <button
+        <Button size="sm"
           type="button"
-          className="room-server-primary"
-          disabled={locked || busy || !anyBound}
+          variant="primary" className="room-server-primary" loading={busy}
+          disabled={locked || !anyBound}
           onClick={() => void onSync()}
         >
           <Icon name="refresh-cw" size={12} />
           {busy ? t('rooms.server.content.syncing') : t('rooms.server.content.syncNow')}
-        </button>
+        </Button>
         {locked && <p className="room-server-muted">{t('rooms.server.content.stopFirst')}</p>}
       </div>
     </div>

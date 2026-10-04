@@ -34,7 +34,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** WebRTC signaling verb for the LanPeer mesh (offer/answer/ice). */
-export type LanSignalKind = 'offer' | 'answer' | 'ice';
+export type LanSignalKind = 'offer' | 'answer' | 'ice' | 'retry';
 
 /**
  * Signed session genesis (plan §0.1 #7). `by` = the creator's memberId = the

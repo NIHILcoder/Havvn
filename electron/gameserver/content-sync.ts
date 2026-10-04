@@ -11,6 +11,7 @@ import { pipeline } from 'stream/promises';
 import path from 'path';
 import type { ContentSlot, ContentSyncState, RelPath } from '../../shared/gameserver-types';
 import { resolveUnder, ensureDir } from './paths';
+import { assertCopySpace, assertPlainPath, treeBytes } from './maintenance-files';
 
 export interface RoomContentFile {
   fileId: string;
@@ -80,7 +81,7 @@ export function computeContentManifest(
     const matched = filesInFolder(roomFiles, folderId).filter((f) => matchesSlot(f, slot));
     matched.sort((a, b) => a.fileId.localeCompare(b.fileId));
     for (const f of matched) {
-      parts.push(`${slot.id}\t${f.fileId}\t${f.infoHash}\t${f.size}`);
+      parts.push(`${slot.id}\t${f.fileId}\t${f.infoHash}\t${f.size}\t${f.name}`);
     }
   }
   const digest = crypto.createHash('sha256');
@@ -93,14 +94,16 @@ async function listSlotFiles(absDir: string, extensions: string[]): Promise<stri
   let names: string[];
   try {
     names = await fsp.readdir(absDir);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
   }
   return names.filter((name) => exts.has(extOf(name)));
 }
 
 async function exists(p: string): Promise<boolean> {
-  try { await fsp.access(p); return true; } catch { return false; }
+  try { await fsp.lstat(p); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
 }
 
 /**
@@ -120,60 +123,82 @@ export async function syncContentSlots(opts: {
     throw new Error('stop-first');
   }
 
+  const manifest = computeContentManifest(opts.slots, opts.bindings, opts.roomFiles);
   const pending: PendingContentConsent[] = [];
-  let copied = 0;
-  let removed = 0;
-  let missing = false;
-
+  const plans: { slot: ContentSlot; dest: string; file: RoomContentFile; staged?: string; sha?: string }[] = [];
+  const stale: string[] = [];
+  let missing = false, bytes = 0;
+  assertPlainPath(opts.instanceRoot, opts.instanceRoot);
   for (const slot of opts.slots) {
     if (!Object.prototype.hasOwnProperty.call(opts.bindings, slot.id)) continue;
-    const folderId = opts.bindings[slot.id] ?? '';
     const destDir = resolveUnder(opts.instanceRoot, slot.into as RelPath);
-    ensureDir(destDir);
-
-    const sources = filesInFolder(opts.roomFiles, folderId).filter((f) => matchesSlot(f, slot));
-    const wantedNames = new Set(sources.map((f) => path.basename(f.name)));
-
-    for (const existing of await listSlotFiles(destDir, slot.extensions)) {
-      if (!wantedNames.has(existing)) {
-        try {
-          await fsp.unlink(path.join(destDir, existing));
-          removed += 1;
-        } catch { /* raced */ }
-      }
-    }
-
+    assertPlainPath(opts.instanceRoot, destDir);
+    const sources = filesInFolder(opts.roomFiles, opts.bindings[slot.id] ?? '').filter(f => matchesSlot(f, slot));
+    const names = new Set<string>();
     for (const file of sources) {
-      if (!file.localPath || !(await exists(file.localPath))) {
-        missing = true;
-        continue;
-      }
-      const sha = await sha256File(file.localPath);
-      if (slot.executable && !opts.hasConsent(sha)) {
-        pending.push({ sha256: sha, name: file.name, slotId: slot.id });
-        continue;
-      }
-      const dest = path.join(destDir, path.basename(file.name));
-      try {
-        const cur = (await exists(dest)) ? await sha256File(dest) : '';
-        if (cur !== sha) {
-          await fsp.copyFile(file.localPath, dest);
-          copied += 1;
-        }
-      } catch {
-        missing = true;
-      }
+      const name = path.basename(file.name);
+      // Case-fold on every platform: room manifests can come from a Unix peer.
+      if (name !== file.name || names.has(name.toLowerCase()) || /[:<>"|?*]/.test(name)) throw new Error('ambiguous content filename: ' + file.name);
+      names.add(name.toLowerCase());
+      const dest = path.join(destDir, name);
+      assertPlainPath(opts.instanceRoot, dest);
+      plans.push({ slot, dest, file });
+      if (!file.localPath || !(await exists(file.localPath))) missing = true;
+      else bytes += await treeBytes(file.localPath);
+    }
+    for (const name of await listSlotFiles(destDir, slot.extensions)) {
+      const dest = path.join(destDir, name);
+      assertPlainPath(opts.instanceRoot, dest);
+      if (!names.has(name.toLowerCase())) stale.push(dest);
     }
   }
-
-  const manifest = computeContentManifest(opts.slots, opts.bindings, opts.roomFiles);
-  let state: ContentSyncState = 'ok';
-  if (pending.length > 0) state = 'conflict';
-  else if (missing) state = 'missing';
-  else {
-    const bound = opts.slots.some((s) => Object.prototype.hasOwnProperty.call(opts.bindings, s.id));
-    if (!bound) state = 'ok';
+  if (missing) return { state: 'missing', copied: 0, removed: 0, pending, manifest };
+  assertCopySpace(opts.instanceRoot, bytes);
+  ensureDir(opts.instanceRoot);
+  const stage = await fsp.mkdtemp(path.join(opts.instanceRoot, '.content-'));
+  const changes: { dest: string; previous: string; hadFile: boolean; published: boolean }[] = [];
+  let copied = 0, removed = 0, preserveStage = false;
+  try {
+    for (let i = 0; i < plans.length; i++) {
+      const plan = plans[i];
+      plan.staged = path.join(stage, 'new-' + i);
+      await fsp.copyFile(plan.file.localPath!, plan.staged);
+      // Consent is bound to the bytes that will actually be installed. Hashing
+      // the source first allowed it to change between the check and copy.
+      plan.sha = await sha256File(plan.staged);
+      if (plan.slot.executable && !opts.hasConsent(plan.sha)) pending.push({ sha256: plan.sha, name: plan.file.name, slotId: plan.slot.id });
+    }
+    if (pending.length) return { state: 'conflict', copied: 0, removed: 0, pending, manifest };
+    const publish = async (dest: string, replacement?: string) => {
+      const previous = path.join(stage, 'old-' + changes.length);
+      const hadFile = await exists(dest);
+      const record = { dest, previous, hadFile, published: false };
+      await fsp.writeFile(path.join(stage, 'recovery.json'), JSON.stringify({ kind: 'content', files: [...changes, record].map(item => ({
+        destination: path.relative(opts.instanceRoot, item.dest), previous: path.basename(item.previous), hadFile: item.hadFile,
+      })) }));
+      if (hadFile) await fsp.rename(dest, previous);
+      changes.push(record);
+      if (replacement) { ensureDir(path.dirname(dest)); await fsp.rename(replacement, dest); record.published = true; }
+    };
+    for (const plan of plans) {
+      if (!(await exists(plan.dest)) || await sha256File(plan.dest) !== plan.sha) {
+        await publish(plan.dest, plan.staged); copied++;
+      }
+    }
+    for (const dest of stale) { await publish(dest); removed++; }
+    return { state: 'ok', copied, removed, pending, manifest };
+  } catch (error) {
+    try {
+      for (const record of changes.reverse()) {
+        if (record.published) await fsp.unlink(record.dest);
+        if (record.hadFile) await fsp.rename(record.previous, record.dest);
+      }
+    } catch (rollback) {
+      preserveStage = true;
+      throw new Error('Content rollback failed; previous files retained at ' + stage + ': ' + String(rollback));
+    }
+    throw error;
+  } finally {
+    if (!preserveStage) await fsp.rm(stage, { recursive: true, force: true });
   }
-
-  return { state, copied, removed, pending, manifest };
 }

@@ -359,7 +359,7 @@ export const minecraftModule: GameModule = {
   contentSlots(inst: InstanceView): ContentSlot[] {
     const compat = `${inst.ref.flavour}:${inst.ref.version}`;
     const datapacks: ContentSlot = {
-      id: 'datapacks', labelKey: 'rooms.server.slot.datapacks', into: 'world/datapacks',
+      id: 'datapacks', labelKey: 'rooms.server.slot.datapacks', into: `${inst.config['level-name'] || 'world'}/datapacks`,
       extensions: ['.zip'], executable: false, compat,
     };
 
