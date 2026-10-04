@@ -20,6 +20,9 @@
  */
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { APPEARANCE_MIRROR_ATTRS, getThemeGlass } from '../../shared/appearance';
+import { installAppearanceMotion, readAppearance, readEffectiveAppearance } from '../utils/appearance';
+import { GlassControls } from './GlassControls';
 import { Button } from './Button';
 import Icon from './Icon';
 import { useTranslation } from '../utils/i18nContext';
@@ -161,7 +164,7 @@ const SIDE_KEY = 'havvn.themeEditor.side';
 const WIDTH_KEY = 'havvn.themeEditor.width';
 
 type DockSide = 'left' | 'right';
-type EditorTab = 'edit' | 'preview';
+type EditorTab = 'edit' | 'glass' | 'preview';
 type PreviewPage = 'overview' | 'downloads' | 'rooms' | 'chat' | 'forms';
 
 const readPref = (key: string): string | null => {
@@ -219,11 +222,11 @@ function hexOf(value: string): string {
   return '#808080';
 }
 
-const emptyTheme = (name: string): Theme => ({ id: genThemeId(), name, dark: {}, light: {} });
+const emptyTheme = (name: string): Theme => ({ id: genThemeId(), name, dark: {}, light: {}, glass: getThemeGlass(readEffectiveAppearance()) });
 
-interface ThemeEditorProps { onClose: () => void; }
+interface ThemeEditorProps { onClose: () => void; initialTab?: 'edit' | 'glass'; }
 
-export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
+export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 'edit' }) => {
   const { t } = useTranslation();
   // EDITABLE_TOKENS label keys are typed `string` (they live in shared/, which
   // can't import the renderer's key union); this narrows them for t().
@@ -231,7 +234,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   const [library, setLibrary] = useState<Theme[]>(loadLibrary);
   const [draft, setDraft] = useState<Theme | null>(() => {
     const active = getActiveTheme();
-    return active ? structuredClone(active) : null;
+    return active ? structuredClone(active) : initialTab === 'glass' ? emptyTheme(t('settings.theme.newName')) : null;
   });
   // Which palette the fields edit + preview (defaults to the app's current mode).
   const [variant, setVariant] = useState<ThemeMode>(resolvedMode);
@@ -242,7 +245,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   const [side, setSide] = useState<DockSide>(initialSide);
   const [width, setWidth] = useState<number>(initialWidth);
   const [collapsed, setCollapsed] = useState(false);
-  const [tab, setTab] = useState<EditorTab>('edit');
+  const [tab, setTab] = useState<EditorTab>(initialTab);
   const [previewPage, setPreviewPage] = useState<PreviewPage>('overview');
   // Simple (curated groups) vs Advanced (every token + search + only-changed).
   const [editMode, setEditMode] = useState<EditMode>('simple');
@@ -275,6 +278,11 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   // Live preview: apply the draft's edited variant to the running app (and thus
   // to every sample rendered in this same document).
   useEffect(() => { if (draft) previewTheme(draft, variant); }, [draft, variant]);
+  useEffect(() => setTab(initialTab), [initialTab]);
+  useEffect(() => () => {
+    const active = getActiveTheme();
+    if (active) applyThemeObject(active); else revertToBase();
+  }, []);
 
   // Reserve the dock's width on the shell (push-layout) via <html> data + var,
   // read by the .app-container rules in layout.css. Collapsed → no reservation.
@@ -317,7 +325,8 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     const coalesce = !!coalesceKey && coalesceRef.current.key === coalesceKey && now - coalesceRef.current.time < 200;
     if (!coalesce) { setUndoStack((s) => [...s.slice(-49), draft]); setRedoStack([]); }
     coalesceRef.current = { key: coalesceKey ?? '', time: now };
-    setDraft(updater(draft));
+    // Keep different edits queued in the same React batch (e.g. name + preset).
+    setDraft(current => current ? updater(current) : current);
   };
 
   const undo = () => {
@@ -510,7 +519,8 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
   useEffect(() => {
     if (!popout) return;
     const src = document.documentElement;
-    const ATTRS = ['style', 'data-theme', 'data-density', 'data-reduce-motion'];
+    const ATTRS = ['style', 'data-theme', 'data-density', 'data-reduce-motion', ...APPEARANCE_MIRROR_ATTRS];
+    const stopMotion = installAppearanceMotion(popout.document);
     const sync = () => {
       if (popout.closed) return;
       const dst = popout.document.documentElement;
@@ -533,7 +543,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
       setTimeout(() => { try { if (w && !w.closed) w.close(); } catch { /* gone */ } }, 0);
     };
     popout.addEventListener('beforeunload', onGone);
-    return () => { mo.disconnect(); popout.removeEventListener('beforeunload', onGone); };
+    return () => { stopMotion(); mo.disconnect(); popout.removeEventListener('beforeunload', onGone); };
   }, [popout]);
 
   // The pop-out's own chrome must render an uploaded custom font too — FontFace
@@ -593,8 +603,13 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
     const idx = lib.findIndex((x) => x.id === clean.id);
     if (idx >= 0) lib[idx] = clean; else lib.push(clean);
     saveLibrary(lib);
+    const persisted = loadLibrary().find(theme => theme.id === clean.id);
+    if (!persisted || JSON.stringify(persisted) !== JSON.stringify(clean)) {
+      note('err', t('appearance.saveError')); return;
+    }
     setLibrary(lib);
     activateTheme(clean);
+    if (getActiveId() !== clean.id) { note('err', t('appearance.saveError')); return; }
     loadDraft(structuredClone(clean));
     note('ok', t('settings.theme.saved'));
   };
@@ -945,9 +960,30 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose }) => {
         <button type="button" role="tab" aria-selected={tab === 'preview'} className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>
           {t('settings.theme.tab.preview')}
         </button>
+        <button type="button" role="tab" aria-selected={tab === 'glass'} className={tab === 'glass' ? 'active' : ''} onClick={() => setTab('glass')}>
+          {t('appearance.glassTab')}
+        </button>
       </div>
 
-      {tab === 'edit' ? (
+      {tab === 'glass' ? (
+        <div className="ted-body ted-glass">
+          <p className="ap-hint">{t('appearance.themeGlassHint')}</p>
+          {draft ? <>
+            <div className="te-toolbar">
+              <button type="button" className="te-tool" onClick={undo} disabled={!undoStack.length} aria-label={t('settings.theme.undo')} title={t('settings.theme.undo')}><Icon name="rotate-ccw" size={14} /></button>
+              <button type="button" className="te-tool" onClick={redo} disabled={!redoStack.length} aria-label={t('settings.theme.redo')} title={t('settings.theme.redo')}><Icon name="rotate-cw" size={14} /></button>
+              <div className="iface-seg" role="group" aria-label={t('settings.theme.variant')}>
+                {(['dark', 'light'] as const).map(mode => <button key={mode} type="button" className={variant === mode ? 'active' : ''}
+                  aria-pressed={variant === mode} onClick={() => setVariant(mode)}>{t(`theme.${mode}`)}</button>)}
+              </div>
+            </div>
+            <label className="te-field te-field--name"><span>{t('settings.theme.name')}</span><input type="text" value={draft.name} maxLength={60}
+              onChange={event => { const name = event.target.value; editDraft(d => ({ ...d, name }), 'name'); }} /></label>
+            <GlassControls value={draft.glass || getThemeGlass(readAppearance())}
+              onChange={(glass, key) => editDraft(d => ({ ...d, glass }), key ? `glass:${key}` : undefined)} />
+          </> : <Button variant="secondary" onClick={() => { loadDraft(emptyTheme(t('settings.theme.newName'))); }}>{t('settings.theme.new')}</Button>}
+        </div>
+      ) : tab === 'edit' ? (
         <div className="ted-body ted-edit">
           {/* Library */}
           <section className="te-list">

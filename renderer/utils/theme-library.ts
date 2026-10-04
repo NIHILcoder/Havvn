@@ -13,6 +13,7 @@
  */
 import { Theme, ThemeMode, validateTheme, applyTheme, clearAppliedTheme } from '../../shared/theme';
 import { restoreThemePrefs } from './theme-prefs';
+import { applyThemeGlass } from './appearance';
 
 const LIBRARY_KEY = 'havvn.theme.library';
 const ACTIVE_KEY = 'havvn.theme.active';
@@ -123,6 +124,7 @@ export function applyThemeObject(theme: Theme): void {
   registerThemeFont(theme);
   applyTheme(root(), theme, resolvedMode());
   restoreThemePrefs();
+  applyThemeGlass(theme.glass);
 }
 
 /** Preview a specific variant of a theme (used by the editor while editing it). */
@@ -130,6 +132,7 @@ export function previewTheme(theme: Theme, mode: ThemeMode): void {
   registerThemeFont(theme);
   applyTheme(root(), theme, mode);
   restoreThemePrefs();
+  applyThemeGlass(theme.glass);
 }
 
 /** Clear any custom overrides, revert to the built-in palette, re-layer quick prefs. */
@@ -137,6 +140,7 @@ export function revertToBase(): void {
   clearAppliedTheme(root());
   root().setAttribute('data-theme', resolvedMode());
   restoreThemePrefs();
+  applyThemeGlass();
 }
 
 /** Make a theme active (persist the pointer) and apply it. */
@@ -159,4 +163,5 @@ export function deactivateTheme(): void {
 export function bootApplyActiveTheme(): void {
   const active = getActiveTheme();
   if (active) { registerThemeFont(active); applyTheme(root(), active, resolvedMode()); }
+  applyThemeGlass(active?.glass);
 }

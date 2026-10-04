@@ -16,6 +16,7 @@ import {
   currentFontId, setFontPref,
 } from '../../../utils/theme-prefs';
 import { FONT_OPTIONS } from '../../../../shared/theme';
+import { AppearancePanel } from './AppearancePanel';
 
 const SCALE_OPTIONS = [90, 100, 110, 125] as const;
 
@@ -44,7 +45,7 @@ export const InterfaceSection: React.FC = () => {
   const [accent, setAccent] = useState<string>(currentAccent);
   const [accentOn, setAccentOn] = useState<boolean>(hasAccentOverride);
   const [fontId, setFontId] = useState<string>(currentFontId);
-  const { openEditor } = useThemeEditor();
+  const { openEditor, open: themeEditorOpen } = useThemeEditor();
 
   const applyScale = (scale: number) => {
     setUiScale(scale);
@@ -141,7 +142,7 @@ export const InterfaceSection: React.FC = () => {
           label={t('settings.theme.customThemes')}
           description={t('settings.theme.customThemes.desc')}
           control={
-            <Button variant="secondary" size="sm" icon={<Icon name="sun" size={15} />} onClick={openEditor}>
+            <Button variant="secondary" size="sm" icon={<Icon name="sun" size={15} />} onClick={() => openEditor()}>
               {t('settings.theme.openEditor')}
             </Button>
           }
@@ -164,6 +165,11 @@ export const InterfaceSection: React.FC = () => {
         />
       </SettingsCard>
 
+      <AppearancePanel profilesLocked={themeEditorOpen} onProfileApplied={mode => {
+        ctx.handleThemeChange(mode);
+        setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
+        setReduceMotion(readPref('reduceMotion') === '1'); setCompact(readPref('density') === 'compact');
+      }} />
       <SettingsCard title={t('settings.iface.behavior')} icon="monitor">
         <SettingRow
           label={t('settings.iface.scale')}

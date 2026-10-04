@@ -118,7 +118,7 @@ export const Onboarding: React.FC<OnboardingProps> = ({ onClose, onCreateRoom })
       <div className={`ob-verdict ${info.vpnActive ? 'ob-verdict-ok' : 'ob-verdict-warn'}`}>
         <Icon name={info.vpnActive ? 'check-circle' : 'alert-triangle'} size={14} />
         <span>
-          {info.vpnActive ? t('onboarding.step2.vpnFound') : t('onboarding.step2.vpnNotFound')}
+          {t(`privacy.route.${info.state ?? 'unknown'}`)}
           {info.ip ? ` · ${t('onboarding.step2.publicIp')} ${info.ip}` : ''}
         </span>
       </div>

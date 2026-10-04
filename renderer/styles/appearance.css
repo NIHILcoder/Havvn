@@ -1,0 +1,53 @@
+/* Palette and radius inheritance; no filters on video pixels or scrolling rows. */
+html[data-material] {
+  --ap-surface: color-mix(in srgb, var(--color-bg-secondary) var(--ap-opacity, 85%), transparent);
+  --ap-tinted: color-mix(in srgb, var(--color-accent-primary) var(--ap-tint, 5%), var(--ap-surface));
+  --ap-rim: color-mix(in srgb, var(--color-text-primary) var(--ap-highlight, 15%), transparent);
+  --ap-glint: radial-gradient(ellipse at var(--ap-x, 35%) var(--ap-y, 0%), color-mix(in srgb, white calc(var(--ap-highlight, 15%) / 4), transparent), transparent 68%);
+  --ap-panel-bg: var(--color-bg-primary);
+  --ap-overlay: linear-gradient(color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent),color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent));
+}
+html[data-acrylic="active"], html[data-acrylic="active"] body { background: transparent !important; }
+html[data-material]:not([data-material="solid"]) { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 85%, transparent); }
+html[data-app-background]:not([data-app-background="none"]) { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 85%, transparent); }
+html[data-acrylic="active"] { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 65%, transparent); }
+html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) :is(.main-content,.popout-root) { background: var(--ap-panel-bg); }
+html[data-material] body { isolation: isolate; }
+html[data-material] body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background-position: center; background-size: cover;
+}
+html[data-acrylic="active"] body::before { background-color: color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent); }
+html[data-app-background="image"] body::before {
+  background-image: linear-gradient(color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent),color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent)), var(--ap-wallpaper);
+}
+html[data-app-background="aurora"] body::before { background-image: var(--ap-overlay),radial-gradient(ellipse at 10% 20%, #2968bd, transparent 65%),radial-gradient(ellipse at 90% 80%, #18bca7, transparent 60%),linear-gradient(135deg,#192651,#573386); }
+html[data-app-background="aero"] body::before { background-image: var(--ap-overlay),radial-gradient(ellipse at 20% 20%,#c4efff,transparent 50%),radial-gradient(ellipse at 85% 80%,#47dca1,transparent 60%),linear-gradient(140deg,#058ade,#a6deed); }
+html[data-app-background="sunset"] body::before { background-image: var(--ap-overlay),radial-gradient(ellipse at 90% 10%,#e7ad6b,transparent 60%),linear-gradient(140deg,#603c99,#ad547a,#252b60); }
+html[data-radius-overrides~="panels"] :is(.um-card,.player-modal) { border-radius: var(--ap-radius-panels); }
+html[data-radius-overrides~="cards"] :is(.stg-card,.download-item,.dock-panel,.ap-preview-surface) { border-radius: var(--ap-radius-cards); }
+html[data-radius-overrides~="buttons"] :is(.btn,.um-x) { border-radius: var(--ap-radius-buttons); clip-path: none; }
+html[data-radius-overrides~="inputs"] :is(.stg-text,.custom-select-trigger,.number-input,input:not([type="range"]):not([type="color"]):not([type="checkbox"]),textarea) { border-radius: var(--ap-radius-inputs); clip-path: none; }
+html:not([data-material="solid"])[data-glass-scopes~="sidebar"] .sidebar,
+html:not([data-material="solid"])[data-glass-scopes~="header"] :is(.titlebar,.page-header,.status-bar),
+html:not([data-material="solid"])[data-glass-scopes~="menus"] :is(.custom-select-dropdown,.dropdown-menu,.query-history-menu,.context-menu,.pc-menu),
+html:not([data-material="solid"])[data-glass-scopes~="dialogs"] :is(.um-card,.ted),
+html:not([data-material="solid"])[data-glass-scopes~="panels"] .stg-card,
+html:not([data-material="solid"])[data-glass-scopes~="player"] .pc,
+html:not([data-material="solid"]) .ap-preview-surface {
+  background: var(--ap-glint), var(--ap-tinted);
+  backdrop-filter: blur(var(--ap-blur)) saturate(1.15);
+  -webkit-backdrop-filter: blur(var(--ap-blur)) saturate(1.15);
+  border-color: color-mix(in srgb, var(--color-border-default), var(--ap-rim) 45%);
+  box-shadow: inset 0 1px 0 var(--ap-rim), inset 0 -1px 0 color-mix(in srgb, var(--color-bg-primary) 30%, transparent), 0 8px 24px rgba(0,0,0,var(--ap-depth));
+}
+html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) .app-container { background: transparent; }
+html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) :is(.stg-page,.search-page,.downloads-page,.rooms-page) { background: transparent; }
+html[data-acrylic="active"] .popout-root { background: var(--ap-panel-bg) !important; }
+@media (prefers-reduced-transparency: reduce), (forced-colors: active) {
+  html[data-material] :is(.sidebar,.titlebar,.page-header,.status-bar,.um-card,.ted,.stg-card,.custom-select-dropdown,.dropdown-menu,.pc,.main-content,.popout-root,.ap-preview-surface) {
+    background: var(--color-bg-secondary) !important; backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important; box-shadow: none !important;
+  }
+  html[data-material] body { background: var(--color-bg-primary) !important; }
+}

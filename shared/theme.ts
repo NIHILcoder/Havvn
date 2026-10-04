@@ -18,6 +18,8 @@
  * IPC import path in main, and vitest all use the exact same validator.
  */
 
+import { validateThemeGlass, type ThemeGlass } from './appearance';
+
 export type ThemeBase = 'dark' | 'light';
 /** Which palette variant is showing — follows the app's dark/light/system mode. */
 export type ThemeMode = ThemeBase;
@@ -44,6 +46,8 @@ export interface Theme {
    * family it defines is the first name in `font`.
    */
   fontData?: string;
+  /** Shared across palette variants. Older themes inherit local material preferences. */
+  glass?: ThemeGlass;
 }
 
 export type ValidateResult =
@@ -561,6 +565,8 @@ export function validateTheme(input: unknown): ValidateResult {
     if (fd) fontData = fd; else warnings.push('invalid font data dropped');
   }
 
+  const glass = obj.glass === undefined ? undefined : validateThemeGlass(obj.glass);
+  if (glass === null) return { ok: false, errors: ['invalid theme glass settings'] };
   const theme: Theme = {
     id: sanitizeId(obj.id),
     name,
@@ -568,6 +574,7 @@ export function validateTheme(input: unknown): ValidateResult {
     light,
     ...(font ? { font } : {}),
     ...(fontData ? { fontData } : {}),
+    ...(glass ? { glass } : {}),
   };
   return { ok: true, theme, warnings };
 }

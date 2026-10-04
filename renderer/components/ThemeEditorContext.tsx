@@ -11,7 +11,8 @@ import React, { createContext, useContext, useState, useCallback, useMemo } from
 
 interface ThemeEditorContextValue {
   open: boolean;
-  openEditor: () => void;
+  initialTab: 'edit' | 'glass';
+  openEditor: (tab?: 'edit' | 'glass') => void;
   closeEditor: () => void;
 }
 
@@ -19,9 +20,10 @@ const ThemeEditorCtx = createContext<ThemeEditorContextValue | null>(null);
 
 export const ThemeEditorProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [open, setOpen] = useState(false);
-  const openEditor = useCallback(() => setOpen(true), []);
+  const [initialTab, setInitialTab] = useState<'edit' | 'glass'>('edit');
+  const openEditor = useCallback((tab: 'edit' | 'glass' = 'edit') => { setInitialTab(tab); setOpen(true); }, []);
   const closeEditor = useCallback(() => setOpen(false), []);
-  const value = useMemo(() => ({ open, openEditor, closeEditor }), [open, openEditor, closeEditor]);
+  const value = useMemo(() => ({ open, initialTab, openEditor, closeEditor }), [open, initialTab, openEditor, closeEditor]);
   return <ThemeEditorCtx.Provider value={value}>{children}</ThemeEditorCtx.Provider>;
 };
 

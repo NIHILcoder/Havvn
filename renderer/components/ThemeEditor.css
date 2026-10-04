@@ -6,6 +6,7 @@
   top: var(--titlebar-h, 0); /* sit below the custom HUD title bar, not over its controls */
   bottom: 0;
   width: var(--te-dock-w, 420px);
+  max-width: 100vw;
   z-index: var(--z-dock);
   display: flex;
   flex-direction: column;
