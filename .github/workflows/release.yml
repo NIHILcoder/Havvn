@@ -83,6 +83,10 @@ jobs:
           [ "$missing" = 0 ] || { echo "Refusing to publish a package with missing native resources." >&2; exit 1; }
           echo "native resources present."
 
+      - name: Extract release notes from changelog
+        shell: bash
+        run: node scripts/changelog-section.js "$APP_VERSION" > release-notes.md
+
       # DRAFT release — a human reviews it and presses Publish on GitHub
       - name: Create draft release
         uses: softprops/action-gh-release@v3
@@ -90,7 +94,7 @@ jobs:
           draft: true
           prerelease: false
           name: Havvn ${{ env.APP_VERSION }}
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             release/Havvn-Setup-*.exe
             release/Havvn-Setup-*.exe.blockmap
