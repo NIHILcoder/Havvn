@@ -1,0 +1,124 @@
+{
+  "date": "2026-10-05",
+  "scope": "local-automatic-only",
+  "checks": [
+    {
+      "name": "typecheck",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 5507
+    },
+    {
+      "name": "typecheck-renderer",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 9123
+    },
+    {
+      "name": "typecheck-guest",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 2570
+    },
+    {
+      "name": "tests",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 144717
+    },
+    {
+      "name": "native-lifecycle",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1348
+    },
+    {
+      "name": "native-peers",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 80779
+    },
+    {
+      "name": "native-voice",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 2104
+    },
+    {
+      "name": "native-playback",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 5177
+    },
+    {
+      "name": "native-controls",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 15286
+    },
+    {
+      "name": "native-data-ui",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 3678
+    },
+    {
+      "name": "native-diagnostics",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 4760
+    },
+    {
+      "name": "native-secrets",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 473
+    },
+    {
+      "name": "native-storage",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 1392
+    },
+    {
+      "name": "native-network-lifecycle",
+      "status": "passed",
+      "exitCode": 0,
+      "durationMs": 17829
+    }
+  ],
+  "regression": {
+    "vitestSuites": 207,
+    "vitestTests": 2873,
+    "nodeTests": 7
+  },
+  "build": {
+    "passed": true,
+    "webpackPerformanceWarnings": 3
+  },
+  "scopedLint": {
+    "errors": 0,
+    "warnings": 0
+  },
+  "finalControlsWithRenderedScreenshot": {
+    "actualReactControls": true,
+    "darkLightAero": true,
+    "narrowPanels": true,
+    "repeatedActions": true,
+    "staleRepliesIgnored": true,
+    "actualNativePopout": true,
+    "keyboardSelectionInChild": true,
+    "themeMirrorsLive": true,
+    "unmountClosesChild": true
+  },
+  "unavailable": [
+    "second physical computer",
+    "real symmetric NAT/TURN",
+    "physical sleep/network switch",
+    "NekoBox proxy/TUN and VPN interruption packet capture",
+    "physical audio hotplug and system sound",
+    "real captured-window close",
+    "installed old-version interoperability"
+  ],
+  "passed": true
+}

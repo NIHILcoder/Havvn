@@ -10,6 +10,8 @@
 
 # Havvn
 
+[Changelog — 3.1.0](CHANGELOG.md#310---2026-10-05)
+
 [![Release](https://img.shields.io/github/v/release/NIHILcoder/Havvn?label=Release&color=e25117)](https://github.com/NIHILcoder/Havvn/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/NIHILcoder/Havvn/total?label=Downloads&color=orange)](https://github.com/NIHILcoder/Havvn/releases)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20·%20macOS%20%2F%20Linux%20planned-blue)
@@ -35,8 +37,8 @@ point. Its real job is the things classic clients *can't* do, all peer-to-peer w
   the room — no accounts, no hosted game service.
 - 🎙️ **Hang out in voice.** Serverless room voice chat with **neural noise suppression**,
   **screen sharing** (system audio included, echo-cancelled) and a **global push-to-talk**.
-- 🛡️ **See what the swarm sees.** A live privacy dashboard shows your exposed IP, ISP
-  and VPN status, with IP-leak detection and a kill-switch.
+- 🛡️ **Inspect your network exit.** A privacy dashboard separates direct-request IP,
+  system web proxy and local tunnel routes, with a VPN kill-switch.
 
 You bring your own indexers and feeds — Havvn bundles none. Everything runs on
 your machine and directly between you and your peers: **the developer runs no servers,
@@ -114,12 +116,30 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   variants, refine results by release details, and see torrents already added or
   completed. Save preferences for resolution, audio language, voice/dub type,
   maximum size and minimum seeds, then rank matching releases first. Media labels
-  are inferred from release names; unknown details remain unknown
+  are inferred from release names; unknown details remain unknown.
+  **Compare** on a release group opens aligned cards with
+  quality, size, audio languages, subtitles and per-source seed observations with
+  receipt times. Title hints and optional Custom JSON/plugin media reports are
+  labelled separately; absent labels remain unknown. Cache replay keeps original
+  timestamps. Download a chosen edition directly from comparison.
+- **Download history in search** — removed torrents stay marked across restarts.
+  Results without a hash receive a non-blocking possible-match hint. Up to 1000
+  local records are kept; clearing them does not remove downloads or files.
 - **Per-source connections** — System (system proxy/VPN), Direct, or a reusable
   HTTP/SOCKS5 proxy profile, plus trusted mirrors. Compatible Python plugins use
   the Havvn Network SDK. **Sign in** opens an isolated source browser; log in and
   complete any browser check there, then close it to keep the session for search
   and `.torrent` retrieval. Browser extensions in Chrome/Edge are not inherited
+- **HTTP mirror failover** — Custom JSON, Jackett and Torznab try configured
+  service copies after network errors or HTTP 5xx, keeping the selected connection,
+  API path and query parameters. Search, capabilities and `.torrent` retrieval
+  share this behavior: up to four addresses within 20 seconds, with the last
+  working mirror first. Login/browser checks, rate limits, proxy and TLS failures
+  stop the attempt. Add mirrors under **Providers → Source connection** and use
+  **Save and check**. Jackett/Torznab mirrors use the same base-URL format as the
+  provider; Custom JSON mirrors use an origin plus an optional service prefix,
+  to which Havvn appends the original search path. Mirrors must serve the same API;
+  HTTPS sources require HTTPS mirrors. Legacy connections keep their old behavior.
 - **RSS as a rule engine** — a rule watches any set of feeds (or all of them), matches
   on words or a regex with include and exclude, bounds size, seeds and age, and files
   what it grabs with its own path, category and paused choice. Smart episode matching
@@ -212,18 +232,23 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   and whether voice is live, with a prominent copy button
 - **Ownership transfer** — hand a room to another member with a **signed transfer chain**,
   so clients can verify the new owner instead of trusting a claim
+- **Local room data** — inspect managed copies and encrypted cache, clean selected downloaded copies while retaining publications and keys, and browse local history in pages. Password-protected room/identity recovery preserves old keys and signed proofs; restore into an empty room profile. File bytes and chat history are excluded from the backup. See [room data](docs/rooms-local-data.md).
+- **Signed profile bans** — updated clients and browser guests sync an owner-signed ban list, including after an owner handover or holder restart. Removal blocks a profile, not a person: a new identity with the current invite can join. Files and keys already received cannot be revoked.
 - **Per-room controls** — auto-download every shared file or pull them **manually** per
   file, and set per-room **upload / download speed limits**
+- **Desktop receive queue** — two simultaneous file receives across all rooms, visible waiting count/size, pause/resume that keeps partial files, and queue priority. Disk checks account for encrypted and plaintext copies with a 256 MiB safety margin. [Details and limits](docs/rooms-receive-resources.md).
+- **Shared room file budget** — default 256 KB/s upload across desktop room clients, configurable total upload/download, voice priority, and a separate screen bitrate per participant. New rooms offer manual or automatic downloading; manual is the default. Voice/video/LAN and regular torrents have separate transports.
+- **Shared playback model** — rate-aware positions, drift correction, separate buffering/pause states and pending commands during loading. Track changes retain the watch session and speed; desktop and browser use the same rules. [Model and limits](docs/rooms-playback-model.md).
+- **Optional playback host** — the room owner selects a desktop or browser host; viewers request actions and report readiness, buffering or local playback. Shared control remains available. [Host mode and limits](docs/rooms-watch-host.md).
+- **Large room lists** — paged synchronization and persistence for up to 5000 files, bounded metadata, and consistent voice admission for nine participants with visible waiting status. [Capacity and compatibility](docs/rooms-manifest-capacity.md).
+- **Room connection diagnostics** — observed discovery/handshake/sync stages, separate file/voice/LAN health, retry discovery while keeping established channels, and a reduced JSON report without invitations, keys, addresses or chat. [Definitions and limits](docs/rooms-connection-diagnostics.md).
+- **Local room acceptance** — `npm run test:rooms` checks isolated peers, encrypted transfers, voice, playback and themed windows. Physical VPN/NAT/TURN and device checks remain separate. [Scope, evidence and compatibility](docs/rooms-local-acceptance.md).
 - **Signed chat** — every message is **signed (Ed25519)** and bound to a member
   identity, so even someone who has the invite code can't post under another member's
   name; the local chat history is **encrypted at rest**. The composer is built for
   sharing scripts: multiline input, Tab indents, and triple-backtick **code blocks**
   with copy
-- **Connects across networks, zero infrastructure** — direct/IPv6/STUN cover the common
-  cases, and members who still can't reach each other are relayed **through another
-  member** automatically (relayed traffic stays end-to-end encrypted). For the rare
-  strict-NAT pair you can add **your own TURN relay** in settings — one side is enough.
-  Each member shows whether they're connected **directly or via a relay**
+- **Connections across networks** — WebRTC trackers broker discovery; ICE tries direct connections. Other members can relay room messages, and file holders can serve downloaded files. Strict NAT may require configured TURN. A relayed member in the list does not prove that file, voice or LAN traffic uses TURN. [Observed paths and limits](docs/rooms-connection-diagnostics.md).
 - **Bring your own rendezvous trackers** — rooms, share links and remote cast announce to
   public WebRTC trackers to broker the first handshake (no file bytes, no plaintext). Point
   Havvn at your own instead in Settings → Sharing; an unusable entry falls back to the
@@ -239,6 +264,8 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **A dedicated server in the room** — install, start, stop and a live console from
   the room itself; mods shared in the room can be mirrored in with consent. Minecraft
   is the module that exists today; others are named as coming
+- **Room network recovery** — LAN has an explicit retry after terminal failure. Linked servers stop on room/network interruption and keep their worlds; schedules resume after an explicit Start. See [lifecycle details](docs/rooms-network-lifecycle.md).
+- **Server console and local hosting** — remote commands wait for a signed host acknowledgement of process input. Leaving defaults to stopping servers and keeping worlds; an explicit local option keeps current processes manageable outside the room. See [console and exit details](docs/rooms-server-console-and-exit.md).
 
 ### Voice & screen share
 - **Room voice chat with zero infrastructure** — a serverless WebRTC mesh between
@@ -252,6 +279,7 @@ Compare the output against the SHA-256 published in the matching GitHub release.
 - **Real device controls** — mic & output pickers, input gain, output volume,
   voice-activity sensitivity, and a **live mic test you can actually hear** through your
   chosen output device
+- **Voice recovery** — desktop and browser guests retry ICE up to three times, then show a Retry action. Device changes preserve mute/deafen; see [recovery policy and tests](docs/rooms-voice-recovery.md).
 - **Connection quality at a glance** — each tile shows good / fair / poor and
   reconnecting states
 
@@ -273,17 +301,24 @@ Compare the output against the SHA-256 published in the matching GitHub release.
   W-wings logomark), plus a **live theme editor**: two-mode token editing, JSON
   import/export, and a sanitizer so a shared theme can't break the app
 - **Customizable hotkeys**
+- **Materials & glass** — theme constructor glass presets saved with each theme, local backgrounds, per-area
+  controls and appearance profiles. Native desktop Acrylic is available on
+  Windows 11 22H2+. [Setup and compatibility](docs/appearance.md).
 - **Localization** — English & Russian
 - Settings export / import
 
 ### Privacy & anonymity
-- **Live exposure dashboard** — see your public IP (the one peers connect to), ISP,
-  location and VPN status at a glance, with a colour-coded posture banner
-- **IP-leak detection** — warns when your torrent-facing IP looks like a consumer ISP
-  rather than a VPN, so you catch a leak before downloading (lookups run only on open /
-  refresh, no background traffic)
-- **VPN kill-switch** — auto-pauses all torrents if your VPN drops, plus a startup check
-  (and it covers rooms, too)
+- **Network exit dashboard** — direct HTTPS exit IP, ISP and exit country; the system
+  web proxy's IP/country appear separately. Countries describe network exits, not your
+  physical or home location. Refreshes every 30 seconds while the panel is visible.
+- **Local tunnel route detection** — recognizes NekoTun/sing-box and common VPN
+  adapters, checks Internet routes and flags IPv6 bypasses. DNS and hosting-provider
+  names do not count as VPN evidence. Unavailable route data stays unknown.
+- **VPN kill-switch** — checks local routes every 5 seconds without external lookups,
+  pauses active torrents and room networking when tunnel routing cannot be confirmed,
+  and covers activity started during an outage. Torrents resume manually.
+- **Native engine binding** — selects the routed IPv4 tunnel, blocks IPv6 peers and
+  uses loopback fallback when no suitable tunnel is found.
 - **One-click recommended privacy preset**, ephemeral peer ID, log sanitization, clear
   data on exit, and open/clear-logs controls
 - **Secrets encrypted at rest** via OS-level encryption (DPAPI / Keychain / libsecret)
@@ -435,9 +470,10 @@ multiple severity levels, and automatic cleanup of old files.
   control, use OS-level network management.
 - **Peer statistics** for rooms and share links are approximate — WebTorrent reports
   aggregate peers and does not cleanly separate seeds from leechers.
-- **VPN / IP-leak detection** is heuristic (network interfaces, IP/ISP lookup) — it's a
-  strong safety net, not a guarantee. A VPN with its own kill-switch remains the real
-  protection.
+- **VPN detection** checks selected Internet routes and adapter identities; split
+  routing and application-specific rules can differ. HTTPS IP lookup does not measure
+  the address seen by torrent peers. Havvn's kill-switch reacts after detection;
+  use your VPN client's kill-switch for immediate network blocking.
 - **Proxy**: there is no SOCKS/HTTP proxy option for peer traffic — use a VPN for
   network privacy. Per-source proxies cover search and `.torrent` retrieval only;
   authenticated proxy profiles are not supported yet.

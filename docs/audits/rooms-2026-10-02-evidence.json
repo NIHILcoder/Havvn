@@ -1,0 +1,47 @@
+[
+  {
+    "id": "VOICE-CANCEL",
+    "activeAfterLeave": true,
+    "microphoneStillOpen": true
+  },
+  {
+    "id": "GUEST-MUTE",
+    "displayedMuted": true,
+    "transmittedTrackEnabled": true
+  },
+  {
+    "id": "GUEST-REPLAY",
+    "oldPresenceResurrectsParticipant": true
+  },
+  {
+    "id": "GOSSIP-SHAPE",
+    "decodedNullThrowsOutsideDecryptCatch": true
+  },
+  {
+    "id": "FILE-COLLISION",
+    "secondDifferentContentReplacesFirstAtSamePlaintextPath": true
+  },
+  {
+    "id": "FILE-EXISTS",
+    "unrelatedSameNameMarkedPresentWithoutContentVerification": true
+  },
+  {
+    "id": "E2E-STATE",
+    "ciphertextCompleteMarkedPlaintextReady": true,
+    "previousDecryptErrorOverwritten": true
+  },
+  {
+    "id": "CHAT-BACKFILL",
+    "replyContextDropped": true,
+    "delayedLowerTimestampMissed": true
+  },
+  {
+    "id": "ENGINE-READY",
+    "startupWaitRemainsPendingAfterFailAll": true,
+    "waiters": 1
+  },
+  {
+    "id": "CHAT-ACK",
+    "returnedSuccessWithoutSendingToAnyEngine": true
+  }
+]
