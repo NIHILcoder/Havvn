@@ -24,7 +24,8 @@ for (const name of ['a.bin', 'b.bin']) {
   fs.closeSync(fd);
 }
 
-const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false } as any;
+// Explicit TCP peers keep this regression independent of optional native UDP permissions.
+const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false, utp: false } as any;
 const seeder = new WebTorrent({ ...quiet, uploadLimit: 2 * 1024 * 1024 } as any);
 const leecher = new WebTorrent({ ...quiet } as any);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

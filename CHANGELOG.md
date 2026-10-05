@@ -34,6 +34,9 @@ This release strengthens rooms, expands search and appearance controls, and refr
 
 ### Fixed
 
+- Updated the packaging HTTP cache dependency and removed the unpatched `braces` dependency chain from development tooling. The loopback renderer server retains Webpack watch/HMR and rejects external hosts/origins without proxy or directory-serving features.
+- Made TCP loopback regression tests independent of optional native uTP/UDP sockets, avoiding permission failures on Windows CI while retaining real transfer, streaming, prefetch and pause assertions.
+
 - Room engine startup waits and pending commands that could remain unresolved after load failure, renderer crashes or closure; room state now reflects engine failure and supports retry.
 - Microphone capture completing after leaving a room, browser mute/PTT state differing from transmitted tracks, and recovery/device changes losing mute or deafen state.
 - Same-name room files overwriting unrelated content or being marked present without verification; encrypted completion is distinguished from plaintext readiness and decryption failures remain visible.

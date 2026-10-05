@@ -13,7 +13,8 @@ import { TorrentManager } from './manager';
 
 it('streams actual verified WebTorrent pieces from an incomplete loopback download, including a suffix seek', async () => {
   const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-external-loopback-'));
-  const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false };
+  // This fixture connects TCP peers explicitly; native UDP is unrelated and can be denied on CI.
+  const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false, utp: false };
   const seeder = new WebTorrent(quiet), leecher = new WebTorrent(quiet), manager = new TorrentManager();
   let stream: ExternalStream | null = null;
   try {

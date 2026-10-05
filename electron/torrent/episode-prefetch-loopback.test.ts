@@ -10,7 +10,8 @@ import { EpisodePrefetcher, type PrefetchTorrent } from './episode-prefetch';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 it('downloads only a bounded next-file head over real loopback peers', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-prefetch-'));
-  const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false };
+  // This fixture connects TCP peers explicitly; native UDP is unrelated and can be denied on CI.
+  const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false, utp: false };
   const seeder = new WebTorrent({ ...quiet, uploadLimit: 1024 * 1024 });
   const leecher = new WebTorrent(quiet);
   const prefetch = new EpisodePrefetcher();
