@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently --kill-others \"npm run dev:electron\" \"npm run dev:renderer\"",
     "dev:electron": "tsc -p tsconfig.electron.json && node scripts/copy-room-engine.cjs && node scripts/dev-electron.cjs",
-    "dev:renderer": "webpack serve --config webpack.renderer.config.js --mode development",
+    "dev:renderer": "node scripts/dev-renderer.cjs",
     "build": "npm run build:electron && npm run build:renderer && npm run build:guest",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/copy-room-engine.cjs",
     "build:renderer": "webpack --config webpack.renderer.config.js --mode production",
@@ -15,7 +15,7 @@
     "typecheck:electron": "tsc -p tsconfig.electron.json --noEmit",
     "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
     "typecheck:guest": "tsc -p tsconfig.guest.json --noEmit",
-    "test": "vitest run && node --test scripts/dev-electron.test.cjs",
+    "test": "vitest run && node --test scripts/dev-electron.test.cjs scripts/dev-renderer.test.cjs",
     "test:watch": "vitest",
     "test:rooms": "npm run build && node scripts/acceptance-rooms.cjs",
     "test:appearance": "npm run build:electron && node scripts/smoke-appearance.cjs",
@@ -75,6 +75,7 @@
     "castv2": "^0.1.10",
     "castv2-client": "^1.2.0",
     "protobufjs": "$protobufjs",
+    "http-cache-semantics": "^4.3.0",
     "xml2js@<0.5.0": "^0.6.2"
   },
   "optionalDependencies": {
@@ -108,7 +109,8 @@
     "vitest": "^4.1.9",
     "webpack": "^5.111.1",
     "webpack-cli": "^7.2.3",
-    "webpack-dev-server": "^6.0.0"
+    "webpack-dev-middleware": "^8.0.3",
+    "webpack-hot-middleware": "^2.26.1"
   },
   "build": {
     "appId": "com.torrenthunt.app",
