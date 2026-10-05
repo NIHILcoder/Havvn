@@ -8,7 +8,8 @@
  * The mark is the W-wings brand (assets/logo/mark-flat.svg, viewBox 512x295.8):
  * two pure polygons — near-black contour + the orange body — rasterized with
  * supersampled coverage anti-aliasing. A small VV zigzag underline echoes the
- * cover art (assets/havvn-cover.png).
+ * cover art (assets/havvn-cover.png). The angular wordmark is rasterized from
+ * the shared SVG, so setup and the application use the same lettering.
  *
  * Run: node scripts/make-installer-art.js
  */
@@ -150,36 +151,55 @@ function writeBmp(file, c) {
 
 // ── palette (the mark's own colors + dark Ember chrome) ─────────────────────
 const GRAPHITE = [0x14, 0x15, 0x19];  // --color-bg-primary
-const GRAPHITE2 = [0x17, 0x18, 0x1d]; // --color-bg-secondary
 const BLAZE = [0xe2, 0x51, 0x17];     // logo body orange (mark-flat.svg)
 const OUTLINE = [0x16, 0x13, 0x11];   // logo contour
 const MUTED = [0x98, 0x95, 0x8d];     // --color-text-tertiary
 const LIGHT = [0xf6, 0xf4, 0xf0];     // light-theme bg (header chrome is light)
+const WHITE = [0xec, 0xeb, 0xe6];
+
+const wordmark = fs.readFileSync(path.join(__dirname, '..', 'assets/logo/wordmark.svg'), 'utf8');
+const wordPaths = [...wordmark.matchAll(/<path\b[^>]*\bd="([^"]+)"/g)].map(m => m[1]);
+/** This brand asset contains only M/L/Z polygons; reject curves instead of approximating them. */
+function drawWordmark(c, cx, y, width, main = WHITE, accent = BLAZE) {
+  const scale = width / 440;
+  wordPaths.forEach((d, index) => {
+    if (/[^MLZ\d.\s,-]/i.test(d)) throw new Error('Wordmark requires polygon paths');
+    for (const contour of d.split(/Z/i).filter(s => s.trim())) {
+      const coords = contour.match(/-?\d+(?:\.\d+)?/g).map(Number);
+      const points = [];
+      for (let i = 0; i < coords.length; i += 2) points.push([cx + (coords[i] - 220) * scale, y + coords[i + 1] * scale]);
+      fillPolygon(c, points, index === 0 ? main : accent);
+    }
+  });
+}
+function brandGround() {
+  const c = makeCanvas(164, 314, GRAPHITE);
+  for (let y = 0; y < c.h; y++) for (let x = 0; x < c.w; x++) {
+    const glow = Math.max(0, 1 - Math.hypot(x - 20, (y - 15) * .8) / 210);
+    blend(c, x, y, BLAZE, glow * glow * .14);
+  }
+  // Fine angular flourish at the foot, matching the VV geometry.
+  strokePolyline(c, [[-18, 304], [64, 233], [182, 312]], .8, [0x49, 0x2c, 0x24]);
+  return c;
+}
 
 const out = path.join(__dirname, '..', 'build');
 
-// Sidebar 164x314 — graphite with a soft vertical lift, the W-wings mark,
-// a VV underline, and a blaze baseline accent.
+// Welcome/finish artwork — graphite, ember glow and the full brand lockup.
 {
-  const c = makeCanvas(164, 314, GRAPHITE);
-  for (let y = 0; y < c.h; y++) {
-    const t = 1 - y / c.h; // slightly lighter at the top
-    for (let x = 0; x < c.w; x++) {
-      const i = (y * c.w + x) * 3;
-      for (let k = 0; k < 3; k++) c.px[i + k] = GRAPHITE[k] + (GRAPHITE2[k] - GRAPHITE[k]) * t;
-    }
-  }
-  drawWings(c, 82, 110, 124, BLAZE, OUTLINE);
-  drawVV(c, 82, 172, 20, 5, 2.6, BLAZE);
-  // blaze baseline accent at the bottom
+  const c = brandGround();
+  drawWings(c, 82, 85, 114, BLAZE, OUTLINE);
+  drawWordmark(c, 82, 132, 126);
+  drawVV(c, 82, 204, 18, 4, 1.6, BLAZE);
   for (let y = 306; y < 309; y++) for (let x = 30; x < 134; x++) blend(c, x, y, BLAZE, 0.9);
   writeBmp(path.join(out, 'installerSidebar.bmp'), c);
 }
 
 // Uninstaller sidebar — same geometry, muted mark (leaving, not arriving).
 {
-  const c = makeCanvas(164, 314, GRAPHITE);
-  drawWings(c, 82, 110, 124, MUTED, OUTLINE);
+  const c = brandGround();
+  drawWings(c, 82, 85, 114, MUTED, OUTLINE);
+  drawWordmark(c, 82, 132, 126, WHITE, MUTED);
   writeBmp(path.join(out, 'uninstallerSidebar.bmp'), c);
 }
 
@@ -187,6 +207,7 @@ const out = path.join(__dirname, '..', 'build');
 // (the near-black contour carries the shape on light).
 {
   const c = makeCanvas(150, 57, LIGHT);
-  drawWings(c, 116, 28, 58, BLAZE, OUTLINE);
+  drawWings(c, 32, 28, 44, BLAZE, OUTLINE);
+  drawWordmark(c, 101, 21, 80, OUTLINE, BLAZE);
   writeBmp(path.join(out, 'installerHeader.bmp'), c);
 }

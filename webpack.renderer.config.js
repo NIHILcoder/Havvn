@@ -1,12 +1,16 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+const fs = require('fs');
 
 module.exports = (env, argv) => ({
-  entry: './renderer/index.tsx',
+  entry: {
+    startup: './renderer/startup.ts',
+    bundle: { import: './renderer/index.tsx', dependOn: 'startup' },
+  },
   target: 'web',
   output: {
     path: path.resolve(__dirname, 'dist/renderer'),
-    filename: 'bundle.js',
+    filename: '[name].js',
     publicPath: argv.mode === 'production' ? './' : '/',
   },
   resolve: {
@@ -44,6 +48,12 @@ module.exports = (env, argv) => ({
     new HtmlWebpackPlugin({
       template: './renderer/index.html',
       filename: 'index.html',
+      chunks: ['startup', 'bundle'],
+      chunksSortMode: 'manual',
+      templateParameters: {
+        startupCss: fs.readFileSync(path.join(__dirname, 'renderer/startup.css'), 'utf8'),
+        appVersion: require('./package.json').version,
+      },
     }),
   ],
   devServer: {

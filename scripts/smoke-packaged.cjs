@@ -110,14 +110,16 @@ if (process.versions.electron) {
       assert.equal(ready, true, 'Packaged renderer did not finish loading');
       const result = await evaluate(`(async () => {
         const until = Date.now() + 30000;
-        while ((!window.api || !document.getElementById('root')?.childElementCount) && Date.now() < until) await new Promise(r => setTimeout(r, 100));
+        while ((!window.api || !document.getElementById('root')?.childElementCount || document.getElementById('th-splash')) && Date.now() < until) await new Promise(r => setTimeout(r, 100));
         return { mounted: !!document.getElementById('root')?.childElementCount,
+          splashDismissed: !document.getElementById('th-splash'),
           version: await window.api.getAppVersion(), engine: await window.api.getRunningEngine(),
           downloads: (await window.api.getDownloads()).length,
           downloadDir: (await window.api.getSettings()).defaultDownloadDir,
           nodeExposed: typeof window.require !== 'undefined' || typeof window.process !== 'undefined' };
       })()`);
       assert.equal(result.mounted, true); assert.equal(result.nodeExposed, false);
+      assert.equal(result.splashDismissed, true, 'Packaged startup splash did not dismiss');
       assert.equal(result.engine, engine); assert.equal(result.downloads, 0);
       assert.equal(result.version, require(path.join(root, 'package.json')).version);
       assert.equal(path.resolve(result.downloadDir), path.join(base, 'downloads'));

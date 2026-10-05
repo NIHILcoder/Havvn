@@ -21,6 +21,7 @@ import { formatBytes } from './utils/format-helpers';
 import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
 import { restoreThemePrefs } from './utils/theme-prefs';
 import { bootApplyActiveTheme } from './utils/theme-library';
+import { bootAppearance } from './utils/appearance';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
 import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorContext';
@@ -29,7 +30,7 @@ import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorCon
 const ThemeEditor = lazy(() => import('./components/ThemeEditor'));
 import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
-import { dismissSplash } from './utils/splash';
+import { dismissSplash, setSplashStage } from './utils/splash';
 import { receiveExternalWatch } from './utils/externalWatch';
 
 
@@ -47,12 +48,13 @@ const AlertBanner: React.FC<{
 );
 
 const AppContent: React.FC = () => {
+  useEffect(bootAppearance, []);
   useEffect(() => receiveExternalWatch(window.api.externalPlayer), []);
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   // The theme editor is a top-level dock (not a Settings modal) so it stays open
   // beside every page — click Rooms/Downloads and watch them recolor live.
-  const { open: themeEditorOpen, closeEditor } = useThemeEditor();
+  const { open: themeEditorOpen, closeEditor, initialTab: themeEditorTab } = useThemeEditor();
   // Start page honors the Settings → Interface preference (downloads is the default).
   const [currentPage, setCurrentPage] = useState<PageId>(() => {
     try { return localStorage.getItem('startPage') === 'rooms' ? 'rooms' : 'downloads'; }
@@ -148,6 +150,7 @@ const AppContent: React.FC = () => {
 
   // Load downloads for counts
   useEffect(() => {
+    setSplashStage('downloads');
     const loadDownloads = async () => {
       try {
         const list = await window.api.getDownloads();
@@ -603,7 +606,7 @@ const AppContent: React.FC = () => {
           it survives page navigation while open. */}
       {themeEditorOpen && (
         <Suspense fallback={null}>
-          <ThemeEditor onClose={closeEditor} />
+          <ThemeEditor onClose={closeEditor} initialTab={themeEditorTab} />
         </Suspense>
       )}
     </>

@@ -23,11 +23,9 @@ import '@fontsource/exo-2/500.css';
 import '@fontsource/exo-2/600.css';
 import '@fontsource/exo-2/700.css';
 import './index.css';
-import { armSplashFailsafe } from './utils/splash';
+import { setSplashStage } from './utils/splash';
 
-// Force the startup splash down even if the app never reports ready (mount error,
-// slow engine). Armed the moment the bundle runs, so the splash can't get stuck.
-armSplashFailsafe(6000);
+setSplashStage('interface');
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 root.render(
