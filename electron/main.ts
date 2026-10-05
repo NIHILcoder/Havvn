@@ -1,8 +1,14 @@
 // MUST be first: sets an isolated userData dir for `TH_INSTANCE` test copies
 // before electron-store / the logger read the path at module load.
 import { isSecondaryInstance, isLanHelper } from './app-instance';
-import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog, safeStorage } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog, safeStorage, powerMonitor } from 'electron';
 import path from 'path';
+import os from 'os';
+import { supportsAcrylic } from '../shared/appearance';
+import { WindowMaterial } from './utils/window-material';
+import { pathToFileURL } from 'url';
+import { RoomNetworkMonitor, roomNetworkFingerprint } from './sharing/room-network-monitor';
+import { installUiPermissionPolicy } from './sharing/room-engine-policy';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
 import { getSchedulerEngine } from './scheduler/scheduler-engine';
@@ -30,6 +36,21 @@ import { PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME } from '../sh
 dotenv.config();
 
 let mainWindow: BrowserWindow | null = null;
+const windowMaterial = new WindowMaterial(supportsAcrylic(process.platform, os.release()));
+windowMaterial.setEnabled(store.get('appearanceAcrylic') === true);
+ipcMain.handle('appearance:acrylic:get', (event) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Only the app shell may read appearance');
+  return windowMaterial.status();
+});
+ipcMain.handle('appearance:acrylic:set', (event, enabled: unknown) => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') {
+    throw new Error('Invalid appearance request');
+  }
+  store.set('appearanceAcrylic', enabled);
+  const status = windowMaterial.setEnabled(enabled);
+  mainWindow.webContents.send('appearance:acrylic:changed', status);
+  return status;
+});
 let tray: Tray | null = null;
 let isQuitting = false;
 
@@ -147,6 +168,8 @@ ipcMain.handle('win:isMaximized', () => !!(mainWindow && !mainWindow.isDestroyed
 // can never be pointed at a window the renderer did not legitimately open. Keep
 // it that way: a prefix match or a renderer-supplied lookup would turn them into
 // a way to drive arbitrary windows.
+let roomNetworkMonitor: RoomNetworkMonitor | null = null;
+
 const dockPopouts = new Map<string, BrowserWindow>();
 const popoutWin = (frameName: unknown): BrowserWindow | null => {
   if (typeof frameName !== 'string') return null;
@@ -621,8 +644,9 @@ async function createWindow(): Promise<void> {
     // Test copies (TH_INSTANCE) get a labelled title so two windows on one
     // machine are tellable apart while verifying rooms/share links.
     title: isSecondaryInstance ? `Havvn — ${process.env.TH_INSTANCE}` : 'Havvn',
-    backgroundColor: '#000000', // matches the app + splash; no flash before paint
+    backgroundColor: '#141519', // first-paint splash fallback before saved theme loads
   });
+  windowMaterial.register(mainWindow);
 
   // Re-assert the window icon from a loaded image (belt-and-suspenders for the
   // taskbar/thumbnail icon — the constructor `icon` option can be ignored on some
@@ -655,6 +679,18 @@ async function createWindow(): Promise<void> {
 
   // Setup IPC handlers
   setupIpcHandlers(mainWindow);
+  if (!roomNetworkMonitor) {
+    const { getRoomManager } = await import('./sharing/room-manager.js');
+    roomNetworkMonitor = new RoomNetworkMonitor({
+      fingerprint: roomNetworkFingerprint,
+      suspend: () => getRoomManager().suspendNetworking('sleep'),
+      resume: () => getRoomManager().resumeNetworking('sleep'),
+      changed: () => getRoomManager().reconnectAfterNetworkChange(),
+      error: error => logger.warn('Rooms', 'Network lifecycle recovery failed', { error: String(error) }),
+    });
+    powerMonitor.on('suspend', roomNetworkMonitor.suspend);
+    powerMonitor.on('resume', roomNetworkMonitor.resume);
+  }
 
   // === Security: navigation & new-window guards ===
   // Torrent names, RSS content and search results are untrusted data rendered in
@@ -834,6 +870,10 @@ async function createWindow(): Promise<void> {
   // than one gutted by windows the user can no longer reach.
   const ownerWindow = mainWindow; // non-null capture for the closures below
   ownerWindow.webContents.on('did-create-window', (child, details) => {
+    if (POPOUTS[details.frameName]) {
+      windowMaterial.register(child);
+      ownerWindow.webContents.send('appearance:acrylic:changed', windowMaterial.status());
+    }
     child.removeMenu(); // no app menu → no Ctrl+R accelerator reloading the child
     // Remember where the user parked this pop-out (per frameName — for the dock
     // that means per POOL SLOT, which is why the allocator hands out the lowest
@@ -901,6 +941,21 @@ async function createWindow(): Promise<void> {
     }
   });
 
+  // Register before load: ready-to-show can fire before loadFile/loadURL resolves.
+  // Capture this window so a late fallback cannot reveal a replacement window.
+  if (!startHidden) {
+    const openingWindow = mainWindow;
+    let shown = false;
+    const reveal = () => {
+      if (shown || openingWindow.isDestroyed()) return;
+      shown = true;
+      openingWindow.show();
+    };
+    openingWindow.once('ready-to-show', reveal);
+    const revealTimer = setTimeout(reveal, 3000);
+    openingWindow.once('closed', () => clearTimeout(revealTimer));
+  }
+
   // In development, load from webpack dev server
   
   if (isDev) {
@@ -912,17 +967,6 @@ async function createWindow(): Promise<void> {
     // __dirname is dist/electron/electron/ due to tsconfig rootDir
     await mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
     // No DevTools in production
-  }
-
-  // Show the window once its first frame (the splash) has painted, so the user
-  // never sees an empty window. Belt-and-suspenders: also show after a short
-  // timeout in case 'ready-to-show' is delayed, so the window can't get stuck
-  // hidden. show() is idempotent.
-  if (!startHidden) {
-    let shown = false;
-    const reveal = () => { if (shown) return; shown = true; if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show(); };
-    mainWindow.once('ready-to-show', reveal);
-    setTimeout(reveal, 3000);
   }
 
   // === Tray behavior: Minimize to Tray ===
@@ -1018,14 +1062,6 @@ function applyContentSecurityPolicy(): void {
   ].join('; ');
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    // The hidden room-engine page (a blank file:// host for the WebRTC engine) must
-    // NOT get the renderer's CSP: connect-src 'self' would block the room trackers'
-    // WSS and break all room networking. It loads no remote content, so no CSP.
-    if (details.url.startsWith('file://') && details.url.includes('room-engine.html')) {
-      callback({ responseHeaders: details.responseHeaders });
-      return;
-    }
-
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -1118,13 +1154,15 @@ async function initializeApp(): Promise<void> {
   // Apply CSP before any window loads content
   applyContentSecurityPolicy();
 
-  // Grant the microphone (voice chat) etc. for the app's OWN trusted windows, in
-  // BOTH dev and prod (the CSP function above is prod-only). The app never loads
-  // remote content, so this doesn't widen the attack surface. The synchronous
-  // check handler runs FIRST — if it doesn't allow 'media', Chromium blocks capture
-  // before the request handler is consulted. `webContents` may be null.
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(true));
-  session.defaultSession.setPermissionCheckHandler(() => true);
+  const rendererUrl = process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:3000/'
+    : pathToFileURL(path.join(__dirname, '../../renderer/index.html')).href;
+  installUiPermissionPolicy(session.defaultSession, (wc, requestingUrl) => {
+    if (!wc || wc.isDestroyed()) return false;
+    const stripHash = (url: string) => url.split('#')[0];
+    if (wc === mainWindow?.webContents) return stripHash(wc.getURL()) === rendererUrl && stripHash(requestingUrl) === rendererUrl;
+    return [...dockPopouts.values()].some((win) => !win.isDestroyed() && win.webContents === wc)
+      && wc.getURL() === 'about:blank' && requestingUrl === 'about:blank';
+  });
 
   // Load the persisted UI language so the tray/menu built below is already in
   // the right language, before the renderer loads and re-announces it.
@@ -1405,6 +1443,12 @@ app.on('before-quit', async (event) => {
 let cleanupPromise: Promise<void> | null = null;
 
 async function cleanup(): Promise<void> {
+  roomNetworkMonitor?.dispose();
+  if (roomNetworkMonitor) {
+    powerMonitor.off('suspend', roomNetworkMonitor.suspend);
+    powerMonitor.off('resume', roomNetworkMonitor.resume);
+    roomNetworkMonitor = null;
+  }
   if (cleanupPromise) return cleanupPromise;
 
   cleanupPromise = (async () => {

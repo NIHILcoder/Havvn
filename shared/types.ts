@@ -1,4 +1,5 @@
 // Shared types for Havvn application
+import type { WatchPlaybackEvent } from './room-watch-sync';
 
 // On-completion action (one-shot "when downloads finish → sleep/shutdown/quit").
 // Logic lives in shared/completion-action.ts; re-exported here so IPC surfaces
@@ -6,6 +7,7 @@
 import type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
 export type { CompletionAction, CompletionPending, CompletionActionState } from './completion-action';
 import type { Theme } from './theme';
+import type { AcrylicStatus } from './appearance';
 export type { Theme, ThemeBase, ValidateResult } from './theme';
 import type { PluginManifest } from './plugin-manifest';
 export type { PluginManifest } from './plugin-manifest';
@@ -137,6 +139,7 @@ export interface RoomFile {
   addedBy: string;       // memberId of the member who first shared it
   addedByName: string;
   addedAt: number;
+  keyEpoch?: string;      // v2 content-key identifier; absent = legacy trial decryption
   enc?: boolean;         // E2E rooms: the seeded torrent is ciphertext (decrypt after download)
   // Folder/section this file sits in. Absent, '', or an id that resolves to no
   // live folder all mean "Uncategorized" — so a peer on an older build that
@@ -193,10 +196,17 @@ export type PersistedRoomFolder = RoomFolder;
 export interface PersistedRoomFile extends RoomFile {
   localPath?: string;   // plaintext on disk (original for shared, room folder for downloaded)
   cipherPath?: string;  // E2E rooms only: the ciphertext we actually seed
+  torrentFile?: string; // base64 torrent metadata for local verification; never gossiped
+  localOriginal?: boolean; // user-selected source, which must never be moved/deleted
+  partialDownload?: boolean; // writable download slot allocated by this client
+  receivePaused?: boolean; // local pause, never broadcast; survives restart
+  localError?: RoomFileError; // local failure only; never gossiped to peers
 }
 
+import type { RoomCapabilities } from './room-capabilities';
+
 /** A member of a room (including yourself). */
-export interface RoomMember {
+export interface RoomMember extends RoomCapabilities {
   memberId: string;      // stable per-install identity
   name: string;
   avatarSeed: string;    // deterministic seed for the identicon (defaults to memberId)
@@ -212,6 +222,7 @@ export interface RoomMember {
   avatarImg?: string;    // custom avatar data URL (signed 'profile' gossip; absent = identicon)
   /** Browser guest (no desktop install). Unsigned hello/ping field — display only. */
   guest?: boolean;
+  watchSync?: boolean; // signed playback v2 advertised by HELLO; display only
 }
 
 /** A chat message in a room (gossiped between members; capped + persisted locally). */
@@ -226,13 +237,31 @@ export interface RoomChatMessage {
   // as backfill to a peer that was offline still self-authenticates (verifyChat).
   pub?: string;
   sig?: string;
-  // Reply pointer + a quote snapshot of the parent (UNSIGNED — rides outside the
-  // chat canonical, like voice `deafened`). replyTo is the parent's id; the
-  // renderer resolves the live parent by id and falls back to the snapshot when
-  // the parent scrolled out of the capped window or was never received.
+  chatV?: 2;            // absent = legacy body signature; quote is not authenticated
+  contextSig?: string;  // v2 signs the body AND reply pointer/name/text, topic-bound
+  receivedAt?: number;  // local receipt clock only; never trusted from gossip
+  // Renderer resolves the parent by id and falls back to this quote snapshot.
   replyTo?: string;
   replyName?: string;    // parent author name at reply time
   replyText?: string;    // parent body snapshot (truncated)
+}
+
+/** Local acknowledgement; it does not promise delivery to remote members. */
+export interface RoomChatAck { ok: true; id: string; state: 'saved-locally'; }
+export interface RoomChatDraft {
+  text: string;
+  reply?: { id: string; name: string; text: string };
+  editId?: string;
+  messageId?: string;
+  compose?: { text: string; reply?: { id: string; name: string; text: string }; messageId?: string };
+}
+export interface RoomPreferenceResult {
+  ok: true;
+  saved: true;
+  /** True after a live engine acknowledgment; false also covers a lost reply. */
+  applied: boolean;
+  state?: RoomState;
+  error?: string;
 }
 
 /** An entry in a room's activity log (locally observed; capped + persisted). */
@@ -247,6 +276,12 @@ export interface RoomEvent {
 }
 
 /** Local transfer status of one room file on this machine. */
+export type RoomFilePhase = 'paused' | 'queued' | 'downloading' | 'verifying' | 'ciphertext-ready' | 'waiting-key' | 'decrypting' | 'ready' | 'error';
+export interface RoomFileError {
+  stage: 'transfer' | 'verification' | 'decryption' | 'local-file';
+  code: 'authentication' | 'missing-file' | 'disk-full' | 'permission' | 'changed-file' | 'failed';
+  message: string;
+}
 export interface RoomTransfer {
   fileId: string;
   progress: number;      // 0..1
@@ -254,12 +289,24 @@ export interface RoomTransfer {
   downSpeed: number;     // bytes/s
   peers: number;
   haveLocally: boolean;
+  receivePaused?: boolean;
+  queuePosition?: number; // waiting position across all rooms, absent when active
   released?: boolean;    // user stopped seeding this file to unlock it on disk
   localPath?: string;    // real on-disk path (original for shared, room folder for downloaded)
+  localStamp?: string;   // local filesystem identity recorded after content verification
   cipherPath?: string;   // E2E rooms only: the ciphertext we seed for this file
+  phase?: RoomFilePhase; // progress describes transfer bytes, not decryption progress
+  cipherReady?: boolean; // full ciphertext passed original torrent verification
+  error?: RoomFileError;
 }
 
 /** Full live state of one room, pushed to the renderer. */
+/** Main-process engine lifecycle, independent of a room's peer count. */
+export interface RoomEngineStatus {
+  state: 'stopped' | 'starting' | 'ready' | 'failed';
+  message?: string;
+}
+
 export interface RoomState {
   roomId: string;        // local uuid
   name: string;
@@ -271,19 +318,24 @@ export interface RoomState {
   topicHash: string;     // internal signature domain separator, sha1(code) — NOT the tracker rendezvous (that is key-derived and never sent here)
   createdAt: number;
   ownerId: string;       // memberId of the room owner ('' until learned)
+  watchPolicy?: import('./room-watch-host').WatchPolicy;
   canManage: boolean;    // this install is the owner (may kick/rekey)
   e2e: boolean;          // end-to-end encryption: file bytes seeded as ciphertext
   members: RoomMember[];
   files: RoomFile[];
+  manifestLimited?: boolean;
   folders?: RoomFolder[];   // room sections (absent/empty = flat list, legacy behaviour)
   transfers: Record<string, RoomTransfer>;
+  connection?: import('./room-diagnostics').RoomConnectionDiagnostics;
+  resources?: { policy: import('./room-resources').RoomResourcePolicy; voicePriorityActive: boolean; fileUpBps: number; fileDownBps: number };
+  receiveQueue?: { active: number; waiting: number; waitingBytes: number; concurrency: number };
   history: RoomEvent[];  // recent activity, newest last
   chat: RoomChatMessage[];  // recent chat messages, newest last
   connected: boolean;    // tracker rendezvous connected
   peerCount: number;     // live gossip peers right now
   autoFetch: boolean;    // auto-download files peers share; false = fetch manually per file
-  upKbps: number;        // per-room upload ceiling, KB/s (0 = unlimited)
-  downKbps: number;      // per-room download ceiling, KB/s (0 = unlimited)
+  upKbps: number;        // per-room upload ceiling, KB/s (0 = shared room budget)
+  downKbps: number;      // per-room download ceiling, KB/s (0 = shared room budget)
   kicked?: boolean;      // the owner removed us from this room (session-only)
   kickedBy?: string;     // display name of who removed us
   typingMemberIds?: string[]; // members composing a chat message right now (self excluded, ~4s TTL)
@@ -309,8 +361,9 @@ export type VoiceQuality = 'good' | 'fair' | 'poor';
 /** A participant currently in a room's voice channel. */
 export interface RoomVoiceParticipant {
   memberId: string;
+  waitingForSlot?: boolean;
   muted: boolean;
-  /** Deafened (hears no one). Display-only: unsigned wire field, cosmetic. */
+  /** Deafened (hears no one). Authenticated by voice-state-v2; legacy cosmetic. */
   deafened?: boolean;
   speaking: boolean;
   /** This member is sharing their screen (click to watch). */
@@ -319,6 +372,8 @@ export interface RoomVoiceParticipant {
   quality?: VoiceQuality;
   /** The link dropped and is re-establishing (ICE disconnected / reconnecting). */
   reconnecting?: boolean;
+  connection?: import('./room-voice-recovery').VoiceLinkState;
+  reconnectAttempts?: number;
 }
 
 /** A shareable screen/window from desktopCapturer (picker entry). */
@@ -337,6 +392,7 @@ export interface ScreenSourceInfo {
 export type VoiceInputMode = 'always' | 'vad' | 'ptt';
 
 export interface RoomVoiceState {
+  micUnavailable?: boolean;
   inVoice: boolean;
   muted: boolean;
   deafened: boolean;
@@ -373,6 +429,7 @@ export interface VoiceDeviceInfo {
 
 /** Lightweight room listing entry. */
 export interface RoomSummary {
+  storageError?: 'unavailable' | 'decrypt-failed' | 'migration-failed' | 'write-failed' | 'unsupported';
   roomId: string;
   name: string;
   code: string;
@@ -614,6 +671,7 @@ export interface AppSettings {
   diskGuardEnabled: boolean;       // Auto-pause all torrents when free space is low
   diskGuardMinFreeMB: number;      // Threshold in MB (default 2048)
   // Sharing
+  roomResources?: import('./room-resources').RoomResourcePolicy;
   shareUseTurn?: boolean;          // Use TURN relays for share links (default true).
                                    // Off = more private (no third-party relay) but
                                    // won't connect through symmetric NAT.
@@ -685,16 +743,19 @@ export interface VpnBindEvent {
 }
 
 export interface VPNDetectionResult {
+  state: import('./vpn-status').VpnState;
   isVPNActive: boolean;
   confidence: 'high' | 'medium' | 'low' | 'unknown';
   indicators: {
     vpnInterface: boolean;
-    ipMismatch: boolean;
     vpnDNS: boolean;
     vpnRoutes: boolean;
   };
   details: {
     detectedInterfaces: string[];
+    routedInterface?: string;
+    ipv6Bypass: boolean;
+    proxyConfigured: boolean | null;
     publicIP?: string;
     localIP?: string;
     vpnProvider?: string;
@@ -714,6 +775,7 @@ export interface PortForwardStatus {
 
 /** One-call privacy snapshot for the dashboard (VPN + geo/ISP of public IP). */
 export interface IpInfo {
+  state: import('./vpn-status').VpnState;
   ip?: string;
   country?: string;
   region?: string;
@@ -723,7 +785,12 @@ export interface IpInfo {
   vpnProvider?: string;
   confidence: 'high' | 'medium' | 'low' | 'unknown';
   interfaces: string[];
-  exposedIsp: boolean;     // true ⇒ no VPN and IP looks like a consumer ISP (likely leak)
+  routedInterface?: string;
+  ipv6Bypass: boolean;
+  proxyConfigured: boolean | null;
+  proxyIp?: string;
+  proxyCountry?: string;
+  // Direct HTTPS probe, not a measurement of the addresses seen by torrent peers.
   fetchedAt: number;
 }
 
@@ -921,6 +988,8 @@ export interface AddDownloadRequest {
   categoryId?: string;
   // Add without starting: the record shows up paused and waits to be resumed.
   paused?: boolean;
+  /** Opaque registered search sources; resolved in main, never persisted as capabilities. */
+  searchSourceRefs?: string[];
 }
 
 export interface TorrentInfo {
@@ -1027,8 +1096,14 @@ export interface PythonStatus {
 }
 
 export interface SearchResult {
+  /** Time main received the provider response. A cache replay keeps this time. */
+  checkedAt?: number;
+  /** Optional source-reported track labels; not a file inspection. */
+  media?: import('./release-languages').ReleaseMedia;
   /** Opaque source identities registered by main; retained when merging results. */
   sourceRefs?: string[];
+  /** Persistent source fingerprints generated in main; no URLs or secrets. */
+  historyKeys?: string[];
   title: string;
   magnetUri?: string;
   torrentUrl?: string;
@@ -1291,6 +1366,11 @@ export interface IpcApi {
   setLanguage: (lang: string) => void;
   // UI scale via webFrame zoom (scales viewport too, unlike CSS zoom)
   setZoomFactor: (factor: number) => void;
+  appearance: {
+    getAcrylic: () => Promise<AcrylicStatus>;
+    setAcrylic: (enabled: boolean) => Promise<AcrylicStatus>;
+    onAcrylicChanged: (callback: (status: AcrylicStatus) => void) => () => void;
+  };
   // Resolve the absolute path of a dropped/selected File (webUtils.getPathForFile)
   getPathForFile: (file: File) => string;
   // Bulk torrent actions (the tray menu calls the manager directly)
@@ -1353,6 +1433,8 @@ export interface IpcApi {
 
   // Search
   search: {
+    getDownloadHistory: () => Promise<import('./search-download-history').SearchDownloadHistoryEntry[]>;
+    clearDownloadHistory: () => Promise<void>;
     // Kicks off a search and returns immediately with the providers that will
     // report; results arrive over onProgress until `done`. A recent identical
     // search is replayed from cache unless `refresh` is set.
@@ -1408,11 +1490,15 @@ export interface IpcApi {
   rooms: {
     getProfile: () => Promise<RoomProfile>;
     setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed' | 'color' | 'status' | 'avatarImg'>>) => Promise<RoomProfile>;
-    create: (name: string, e2e?: boolean) => Promise<RoomState>;
-    join: (code: string) => Promise<RoomState>;
-    leave: (roomId: string, deleteFiles?: boolean) => Promise<{ ok: boolean }>;
+    create: (name: string, e2e?: boolean, autoFetch?: boolean) => Promise<RoomState>;
+    join: (code: string, autoFetch?: boolean) => Promise<RoomState>;
+    leave: (roomId: string, deleteFiles?: boolean, serverMode?: 'stop' | 'local') => Promise<{ ok: boolean }>;
     list: () => Promise<RoomSummary[]>;
     get: (roomId: string) => Promise<RoomState | null>;
+    engineStatus: () => Promise<RoomEngineStatus>;
+    diagnose: (roomId: string) => Promise<import('./room-diagnostics').RoomDiagnosticReport>;
+    retryConnection: (roomId: string) => Promise<import('./room-diagnostics').RoomDiagnosticReport>;
+    exportDiagnostics: (roomId: string) => Promise<{ success: boolean }>;
     addFiles: (roomId: string, paths: string[], folderId?: string) => Promise<RoomState>;
     pickAndAddFiles: (roomId: string, folderId?: string) => Promise<RoomState | null>;
     shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[], folderName?: string) => Promise<RoomState>;
@@ -1426,7 +1512,8 @@ export interface IpcApi {
     subtitleGet: (roomId: string, fileId: string, key: string) => Promise<string>;
     releaseFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     reseedFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
-    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }) => Promise<{ ok: boolean }>;
+    setWatchHost: (roomId: string, hostId: string) => Promise<RoomState>;
+    broadcastSync: (roomId: string, payload: import('./room-watch-sync').WatchInput) => Promise<{ ok: boolean }>;
     removeFile: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
     removeFiles: (roomId: string, fileIds: string[]) => Promise<{ ok: boolean }>;
     rename: (roomId: string, name: string) => Promise<RoomState>;
@@ -1440,15 +1527,21 @@ export interface IpcApi {
     deleteFolder: (roomId: string, folderId: string) => Promise<RoomState>;
     assignFile: (roomId: string, fileId: string, folderId: string | null) => Promise<RoomState>;
     assignFiles: (roomId: string, fileIds: string[], folderId: string | null) => Promise<RoomState>;
-    setFolderAutoFetch: (roomId: string, folderId: string, mode: boolean | null) => Promise<RoomState>;
-    setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<{ ok: boolean }>;
-    setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<{ ok: boolean }>;
+    setFolderAutoFetch: (roomId: string, folderId: string, mode: boolean | null) => Promise<RoomPreferenceResult>;
+    setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<RoomPreferenceResult>;
+    setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<RoomPreferenceResult>;
     setNotifyMuted: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
     fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
-    setLimits: (roomId: string, upKbps: number, downKbps: number) => Promise<{ ok: boolean }>;
+    pauseReceive: (roomId: string, fileId: string) => Promise<RoomState>;
+    prioritizeReceive: (roomId: string, fileId: string) => Promise<RoomState>;
+    retryDecrypt: (roomId: string, fileId: string) => Promise<{ ok: boolean }>;
+    setResources: (policy: import('./room-resources').RoomResourcePolicy) => Promise<import('./room-resources').RoomResourceResult>;
+    setLimits: (roomId: string, upKbps: number, downKbps: number) => Promise<RoomPreferenceResult>;
     kick: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
     transferOwner: (roomId: string, memberId: string) => Promise<RoomState>;
-    sendChat: (roomId: string, text: string, replyTo?: string) => Promise<{ ok: boolean }>;
+    sendChat: (roomId: string, text: string, replyTo?: string, messageId?: string) => Promise<RoomChatAck>;
+    chatDraft: (roomId: string) => Promise<RoomChatDraft>;
+    saveChatDraft: (roomId: string, draft: RoomChatDraft) => Promise<{ ok: boolean }>;
     editChat: (roomId: string, msgId: string, text: string) => Promise<{ ok: boolean }>;
     typing: (roomId: string) => void;
     reactFile: (roomId: string, fileId: string, emoji: string) => Promise<void>;
@@ -1457,6 +1550,7 @@ export interface IpcApi {
     voice: {
       join: (roomId: string) => Promise<{ ok: boolean; warning?: string }>;
       leave: (roomId: string) => Promise<{ ok: boolean }>;
+      reconnect: (roomId: string) => Promise<{ ok: boolean }>;
       mute: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
       deafen: (roomId: string, deafened: boolean) => Promise<{ ok: boolean }>;
       volume: (roomId: string, memberId: string, volume: number) => Promise<{ ok: boolean }>;
@@ -1487,6 +1581,7 @@ export interface IpcApi {
       /** Host starts a session and admits the picked members (1 UAC). */
       start: (roomId: string, memberIds: string[]) => Promise<{ ok: boolean; sessionId?: string; warning?: string }>;
       stop: (roomId: string) => Promise<{ ok: boolean }>;
+      retry: (roomId: string) => Promise<{ ok: boolean }>;
       /** Host admits one more member into an already-live session. */
       invite: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
       /** A non-host who has been admitted joins the session's mesh. */
@@ -1604,8 +1699,12 @@ export interface IpcApi {
       systemJava: () => Promise<{ available: boolean; version?: string; major?: number }>;
       onUpdate: (cb: (payload: { roomId: string; state: RoomServerState }) => void) => () => void;
     };
-    exportIdentity: () => Promise<{ success: boolean; path?: string }>;
-    importIdentity: () => Promise<{ success: boolean; rooms?: number }>;
+    diskUsage: (roomId: string) => Promise<import('./room-local-data').RoomDiskUsage>;
+    cleanupCopies: (roomId: string, previewId: string, fileIds: string[]) => Promise<{ bytes: number; files: number }>;
+    localHistory: (roomId: string, kind: 'chat' | 'event', before?: string) => Promise<import('./room-local-data').RoomHistoryPage>;
+    setHistoryRetention: (roomId: string, days: import('./room-local-data').RoomHistoryDays) => Promise<import('./room-local-data').RoomHistoryDays>;
+    exportIdentity: (password: string, roomId?: string) => Promise<{ success: boolean; path?: string }>;
+    importIdentity: (password: string) => Promise<{ success: boolean; rooms?: number }>;
   };
   // Custom theme sharing (import/export as a JSON file). Imported `data` is
   // untrusted raw JSON — the renderer runs validateTheme() before using it.
@@ -1614,7 +1713,8 @@ export interface IpcApi {
     import: () => Promise<{ success: boolean; data?: unknown; error?: string }>;
   };
   onRoomUpdate: (callback: (state: RoomState) => void) => () => void;
-  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void) => () => void;
+  onRoomEngineStatus: (callback: (status: RoomEngineStatus) => void) => () => void;
+  onRoomSync: (callback: (msg: WatchPlaybackEvent & { roomId: string }) => void) => () => void;
   onRoomOpen: (callback: (roomId: string) => void) => () => void;
   /** Live mic level while a mic test runs: 0-255 avg magnitude (raw, pre-gain), or
    *  -1 when the test auto-stopped on its 60s deadline (UI should exit testing). */

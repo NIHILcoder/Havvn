@@ -1,3 +1,4 @@
+import { sealRoomBackup, openRoomBackup, writeRoomBackup, validateBackupPassword, ROOM_BACKUP_MAX_BYTES } from '../db/room-backup';
 import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
 import { validateEpisodePrefetch, type EpisodePrefetchRequest } from '../../shared/episode-prefetch';
 import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent';
@@ -30,6 +31,7 @@ import { openProviderLogin } from '../services/provider-login';
 import { providerNetwork } from '../services/provider-network';
 import { getSearchNetworkSettings, saveSearchNetworkProfile, setProviderAccess } from '../services/provider-network-store';
 import { getSearchService } from '../services/search-service';
+import { searchDownloadHistory } from '../services/search-download-history';
 import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
 import { getWatchFolderService } from '../torrent/watch-folder';
@@ -40,6 +42,7 @@ import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from 
 import {
   validateDownloadPath,
   validateTrackerUrl,
+  validateSeedLimit,
   validateMagnetUri,
   validateRoomId,
   validateFileId,
@@ -134,7 +137,7 @@ type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: any[]) => Promis
  */
 function wrapHandler(name: string, handler: IpcHandler): IpcHandler {
   return async (event, ...args) => {
-    log.debug(`IPC call: ${name}`, { args });
+    log.debug(`IPC call: ${name}`, { args: ['rooms:exportIdentity', 'rooms:importIdentity'].includes(name) ? '[redacted]' : args });
     try {
       const result = await handler(event, ...args);
       return result;
@@ -178,11 +181,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // just cannot be advertised, and the panel says so.
   serverManager.init({
     getRoomVip: (roomId) => roomManager.cachedLanVip(roomId),
+    isRoomAvailable: (roomId) => roomManager.isRoomAvailable(roomId),
+    getKnownRoomIds: () => db.getPersistedRooms().map(room => room.roomId),
     getSelfId: () => db.getRoomProfile().memberId,
     getRoomContentFiles: (roomId) => roomManager.listRoomContentFiles(roomId),
     getServerMirrors: (roomId) => roomManager.getServerMirrors(roomId),
     publishServerMirror: (roomId, payload) => roomManager.broadcastServerMirror(roomId, payload),
-    publishRemoteCommand: (roomId, instanceId, command) => roomManager.publishRemoteCommand(roomId, instanceId, command),
+    publishRemoteCommand: (roomId, request) => roomManager.publishRemoteCommand(roomId, request),
     onServerAlert: (roomId, alert) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('rooms:srvAlert', { roomId, ...alert });
@@ -221,10 +226,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   };
 
   if (!handlersRegistered) {
+    roomManager.onRoomUnavailable((roomId, reason) => serverManager.onRoomUnavailable(roomId, reason));
     roomManager.onRoomUpdate((state, prev) => {
       const prevVip = prev?.lan?.active && prev.lan.selfVip;
       const newVip = state.lan?.active && state.lan.selfVip;
       if (prevVip !== newVip || prev?.lan?.active !== state.lan?.active) {
+        if (prevVip && !newVip) {
+          void serverManager.onRoomUnavailable(state.roomId, 'lan-stopped').catch(error => logger.warn('Servers', 'LAN server stop failed', { error: String(error) }));
+        }
         serverManager.onRoomVipChanged(state.roomId);
       }
       if (!sameFileSet(prev?.files, state.files)) {
@@ -247,19 +256,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   }
 
   if (!handlersRegistered) {
-    ipcMain.on('srv-remote-cmd', (_e, payload: { roomId?: string; by?: string; instanceId?: string; command?: string }) => {
-      const by = String(payload?.by || '');
-      const roomId = String(payload?.roomId || '');
-      const instanceId = String(payload?.instanceId || '');
-      const command = String(payload?.command || '');
-      if (!by || !roomId || !instanceId || !command) return;
-      serverManager.handleRemoteCommand(by, roomId, instanceId, command);
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('rooms:srvUpdate', {
-          roomId,
-          state: serverManager.stateForRoom(roomId),
-        });
-      }
+    ipcMain.handle('srv-remote-cmd', (event, payload: { roomId: string; request: import('../../shared/server-command').ServerCommandRequest }) => {
+      roomManager.assertEngineServerCommand(event, payload?.roomId);
+      const request = payload?.request;
+      if (!request) return { ok: false, reason: 'command-expired' };
+      return serverManager.handleRemoteCommand(request.by, payload.roomId, request.instanceId, request.command, request);
     });
   }
 
@@ -302,7 +303,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         throw new Error('Invalid category: must be a string');
       }
 
-      return torrentManager.addDownload(request);
+      const sourceKeys = request.searchSourceRefs !== undefined
+        ? getSearchService().historyKeysForSources(request.searchSourceRefs) : [];
+      const { searchSourceRefs: _searchSourceRefs, ...engineRequest } = request;
+      const added = await torrentManager.addDownload(engineRequest);
+      if (sourceKeys.length) searchDownloadHistory.remember(added, sourceKeys);
+      return added;
     }
   ));
 
@@ -671,7 +677,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:create', wrapHandler('rooms:create',
-    async (event, name: string, e2e?: boolean) => {
+    async (event, name: string, e2e?: boolean, autoFetch?: boolean) => {
       // Rate limiting
       const key = createWebContentsKey('rooms:create', event.sender.id);
       globalRateLimiter.checkOrThrow(key, RATE_LIMITS.CREATE_ROOM.maxRequests, RATE_LIMITS.CREATE_ROOM.windowMs);
@@ -684,12 +690,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         throw new Error('Room name is too long (max 100 characters)');
       }
 
-      return roomManager.createRoom(name.trim(), !!e2e);
+      if (autoFetch !== undefined && typeof autoFetch !== 'boolean') throw new Error('Invalid auto-download choice');
+      return roomManager.createRoom(name.trim(), !!e2e, autoFetch === true);
     }
   ));
 
   ipcMain.handle('rooms:join', wrapHandler('rooms:join',
-    async (event, code: string) => {
+    async (event, code: string, autoFetch?: boolean) => {
       // Rate limiting
       const key = createWebContentsKey('rooms:join', event.sender.id);
       globalRateLimiter.checkOrThrow(key, RATE_LIMITS.JOIN_ROOM.maxRequests, RATE_LIMITS.JOIN_ROOM.windowMs);
@@ -699,16 +706,22 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         throw new Error('Room code is required');
       }
 
-      return roomManager.joinRoom(code);
+      if (autoFetch !== undefined && typeof autoFetch !== 'boolean') throw new Error('Invalid auto-download choice');
+      return roomManager.joinRoom(code, autoFetch === true);
     }
   ));
 
+  ipcMain.handle('rooms:setResources', wrapHandler('rooms:setResources',
+    async (_event, policy: unknown) => roomManager.setResources(policy)
+  ));
+
   ipcMain.handle('rooms:leave', wrapHandler('rooms:leave',
-    async (event, roomId: string, deleteFiles?: boolean) => {
+    async (event, roomId: string, deleteFiles?: boolean, serverMode?: 'stop' | 'local') => {
       // Validate
       validateRoomId(roomId);
 
-      return roomManager.leaveRoom(roomId, deleteFiles);
+      if (serverMode !== undefined && serverMode !== 'stop' && serverMode !== 'local') throw new Error('Invalid server leave mode');
+      return roomManager.leaveRoom(roomId, deleteFiles, serverMode);
     }
   ));
 
@@ -716,6 +729,26 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async () => roomManager.list()
   ));
 
+  ipcMain.handle('rooms:diagnose', wrapHandler('rooms:diagnose', async (_event, roomId: string) => {
+    validateRoomId(roomId); return roomManager.diagnoseRoom(roomId);
+  }));
+  ipcMain.handle('rooms:retryConnection', wrapHandler('rooms:retryConnection', async (_event, roomId: string) => {
+    validateRoomId(roomId); return roomManager.retryConnection(roomId);
+  }));
+  ipcMain.handle('rooms:exportDiagnostics', wrapHandler('rooms:exportDiagnostics', async (_event, roomId: string) => {
+    validateRoomId(roomId);
+    const report = roomManager.diagnoseRoom(roomId);
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: t('dialog.exportRoomDiagnostics'), defaultPath: 'havvn-room-diagnostics.json',
+      filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) return { success: false };
+    await fs.writeFile(result.filePath, JSON.stringify(report, null, 2), 'utf-8');
+    return { success: true };
+  }));
+
+  ipcMain.handle('rooms:engineStatus', wrapHandler('rooms:engineStatus',
+    async () => getRoomManager().getEngineStatus()));
   ipcMain.handle('rooms:get', wrapHandler('rooms:get',
     async (_event, roomId: string) => roomManager.getRoom(roomId)
   ));
@@ -892,8 +925,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, fileId: string) => roomManager.reseedFile(roomId, fileId)
   ));
 
+  ipcMain.handle('rooms:setWatchHost', wrapHandler('rooms:setWatchHost',
+    async (_event, roomId: string, hostId: string) => roomManager.setWatchHost(roomId, hostId)
+  ));
+
   ipcMain.handle('rooms:broadcastSync', wrapHandler('rooms:broadcastSync',
-    async (_event, roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean }) => {
+    async (_event, roomId: string, payload: import('../../shared/room-watch-sync').WatchInput) => {
       roomManager.broadcastSync(roomId, payload);
       return { ok: true };
     }
@@ -949,6 +986,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // ── Voice ─────────────────────────────────────────────────────────────────
   ipcMain.handle('rooms:voiceJoin', wrapHandler('rooms:voiceJoin',
     async (_event, roomId: string) => roomManager.voiceJoin(roomId)
+  ));
+  ipcMain.handle('rooms:voiceReconnect', wrapHandler('rooms:voiceReconnect',
+    async (_event, roomId: string) => roomManager.voiceReconnect(roomId)
   ));
   ipcMain.handle('rooms:voiceLeave', wrapHandler('rooms:voiceLeave',
     async (_event, roomId: string) => roomManager.voiceLeave(roomId)
@@ -1011,6 +1051,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
   ipcMain.handle('rooms:lanStop', wrapHandler('rooms:lanStop',
     async (_event, roomId: string) => roomManager.lanStop(roomId)
+  ));
+  ipcMain.handle('rooms:lanRetry', wrapHandler('rooms:lanRetry',
+    async (_event, roomId: string) => roomManager.lanRetry(roomId)
   ));
   ipcMain.handle('rooms:lanInvite', wrapHandler('rooms:lanInvite',
     async (_event, roomId: string, memberId: string) => roomManager.lanInvite(roomId, String(memberId || ''))
@@ -1368,6 +1411,15 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:fetchFile', wrapHandler('rooms:fetchFile',
     async (_event, roomId: string, fileId: string) => roomManager.fetchFile(roomId, fileId)
   ));
+  ipcMain.handle('rooms:pauseReceive', wrapHandler('rooms:pauseReceive',
+    async (_event, roomId: string, fileId: string) => roomManager.pauseReceive(roomId, fileId)
+  ));
+  ipcMain.handle('rooms:prioritizeReceive', wrapHandler('rooms:prioritizeReceive',
+    async (_event, roomId: string, fileId: string) => roomManager.prioritizeReceive(roomId, fileId)
+  ));
+  ipcMain.handle('rooms:retryDecrypt', wrapHandler('rooms:retryDecrypt',
+    async (_event, roomId: string, fileId: string) => roomManager.retryDecrypt(roomId, fileId)
+  ));
 
   ipcMain.handle('rooms:setLimits', wrapHandler('rooms:setLimits',
     async (_event, roomId: string, upKbps: number, downKbps: number) => roomManager.setLimits(roomId, upKbps, downKbps)
@@ -1386,7 +1438,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:sendChat', wrapHandler('rooms:sendChat',
-    async (event, roomId: string, text: string, replyTo?: string) => {
+    async (event, roomId: string, text: string, replyTo?: string, messageId?: string) => {
       // Rate limiting
       const key = createWebContentsKey('rooms:sendChat', event.sender.id);
       globalRateLimiter.checkOrThrow(key, RATE_LIMITS.SEND_CHAT.maxRequests, RATE_LIMITS.SEND_CHAT.windowMs);
@@ -1398,9 +1450,17 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         validateFileId(replyTo); // Message IDs follow same format
       }
 
-      return roomManager.sendChat(roomId, text, replyTo ? String(replyTo) : undefined);
+      if (messageId !== undefined && (typeof messageId !== 'string' || !/^[a-f0-9]{32}$/.test(messageId))) throw new Error('Invalid chat message ID');
+      return roomManager.sendChat(roomId, text, replyTo ? String(replyTo) : undefined, messageId);
     }
   ));
+
+  ipcMain.handle('rooms:chatDraft', wrapHandler('rooms:chatDraft', async (_event, roomId: string) => {
+    validateRoomId(roomId); return roomManager.chatDraft(roomId);
+  }));
+  ipcMain.handle('rooms:saveChatDraft', wrapHandler('rooms:saveChatDraft', async (_event, roomId: string, draft: import('../../shared/types').RoomChatDraft) => {
+    validateRoomId(roomId); return roomManager.saveChatDraft(roomId, draft);
+  }));
 
   ipcMain.handle('rooms:editChat', wrapHandler('rooms:editChat',
     async (event, roomId: string, msgId: string, text: string) => {
@@ -1417,44 +1477,52 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
-  // Room identity backup — the keypair + profile + joined rooms as one JSON
-  // file (reinstall insurance). The private key goes into the file DECRYPTED;
-  // the renderer warns the user to store it safely.
-  ipcMain.handle('rooms:exportIdentity', wrapHandler('rooms:exportIdentity',
-    async () => {
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: t('dialog.exportRoomIdentity'),
-        defaultPath: 'havvn-room-identity.json',
-        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
-      });
-      if (result.canceled || !result.filePath) {
-        return { success: false };
-      }
-      const bundle = db.exportRoomIdentityBundle();
-      await fs.writeFile(result.filePath, JSON.stringify(bundle, null, 2), 'utf-8');
-      log.info('Room identity exported', { path: result.filePath, rooms: bundle.rooms.length });
-      return { success: true, path: result.filePath };
-    }
-  ));
+  ipcMain.handle('rooms:diskUsage', wrapHandler('rooms:diskUsage', async (event, roomId: string) => { externalSender(event); return roomManager.diskUsage(roomId); }));
+  ipcMain.handle('rooms:cleanupCopies', wrapHandler('rooms:cleanupCopies', async (event, roomId: string, previewId: string, fileIds: string[]) => { externalSender(event); return roomManager.cleanupCopies(roomId, previewId, fileIds); }));
+  ipcMain.handle('rooms:localHistory', wrapHandler('rooms:localHistory', async (event, roomId: string, kind: 'chat' | 'event', before?: string) => { externalSender(event); return roomManager.localHistory(roomId, kind, before); }));
+  ipcMain.handle('rooms:setHistoryRetention', wrapHandler('rooms:setHistoryRetention', async (event, roomId: string, days: import('../../shared/room-local-data').RoomHistoryDays) => { externalSender(event); return roomManager.setHistoryRetention(roomId, days); }));
 
-  ipcMain.handle('rooms:importIdentity', wrapHandler('rooms:importIdentity',
-    async () => {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: t('dialog.importRoomIdentity'),
-        properties: ['openFile'],
-        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
-      });
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false };
+  // Portable backups are authenticated ciphertext. Passwords never enter IPC logs.
+  let backupBusy = false;
+  ipcMain.handle('rooms:exportIdentity', wrapHandler('rooms:exportIdentity', async (event, password: string, roomId?: string) => {
+    externalSender(event); validateBackupPassword(password);
+    if (backupBusy) throw new Error('Room backup is busy'); backupBusy = true;
+    try {
+      const result = await dialog.showSaveDialog(mainWindow, { title: t('dialog.exportRoomIdentity'), defaultPath: 'havvn-rooms.havvn-backup', filters: [{ name: 'Havvn encrypted backup', extensions: ['havvn-backup'] }] });
+      if (result.canceled || !result.filePath) return { success: false };
+      const bundle = db.exportRoomRecoveryBundle(roomId), encrypted = await sealRoomBackup(bundle, password);
+      await writeRoomBackup(result.filePath, encrypted);
+      log.info('Encrypted room identity exported', { rooms: bundle.rooms.length });
+      return { success: true, path: result.filePath };
+    } finally { backupBusy = false; }
+  }));
+  ipcMain.handle('rooms:importIdentity', wrapHandler('rooms:importIdentity', async (_event, password: string) => {
+    validateBackupPassword(password);
+    if (backupBusy) throw new Error('Room backup is busy'); backupBusy = true;
+    try {
+      if (db.getPersistedRooms().length) throw new Error('Restore into a profile with no joined rooms. Leave the current rooms first or use a fresh profile.');
+      const result = await dialog.showOpenDialog(mainWindow, { title: t('dialog.importRoomIdentity'), properties: ['openFile'], filters: [{ name: 'Havvn encrypted backup', extensions: ['havvn-backup'] }] });
+      if (result.canceled || !result.filePaths.length) return { success: false };
+      const file = await fs.open(result.filePaths[0], 'r');
+      let content: string;
+      try {
+        const stat = await file.stat(); if (!stat.isFile() || stat.size > ROOM_BACKUP_MAX_BYTES) throw new Error('Invalid or oversized room backup');
+        const buffer = Buffer.alloc(stat.size + 1); let read = 0;
+        while (read < buffer.length) { const result = await file.read(buffer, read, buffer.length - read, read); if (!result.bytesRead) break; read += result.bytesRead; }
+        if (read > stat.size || read > ROOM_BACKUP_MAX_BYTES) throw new Error('Room backup changed or is too large');
+        content = buffer.subarray(0, read).toString('utf8');
       }
-      const content = await fs.readFile(result.filePaths[0], 'utf-8');
-      const { rooms } = db.importRoomIdentityBundle(JSON.parse(content));
-      // Persisted rooms are re-joined at startup — a restart picks the imported
-      // rooms up. No live rejoin plumbing here (the UI shows a restart hint).
-      log.info('Room identity imported', { path: result.filePaths[0], rooms });
+      finally { await file.close(); }
+      const decoded = await openRoomBackup(content, password);
+      const settings = await db.getSettings();
+      const base = path.join(settings.defaultDownloadDir || path.join(app.getPath('downloads'), 'Havvn'), 'Rooms');
+      const { rooms } = db.importRoomRecoveryBundle(decoded, base);
+      // Stop the old signing identity immediately. The restored rooms rejoin only after restart.
+      roomManager.destroy();
+      log.info('Encrypted room identity restored', { rooms });
       return { success: true, rooms };
-    }
-  ));
+    } finally { backupBusy = false; }
+  }));
 
   // Custom theme sharing. Export writes the theme JSON to a file; import reads a
   // file and hands the raw parsed object back — the renderer runs validateTheme()
@@ -1508,6 +1576,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('settings:update', wrapHandler('settings:update',
     async (_event, settings) => {
+      if (settings?.roomResources !== undefined) {
+        const result = await roomManager.setResources(settings.roomResources);
+        if (result.error) throw new Error('Room settings saved but not applied: ' + result.error);
+        settings = { ...settings, roomResources: result.policy };
+      }
       const updated = await db.updateSettings(settings);
 
       // Update torrent manager with new settings.
@@ -2290,24 +2363,34 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('downloads:setSequential', wrapHandler('downloads:setSequential',
     async (_event, id: string, enabled: boolean) => {
+      validateDownloadId(id);
+      if (typeof enabled !== 'boolean') throw new Error('Sequential download must be a boolean');
       await torrentManager.setSequentialDownload(id, enabled);
     }
   ));
 
   ipcMain.handle('downloads:setFilePriority', wrapHandler('downloads:setFilePriority',
     async (_event, id: string, fileIndex: number, priority: FilePriority) => {
+      validateDownloadId(id);
+      if (!Number.isSafeInteger(fileIndex) || fileIndex < 0 || !['skip', 'low', 'normal', 'high'].includes(priority)) {
+        throw new Error('Invalid file index or priority');
+      }
       await torrentManager.setFilePriority(id, fileIndex, priority);
     }
   ));
 
   ipcMain.handle('downloads:setSeedRatio', wrapHandler('downloads:setSeedRatio',
     async (_event, id: string, ratio: number) => {
+      validateDownloadId(id);
+      validateSeedLimit(ratio);
       await torrentManager.setSeedRatioLimit(id, ratio);
     }
   ));
 
   ipcMain.handle('downloads:setSeedTime', wrapHandler('downloads:setSeedTime',
     async (_event, id: string, minutes: number) => {
+      validateDownloadId(id);
+      validateSeedLimit(minutes, true);
       await torrentManager.setSeedTimeLimit(id, minutes);
     }
   ));
@@ -2578,6 +2661,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // ============================================================
   // Priority 2: Search
   // ============================================================
+
+  ipcMain.handle('search:getDownloadHistory', wrapHandler('search:getDownloadHistory', async () => searchDownloadHistory.get()));
+  ipcMain.handle('search:clearDownloadHistory', wrapHandler('search:clearDownloadHistory', async () => searchDownloadHistory.clear()));
 
   ipcMain.handle('search:start', wrapHandler('search:start',
     async (event, query: string, category?: string, refresh?: boolean, providerId?: string) => {

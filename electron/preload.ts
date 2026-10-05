@@ -23,6 +23,7 @@ import {
   ShareInfo,
   RoomProfile,
   RoomState,
+  RoomEngineStatus,
   RoomSummary,
   VoiceSettings,
   VoiceDeviceInfo,
@@ -538,6 +539,15 @@ const api: IpcApi = {
     const f = Number(factor);
     if (Number.isFinite(f) && f >= 0.5 && f <= 2) webFrame.setZoomFactor(f);
   },
+  appearance: {
+    getAcrylic: () => ipcRenderer.invoke('appearance:acrylic:get'),
+    setAcrylic: (enabled: boolean) => ipcRenderer.invoke('appearance:acrylic:set', enabled),
+    onAcrylicChanged: (callback) => {
+      const listener = (_event: IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status);
+      ipcRenderer.on('appearance:acrylic:changed', listener);
+      return () => { ipcRenderer.removeListener('appearance:acrylic:changed', listener); };
+    },
+  },
 
   // Resolve the absolute filesystem path of a dropped/selected File.
   // Electron >=30 exposes webUtils.getPathForFile; older versions still carry the
@@ -694,6 +704,8 @@ const api: IpcApi = {
 
   // Priority 2: Search
   search: {
+    getDownloadHistory: () => ipcRenderer.invoke('search:getDownloadHistory'),
+    clearDownloadHistory: () => ipcRenderer.invoke('search:clearDownloadHistory'),
     start: (query: string, category?: string, refresh?: boolean, providerId?: string) =>
       ipcRenderer.invoke('search:start', query, category, refresh, providerId),
     cancel: (searchId: string) => ipcRenderer.invoke('search:cancel', searchId),
@@ -755,11 +767,15 @@ const api: IpcApi = {
     getProfile: (): Promise<RoomProfile> => ipcRenderer.invoke('rooms:getProfile'),
     setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed' | 'color' | 'status' | 'avatarImg'>>): Promise<RoomProfile> =>
       ipcRenderer.invoke('rooms:setProfile', updates),
-    create: (name: string, e2e?: boolean): Promise<RoomState> => ipcRenderer.invoke('rooms:create', name, e2e),
-    join: (code: string): Promise<RoomState> => ipcRenderer.invoke('rooms:join', code),
-    leave: (roomId: string, deleteFiles?: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:leave', roomId, deleteFiles),
+    create: (name: string, e2e?: boolean, autoFetch?: boolean): Promise<RoomState> => ipcRenderer.invoke('rooms:create', name, e2e, autoFetch),
+    join: (code: string, autoFetch?: boolean): Promise<RoomState> => ipcRenderer.invoke('rooms:join', code, autoFetch),
+    leave: (roomId: string, deleteFiles?: boolean, serverMode?: 'stop' | 'local'): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:leave', roomId, deleteFiles, serverMode),
     list: (): Promise<RoomSummary[]> => ipcRenderer.invoke('rooms:list'),
     get: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:get', roomId),
+    engineStatus: (): Promise<RoomEngineStatus> => ipcRenderer.invoke('rooms:engineStatus'),
+    diagnose: (roomId: string): Promise<import('../shared/room-diagnostics').RoomDiagnosticReport> => ipcRenderer.invoke('rooms:diagnose', roomId),
+    retryConnection: (roomId: string): Promise<import('../shared/room-diagnostics').RoomDiagnosticReport> => ipcRenderer.invoke('rooms:retryConnection', roomId),
+    exportDiagnostics: (roomId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('rooms:exportDiagnostics', roomId),
     addFiles: (roomId: string, paths: string[], folderId?: string): Promise<RoomState> => ipcRenderer.invoke('rooms:addFiles', roomId, paths, folderId),
     pickAndAddFiles: (roomId: string, folderId?: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:pickAndAddFiles', roomId, folderId),
     shareDownload: (roomId: string, downloadId: string, selectedPaths?: string[], folderName?: string): Promise<RoomState> =>
@@ -781,7 +797,8 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:releaseFile', roomId, fileId),
     reseedFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:reseedFile', roomId, fileId),
-    broadcastSync: (roomId: string, payload: { fileId: string; action: string; position: number; rate?: number; playing?: boolean; together?: boolean; emoji?: string }): Promise<{ ok: boolean }> =>
+    setWatchHost: (roomId: string, hostId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:setWatchHost', roomId, hostId),
+    broadcastSync: (roomId: string, payload: import('../shared/room-watch-sync').WatchInput): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:broadcastSync', roomId, payload),
     removeFile: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:removeFile', roomId, fileId),
@@ -800,6 +817,7 @@ const api: IpcApi = {
     voice: {
       join: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:voiceJoin', roomId),
       leave: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceLeave', roomId),
+      reconnect: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceReconnect', roomId),
       mute: (roomId: string, muted: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMute', roomId, muted),
       deafen: (roomId: string, deafened: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceDeafen', roomId, deafened),
       volume: (roomId: string, memberId: string, volume: number): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceVolume', roomId, memberId, volume),
@@ -826,6 +844,7 @@ const api: IpcApi = {
       start: (roomId: string, memberIds: string[]): Promise<{ ok: boolean; sessionId?: string; warning?: string }> =>
         ipcRenderer.invoke('rooms:lanStart', roomId, memberIds),
       stop: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanStop', roomId),
+      retry: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanRetry', roomId),
       invite: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanInvite', roomId, memberId),
       accept: (roomId: string): Promise<{ ok: boolean; warning?: string }> => ipcRenderer.invoke('rooms:lanAccept', roomId),
       evict: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:lanEvict', roomId, memberId),
@@ -949,24 +968,31 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:assignFile', roomId, fileId, folderId),
     assignFiles: (roomId: string, fileIds: string[], folderId: string | null): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:assignFiles', roomId, fileIds, folderId),
-    setFolderAutoFetch: (roomId: string, folderId: string, mode: boolean | null): Promise<RoomState> =>
+    setFolderAutoFetch: (roomId: string, folderId: string, mode: boolean | null): Promise<import('../shared/types').RoomPreferenceResult> =>
       ipcRenderer.invoke('rooms:setFolderAutoFetch', roomId, folderId, mode),
-    setMuted: (roomId: string, memberId: string, muted: boolean): Promise<{ ok: boolean }> =>
+    setMuted: (roomId: string, memberId: string, muted: boolean): Promise<import('../shared/types').RoomPreferenceResult> =>
       ipcRenderer.invoke('rooms:setMuted', roomId, memberId, muted),
-    setAutoFetch: (roomId: string, autoFetch: boolean): Promise<{ ok: boolean }> =>
+    setAutoFetch: (roomId: string, autoFetch: boolean): Promise<import('../shared/types').RoomPreferenceResult> =>
       ipcRenderer.invoke('rooms:setAutoFetch', roomId, autoFetch),
     setNotifyMuted: (roomId: string, muted: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setNotifyMuted', roomId, muted),
     fetchFile: (roomId: string, fileId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:fetchFile', roomId, fileId),
-    setLimits: (roomId: string, upKbps: number, downKbps: number): Promise<{ ok: boolean }> =>
+    pauseReceive: (roomId: string, fileId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:pauseReceive', roomId, fileId),
+    prioritizeReceive: (roomId: string, fileId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:prioritizeReceive', roomId, fileId),
+    retryDecrypt: (roomId: string, fileId: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:retryDecrypt', roomId, fileId),
+    setResources: (policy: import('../shared/room-resources').RoomResourcePolicy): Promise<import('../shared/room-resources').RoomResourceResult> => ipcRenderer.invoke('rooms:setResources', policy),
+    setLimits: (roomId: string, upKbps: number, downKbps: number): Promise<import('../shared/types').RoomPreferenceResult> =>
       ipcRenderer.invoke('rooms:setLimits', roomId, upKbps, downKbps),
     kick: (roomId: string, memberId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:kick', roomId, memberId),
     transferOwner: (roomId: string, memberId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:transferOwner', roomId, memberId),
-    sendChat: (roomId: string, text: string, replyTo?: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('rooms:sendChat', roomId, text, replyTo),
+    sendChat: (roomId: string, text: string, replyTo?: string, messageId?: string): Promise<import('../shared/types').RoomChatAck> =>
+      ipcRenderer.invoke('rooms:sendChat', roomId, text, replyTo, messageId),
+    chatDraft: (roomId: string): Promise<import('../shared/types').RoomChatDraft> => ipcRenderer.invoke('rooms:chatDraft', roomId),
+    saveChatDraft: (roomId: string, draft: import('../shared/types').RoomChatDraft): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:saveChatDraft', roomId, draft),
     editChat: (roomId: string, msgId: string, text: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:editChat', roomId, msgId, text),
     typing: (roomId: string): void => {
@@ -977,10 +1003,14 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:reactFile', roomId, fileId, emoji),
     reactChat: (roomId: string, msgId: string, emoji: string): Promise<void> =>
       ipcRenderer.invoke('rooms:reactChat', roomId, msgId, emoji),
-    exportIdentity: (): Promise<{ success: boolean; path?: string }> =>
-      ipcRenderer.invoke('rooms:exportIdentity'),
-    importIdentity: (): Promise<{ success: boolean; rooms?: number }> =>
-      ipcRenderer.invoke('rooms:importIdentity'),
+    diskUsage: roomId => ipcRenderer.invoke('rooms:diskUsage', roomId),
+    cleanupCopies: (roomId, previewId, fileIds) => ipcRenderer.invoke('rooms:cleanupCopies', roomId, previewId, fileIds),
+    localHistory: (roomId, kind, before) => ipcRenderer.invoke('rooms:localHistory', roomId, kind, before),
+    setHistoryRetention: (roomId, days) => ipcRenderer.invoke('rooms:setHistoryRetention', roomId, days),
+    exportIdentity: (password: string, roomId?: string): Promise<{ success: boolean; path?: string }> =>
+      ipcRenderer.invoke('rooms:exportIdentity', password, roomId),
+    importIdentity: (password: string): Promise<{ success: boolean; rooms?: number }> =>
+      ipcRenderer.invoke('rooms:importIdentity', password),
   },
 
   // Custom theme sharing (import/export as a JSON file)
@@ -997,7 +1027,13 @@ const api: IpcApi = {
     return () => { ipcRenderer.removeListener('rooms:update', handler); };
   },
 
-  onRoomSync: (callback: (msg: { roomId: string; fileId: string; action: string; position: number; rate: number; at: number; memberId: string; name: string; avatarSeed?: string; playing?: boolean; together?: boolean; emoji?: string }) => void): (() => void) => {
+  onRoomEngineStatus: (callback: (status: RoomEngineStatus) => void): (() => void) => {
+    const handler = (_event: IpcRendererEvent, status: RoomEngineStatus) => callback(status);
+    ipcRenderer.on('rooms:engineStatus', handler);
+    return () => { ipcRenderer.removeListener('rooms:engineStatus', handler); };
+  },
+
+  onRoomSync: (callback: Parameters<IpcApi['onRoomSync']>[0]): (() => void) => {
     const handler = (_event: IpcRendererEvent, msg: any) => callback(msg);
     ipcRenderer.on('rooms:sync', handler);
     return () => { ipcRenderer.removeListener('rooms:sync', handler); };
