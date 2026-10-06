@@ -91,7 +91,7 @@ const ERROR_CANCELLED = 1223;
  */
 export function systemToolPath(exe: string): string {
   const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
-  return path.join(root, 'System32', exe);
+  return path.win32.join(root, 'System32', exe);
 }
 
 /**

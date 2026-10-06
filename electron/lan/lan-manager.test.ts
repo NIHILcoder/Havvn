@@ -29,19 +29,19 @@ afterEach(() => {
 describe('systemToolPath', () => {
   it('resolves under SystemRoot\\System32, never through PATH', () => {
     process.env.SystemRoot = 'C:\\Windows';
-    expect(systemToolPath('whoami.exe')).toBe(path.join('C:\\Windows', 'System32', 'whoami.exe'));
+    expect(systemToolPath('whoami.exe')).toBe(path.win32.join('C:\\Windows', 'System32', 'whoami.exe'));
     // The whole point: an absolute path, so PATH order cannot choose the binary.
-    expect(path.isAbsolute(systemToolPath('whoami.exe'))).toBe(true);
+    expect(path.win32.isAbsolute(systemToolPath('whoami.exe'))).toBe(true);
   });
 
   it('honours a relocated Windows install, then windir, then the default', () => {
     process.env.SystemRoot = 'D:\\Win';
-    expect(systemToolPath('whoami.exe')).toBe(path.join('D:\\Win', 'System32', 'whoami.exe'));
+    expect(systemToolPath('whoami.exe')).toBe(path.win32.join('D:\\Win', 'System32', 'whoami.exe'));
     delete process.env.SystemRoot;
     process.env.windir = 'E:\\Win';
-    expect(systemToolPath('whoami.exe')).toBe(path.join('E:\\Win', 'System32', 'whoami.exe'));
+    expect(systemToolPath('whoami.exe')).toBe(path.win32.join('E:\\Win', 'System32', 'whoami.exe'));
     delete process.env.windir;
-    expect(systemToolPath('whoami.exe')).toBe(path.join('C:\\Windows', 'System32', 'whoami.exe'));
+    expect(systemToolPath('whoami.exe')).toBe(path.win32.join('C:\\Windows', 'System32', 'whoami.exe'));
   });
 });
 

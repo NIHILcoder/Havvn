@@ -149,7 +149,11 @@ export function validateDownloadPath(filePath: unknown): string {
   ];
 
   const resolvedPath = path.resolve(normalized);
-  if (forbiddenPaths.some(forbidden => resolvedPath.startsWith(forbidden))) {
+  const compared = process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
+  if (forbiddenPaths.some(forbidden => {
+    const prefix = process.platform === 'win32' ? forbidden.toLowerCase() : forbidden;
+    return compared === prefix || compared.startsWith(prefix + path.sep);
+  })) {
     throw new Error('Access to system directory denied');
   }
 

@@ -128,16 +128,20 @@ if (process.versions.electron) {
       // empty download list alone could pass with a degraded engine.
       const payload = path.join(base, 'downloads', 'package-fixture.bin');
       fs.writeFileSync(payload, require('node:crypto').randomBytes(32768));
-      const torrentBytes = await new Promise((resolve, reject) => require('create-torrent')(payload,
+      const { default: createTorrent } = await import('create-torrent');
+      const torrentBytes = await new Promise((resolve, reject) => createTorrent(payload,
         { announceList: [], private: true }, (error, bytes) => error ? reject(error) : resolve(bytes)));
       const torrentFile = path.join(base, 'package-fixture.torrent');
       fs.writeFileSync(torrentFile, torrentBytes);
       const request = { sourceType: 'torrent_file', sourceUri: torrentFile,
         savePath: path.join(base, 'downloads'), paused: true };
       const operation = await evaluate('(async () => { const download = await window.api.addDownload(' +
-        JSON.stringify(request) + '); const files = await window.api.getTorrentFiles(download.id); ' +
+        JSON.stringify(request) + '); await window.api.resumeDownload(download.id); ' +
+        'let files = []; const until = Date.now() + 15000; while (!files.length && Date.now() < until) { ' +
+        'files = await window.api.getTorrentFiles(download.id); if (!files.length) await new Promise(r => setTimeout(r, 100)); } ' +
+        'await window.api.pauseDownload(download.id); ' +
         'await window.api.removeDownload(download.id, false); return { status: download.status, ' +
-        'fileSizes: files.map(f => f.size), remaining: (await window.api.getDownloads()).length }; })()');
+        'fileSizes: files.map(f => f.length), remaining: (await window.api.getDownloads()).filter(d => d.status !== "removed").length }; })()');
       assert.equal(operation.status, 'paused');
       assert.deepEqual(operation.fileSizes, [32768]);
       assert.equal(operation.remaining, 0);

@@ -547,7 +547,13 @@ describe('chat backfill: messages said while offline arrive on reconnect', () =>
     await flush();
     expect((await cmd(B, cp('CB'))).chat.at(-1).chatV).toBeUndefined();
     connect(A, B); await flush();
-    const snapshot = await cmd(B, cp('CB'));
+    // Full HELLOs may be paced across multiple pages; Windows timer granularity
+    // used to make the fixed flush accidentally wait long enough for them.
+    const snapshot = await vi.waitFor(async () => {
+      const state = await cmd(B, cp('CB'));
+      expect(state.chatEdits?.['offline-0']).toMatchObject({ text: 'edited original' });
+      return state;
+    }, { timeout: 5000, interval: 50 });
     expect(snapshot.chat.map((m: any) => m.id)).toEqual(['offline-999', quoted.id, ...messages.filter(m => m.id !== quoted.id).map(m => m.id)]);
     expect(snapshot.chat[1]).toMatchObject({ replyTo: 'offline-0', replyName: 'CA', replyText: 'edited original', chatV: 2 });
     expect(snapshot.chatEdits['offline-0'].text).toBe('edited original');

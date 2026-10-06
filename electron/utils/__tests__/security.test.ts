@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import path from 'node:path';
 import {
   validateTorrentId,
   validateDownloadId,
@@ -142,12 +143,13 @@ describe('Security Validators', () => {
 
   describe('validateDownloadPath', () => {
     it('should accept valid path', () => {
-      expect(() => validateDownloadPath('C:\\Users\\User\\Downloads')).not.toThrow();
+      expect(() => validateDownloadPath(path.resolve('test-downloads'))).not.toThrow();
     });
 
     it('should normalize path', () => {
-      const result = validateDownloadPath('C:\\Users\\User\\Downloads\\.');
-      expect(result).not.toContain('\\.');
+      const directory = path.resolve('test-downloads');
+      const result = validateDownloadPath(directory + path.sep + '.');
+      expect(result).toBe(directory);
     });
 
     it('should reject path traversal with ..', () => {
@@ -155,11 +157,21 @@ describe('Security Validators', () => {
     });
 
     it('should reject Windows system directory', () => {
-      expect(() => validateDownloadPath('C:\\Windows\\System32')).toThrow('Access to system directory denied');
+      expect(() => validateDownloadPath(process.platform === 'win32' ? 'C:\\Windows\\System32' : '/etc/havvn')).toThrow('Access to system directory denied');
     });
 
     it('should reject Program Files', () => {
-      expect(() => validateDownloadPath('C:\\Program Files\\Something')).toThrow('Access to system directory denied');
+      expect(() => validateDownloadPath(process.platform === 'win32' ? 'C:\\Program Files\\Something' : '/usr/share/havvn')).toThrow('Access to system directory denied');
+    });
+
+    it('does not reject a different directory sharing a system-path prefix', () => {
+      const directory = process.platform === 'win32' ? 'C:\\Windows-downloads' : '/etcetera/downloads';
+      expect(validateDownloadPath(directory)).toBe(path.resolve(directory));
+    });
+
+    it('blocks Windows system directories regardless of casing', () => {
+      if (process.platform === 'win32') expect(() => validateDownloadPath('c:\\wInDoWs\\system32')).toThrow('Access to system directory denied');
+      else expect(() => validateDownloadPath('/etc/Downloads')).toThrow('Access to system directory denied');
     });
 
     it('should reject empty path', () => {
