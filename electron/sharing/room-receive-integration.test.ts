@@ -204,6 +204,9 @@ describe('local copy cleanup commands', () => {
   it('rejects a stale preview without removing bytes or stopping the download', async () => {
     await join('clean',[files[0]]);await settle();const target=(await snapshot('clean')).transfers[files[0].fileId].localPath;
     fs.writeFileSync(target,'partial');const usage=await cmd('diskUsage',{roomId:'clean'});fs.writeFileSync(target,'changed');
+    // A fast same-size rewrite can share a filesystem timestamp tick on Linux.
+    // Make the changed file identity explicit instead of depending on elapsed wall time.
+    const modified = new Date(Date.now() + 2000); fs.utimesSync(target, modified, modified);
     await expect(cmd('cleanupCopies',{roomId:'clean',previewId:usage.previewId,fileIds:[files[0].fileId]})).rejects.toThrow(/changed/);
     expect(fs.readFileSync(target,'utf8')).toBe('changed');expect(clients().get('clean').get(files[0].fileId)).toBeDefined();
   });

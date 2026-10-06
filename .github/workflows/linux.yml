@@ -86,6 +86,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-diagnostics
+          include-hidden-files: true
           if-no-files-found: ignore
           path: |
             node_modules/.cache/packaged-smoke.json
