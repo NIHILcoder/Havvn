@@ -11,6 +11,7 @@
 
 - Windows-only engine paths and native-resource packaging on Linux. Global push-to-talk reports unavailable in Wayland sessions instead of attempting an X11 hook.
 - Linux stale-daemon cleanup verifies the executable and exact configuration directory before signalling a reused process ID.
+- Updated the build-only source-map-js dependency to 1.2.2 to address GHSA-68fv-2mgg-jv7q without changing the application API.
 
 
 ## [3.1.0] - 2026-10-05
