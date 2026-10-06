@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [3.1.1] - 2026-10-06
+
+This update fixes current-format room invitations being rejected by the desktop join dialog and adds the first Linux x64 packages.
 
 ### Added
 
@@ -9,6 +11,7 @@
 
 ### Fixed
 
+- Desktop room joining, clipboard prefill and havvn:// deep links now accept both current five-word/five-digit invitations and historical four-word/four-digit codes, including encryption suffixes and validated owner pins. The join hint now describes the current format.
 - Windows-only engine paths and native-resource packaging on Linux. Global push-to-talk reports unavailable in Wayland sessions instead of attempting an X11 hook.
 - Linux stale-daemon cleanup verifies the executable and exact configuration directory before signalling a reused process ID.
 - Updated the build-only source-map-js dependency to 1.2.2 to address GHSA-68fv-2mgg-jv7q without changing the application API.

@@ -16,10 +16,10 @@ Verify `SHA256SUMS-linux.txt`, then choose one format:
 
 ```bash
 sha256sum -c SHA256SUMS-linux.txt
-chmod +x Havvn-3.1.0-linux-x64.AppImage
-./Havvn-3.1.0-linux-x64.AppImage
+chmod +x Havvn-3.1.1-linux-x64.AppImage
+./Havvn-3.1.1-linux-x64.AppImage
 # Debian / Ubuntu: installs dependencies and the desktop entry
-sudo apt install ./Havvn-3.1.0-linux-x64.deb
+sudo apt install ./Havvn-3.1.1-linux-x64.deb
 ```
 
 Run Havvn as your regular desktop user. Keep Chromium's sandbox enabled.

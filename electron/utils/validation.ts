@@ -4,6 +4,7 @@
  */
 
 import path from 'path';
+import { isRoomCode } from '../../shared/room-invite';
 import { ValidationError } from './error-handler';
 
 /**
@@ -190,9 +191,7 @@ export function validateRoomCode(code: string): string {
     throw new ValidationError('Room code must be a non-empty string');
   }
 
-  // Format: adj-adj-adj-noun-noun-NNNNN or adj-adj-adj-noun-noun-NNNNN-e2e
-  const pattern = /^(?:(?:[a-z]+-){4}\d{4}|(?:[a-z]+-){5}\d{5})(?:-e2e)?$/;
-  if (!pattern.test(code.toLowerCase())) {
+  if (!isRoomCode(code)) {
     throw new ValidationError('Invalid room code format');
   }
 

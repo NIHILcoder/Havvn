@@ -2,7 +2,7 @@
 //
 // A deep link is UNTRUSTED input (it can come from any web page or message), so
 // this module only EXTRACTS a candidate invite string and bounds its length —
-// the renderer runs the authoritative shape check (INVITE_SHAPE_RE) and the user
+// the renderer runs the authoritative shared invite shape check and the user
 // still confirms the join. Kept pure + dependency-free so it's unit-testable and
 // can't reach app/window state.
 

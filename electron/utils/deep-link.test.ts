@@ -1,3 +1,4 @@
+import { isRoomInvite } from '../../shared/room-invite';
 import { describe, it, expect } from 'vitest';
 import { isHavvnUrl, parseHavvnInvite } from './deep-link';
 
@@ -62,4 +63,12 @@ describe('parseHavvnInvite', () => {
     // '%zz' is invalid; decodeURIComponent throws, and we fall back to raw.
     expect(parseHavvnInvite('havvn://join/abc%zz')).toBe('abc%zz');
   });
+});
+
+
+it('a current encrypted pinned deep link passes the desktop join gate unchanged', () => {
+  const invite = 'bright-frosty-swift-harbor-anchor-62590-e2e~' + 'a'.repeat(32);
+  const extracted = parseHavvnInvite('havvn://join/' + encodeURIComponent(invite));
+  expect(extracted).toBe(invite);
+  expect(isRoomInvite(extracted!)).toBe(true);
 });

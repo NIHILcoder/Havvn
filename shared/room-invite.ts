@@ -9,6 +9,21 @@
 export const E2E_SUFFIX = '-e2e';
 export const INVITE_SEP = '~';
 const OWNER_ID_RE = /^[0-9a-f]{32}$/;
+// Accept both historical invites and the higher-entropy generated format.
+const ROOM_CODE_RE = /^(?:(?:[a-z]+-){4}\d{4}|(?:[a-z]+-){5}\d{5})(?:-e2e)?$/i;
+
+/** Check a canonical code without changing the KDF input or owner identity. */
+export function isRoomCode(code: string): boolean {
+  return typeof code === 'string' && ROOM_CODE_RE.test(code);
+}
+
+/** The desktop's paste, clipboard and deep-link gates must accept generated invites.
+ * Invalid owner pins are rejected, rather than silently converted to bare codes. */
+export function isRoomInvite(raw: string): boolean {
+  if (typeof raw !== 'string') return false;
+  const { code, ownerPin } = parseInvite(raw);
+  return isRoomCode(code) && (!raw.includes(INVITE_SEP) || !!ownerPin);
+}
 
 /** Normalize so trivial copy/paste differences still resolve to the same room. */
 export function normalizeCode(code: string): string {

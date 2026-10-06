@@ -24,8 +24,8 @@ const SECRET_PATTERNS = [
   // Private keys
   /-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----[\s\S]+?-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----/gi,
 
-  // Room invite codes (format: word-word-word-word-NNNN or with -e2e)
-  /\b[a-z]+-[a-z]+-[a-z]+-[a-z]+-\d{4}(?:-e2e)?\b/gi,
+  // Historical and current room invite codes, including encrypted rooms.
+  /\b(?:(?:[a-z]+-){4}\d{4}|(?:[a-z]+-){5}\d{5})(?:-e2e)?\b/gi,
 
   // Email addresses (optional - might be needed in some logs)
   // /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g,

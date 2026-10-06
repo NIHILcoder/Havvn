@@ -61,6 +61,7 @@ import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
 import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
+import { isRoomInvite } from '../../shared/room-invite';
 import { buildGuestUrl } from '../../shared/room-guest-url';
 import { parseTrackers } from '../../shared/trackers';
 import { roomTransferView } from '../../shared/room-transfer';
@@ -439,8 +440,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     navigator.clipboard.readText().then((text) => {
       const candidate = (text || '').trim();
       if (!alive || !candidate || candidate.length > 200) return;
-      const normalized = candidate.toLowerCase().replace(/\s*~\s*/g, '~').replace(/\s+/g, '-').replace(/-+/g, '-');
-      if (!INVITE_SHAPE_RE.test(normalized)) return;
+      if (!isRoomInvite(candidate)) return;
       setJoinCode((cur) => cur || candidate);
       toast(t('rooms.joinFromClipboard'), { icon: '📋' });
     }).catch(() => { /* clipboard unavailable — type it in */ });
@@ -466,8 +466,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   useEffect(() => {
     if (!pendingJoinInvite) return;
     const candidate = pendingJoinInvite.trim();
-    const normalized = candidate.toLowerCase().replace(/\s*~\s*/g, '~').replace(/\s+/g, '-').replace(/-+/g, '-');
-    if (INVITE_SHAPE_RE.test(normalized)) {
+    if (isRoomInvite(candidate)) {
       setJoinCode(candidate);
       setDialog('join');
       toast(t('rooms.joinFromLink'), { icon: '🔗' });
@@ -480,16 +479,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
 
   const handleJoin = async () => {
     if (!joinCode.trim()) return;
-    // A shape check up front beats the engine's generic failure: an incomplete
-    // paste would otherwise just announce into the void (wrong code = empty
-    // rendezvous, indistinguishable from a sleeping room). Mirror the engine's
-    // forgiveness (room-crypto normalizeCode + parseInvite): whitespace around
-    // the ~pin is trimmed, runs of spaces/dashes collapse to one dash.
-    const normalized = joinCode.trim().toLowerCase()
-      .replace(/\s*~\s*/g, '~')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-');
-    if (!INVITE_SHAPE_RE.test(normalized)) {
+    // Share the invite parser with clipboard/deep-link validation so generated
+    // codes and historical rooms follow the same copy/paste rules.
+    if (!isRoomInvite(joinCode)) {
       toast.error(t('rooms.joinBadFormat'));
       return;
     }
@@ -783,7 +775,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           <p className="rooms-modal-desc">{t('rooms.joinDesc')}</p>
           <input
             className="rooms-input rooms-input-code" data-autofocus
-            placeholder="swift-amber-otter-comet-4821"
+            placeholder="swift-amber-calm-otter-comet-48219"
             value={joinCode}
             onChange={(e) => setJoinCode(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
@@ -1026,12 +1018,6 @@ type StageView =
   | { kind: 'files' }
   | { kind: 'watch'; file: RoomFile; together?: boolean }
   | { kind: 'screen'; memberId: string };
-
-/** Loose shape check for an invite code: word-word-word-word-NNNN, optional
- *  legacy "-e2e" suffix, optional "~<32-hex ownerPin>" (see room-crypto.ts).
- *  Format-only on purpose — wordlist membership isn't checked, so older or
- *  hand-typed codes with unknown words still pass. */
-const INVITE_SHAPE_RE = /^[a-z]+-[a-z]+-[a-z]+-[a-z]+-\d{4}(-e2e)?(~[0-9a-f]{32})?$/i;
 
 /** Map the few raw strings the join promise can actually reject with to a
  *  friendly, localized key. This is a SERVERLESS mesh — a wrong/expired code,

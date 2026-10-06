@@ -880,7 +880,7 @@
   "rooms.voice.peerUnmute": "Unmute for me",
   "rooms.joinFromClipboard": "Invite code pasted from your clipboard",
   "rooms.joinFromLink": "Invite opened from a link — review and join",
-  "rooms.joinBadFormat": "That doesn't look like an invite — the format is word-word-word-word-1234.",
+  "rooms.joinBadFormat": "That does not look like an invite. Paste the complete room code: five words and five digits (older codes are also supported).",
   "rooms.joinServerlessHint": "Rooms are serverless: joining works only while another member is online.",
   "rooms.joinErr.vpn": "Room networking is paused. Restore the connection, including VPN if required, and try again.",
   "rooms.joinErr.empty": "That invite code is empty or incomplete.",

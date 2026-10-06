@@ -1,5 +1,6 @@
+import { isRoomInvite } from '../../shared/room-invite';
 import { describe, it, expect } from 'vitest';
-import { deriveKey, topicHash, rendezvousId, normalizeCode, buildInvite, parseInvite, deriveMemberId } from './room-crypto';
+import { deriveKey, topicHash, rendezvousId, normalizeCode, buildInvite, parseInvite, deriveMemberId, generateRoomCode } from './room-crypto';
 
 describe('room-crypto: topic / rendezvous split', () => {
   const code = 'swift-amber-otter-comet-4821';
@@ -82,4 +83,18 @@ describe('room-crypto: owner-pinned invite', () => {
     const parsed = parseInvite(buildInvite(e2e, owner));
     expect(parsed).toEqual({ code: e2e, ownerPin: owner });
   });
+});
+
+
+it('every newly generated plain or encrypted invite passes the desktop join gate', () => {
+  const owner = 'a'.repeat(32);
+  for (const encrypted of [false, true]) {
+    for (let i = 0; i < 32; i++) {
+      const code = generateRoomCode(encrypted);
+      expect(isRoomInvite(code)).toBe(true);
+      const invite = buildInvite(code, owner);
+      expect(isRoomInvite(invite)).toBe(true);
+      expect(parseInvite(invite)).toEqual({ code, ownerPin: owner });
+    }
+  }
 });

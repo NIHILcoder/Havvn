@@ -56,6 +56,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify room invitation UI with two local clients
+        run: npm run test:room-invites
+
       # The two vendored binaries are gitignored, so a clean checkout has neither
       # — and build.extraResources points straight at them. Both scripts verify a
       # pinned SHA-256 and exit non-zero on any mismatch.

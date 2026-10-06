@@ -1,6 +1,6 @@
 {
   "name": "havvn",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "A modern, privacy-focused BitTorrent client",
   "main": "dist/electron/electron/main.js",
   "scripts": {
@@ -37,7 +37,8 @@
     "test:torrent-controls": "node scripts/smoke-torrent-controls.cjs",
     "spike:engine": "npm run build:electron && node dist/electron/electron/torrent/native/spike-harness.js",
     "spike:lan": "npm run build:electron && node dist/electron/electron/lan/spike-harness.js",
-    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js"
+    "spike:pipe": "npm run build:electron && node dist/electron/electron/lan/pipe-spike.js",
+    "test:room-invites": "node scripts/smoke-room-invites.cjs"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.3.0",
