@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { TransmissionSidecar } from './transmission-sidecar';
 import { TransmissionRpc, TrStatus } from './transmission-rpc';
+import { resolveEngineBinary } from '../host/engine-binary';
 
 const STAT_FIELDS = [
   'id', 'hashString', 'name', 'status', 'percentDone', 'metadataPercentComplete',
@@ -174,7 +175,7 @@ async function main(): Promise<void> {
   const runInventory = !argv.includes('--no-inventory');
 
   const repoRoot = process.cwd();
-  const binaryPath = path.join(repoRoot, 'vendor', 'transmission', 'win32-x64', 'transmission-daemon.exe');
+  const binaryPath = resolveEngineBinary(process.platform, process.arch, false, repoRoot, '') ?? '';
   if (!fs.existsSync(binaryPath)) {
     console.error(`engine binary missing: ${binaryPath}\nrun: node scripts/fetch-transmission.mjs`);
     process.exit(2);

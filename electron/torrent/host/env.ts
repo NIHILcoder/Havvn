@@ -9,6 +9,8 @@
  * the manager, so it never touches `app`.
  */
 
+import { resolveEngineBinary } from './engine-binary';
+
 export interface HostEnv {
   version: string;
   isPackaged: boolean;
@@ -44,12 +46,8 @@ export function getHostEnv(): HostEnv {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { getEngineChoice } = require('../../db/store') as typeof import('../../db/store.js');
 
-    // Only a Windows daemon is vendored today; other platforms fall back below.
-    const engineBinary = process.platform === 'win32'
-      ? (app.isPackaged
-        ? path.join(process.resourcesPath, 'engine', 'transmission-daemon.exe')
-        : path.join(app.getAppPath(), 'vendor', 'transmission', 'win32-x64', 'transmission-daemon.exe'))
-      : null;
+    const engineBinary = resolveEngineBinary(process.platform, process.arch, app.isPackaged,
+      app.getAppPath(), process.resourcesPath);
     let engine = getEngineChoice();
     if (engine === 'native' && (!engineBinary || !fs.existsSync(engineBinary))) {
       // Fresh clone without `node scripts/fetch-transmission.mjs`, or an

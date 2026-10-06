@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/NIHILcoder/Havvn?label=Release&color=e25117)](https://github.com/NIHILcoder/Havvn/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/NIHILcoder/Havvn/total?label=Downloads&color=orange)](https://github.com/NIHILcoder/Havvn/releases)
-![Platform](https://img.shields.io/badge/Platform-Windows%20·%20macOS%20%2F%20Linux%20planned-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows%20·%20Linux%20preview%20·%20macOS%20planned-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20Transmission%20%2B%20WebTorrent-informational)
 
@@ -365,7 +365,7 @@ it than not.
 
 ### Prerequisites
 - **Node.js 24** and npm (the version used in CI)
-- **Windows 10+ x64** for the current packaged target. macOS / Linux ports are planned
+- **Windows 10+ x64** or **Linux x64** (Ubuntu 22.04 build baseline). macOS is planned
 - **Python 3** only if you use Python search providers; VLC / mpv only if you choose
   those external players
 
@@ -395,6 +395,8 @@ npm run lint         # lint
 npm run dist         # build Windows x64 NSIS installer + portable ZIP
 ```
 Packaged output is written to `release/`.
+
+Linux x64 preview: `npm run dist:linux` builds AppImage + deb on Linux with a bundled native engine. See [Linux installation, build instructions and platform limits](docs/linux.md).
 
 ---
 

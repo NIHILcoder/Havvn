@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/NIHILcoder/Havvn?label=Release&color=e25117)](https://github.com/NIHILcoder/Havvn/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/NIHILcoder/Havvn/total?label=Downloads&color=orange)](https://github.com/NIHILcoder/Havvn/releases)
-![Platform](https://img.shields.io/badge/Platform-Windows%20·%20macOS%20%2F%20Linux%20planned-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows%20·%20Linux%20preview%20·%20macOS%20planned-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20Transmission%20%2B%20WebTorrent-informational)
 
@@ -314,7 +314,7 @@ Havvn 房间协议使用标准密码学原语：内容和聊天使用 **AES-256-
 ### 环境要求
 
 - **Node.js 24** 和 npm，与 CI 使用的版本一致。
-- 当前打包目标为 **Windows 10+ x64**，macOS / Linux 支持尚在计划中。
+- 打包目标为 **Windows 10+ x64** 和 **Linux x64**（以 Ubuntu 22.04 为构建基线），macOS 支持仍在计划中。
 - 使用 Python 搜索源时才需要 **Python 3**；选择外部播放器时才需要 VLC / mpv。
 
 ### 安装依赖
@@ -349,6 +349,8 @@ npm run dist         # Windows x64 NSIS 安装程序和便携 ZIP
 ```
 
 打包结果写入 `release/`。
+
+Linux x64 预览版：在 Linux 上运行 `npm run dist:linux` 可构建含原生引擎的 AppImage 和 deb。[Linux 安装、构建与平台限制](docs/linux.md)。
 
 ---
 

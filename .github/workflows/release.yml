@@ -11,7 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux:
+    uses: ./.github/workflows/linux.yml
+    permissions:
+      contents: read
+
   release:
+    needs: linux
     runs-on: windows-latest
     permissions:
       contents: write
@@ -87,6 +93,12 @@ jobs:
         shell: bash
         run: node scripts/changelog-section.js "$APP_VERSION" > release-notes.md
 
+      - name: Download verified Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: havvn-linux-x64
+          path: release
+
       # DRAFT release — a human reviews it and presses Publish on GitHub
       - name: Create draft release
         uses: softprops/action-gh-release@v3
@@ -100,3 +112,7 @@ jobs:
             release/Havvn-Setup-*.exe.blockmap
             release/latest.yml
             release/Havvn-*-win-portable.zip
+            release/Havvn-*-linux-x64.AppImage
+            release/Havvn-*-linux-x64.deb
+            release/latest-linux.yml
+            release/SHA256SUMS-linux.txt

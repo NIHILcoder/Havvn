@@ -12,20 +12,21 @@ import path from 'path';
 import { logger } from './logger';
 
 /**
- * Resolve the absolute path to the app icon (icon.ico), working in both dev and
+ * Resolve the absolute path to the platform app icon, working in both dev and
  * packaged builds. Returns null if no icon file is found. Result is cached.
  */
 let cachedIconPath: string | null | undefined;
 export function getAppIconPath(): string | null {
   if (cachedIconPath !== undefined) return cachedIconPath;
 
+  const icon = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
   const candidates = [
     // Packaged: shipped via electron-builder extraResources
-    path.join(process.resourcesPath || '', 'icon.ico'),
+    path.join(process.resourcesPath || '', icon),
     // Dev: probe a few depths up from the compiled location to the project root
-    path.join(__dirname, '../../../../build/icon.ico'),
-    path.join(__dirname, '../../../build/icon.ico'),
-    path.join(__dirname, '../../build/icon.ico'),
+    path.join(__dirname, '../../../../build', icon),
+    path.join(__dirname, '../../../build', icon),
+    path.join(__dirname, '../../build', icon),
   ];
 
   for (const candidate of candidates) {

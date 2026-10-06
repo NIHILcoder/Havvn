@@ -25,6 +25,8 @@
     "format": "prettier --write \"**/*.{ts,tsx,json,md,yml,yaml}\"",
     "start": "npm run build && electron .",
     "dist": "node scripts/make-installer-art.js && npm run build && electron-builder --win",
+    "dist:linux": "node scripts/build-transmission-linux.mjs && npm run build && electron-builder --linux --x64 --publish never",
+    "test:packaged": "node scripts/smoke-packaged.cjs",
     "prepare": "husky",
     "security:audit": "npm audit --audit-level=high",
     "security:fix": "npm audit fix",
@@ -149,12 +151,93 @@
       }
     ],
     "mac": {
-      "fileAssociations": [{ "ext": "torrent", "name": "BitTorrent Document", "description": "Open with Havvn", "role": "Editor", "icon": "build/icon2.ico" }],
-      "protocols": [{ "name": "magnet", "schemes": ["magnet"] }]
+      "fileAssociations": [
+        {
+          "ext": "torrent",
+          "name": "BitTorrent Document",
+          "description": "Open with Havvn",
+          "role": "Editor",
+          "icon": "build/icon2.ico"
+        }
+      ],
+      "protocols": [
+        {
+          "name": "magnet",
+          "schemes": [
+            "magnet"
+          ]
+        }
+      ]
     },
     "linux": {
-      "fileAssociations": [{ "ext": "torrent", "name": "BitTorrent Document", "description": "Open with Havvn", "role": "Editor", "icon": "build/icon2.ico" }],
-      "protocols": [{ "name": "magnet", "schemes": ["magnet"] }]
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Havvn-${version}-linux-${arch}.${ext}",
+      "executableName": "havvn",
+      "icon": "build/icon.png",
+      "category": "Network",
+      "maintainer": "NIHILcoder <kostopraevd@gmail.com>",
+      "mimeTypes": [
+        "application/x-bittorrent"
+      ],
+      "protocols": [
+        {
+          "name": "magnet",
+          "schemes": [
+            "magnet"
+          ]
+        }
+      ],
+      "desktop": {
+        "entry": {
+          "StartupWMClass": "Havvn",
+          "Comment": "Private P2P downloads, rooms and streaming"
+        }
+      },
+      "extraResources": [
+        {
+          "from": "build/icon.png",
+          "to": "icon.png"
+        },
+        {
+          "from": "vendor/transmission/linux-x64",
+          "to": "engine"
+        }
+      ]
+    },
+    "deb": {
+      "depends": [
+        "libc6 (>= 2.35)",
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "libasound2",
+        "libgbm1",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libsecret-1-0",
+        "iproute2",
+        "ca-certificates"
+      ],
+      "recommends": [
+        "libayatana-appindicator3-1",
+        "gnome-keyring"
+      ]
     },
     "win": {
       "target": [
@@ -173,27 +256,32 @@
       ],
       "artifactName": "Havvn-${version}-win-portable.${ext}",
       "icon": "build/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "extraFiles": [
+        {
+          "from": "build/icon2.ico",
+          "to": "icon2.ico"
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "build/icon.ico",
+          "to": "icon.ico"
+        },
+        {
+          "from": "vendor/transmission/win32-x64",
+          "to": "engine"
+        },
+        {
+          "from": "vendor/wintun/win32-x64",
+          "to": "wintun"
+        }
+      ]
     },
-    "extraFiles": [
-      {
-        "from": "build/icon2.ico",
-        "to": "icon2.ico"
-      }
-    ],
     "extraResources": [
-      { "from": "docs/search-plugins/havvn_network.py", "to": "search-sdk/havvn_network.py" },
       {
-        "from": "build/icon.ico",
-        "to": "icon.ico"
-      },
-      {
-        "from": "vendor/transmission/win32-x64",
-        "to": "engine"
-      },
-      {
-        "from": "vendor/wintun/win32-x64",
-        "to": "wintun"
+        "from": "docs/search-plugins/havvn_network.py",
+        "to": "search-sdk/havvn_network.py"
       }
     ],
     "nsis": {

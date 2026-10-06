@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Linux x64 AppImage and deb packaging with a pinned Transmission 4.1.3 daemon, Linux FFmpeg, platform-specific native resources and a Linux CI/package smoke workflow.
+- XDG desktop autostart, including stable AppImage paths, Linux PNG icons and torrent/magnet/room-link desktop associations.
+
+### Fixed
+
+- Windows-only engine paths and native-resource packaging on Linux. Global push-to-talk reports unavailable in Wayland sessions instead of attempting an X11 hook.
+- Linux stale-daemon cleanup verifies the executable and exact configuration directory before signalling a reused process ID.
+
+
 ## [3.1.0] - 2026-10-05
 
 This release strengthens rooms, expands search and appearance controls, and refreshes the Windows installer and startup experience. The changes below describe work accumulated since 3.0.7.

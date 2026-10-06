@@ -83,6 +83,7 @@ test-themes/
 
 # ── Vendored native engine binaries (restore: node scripts/fetch-transmission.mjs)
 vendor/transmission/win32-x64/
+vendor/transmission/linux-x64/
 # ── Vendored Wintun DLL (restore: node scripts/fetch-wintun.mjs)
 vendor/wintun/win32-x64/
 # Engine-spike scratch area (daemon config/downloads during spike runs)

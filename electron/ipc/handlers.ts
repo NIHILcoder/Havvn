@@ -36,6 +36,7 @@ import { getPythonStatus } from '../services/python-detector';
 import { getIPBlocklistService } from '../services/ip-blocklist';
 import { getWatchFolderService } from '../torrent/watch-folder';
 import { t } from '../i18n';
+import { setAutoLaunch } from '../utils/auto-launch';
 import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
 
 // Security: Import validation and rate limiting utilities
@@ -2153,12 +2154,8 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       // Register under a friendly name ("Havvn") instead of the raw
       // executable, so Task Manager / Startup lists it as Havvn rather
       // than electron.exe. The launch argument starts the app minimised to tray.
-      app.setLoginItemSettings({
-        openAtLogin: enabled,
-        args: ['--havvn-start-hidden'],
-        name: 'Havvn',
-        path: process.execPath,
-      });
+      if (typeof enabled !== 'boolean') throw new Error('Invalid autostart setting');
+      setAutoLaunch(enabled);
 
       await db.updateSettings({ autoLaunch: enabled } as any);
       log.info('Auto-launch setting changed', { enabled });

@@ -1,4 +1,4 @@
-// Usage: node scripts/smoke-packaged.cjs <win-unpacked-directory>
+// Usage: node scripts/smoke-packaged.cjs <win-unpacked|linux-unpacked-directory>
 // Starts the actual packaged executable with isolated profiles for both engines.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,9 +29,10 @@ if (process.versions.electron) {
   const net = require('node:net');
   const os = require('node:os');
   const assert = require('node:assert/strict');
-  const packageDir = path.resolve(process.argv[2] || 'release/verification-20260921/win-unpacked');
+  const packageDir = path.resolve(process.argv[2] || 'release/' + (process.platform === 'win32' ? 'win' : 'linux') + '-unpacked');
   const report = {};
   const output = path.join(root, 'node_modules/.cache/packaged-smoke.json');
+  fs.mkdirSync(path.dirname(output), { recursive: true });
   async function freePort() {
     const server = net.createServer();
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -55,10 +56,10 @@ if (process.versions.electron) {
     const seed = spawnSync(require('electron'), [__filename], { env, windowsHide: true, timeout: 60000, stdio: 'pipe' });
     if (seed.status !== 0) throw new Error(`Profile seed failed: ${seed.stderr}`);
     const port = await freePort();
-    const child = spawn(path.join(packageDir, 'Havvn.exe'), [
+    const child = spawn(path.join(packageDir, process.platform === 'win32' ? 'Havvn.exe' : 'havvn'), [
       `--user-data-dir=${base}`, '--havvn-start-hidden', `--remote-debugging-port=${port}`,
       '--remote-debugging-address=127.0.0.1',
-    ], { env, windowsHide: true, stdio: 'pipe' });
+    ], { env, windowsHide: true, detached: process.platform !== 'win32', stdio: 'pipe' });
     const log = fs.createWriteStream(path.join(root, `node_modules/.cache/packaged-${engine}.log`));
     child.stdout.pipe(log, { end: false }); child.stderr.pipe(log, { end: false });
     let exited = false;
@@ -123,7 +124,35 @@ if (process.versions.electron) {
       assert.equal(result.engine, engine); assert.equal(result.downloads, 0);
       assert.equal(result.version, require(path.join(root, 'package.json')).version);
       assert.equal(path.resolve(result.downloadDir), path.join(base, 'downloads'));
-      report[engine] = result;
+      // A real paused torrent crosses preload -> main -> host -> daemon. An
+      // empty download list alone could pass with a degraded engine.
+      const payload = path.join(base, 'downloads', 'package-fixture.bin');
+      fs.writeFileSync(payload, require('node:crypto').randomBytes(32768));
+      const torrentBytes = await new Promise((resolve, reject) => require('create-torrent')(payload,
+        { announceList: [], private: true }, (error, bytes) => error ? reject(error) : resolve(bytes)));
+      const torrentFile = path.join(base, 'package-fixture.torrent');
+      fs.writeFileSync(torrentFile, torrentBytes);
+      const request = { sourceType: 'torrent_file', sourceUri: torrentFile,
+        savePath: path.join(base, 'downloads'), paused: true };
+      const operation = await evaluate('(async () => { const download = await window.api.addDownload(' +
+        JSON.stringify(request) + '); const files = await window.api.getTorrentFiles(download.id); ' +
+        'await window.api.removeDownload(download.id, false); return { status: download.status, ' +
+        'fileSizes: files.map(f => f.size), remaining: (await window.api.getDownloads()).length }; })()');
+      assert.equal(operation.status, 'paused');
+      assert.deepEqual(operation.fileSizes, [32768]);
+      assert.equal(operation.remaining, 0);
+      assert.equal(fs.statSync(payload).size, 32768, 'Removing the record deleted fixture bytes');
+      const roomOperation = await evaluate(`(async () => {
+        const room = await window.api.rooms.create('Package check', true, false);
+        const created = !!room.roomId;
+        const left = await window.api.rooms.leave(room.roomId, false, 'stop');
+        return { created, left: left.ok, remaining: (await window.api.rooms.list()).length };
+      })()`);
+      assert.equal(roomOperation.created, true);
+      assert.equal(roomOperation.left, true);
+      assert.equal(roomOperation.remaining, 0);
+      report[engine] = { ...result, torrentOperation: operation, roomOperation };
+
       // Closing the last window can destroy its debugger before CDP replies.
       // Observe the process exit instead of waiting for a reply from that page.
       socket.send(JSON.stringify({ id: ++seq, method: 'Runtime.evaluate',
@@ -132,7 +161,10 @@ if (process.versions.electron) {
       assert.equal(exited, true, 'Packaged app did not close normally');
     } finally {
       socket?.close();
-      if (!exited) spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      if (!exited && child.pid) {
+        if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+        else { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
+      }
       log.end();
     }
   }

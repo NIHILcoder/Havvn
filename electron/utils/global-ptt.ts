@@ -32,6 +32,10 @@ let onDown: (() => void) | null = null;
 let onUp: (() => void) | null = null;
 
 function getModule(): UiohookModule | null {
+  // libuiohook observes X11, not native Wayland windows. Starting it in a
+  // Wayland session can falsely advertise global PTT or fail in native code.
+  if (process.platform === 'linux' &&
+    (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY || !process.env.DISPLAY)) return null;
   if (mod === undefined) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires

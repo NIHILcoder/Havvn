@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { supportsAcrylic } from '../shared/appearance';
 import { WindowMaterial } from './utils/window-material';
+import { setAutoLaunch } from './utils/auto-launch';
 import { pathToFileURL } from 'url';
 import { RoomNetworkMonitor, roomNetworkFingerprint } from './sharing/room-network-monitor';
 import { installUiPermissionPolicy } from './sharing/room-engine-policy';
@@ -34,6 +35,7 @@ import { PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME } from '../sh
 
 // Load environment variables
 dotenv.config();
+if (process.platform === 'linux') app.setDesktopName('havvn.desktop');
 
 let mainWindow: BrowserWindow | null = null;
 const windowMaterial = new WindowMaterial(supportsAcrylic(process.platform, os.release()));
@@ -1303,12 +1305,8 @@ async function initializeApp(): Promise<void> {
   // this recreates it under the new name from the migrated settings.
   const settings = store.get('settings') as any;
   if (settings?.autoLaunch !== undefined) {
-    app.setLoginItemSettings({
-      openAtLogin: settings.autoLaunch,
-      args: ['--havvn-start-hidden'],
-      name: 'Havvn',
-      path: process.execPath,
-    });
+    try { setAutoLaunch(settings.autoLaunch === true); }
+    catch (error) { logger.warn('App', 'Could not apply autostart preference', { error: String(error) }); }
   }
 
   // Initialize IP blocklist: load from store in main, ship the ranges to the

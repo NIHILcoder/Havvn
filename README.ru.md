@@ -14,7 +14,7 @@
 
 [![Release](https://img.shields.io/github/v/release/NIHILcoder/Havvn?label=Release&color=e25117)](https://github.com/NIHILcoder/Havvn/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/NIHILcoder/Havvn/total?label=Downloads&color=orange)](https://github.com/NIHILcoder/Havvn/releases)
-![Platform](https://img.shields.io/badge/Platform-Windows%20·%20macOS%20%2F%20Linux%20planned-blue)
+![Platform](https://img.shields.io/badge/Platform-Windows%20·%20Linux%20preview%20·%20macOS%20planned-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Built with](https://img.shields.io/badge/Electron%20%2B%20React%20%2B%20Transmission%20%2B%20WebTorrent-informational)
 
@@ -379,7 +379,7 @@ Get-FileHash .\Havvn-Setup-<version>.exe -Algorithm SHA256
 ### Требования
 
 - **Node.js 24** и npm — эта версия используется в CI.
-- **Windows 10+ x64** — текущая целевая платформа сборки. macOS / Linux запланированы.
+- **Windows 10+ x64** или **Linux x64** (базовая среда сборки Ubuntu 22.04). macOS запланирован.
 - **Python 3** нужен только для Python-источников; VLC / mpv — только при выборе
   соответствующего внешнего плеера.
 
@@ -415,6 +415,8 @@ npm run dist         # Windows x64: установщик NSIS + переноси
 ```
 
 Готовые файлы помещаются в `release/`.
+
+Linux x64: `npm run dist:linux` собирает AppImage и deb в Linux со встроенным движком. [Установка, сборка и ограничения Linux](docs/linux.md).
 
 ---
 

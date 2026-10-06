@@ -82,12 +82,12 @@ export class TransmissionSidecar {
 
     const username = 'havvn';
     const password = crypto.randomBytes(18).toString('base64url');
-    this.writeSettings(username, password); // also creates configDir
     // A previous run that died uncleanly (parent crash / hard-kill / Ctrl-C)
     // can leave the daemon orphaned, still torrenting and holding this config
     // dir. Reap it before spawning so we never end up with two daemons racing
     // on the same resume/ state.
-    this.reapStaleDaemon();
+    await this.reapStaleDaemon();
+    this.writeSettings(username, password);
 
     fs.mkdirSync(this.opts.downloadDir, { recursive: true });
     const child = spawn(this.opts.binaryPath, ['-f', '--config-dir', this.opts.configDir], {
@@ -132,7 +132,7 @@ export class TransmissionSidecar {
   }
 
   /** Kill a transmission-daemon left behind by a previous unclean exit (pid file). */
-  private reapStaleDaemon(): void {
+  private async reapStaleDaemon(): Promise<void> {
     let pid = 0;
     try { pid = parseInt(fs.readFileSync(this.pidFile, 'utf8').trim(), 10); } catch { return; }
     if (!pid || Number.isNaN(pid)) { this.safeUnlink(this.pidFile); return; }
@@ -142,10 +142,31 @@ export class TransmissionSidecar {
         // Guard against PID reuse: only kill if it's actually our daemon image.
         const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' });
         if (/transmission-daemon\.exe/i.test(out)) execFileSync('taskkill', ['/PID', String(pid), '/F', '/T']);
-      } else {
-        process.kill(pid, 'SIGTERM');
+      } else if (process.platform === 'linux') {
+        // A PID file can outlive its process. Verify both executable and exact
+        // config directory before signalling anything after PID reuse.
+        const image = fs.realpathSync(`/proc/${pid}/exe`);
+        const binary = fs.realpathSync(path.join(path.dirname(this.opts.binaryPath), 'transmission-daemon.bin'));
+        const args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+        const configIndex = args.indexOf('--config-dir');
+        if (image === binary && configIndex >= 0 && args[configIndex + 1] === this.opts.configDir) {
+          process.kill(pid, 'SIGTERM');
+          // Do not let the old daemon's final settings rewrite race the next
+          // instance's new RPC credentials. Fail startup if it refuses to stop.
+          const deadline = Date.now() + 7000;
+          while (Date.now() < deadline && fs.existsSync(`/proc/${pid}/exe`)) {
+            if (fs.realpathSync(`/proc/${pid}/exe`) !== binary) break;
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          if (fs.existsSync(`/proc/${pid}/exe`) && fs.realpathSync(`/proc/${pid}/exe`) === binary) {
+            throw new Error('Previous Havvn daemon is still shutting down; retry startup');
+          }
+        }
       }
-    } catch { /* best effort */ }
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Previous Havvn daemon')) throw error;
+      // /proc can disappear between inspection and shutdown.
+    }
     this.safeUnlink(this.pidFile);
   }
 
@@ -155,7 +176,8 @@ export class TransmissionSidecar {
    * daemon added (e.g. stats) are preserved.
    */
   private writeSettings(username: string, password: string): void {
-    fs.mkdirSync(this.opts.configDir, { recursive: true });
+    fs.mkdirSync(this.opts.configDir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') fs.chmodSync(this.opts.configDir, 0o700);
     const file = path.join(this.opts.configDir, 'settings.json');
     let existing: Record<string, unknown> = {};
     try { existing = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>; } catch { /* first launch */ }

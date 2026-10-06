@@ -1,0 +1,92 @@
+name: Linux packages
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches: [main]
+    paths-ignore: ['artifacts/**', 'assets/**', 'docs/screenshots/**']
+  pull_request:
+    paths-ignore: ['artifacts/**', 'assets/**', 'docs/screenshots/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    # Build against glibc 2.35, rather than inheriting a newer ubuntu-latest ABI.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      VITEST_MAX_WORKERS: '2'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install Linux build and desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libcurl4-openssl-dev libssl-dev libevent-dev libdeflate-dev libpsl-dev libx11-dev libxtst-dev libxinerama-dev libxkbcommon-dev libxrandr-dev libgtk-3-0 libnss3 libnotify4 libxss1 libasound2 libgbm1 libsecret-1-0 gnome-keyring libayatana-appindicator3-1 libfuse2 xvfb dbus-x11 desktop-file-utils
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Test on Linux
+        run: npm test
+      - name: Check native prebuild preparation
+        run: npm run test:native-prebuilds
+      - name: Build AppImage and deb with the bundled engine
+        run: npm run dist:linux
+      - name: Verify Linux package contents
+        run: |
+          test -x release/linux-unpacked/resources/engine/transmission-daemon
+          test -x release/linux-unpacked/resources/engine/transmission-daemon.bin
+          test -f release/linux-unpacked/resources/engine/transmission-source.tar.xz
+          test -f release/linux-unpacked/resources/engine/licenses/transmission.COPYING
+          test -f release/linux-unpacked/resources/icon.png
+          test -f release/linux-unpacked/resources/search-sdk/havvn_network.py
+          test ! -e release/linux-unpacked/resources/wintun
+          release/linux-unpacked/resources/engine/transmission-daemon -V
+          node -e "const fs=require('fs');const p='release/linux-unpacked/resources/app.asar.unpacked/node_modules/ffmpeg-static/ffmpeg';if(fs.readFileSync(p).subarray(0,4).toString('hex')!=='7f454c46')throw Error('Missing Linux ffmpeg')"
+          dpkg-deb --info release/Havvn-*-linux-x64.deb
+          dpkg-deb --extract release/Havvn-*-linux-x64.deb release/deb-check
+          desktop-file-validate release/deb-check/usr/share/applications/havvn.desktop
+          grep 'application/x-bittorrent' release/deb-check/usr/share/applications/havvn.desktop
+          grep 'x-scheme-handler/magnet' release/deb-check/usr/share/applications/havvn.desktop
+          grep 'x-scheme-handler/havvn' release/deb-check/usr/share/applications/havvn.desktop
+      - name: Run the packaged app and both engines under X11
+        # Keep Chromium's sandbox enabled; do not mask startup issues with --no-sandbox.
+        run: |
+          dbus-run-session -- bash -euc '
+            printf "havvn-ci-keyring\n" | gnome-keyring-daemon --unlock --components=secrets
+            export XDG_CURRENT_DESKTOP=GNOME
+            xvfb-run -a npm run test:packaged -- release/linux-unpacked
+          '
+      - name: Calculate package checksums
+        run: |
+          cd release
+          sha256sum Havvn-*-linux-x64.AppImage Havvn-*-linux-x64.deb > SHA256SUMS-linux.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: havvn-linux-x64
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release/Havvn-*-linux-x64.AppImage
+            release/Havvn-*-linux-x64.deb
+            release/latest-linux.yml
+            release/SHA256SUMS-linux.txt
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-diagnostics
+          if-no-files-found: ignore
+          path: |
+            node_modules/.cache/packaged-smoke.json
+            node_modules/.cache/packaged-*.log
