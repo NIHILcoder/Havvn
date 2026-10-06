@@ -184,7 +184,7 @@
           ]
         }
       ],
-      "artifactName": "Havvn-${version}-linux-${arch}.${ext}",
+      "artifactName": "Havvn-${version}-linux-x64.${ext}",
       "executableName": "havvn",
       "icon": "build/icon.png",
       "category": "Network",
@@ -202,7 +202,7 @@
       ],
       "desktop": {
         "entry": {
-          "StartupWMClass": "Havvn",
+          "StartupWMClass": "havvn",
           "Comment": "Private P2P downloads, rooms and streaming"
         }
       },
@@ -215,7 +215,8 @@
           "from": "vendor/transmission/linux-x64",
           "to": "engine"
         }
-      ]
+      ],
+      "syncDesktopName": true
     },
     "deb": {
       "depends": [
@@ -310,5 +311,6 @@
   "author": {
     "name": "NIHILcoder"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "desktopName": "havvn.desktop"
 }
