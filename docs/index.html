@@ -1,467 +1,143 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Havvn — a private, serverless P2P hub</title>
-<meta name="description" content="Havvn is a private, serverless P2P hub that happens to speak BitTorrent. Stream torrents to any device, watch and listen together in encrypted rooms, talk over serverless voice, and beam files into a friend's browser — all peer-to-peer, no cloud, no servers." />
-<meta property="og:title" content="Havvn — a private, serverless P2P hub" />
-<meta property="og:description" content="Stream torrents anywhere, watch and listen together in end-to-end-encrypted rooms, talk over serverless voice, and beam files into a friend's browser. Peer-to-peer, no servers, free." />
-<meta property="og:type" content="website" />
-<meta property="og:image" content="https://raw.githubusercontent.com/NIHILcoder/Havvn/main/assets/havvn-cover.png" />
-<meta name="twitter:card" content="summary_large_image" />
-<meta name="theme-color" content="#0d0c0a" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 295.8'%3E%3Cpath fill='%23161311' d='M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z'/%3E%3Cpath fill='%23e25117' d='M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z'/%3E%3C/svg%3E" />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<!-- Non-blocking: paint instantly on the system-font fallback, swap web fonts in when ready
-     (resilient to slow or blocked font hosts — the page never waits on them). -->
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'" />
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" /></noscript>
-<!-- Scroll-reveal is JS-driven; without JS, show all content immediately. -->
-<noscript><style>.reveal{opacity:1!important;transform:none!important}</style></noscript>
-<style>
-  /* Havvn "Blaze" — the W-wings era. Near-black warm ground, the logo's own
-     orange (#e25117), squared-off HUD geometry: corner brackets, chamfered
-     buttons, hazard stripes, zigzag VV motifs. Loud on purpose. */
-  :root{
-    --ink:#0d0c0a; --bg:#121110; --panel:#181613; --elev:#211d18;
-    --line:rgba(242,230,220,.10); --line2:rgba(242,230,220,.20); --line0:rgba(242,230,220,.05);
-    --text:#f2efe9; --muted:#b8b0a4; --dim:#8d867b;
-    --blaze:#e25117; --blaze-hot:#ff6a2a; --amber:#e88a3c;
-    --blaze-bg:rgba(226,81,23,.13); --blaze-ring:rgba(226,81,23,.38);
-    --olive:#adb87c; --olive-bg:rgba(173,184,124,.12); --olive-ring:rgba(173,184,124,.3);
-    --display:'Chakra Petch','Inter',system-ui,sans-serif;
-    --sans:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
-    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
-    --max:1120px;
-    --cut:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,10px 100%,0 calc(100% - 10px));
-  }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth}
-  body{
-    background:
-      radial-gradient(900px 560px at 84% -6%,rgba(226,81,23,.09),transparent 62%),
-      radial-gradient(760px 520px at -8% 30%,rgba(232,138,60,.05),transparent 60%),
-      repeating-linear-gradient(115deg,rgba(242,230,220,.013) 0 1px,transparent 1px 9px),
-      var(--ink);
-    color:var(--text);font-family:var(--sans);line-height:1.6;
-    -webkit-font-smoothing:antialiased;overflow-x:hidden;
-  }
-  a{color:inherit;text-decoration:none}
-  a:focus-visible,.btn:focus-visible,summary:focus-visible{outline:2px solid var(--blaze-hot);outline-offset:3px}
-  ::selection{background:var(--blaze);color:#140f0c}
-  .wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
-  .mono{font-family:var(--mono)}
-  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--blaze-hot)}
-  .eyebrow::before{content:"// ";color:var(--dim)}
-
-  .btn{display:inline-flex;align-items:center;gap:9px;padding:12px 20px;cursor:pointer;transition:.16s;border:1px solid transparent;white-space:nowrap;font-family:var(--display);font-weight:600;font-size:13.5px;letter-spacing:.07em;text-transform:uppercase}
-  .btn-primary{background:linear-gradient(180deg,var(--amber),var(--blaze) 62%);color:#140f0c;clip-path:var(--cut);border:none}
-  .btn-primary:hover{background:var(--blaze-hot);transform:translateY(-1px);filter:drop-shadow(0 6px 22px rgba(226,81,23,.45))}
-  .btn-o{background:transparent;color:var(--text);border-color:var(--line2)}
-  .btn-o:hover{border-color:var(--blaze);color:var(--blaze-hot);background:var(--blaze-bg)}
-  svg.icn{width:1em;height:1em;vertical-align:-.12em;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-
-  /* HUD corner bracket, the recurring frame motif */
-  .brkt{position:relative}
-  .brkt::before{content:"";position:absolute;top:-1px;left:-1px;width:16px;height:16px;border-top:2px solid var(--blaze);border-left:2px solid var(--blaze);opacity:.85;transition:.16s}
-  .brkt:hover::before{width:26px;height:26px;opacity:1}
-
-  /* Brand — the W-wings mark + the HAVVN lettermark (self-colored SVGs) */
-  .mark{width:26px;height:auto}
-  .logo{display:flex;align-items:center;gap:10px}
-  .logo .mark{width:32px}
-  .logo .wm{height:14px;width:auto;display:block}
-
-  header{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);background:rgba(13,12,10,.8);border-bottom:1px solid var(--line)}
-  header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:linear-gradient(90deg,var(--blaze),transparent 38%);pointer-events:none}
-  nav{display:flex;align-items:center;justify-content:space-between;height:62px}
-  .navlinks{display:flex;align-items:center;gap:26px;font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
-  .navlinks a{transition:.15s;padding:4px 0;border-bottom:2px solid transparent}
-  .navlinks a:hover{color:var(--blaze-hot);border-bottom-color:var(--blaze)}
-  .nav-cta{display:flex;align-items:center;gap:14px}
-
-  section{padding:96px 0;position:relative}
-  .sec-head{max-width:640px;margin-bottom:48px}
-  .sec-head h2{font-family:var(--display);font-size:clamp(24px,3vw,32px);font-weight:700;letter-spacing:.015em;text-transform:uppercase;line-height:1.16;margin:12px 0 14px}
-  .sec-head p{color:var(--muted);font-size:16px}
-
-  /* ── Hero ─────────────────────────────────────────────────── */
-  .hero{padding:84px 0 76px;display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center;position:relative}
-  .hero h1{font-family:var(--display);font-size:clamp(32px,4.6vw,55px);line-height:1.04;font-weight:700;letter-spacing:.01em;text-transform:uppercase;margin:18px 0 20px}
-  .hero h1 b{background:linear-gradient(180deg,var(--amber),var(--blaze));-webkit-background-clip:text;background-clip:text;color:transparent;font-weight:700}
-  .hero p.lead{font-size:17px;color:var(--muted);max-width:480px;margin-bottom:28px}
-  .hero-cta{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:22px}
-  .trust{font-family:var(--mono);font-size:12px;color:var(--dim);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  .trust span.dot{color:var(--blaze);font-size:9px}
-
-  .wings{position:relative;display:flex;align-items:center;justify-content:center;min-height:380px}
-  .wings::before,.wings::after{content:"";position:absolute;width:30px;height:30px;pointer-events:none}
-  .wings::before{top:6px;left:6px;border-top:2px solid var(--blaze);border-left:2px solid var(--blaze)}
-  .wings::after{bottom:6px;right:6px;border-bottom:2px solid var(--blaze);border-right:2px solid var(--blaze)}
-  .wings .glow{position:absolute;inset:0;background:radial-gradient(closest-side at 50% 46%,rgba(226,81,23,.28),rgba(226,81,23,.07) 58%,transparent 75%);filter:blur(6px);pointer-events:none}
-  .wings img{position:relative;width:min(430px,86%);height:auto;filter:drop-shadow(0 18px 48px rgba(226,81,23,.35));animation:hover-w 7s ease-in-out infinite}
-  @keyframes hover-w{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
-  .chip{position:absolute;font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;color:var(--muted);background:rgba(24,22,19,.92);border:1px solid var(--line2);padding:5px 10px;white-space:nowrap;text-transform:uppercase}
-  .chip b{color:var(--blaze-hot);font-weight:500}
-  .chip.c1{left:2%;top:16%}.chip.c2{right:0;top:30%}.chip.c3{left:6%;bottom:20%}.chip.c4{right:5%;bottom:9%}
-
-  /* zigzag VV divider */
-  .vv-div{display:flex;justify-content:center;padding:0 0 8px}
-  .vv-div svg{width:64px;height:16px;stroke:var(--blaze);stroke-width:3;fill:none}
-
-  /* ── Ticker strip ─────────────────────────────────────────── */
-  .strip{position:relative;background:#14110e;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-  .strip::before,.strip::after{content:"";position:absolute;left:0;right:0;height:5px;background:repeating-linear-gradient(-45deg,var(--blaze) 0 7px,transparent 7px 16px);opacity:.35}
-  .strip::before{top:0}.strip::after{bottom:0}
-  .strip .wrap{display:flex;gap:30px;flex-wrap:wrap;justify-content:center;padding:22px 24px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
-  .strip b{color:var(--muted);font-weight:400}
-  .strip b::before{content:"◆ ";color:var(--blaze);font-size:8px;vertical-align:2px}
-
-  /* ── Cards ────────────────────────────────────────────────── */
-  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-  .card{border:1px solid var(--line);padding:24px;background:var(--panel);transition:.18s;position:relative}
-  .card:hover{border-color:var(--blaze-ring);transform:translateY(-3px);box-shadow:0 10px 34px rgba(226,81,23,.16)}
-  .card .ci{width:42px;height:42px;background:var(--blaze-bg);border:1px solid var(--blaze-ring);color:var(--blaze-hot);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:16px;clip-path:var(--cut)}
-  .card .ci.olive{background:var(--olive-bg);border-color:var(--olive-ring);color:var(--olive)}
-  .card h3{font-family:var(--display);font-size:15.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;margin-bottom:7px}
-  .card p{font-size:14px;color:var(--muted)}
-
-  /* ── Rooms ────────────────────────────────────────────────── */
-  .rooms{background:#100e0c;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px}
-  .step{border:1px solid var(--line);padding:24px;background:var(--panel);position:relative}
-  .step .n{font-family:var(--display);font-size:44px;font-weight:700;line-height:1;color:transparent;-webkit-text-stroke:1.2px var(--blaze);margin-bottom:12px}
-  .step h3{font-family:var(--display);font-size:15.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;margin-bottom:7px}
-  .step p{font-size:14px;color:var(--muted)}
-  .step .code{display:inline-block;margin-top:12px;font-family:var(--mono);font-size:13px;color:var(--text);background:var(--ink);border:1px solid var(--line);border-left:3px solid var(--blaze);padding:6px 11px}
-  .step .code b{color:var(--blaze-hot);font-weight:500}
-
-  .together{border:1px solid var(--line);padding:26px;background:var(--panel);display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:center;margin-bottom:16px}
-  .together h3{font-family:var(--display);font-size:17px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;margin-bottom:10px}
-  .together p{font-size:14px;color:var(--muted);margin-bottom:14px}
-  .together .tagrow{margin-top:0}
-  /* mini player mockup */
-  .player{background:var(--ink);border:1px solid var(--line2);padding:16px;box-shadow:0 14px 40px rgba(0,0,0,.5)}
-  .player .stage{height:96px;background:linear-gradient(120deg,#221108,#191207);position:relative;overflow:hidden;display:flex;align-items:flex-end;gap:3px;padding:12px}
-  .player .bar{flex:1;background:var(--blaze);opacity:.85}
-  .player .bar:nth-child(even){background:var(--olive);opacity:.65}
-  .player .row{display:flex;align-items:center;gap:10px;margin-top:12px}
-  .player .disc{width:34px;height:34px;background:var(--blaze-bg);border:1px solid var(--blaze-ring);display:flex;align-items:center;justify-content:center;color:var(--blaze-hot);flex-shrink:0;clip-path:var(--cut)}
-  .player .meta{min-width:0;flex:1}
-  .player .tt{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .player .sub{font-size:11px;color:var(--dim);font-family:var(--mono)}
-  .player .track{height:4px;background:var(--line);margin-top:10px;position:relative}
-  .player .track::before{content:"";position:absolute;left:0;top:0;bottom:0;width:44%;background:linear-gradient(90deg,var(--amber),var(--blaze))}
-  .player .track::after{content:"";position:absolute;left:44%;top:-3px;width:10px;height:10px;background:var(--blaze-hot);transform:rotate(45deg);box-shadow:0 0 0 3px rgba(226,81,23,.3)}
-  .player .who{display:flex;align-items:center;gap:6px;margin-top:12px;font-size:11px;color:var(--olive);font-family:var(--mono)}
-  .player .who .dot{width:6px;height:6px;background:var(--olive);transform:rotate(45deg)}
-
-  .relaybox{border:1px solid var(--line);padding:26px;background:var(--panel);display:grid;grid-template-columns:1.1fr 1fr;gap:24px;align-items:center}
-  .relaybox h3{font-family:var(--display);font-size:17px;font-weight:600;letter-spacing:.02em;text-transform:uppercase;margin-bottom:10px}
-  .relaybox p{font-size:14px;color:var(--muted);margin-bottom:10px}
-  .tagrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
-  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.04em;color:var(--olive);border:1px solid var(--olive-ring);background:var(--olive-bg);padding:4px 9px}
-
-  /* ── Privacy ──────────────────────────────────────────────── */
-  .plist{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
-  .pitem{display:flex;gap:13px;border:1px solid var(--line);padding:18px 20px;background:var(--panel);transition:.18s;position:relative}
-  .pitem::before{border-color:var(--olive)!important}
-  .pitem:hover{border-color:var(--olive-ring);transform:translateY(-2px)}
-  .pitem .pi{font-size:19px;color:var(--olive);margin-top:1px;flex-shrink:0}
-  .pitem h3{font-family:var(--display);font-size:14.5px;font-weight:600;letter-spacing:.03em;text-transform:uppercase;margin-bottom:4px}
-  .pitem p{font-size:13.5px;color:var(--muted)}
-
-  /* ── Download ─────────────────────────────────────────────── */
-  .download{text-align:center}
-  .dl-card{max-width:680px;margin:0 auto;border:1px solid var(--line2);padding:48px 34px 40px;position:relative;background:radial-gradient(120% 150% at 50% 0,rgba(226,81,23,.10),transparent 62%),var(--panel);box-shadow:inset 0 0 0 1px rgba(13,12,10,.9),inset 0 0 0 2px var(--line0)}
-  .dl-card::before{content:"";position:absolute;top:0;left:0;right:0;height:4px;background:repeating-linear-gradient(-45deg,var(--blaze) 0 7px,transparent 7px 16px);opacity:.5}
-  .dl-card::after{content:"";position:absolute;bottom:-1px;right:-1px;width:26px;height:26px;border-bottom:2px solid var(--blaze);border-right:2px solid var(--blaze)}
-  .download h2{font-family:var(--display);font-size:30px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;margin-bottom:12px}
-  .download p.sub{color:var(--muted);margin-bottom:26px}
-  .verify{margin-top:26px;text-align:left;border:1px solid var(--line);padding:18px;background:var(--ink)}
-  .verify .vt{font-size:13px;color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:8px}
-  .verify .vt svg{color:var(--olive)}
-  .verify pre{font-family:var(--mono);font-size:12.5px;color:var(--text);background:#0a0908;border:1px solid var(--line);border-left:3px solid var(--blaze);padding:11px 13px;overflow-x:auto}
-  .note{font-size:12.5px;color:var(--dim);margin-top:14px}
-
-  /* ── FAQ ──────────────────────────────────────────────────── */
-  details{border:1px solid var(--line);margin-bottom:10px;background:var(--panel);overflow:hidden;transition:border-color .18s}
-  details:hover{border-color:var(--line2)}
-  details summary{list-style:none;cursor:pointer;padding:18px 20px;font-size:15px;font-weight:500;display:flex;justify-content:space-between;align-items:center;gap:16px}
-  details summary::-webkit-details-marker{display:none}
-  details summary .chev{transition:.2s;color:var(--dim);flex-shrink:0}
-  details[open]{border-color:var(--blaze-ring)}
-  details[open] summary{color:var(--blaze-hot)}
-  details[open] summary .chev{transform:rotate(180deg);color:var(--blaze-hot)}
-  details .ans{padding:0 20px 18px;color:var(--muted);font-size:14px}
-
-  .legal{border:1px solid var(--line);border-left:3px solid var(--blaze);padding:16px 20px;background:var(--panel);color:var(--muted);font-size:13.5px;max-width:760px;margin:0 auto}
-  .legal strong{color:var(--text)}
-
-  /* ── Footer ───────────────────────────────────────────────── */
-  footer{border-top:1px solid var(--line);background:#100e0c;padding:54px 0 40px;position:relative}
-  footer::before{content:"";position:absolute;top:-2px;left:0;width:38%;height:2px;background:linear-gradient(90deg,var(--blaze),transparent)}
-  .foot{display:flex;justify-content:space-between;gap:30px;flex-wrap:wrap;margin-bottom:30px}
-  .foot .fcol h4{font-size:11px;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
-  .foot .fcol h4::before{content:"// ";color:var(--blaze)}
-  .foot .fcol a{display:block;color:var(--muted);font-size:14px;margin-bottom:9px;transition:.15s}
-  .foot .fcol a:hover{color:var(--blaze-hot)}
-  .foot-bottom{border-top:1px solid var(--line);padding-top:22px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--dim);font-size:13px}
-
-  .reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s ease}
-  .reveal.in{opacity:1;transform:none}
-
-  @media(max-width:860px){
-    .hero{grid-template-columns:1fr;gap:10px}
-    .wings{min-height:0;margin:26px auto 0;max-width:420px}
-    .grid3,.steps,.plist{grid-template-columns:1fr}
-    .relaybox,.together{grid-template-columns:1fr}
-    .navlinks{display:none}
-    section{padding:72px 0}
-    .chip.c1{left:0;top:8%}.chip.c2{right:0;top:22%}.chip.c3{left:0;bottom:12%}.chip.c4{right:0;bottom:2%}
-  }
-  @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{animation:none!important;transition-duration:.01ms!important}.reveal{opacity:1;transform:none}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Havvn — your people. Your files. Your rules.</title>
+  <meta name="description" content="A free, open-source P2P hub for Windows and Linux. Download torrents, share files, watch together and talk in private rooms. No Havvn accounts or cloud storage.">
+  <meta property="og:title" content="Havvn — your people. Your files. Your rules.">
+  <meta property="og:description" content="Downloads, private rooms, watch-together and voice. One open-source P2P hub. Windows + Linux.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="https://raw.githubusercontent.com/NIHILcoder/Havvn/main/assets/havvn-cover.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#0c0c0e">
+  <meta property="og:url" content="https://nihilcoder.github.io/Havvn/">
+  <link rel="canonical" href="https://nihilcoder.github.io/Havvn/">
+  <link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/inter-cyrillic-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="icon" href="assets/mark-gloss-768.png">
+  <link rel="stylesheet" href="assets/site.css?hash=6dfc94249e2f">
+  <script src="assets/site.js?hash=dc80371021c2" defer></script>
 </head>
 <body>
-
+<div class="scroll-progress" aria-hidden="true"></div>
+<a class="skip" href="#main" data-ru="К содержимому">Skip to content</a>
 <header>
-  <nav class="wrap">
-    <a class="logo" href="#" aria-label="Havvn — home">
-      <svg class="mark" viewBox="0 0 512 295.8" aria-hidden="true"><path fill="#161311" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/><path fill="#e25117" d="M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z"/><g fill="#f4c1b0"><path d="M478.6 34.2C478.6 34.2 402.4 153.1 402.4 153.1C402.4 153.1 407.5 139.6 409.5 132.9C411.6 126.2 413.4 118.7 414.7 112.9C415.9 107.1 416.7 102.4 417 98.2C417.4 93.9 417.1 89.8 416.7 87.5C416.4 85.3 415.6 85.1 414.9 84.6C414.2 84.1 417.3 82.5 412.6 84.5C407.8 86.5 386.5 96.6 386.5 96.6C386.5 96.6 478.6 34.2 478.6 34.2Z"/><path d="M186.4 137.3C186.4 137.3 176.1 145.7 171.4 150.5C166.6 155.2 161 162 157.7 165.8C154.5 169.7 153.4 171.2 151.6 173.6C149.9 176.1 148.4 178.6 147.3 180.7C146.1 182.8 145.5 184.1 144.8 186.2C144 188.3 143.3 190.6 142.7 193.2C142.2 195.9 141.4 202.1 141.4 202.1C141.4 202.1 117.8 165.3 117.8 165.3C117.8 165.3 123.9 164.1 127.6 162.6C131.3 161.1 134.3 159.6 139.8 156.5C145.4 153.4 154.7 148.3 161 144.1C167.2 140 177.6 131.4 177.6 131.4C177.6 131.4 186.4 137.3 186.4 137.3Z"/><path d="M361.5 113.3C361.5 113.3 360.4 116.8 359.1 119.6C357.8 122.5 358.1 122.8 353.6 130.4C349.1 138.1 337.5 155.9 332.2 165.7C326.9 175.4 324.7 181.5 321.7 189.1C318.6 196.8 316 204.9 313.9 211.7C311.7 218.5 309.8 225.6 308.7 230.2C307.6 234.7 307.6 236.6 307.4 239.1C307.2 241.6 307.3 243 307.4 245.2C307.6 247.4 308.3 252.3 308.3 252.3C308.3 252.3 274.7 213.7 274.7 213.7C274.7 213.7 278.7 212.3 280.9 211.1C283 210 284.2 209.3 287.6 206.6C291.1 203.9 297.7 198.4 301.6 194.9C305.4 191.3 307.6 189.3 310.9 185.4C314.2 181.5 318.1 176.3 321.2 171.6C324.3 166.9 326.8 162.6 329.5 157.4C332.2 152.2 335.4 145.5 337.3 140.4C339.3 135.4 337.2 131.4 341.3 126.8C345.3 122.3 361.5 113.3 361.5 113.3Z"/></g></svg>
-      <svg class="wm" viewBox="0 0 440 100" role="img" aria-label="Havvn"><path fill="#f2efe9" d="M11.5 18.0L40.0 0.0L26.0 100.0L0.0 100.0ZM60.0 0.0L86.0 0.0L74.5 82.0L46.0 100.0ZM28.7 38.0L60.7 38.0L57.5 61.0L25.5 61.0ZM138.0 0.0L133.8 30.0L111.0 100.0L85.0 100.0ZM138.0 0.0L163.0 100.0L137.0 100.0L133.8 30.0ZM110.3 62.0L148.3 62.0L145.2 84.0L107.2 84.0ZM364.0 0.0L390.0 0.0L376.0 100.0L350.0 100.0ZM411.5 18.0L440.0 0.0L426.0 100.0L400.0 100.0ZM364.0 0.0L390.0 0.0L426.0 100.0L400.0 100.0Z"/><path fill="#e25117" d="M190.0 0.0L218.0 0.0L218.9 72.0L215.0 100.0ZM268.0 0.0L240.0 0.0L218.9 72.0L215.0 100.0ZM273.0 0.0L301.0 0.0L301.9 72.0L298.0 100.0ZM351.0 0.0L323.0 0.0L301.9 72.0L298.0 100.0Z"/></svg>
-    </a>
-    <div class="navlinks">
-      <a href="#features">Features</a>
-      <a href="#rooms">Rooms</a>
-      <a href="#privacy">Privacy</a>
-      <a href="#faq">FAQ</a>
-      <a href="https://github.com/NIHILcoder/Havvn">GitHub</a>
-    </div>
-    <div class="nav-cta">
-      <a class="btn btn-primary" href="https://github.com/NIHILcoder/Havvn/releases/latest">
-        <svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
-        Download
-      </a>
-    </div>
+  <nav class="wrap" aria-label="Main navigation">
+    <a class="brand" href="#" aria-label="Havvn home"><img src="assets/mark-gloss-768.png" width="768" height="440" alt=""><img class="brand-wordmark" src="assets/wordmark.svg" width="440" height="100" alt=""><span class="brand-dot"></span></a>
+    <div id="navigation" class="navlinks"><a href="#features" data-ru="Возможности">Explore</a><a href="#rooms" data-ru="Комнаты">Rooms</a><a href="#privacy" data-ru="Приватность">Privacy</a><a href="#updates" data-ru="Обновления">Updates</a><a href="https://github.com/NIHILcoder/Havvn">GitHub ↗</a></div>
+    <div class="nav-actions"><button id="language" class="language" type="button" aria-label="Switch to Russian">RU</button><a class="button small" href="#download"><span class="button-label" data-ru="Скачать">Get Havvn</span><span class="button-icon" data-direction="diagonal" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a><button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="navigation" aria-label="Open navigation"><span></span><span></span></button></div>
   </nav>
 </header>
-
-<main class="wrap">
-
-  <section class="hero">
-    <div>
-      <div class="eyebrow">Peer-to-peer · no servers</div>
-      <h1>A private, serverless <b>P2P hub</b> that happens to speak <b>BitTorrent</b>.</h1>
-      <p class="lead">Havvn (formerly TorrentHunt) is a full torrent client — but the real point is what classic clients can't do: stream to any device, watch and listen <em>together</em> in encrypted rooms, talk over serverless voice, and beam a file into a friend's browser. No cloud, nothing to pay for.</p>
-      <div class="hero-cta">
-        <a class="btn btn-primary" href="https://github.com/NIHILcoder/Havvn/releases/latest">
-          <svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
-          Download for Windows
-        </a>
-        <a class="btn btn-o" href="https://github.com/NIHILcoder/Havvn">
-          <svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-1-2.6c3-.3 6-1.5 6-6.6a5.1 5.1 0 0 0-1.4-3.5 4.8 4.8 0 0 0-.1-3.5s-1.1-.3-3.5 1.3a12 12 0 0 0-6.4 0C6.3 1.1 5.2 1.4 5.2 1.4a4.8 4.8 0 0 0-.1 3.5A5.1 5.1 0 0 0 3.7 8.4c0 5 3 6.3 6 6.6a3.4 3.4 0 0 0-1 2.6V21"/></svg>
-          View on GitHub
-        </a>
+<main id="main">
+  <section class="hero wrap">
+    <div class="hero-copy">
+      <a class="release-pill" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="status-dot"></span><span data-ru="Для Windows и Linux">For Windows &amp; Linux</span><span aria-hidden="true">↗</span></a>
+      <p class="eyebrow" data-ru="ТВОИ ЛЮДИ. ТВОИ ФАЙЛЫ. ТВОИ ПРАВИЛА.">YOUR PEOPLE. YOUR FILES. YOUR RULES.</p>
+      <h1><span data-ru="Больше,">Beyond</span><br><em data-ru="чем торренты.">the download.</em></h1>
+      <p class="lead" data-ru="Торренты, кино с друзьями, голос и общие файлы. Одно пространство для всего, что связывает вас. Напрямую. Без аккаунтов Havvn и облачного хранения.">Torrents, movie nights, voice and shared files. One space for everything that connects you. Peer to peer. No Havvn accounts or cloud storage.</p>
+      <div class="hero-actions"><a class="button" href="#download"><span class="button-label" data-ru="Скачать Havvn">Download Havvn</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a><a class="text-link" href="#experience"><span data-ru="Посмотреть, как это работает">See it in action</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
+      <p class="micro" data-ru="Бесплатно · Открытый код · Без телеметрии">Free · Open source · No telemetry</p>
+    </div>
+<div class="hero-art" aria-hidden="true">
+      <canvas id="network-scene"></canvas>
+      <div class="scene-aura"></div><div class="scene-halo"></div>
+      <svg class="hero-mark hero-sculpture" viewBox="0 0 512 325" fill="none">
+        <defs>
+          <linearGradient id="metal" x1="40" y1="20" x2="405" y2="285" gradientUnits="userSpaceOnUse"><stop stop-color="#fff1d7"/><stop offset=".14" stop-color="#ffaf70"/><stop offset=".28" stop-color="#532c20"/><stop offset=".42" stop-color="#e86a32"/><stop offset=".53" stop-color="#ffe6c5"/><stop offset=".56" stop-color="#b9471f"/><stop offset=".78" stop-color="#3c1b15"/><stop offset="1" stop-color="#ff9351"/></linearGradient>
+          <linearGradient id="edge" x1="60" y1="0" x2="410" y2="280" gradientUnits="userSpaceOnUse"><stop stop-color="#ffeace"/><stop offset=".37" stop-color="#ff8a45"/><stop offset=".64" stop-color="#4a2019"/><stop offset="1" stop-color="#ef7039"/></linearGradient>
+          <linearGradient id="facet" x1="250" y1="75" x2="310" y2="260" gradientUnits="userSpaceOnUse"><stop stop-color="#fcd6b2"/><stop offset=".43" stop-color="#b95028"/><stop offset="1" stop-color="#230f0d"/></linearGradient>
+        </defs>
+        <path class="sculpture-depth" transform="translate(0 19)" fill="#27130f" stroke="#9a452b" stroke-width="2" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/>
+        <path fill="url(#metal)" stroke="url(#edge)" stroke-width="2" stroke-linejoin="round" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/>
+        <path fill="url(#facet)" opacity=".72" d="M34 35L222 176L256 139L290 176L478 35L358 221L330 276L256 192L182 276L154 221Z"/>
+        <path stroke="#ffe2ba" stroke-opacity=".48" stroke-width="1.4" d="M34 35L222 176L256 139L290 176L478 35M182 276L256 192L330 276"/>
+        <path stroke="#ffb36f" stroke-opacity=".23" stroke-width="1" d="M6 6L181 289M506 6L330 289"/>
+      </svg>
+      <div class="scene-coordinate coord-one">01 — P2P</div><div class="scene-coordinate coord-two">02 — E2E</div>
+      <div class="scene-orbit-tag"><span class="status-dot"></span><span data-ru="МЕЖДУ ВАМИ. НАПРЯМУЮ.">BETWEEN YOU. DIRECTLY.</span></div>
+      <span class="scene-hint" data-ru="ПОВОДИ КУРСОРОМ · ПОЧУВСТВУЙ СВЯЗЬ">MOVE YOUR CURSOR · FEEL THE CONNECTION</span>
+    </div>
+    <div class="hero-bottom"><span>01 / <span data-ru="СВОБОДА СОЕДИНЯТЬСЯ">FREEDOM TO CONNECT</span></span><button id="motion-toggle" class="motion-toggle" type="button" aria-pressed="false" aria-label="Pause visual effects"><span class="motion-led"></span><span data-ru="Анимация включена">Motion is on</span></button><a href="#experience" data-ru="Листай дальше ↓">SCROLL TO EXPLORE ↓</a></div>
+  </section>
+  <div class="principles"><div class="wrap"><span data-ru="Без аккаунтов">No accounts</span><span class="star">✳</span><span data-ru="Без облачного хранилища">No cloud storage</span><span class="star">✳</span><span data-ru="Без подписки">No subscription</span><span class="star">✳</span><span data-ru="Открытый код">Open source</span><span class="star">✳</span><span>100% HAVVN</span></div></div>
+  <section id="experience" class="section wrap">
+    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="ОДНО ПРИЛОЖЕНИЕ. БОЛЬШЕ ВОЗМОЖНОСТЕЙ.">ONE APP. MORE POSSIBILITIES.</p><h2><span data-ru="Гораздо больше,">So much more</span><br><span class="muted" data-ru="чем загрузки.">than downloads.</span></h2></div><p data-ru="Торренты — только начало. Посмотри, как Havvn соединяет файлы, друзей и общие вечера.">Torrents are just the beginning. Explore how Havvn brings files, friends and shared nights together.</p></div>
+    <div class="experience reveal">
+      <div class="scenario-controls" role="tablist" aria-label="Product scenarios">
+        <button id="tab-downloads" role="tab" aria-selected="true" aria-controls="panel-downloads" data-scenario="downloads"><span class="tab-num">01</span><span><b data-ru="Скачивай без суеты">Download without the friction</b><small data-ru="Торренты, поиск и полный контроль">Torrents, search and complete control</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+        <button id="tab-rooms" role="tab" aria-selected="false" aria-controls="panel-rooms" tabindex="-1" data-scenario="rooms"><span class="tab-num">02</span><span><b data-ru="Собери своих">Bring your people together</b><small data-ru="Приватная комната для вашей компании">A private room for your circle</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+        <button id="tab-watch" role="tab" aria-selected="false" aria-controls="panel-watch" tabindex="-1" data-scenario="watch"><span class="tab-num">03</span><span><b data-ru="Раздели момент">Share the moment</b><small data-ru="Кино, музыка и голос — вместе">Films, music and voice — together</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
+        <p class="demo-note" data-ru="Интерактивная иллюстрация возможностей. Данные в примере вымышлены.">Interactive feature illustration. Sample data is fictional.</p>
       </div>
-      <div class="trust"><span>Windows</span><span class="dot">◆</span><span>MIT</span><span class="dot">◆</span><span>No servers</span><span class="dot">◆</span><span>No telemetry</span></div>
+      <div class="app-preview">
+        <div class="window-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>HAVVN</span><span class="window-label">P2P HUB</span></div>
+        <div id="panel-downloads" class="scenario" role="tabpanel" aria-labelledby="tab-downloads" tabindex="0">
+          <div class="preview-title"><span data-ru="Твои загрузки">Your downloads</span><span class="preview-badge" data-ru="Нативный движок">Native engine</span></div>
+          <div class="preview-search"><span>⌕</span><span data-ru="Magnet-ссылка, .torrent или поиск…">Magnet link, .torrent or search…</span><span class="search-plus">+</span></div>
+          <div class="file-row"><span class="file-icon">↓</span><div><b>Big Buck Bunny · Blender Open Movie</b><small data-ru="Загрузка · последовательный режим">Downloading · sequential mode</small><div class="progress"><i></i></div></div><span class="file-stat">64%<small>1.2 / 1.9 GB</small></span></div>
+          <div class="file-row"><span class="file-icon completed">✓</span><div><b>Ubuntu Desktop</b><small data-ru="Готово · можно поделиться">Complete · ready to share</small></div><span class="file-stat completed" data-ru="Готово">Ready</span></div>
+          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="Выбирай файлы. Задавай приоритеты. Управляй скоростью.">Pick files. Set priorities. Control bandwidth.</span></div>
+        </div>
+        <div id="panel-rooms" class="scenario" role="tabpanel" aria-labelledby="tab-rooms" tabindex="0" hidden>
+          <div class="preview-title"><span data-ru="Свои люди">The inner circle</span><span class="preview-badge">E2E</span></div>
+          <div class="avatars"><span>A</span><span>M</span><span>K</span><div><b data-ru="Вечер с друзьями">A night with friends</b><small data-ru="Чат · файлы · голос">Chat · files · voice</small></div></div>
+          <div class="chat-bubble"><small>Alex</small><p data-ru="Собираемся? Я добавил фильм в общие файлы.">Movie night? I've added the film to our shared files.</p></div>
+          <div class="chat-bubble own"><small>Mika</small><p data-ru="Я здесь. Включай совместный просмотр ✳">I'm here. Let's watch together ✳</p></div>
+          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="По приглашению. Скачивание файлов — под твоим контролем.">Invite only. File downloads stay in your control.</span></div>
+        </div>
+        <div id="panel-watch" class="scenario" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" hidden>
+          <div class="preview-title"><span data-ru="Ваш общий кинотеатр">Your shared cinema</span><span class="preview-badge" data-ru="Вместе">Together</span></div>
+          <div class="cinema"><div class="cinema-sun"></div><div class="cinema-mountain"></div><span class="cinema-caption" data-ru="ВАШ ОБЩИЙ ЭКРАН">YOUR SHARED SCREEN</span><button id="demo-play" class="play-symbol" type="button" aria-pressed="false" aria-label="Play the animation demo"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 5 10 7-10 7V5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button></div>
+          <div class="playback"><span id="demo-state" data-ru="Демо на паузе">Demo paused</span><div class="progress"><i></i></div><span data-ru="Иллюстрация">Illustration</span></div>
+          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="Общие пауза и перемотка. Видно, кто ещё загружает.">Shared pause and seek. See who's still buffering.</span></div>
+        </div>
+      </div>
     </div>
-
-    <div class="wings" aria-hidden="true">
-      <div class="glow"></div>
-      <img src="assets/mark-gloss-768.png" width="768" height="440" alt="" decoding="async" />
-      <span class="chip c1"><b>0</b> servers</span>
-      <span class="chip c2">E2E <b>encrypted</b></span>
-      <span class="chip c3">P2P <b>mesh</b></span>
-      <span class="chip c4"><b>No</b> telemetry</span>
+  </section>
+  <div class="kinetic-band" aria-hidden="true"><div class="kinetic-track"><span data-ru="ЗАГРУЖАЙ.">DOWNLOAD.</span><span data-ru="ДЕЛИСЬ.">SHARE.</span><span data-ru="БУДЬ ВМЕСТЕ.">CONNECT.</span><span>HAVVN.</span></div></div>
+  <section id="features" class="section wrap">
+    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="СДЕЛАНО ДЛЯ ТВОЕГО РИТМА">BUILT FOR YOUR FLOW</p><h2 data-ru="Всё, что нужно. И ещё немного.">All you need. Then some.</h2></div><span class="section-index" data-ru="02 / ВОЗМОЖНОСТИ">02 / CAPABILITIES</span></div>
+    <div class="feature-grid">
+      <article class="feature wide reveal"><span class="feature-icon">↗</span><span class="feature-number">01</span><h3 data-ru="Файл. Ссылка. Готово.">A file. A link. That's it.</h3><p data-ru="Передай завершённую загрузку прямо в браузер друга по WebRTC. Получателю не нужны установка приложения и аккаунт Havvn.">Send a completed download straight to a friend's browser over WebRTC. No app installation or Havvn account needed on their side.</p><div class="share-visual" aria-hidden="true"><span data-ru="ТВОЙ ФАЙЛ">YOUR FILE</span><div class="transfer-line"><i></i></div><span data-ru="БРАУЗЕР ДРУГА">THEIR BROWSER</span></div><div class="tags"><span>WebRTC</span><span data-ru="Без облачной копии">No cloud copy</span></div></article>
+      <article class="feature reveal"><span class="feature-icon">▷</span><span class="feature-number">02</span><h3 data-ru="Не жди конца загрузки.">Don't wait for the download.</h3><p data-ru="Смотри во время загрузки, передавай видео на телефон или ТВ. Неподдерживаемые браузером форматы преобразуются на лету.">Watch while downloading, stream to your phone or TV. Formats your browser can't play are transcoded on the fly.</p><div class="tags"><span>Chromecast</span><span>Android TV</span></div></article>
+      <article class="feature reveal"><span class="feature-icon">⌁</span><span class="feature-number">03</span><h3 data-ru="Голос ближе. Шум тише.">Closer voices. Less noise.</h3><p data-ru="Голосовой чат, нейросетевое шумоподавление, демонстрация экрана и системный звук на Windows. Push-to-talk там, где платформа поддерживает глобальные клавиши.">Voice chat, neural noise suppression, screen sharing and system audio on Windows. Push-to-talk where the platform supports global shortcuts.</p><div class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></article>
+      <article class="feature reveal"><span class="feature-icon">⌘</span><span class="feature-number">04</span><h3 data-ru="Одна сеть. Ваша игра.">One network. Your game.</h3><p data-ru="Виртуальная LAN на Windows для игр через интернет и выделенный сервер на твоём компьютере. Миры сохраняются после остановки сервера.">A virtual LAN on Windows for games over the internet and a dedicated server on your computer. Worlds stay with you when the server stops.</p><div class="tags"><span>Virtual LAN · Windows</span><span data-ru="Свои серверы">Self-hosted</span></div></article>
+      <article class="feature reveal"><span class="feature-icon">✳</span><span class="feature-number">05</span><h3 data-ru="Твой стиль. До деталей.">Your style. Down to the details.</h3><p data-ru="Темы, стеклянные материалы, локальные фоны и профили оформления. Настраивай прозрачность, размытие и анимации под себя.">Themes, glass materials, local backgrounds and appearance profiles. Make opacity, blur and motion feel right for you.</p><div class="theme-swatches" aria-hidden="true"><i></i><i></i><i></i><i></i></div></article>
+      <article class="feature wide discovery reveal"><span class="feature-icon">⌕</span><span class="feature-number">06</span><h3 data-ru="Найди свой вариант.">Find your kind of download.</h3><p data-ru="Подключай свои источники поиска и RSS. Сравнивай качество, размер и языки релизов, выбирай файлы и сохраняй предпочтения — прямо в приложении.">Connect your search providers and RSS feeds. Compare release quality, size and languages, choose files and save your preferences — right in the app.</p><div class="tags"><span>Jackett</span><span>Prowlarr</span><span>RSS</span><span>Python</span></div></article>
     </div>
+  </section>
+  <section id="rooms" class="room-section section">
+    <div class="wrap room-layout">
+      <div class="reveal"><p class="eyebrow" data-ru="ЛИЧНОЕ ПРОСТРАНСТВО. ОБЩИЕ МОМЕНТЫ.">PRIVATE SPACE. SHARED MOMENTS.</p><h2><span data-ru="Своя комната.">Your own room.</span><br><em data-ru="Своя компания.">Your own people.</em></h2><p class="lead" data-ru="Общая папка, подписанный чат, голос и синхронный просмотр. Комната живёт на компьютерах участников — без серверов приложения.">Shared files, signed chat, voice and synchronized playback. Your room lives on its members' computers — without application servers.</p><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/README.md"><span data-ru="Подробнее о комнатах">Explore room features</span> ↗</a></div>
+      <div class="room-steps reveal"><article><span>01</span><div><h3 data-ru="Создай пространство">Create your space</h3><p data-ru="Выбери параметры комнаты и сквозное шифрование. Получи код приглашения.">Choose your room settings and end-to-end encryption. Get an invitation code.</p></div></article><article><span>02</span><div><h3 data-ru="Пригласи своих">Invite your people</h3><p data-ru="Поделись кодом для приложения или ссылкой для браузера. Гости могут общаться и смотреть вместе.">Share a code for the app or a browser link. Guests can chat, talk and watch together.</p></div></article><article><span>03</span><div><h3 data-ru="Будь вместе">Make it a shared moment</h3><p data-ru="Добавь файлы и включи совместный просмотр. Файлы скачиваются вручную по умолчанию; очередь и приоритеты выбираешь ты.">Add files and start watching together. File downloads are manual by default; you choose the queue and priorities.</p></div></article></div>
+    </div>
+  </section>
+  <section id="privacy" class="section wrap">
+    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="ПРИВАТНОСТЬ, КОТОРУЮ МОЖНО ПРОВЕРИТЬ">PRIVACY YOU CAN INSPECT</p><h2><span data-ru="Твои данные.">Your data.</span><br><span class="muted" data-ru="Под твоим контролем.">In your hands.</span></h2></div><p data-ru="Открытый код и понятные настройки. Ты видишь, как приложение подключается к сети и где хранит данные.">Open source and clear controls. See how the app connects to the network and where your data stays.</p></div>
+    <div class="privacy-grid"><article class="reveal"><span>◎</span><h3 data-ru="Понятная картина сети">A clearer network picture</h3><p data-ru="Прямой HTTPS IP, системный веб-прокси и маршруты туннеля показаны отдельно. Страна выходного IP не выдаётся за твоё местоположение.">Direct HTTPS IP, system web proxy and tunnel routes are shown separately. An exit IP's country isn't presented as your location.</p></article><article class="reveal"><span>⏸</span><h3 data-ru="Защита при сбое VPN">Protection when a VPN drops</h3><p data-ru="VPN-защита проверяет локальные маршруты, приостанавливает передачи и сеть комнат. Привязка нативного движка к туннелю зависит от доступной конфигурации.">VPN protection checks local routes and suspends transfers and room networking. Native engine tunnel binding depends on the available configuration.</p></article><article class="reveal"><span>◇</span><h3 data-ru="Ключи остаются у тебя">Your keys stay with you</h3><p data-ru="Секреты защищаются средствами ОС, история чата хранится зашифрованной. В E2E-комнатах файлы шифруются перед раздачей.">Secrets use OS-backed protection; chat history is stored encrypted. In E2E rooms, files are encrypted before being shared.</p></article></div>
+    <div class="network-note reveal"><span class="note-icon">↳</span><p data-ru="Без собственных серверов не означает без внешних соединений. Обнаружение участников использует трекеры и STUN; поиск — выбранные тобой источники. Соединение зависит от сети и доступности участников; ретрансляция через участника возможна, но не гарантирует связь в любой сети.">No application servers doesn't mean no external connections. Peer discovery uses trackers and STUN; search uses the sources you choose. Connectivity depends on networks and available peers; member relaying is possible, but cannot guarantee access across every network.</p></div>
+  </section>
+  <section id="updates" class="section updates-section wrap">
+    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="HAVVN ПРОДОЛЖАЕТ РАСТИ">HAVVN KEEPS MOVING</p><h2 data-ru="Что нового?">What's new?</h2></div><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md"><span data-ru="Все изменения">Full changelog</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
+    <div class="updates-grid">
+      <article class="reveal"><div class="update-meta"><b data-ru="ПЛАТФОРМЫ">PLATFORMS</b><span>Windows + Linux</span></div><h3 data-ru="Больше пространства для Havvn.">More room for Havvn.</h3><p data-ru="Загрузки, приватные комнаты и совместный просмотр на Windows и Linux. Выбирай привычную систему — твои файлы и твоя компания остаются рядом.">Downloads, private rooms and shared watching on Windows and Linux. Choose the system you know — keep your files and your people close.</p><a class="text-link" href="#download"><span data-ru="Выбрать платформу">Choose your platform</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></article>
+      <article class="reveal"><div class="update-meta"><b data-ru="ТВОЙ ОПЫТ">YOUR EXPERIENCE</b><span data-ru="Поиск · комнаты · оформление">Search · rooms · appearance</span></div><h3 data-ru="Больше контроля. Больше тебя.">More control. More you.</h3><p data-ru="Сравнивай варианты в поиске, управляй очередью общих файлов и настраивай интерфейс под себя. Возможности Havvn развиваются вместе с проектом.">Compare search results, manage shared-file queues and make the interface your own. Havvn's capabilities grow with the project.</p><a class="text-link" href="#features"><span data-ru="Исследовать возможности">Explore the possibilities</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></article>
+    </div>
+    <div class="next-update update-source reveal"><span class="update-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b data-ru="Всё развитие — на GitHub.">Follow the project on GitHub.</b><p data-ru="Свежие сборки, новые возможности и исправления — в релизах и истории изменений проекта.">Find current downloads, new capabilities and fixes in the project's releases and changelog.</p></div><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md" aria-label="Read the changelog"><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
+  </section>
+  <section id="download" class="section download-section">
+    <div class="wrap"><div class="download-heading reveal"><p class="eyebrow" data-ru="НАЧНИ СВОЮ ИСТОРИЮ">MAKE IT YOURS</p><h2><span data-ru="Меньше барьеров.">Less friction.</span><br><em data-ru="Больше свободы.">More freedom.</em></h2><p data-ru="Бесплатно. Открытый код. Никаких подписок.">Free. Open source. No subscriptions.</p></div>
+      <div class="platforms reveal"><article><div class="platform-top"><svg class="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4.5 10 3.4v7.7H2zm9.5-1.3L22 1.7v9.4H11.5zM2 12.6h8v7.8l-8-1.1zm9.5 0H22V22l-10.5-1.4z"/></svg><span class="platform-label" data-ru="ДЛЯ КОМПЬЮТЕРА">DESKTOP</span></div><h3>Windows</h3><p data-ru="Установщик и portable-архив · x64">Installer and portable archive · x64</p><a class="button" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="button-label" data-ru="Выбрать файл Windows">Choose a Windows download</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a></article><article><div class="platform-top"><svg class="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M8 11c0-2-1-3 0-6 1-3 7-3 8 0 1 3 0 4 0 6l3 7c1 3-3 3-7 3s-8 0-7-3zM9 8h.01M15 8h.01M10 10l2 2 2-2M8 15l-2 3m10-3 2 3"/></svg><span class="platform-label" data-ru="ПЕРВЫЕ СБОРКИ">PREVIEW</span></div><h3>Linux</h3><p>AppImage &amp; deb · x64</p><a class="button secondary" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="button-label" data-ru="Выбрать пакет Linux">Choose a Linux package</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a></article></div>
+      <div class="download-notes"><p data-ru="Выбери файл своей платформы на GitHub Releases. Linux — первые сборки: ограничения и требования указаны в документации. macOS пока в планах.">Choose your platform's asset on GitHub Releases. Linux packages are early builds: see the documentation for requirements and limitations. macOS is planned.</p><a href="https://github.com/NIHILcoder/Havvn/blob/main/docs/linux.md" data-ru="Руководство Linux ↗">Linux guide ↗</a></div>
+      <details class="verify"><summary data-ru="Как проверить скачанный файл?">How do I verify my download?</summary><p data-ru="Сравни SHA-256 с контрольной суммой в релизе. Для Linux опубликован SHA256SUMS-linux.txt. Результаты проверки и предупреждения установщика смотри в описании выбранной версии.">Compare SHA-256 with the checksum in the release. Linux packages include SHA256SUMS-linux.txt. See your release notes for scan results and installer warnings.</p><code>Get-FileHash .\Havvn-Setup-&lt;version&gt;.exe -Algorithm SHA256</code><p data-ru="Совпадение суммы подтверждает соответствие опубликованному файлу; это не гарантия безопасности.">A matching checksum confirms the file matches the published one; it isn't a security guarantee.</p></details>
+    </div>
+  </section>
+  <section id="faq" class="section wrap faq-layout">
+    <div class="reveal"><p class="eyebrow" data-ru="ДАВАЙ РАЗБЕРЁМСЯ">GOOD TO KNOW</p><h2 data-ru="Без недомолвок.">No loose ends.</h2><p class="muted" data-ru="Ответы перед первым запуском.">A few answers before you jump in.</p></div>
+    <div class="faq-list reveal"><details><summary data-ru="Это действительно бесплатно?">Is it really free?</summary><p data-ru="Да. Havvn — проект с открытым кодом под лицензией MIT. Нет платного тарифа, аккаунтов Havvn и телеметрии.">Yes. Havvn is open source under the MIT license. No paid tier, Havvn accounts or telemetry.</p></details><details><summary data-ru="Другу обязательно устанавливать приложение?">Does my friend need to install the app?</summary><p data-ru="Для получения файла по ссылке и участия в браузерной комнате — нет. В браузере доступны чат, голос и совместный просмотр. Полные возможности управления файлами и серверами доступны в приложении.">Not for receiving a shared file or joining a browser room. Browser guests can chat, talk and watch together. Full file and server management is available in the desktop app.</p></details><details><summary data-ru="Havvn заменяет VPN?">Does Havvn replace a VPN?</summary><p data-ru="Нет. P2P-соединения могут раскрывать IP участникам и инфраструктуре обнаружения. E2E-шифрование защищает содержимое, а не скрывает адрес. VPN-защита приложения работает вместе с твоим VPN и настройками ОС.">No. P2P connections can expose IP addresses to peers and discovery infrastructure. E2E encryption protects content, not your address. The app's VPN protection works alongside your VPN and OS settings.</p></details><details><summary data-ru="Откуда берутся результаты поиска?">Where do search results come from?</summary><p data-ru="Источники и RSS-ленты добавляешь ты. Havvn не включает индексаторы материалов, защищённых авторским правом. Используй приложение только для контента, который имеешь право скачивать и распространять.">You add search providers and RSS feeds. Havvn doesn't bundle indexers for copyrighted material. Use it for content you're allowed to download and distribute.</p></details></div>
   </section>
 </main>
-
-<div class="strip">
-  <div class="wrap">
-    <span><b>Open source</b></span><span><b>MIT licensed</b></span><span><b>No accounts</b></span>
-    <span><b>End-to-end encrypted</b></span><span><b>Bring your own indexers</b></span><span><b>Free</b></span>
-  </div>
-</div>
-
-<main class="wrap">
-
-  <section id="features">
-    <div class="sec-head reveal">
-      <div class="eyebrow">Not just a downloader</div>
-      <h2>The things classic clients can't do.</h2>
-      <p>Havvn is built on the BitTorrent ↔ WebRTC bridge — so a torrent isn't just something you download, it's something you can watch, share and sync, peer-to-peer.</p>
-    </div>
-    <div class="grid3">
-      <div class="card brkt reveal">
-        <div class="ci"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div>
-        <h3>Watch anywhere</h3>
-        <p>Stream a torrent while it's still downloading — to your phone, laptop or TV. Even formats the browser can't play, transcoded on the fly. Cast to Chromecast and Android TV, too.</p>
-      </div>
-      <div class="card brkt reveal">
-        <div class="ci"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9l5 3-5 3z"/></svg></div>
-        <h3>Watch &amp; listen together</h3>
-        <p>Flip on "together" in a room and playback stays in sync for everyone — with a music mode that reads album art, paints a live spectrum, and runs a shared queue.</p>
-      </div>
-      <div class="card brkt reveal">
-        <div class="ci"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/><rect x="3" y="19" width="18" height="2" rx="1"/></svg></div>
-        <h3>Share to a browser</h3>
-        <p>Send a finished download straight into a friend's browser over a link — no install, no account on their side. Pure WebRTC.</p>
-      </div>
-      <div class="card brkt reveal">
-        <div class="ci"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3"/></svg></div>
-        <h3>Voice &amp; screen share</h3>
-        <p>Serverless room voice with neural noise suppression, a global push-to-talk, and screen sharing — system audio included, echo-cancelled.</p>
-      </div>
-      <div class="card brkt reveal">
-        <div class="ci olive"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg></div>
-        <h3>Private friend rooms</h3>
-        <p>Invite-only rooms where everyone's files auto-sync into a shared folder and you chat — end-to-end encrypted, with the room key distributed in an owner-signed config.</p>
-      </div>
-      <div class="card brkt reveal">
-        <div class="ci olive"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
-        <h3>Privacy dashboard</h3>
-        <p>See the public IP peers connect to, your ISP and VPN status at a glance, with IP-leak detection and a VPN kill-switch.</p>
-      </div>
-    </div>
-  </section>
-</main>
-
-<div class="rooms" id="rooms">
-  <main class="wrap">
-    <section style="border:none">
-      <div class="sec-head reveal">
-        <div class="eyebrow">Friend swarms</div>
-        <h2>Private rooms that need no infrastructure.</h2>
-        <p>Spin up a room, share a speakable code, and your group's files distribute peer-to-peer — with a shared theater, encrypted chat and voice, and connectivity that hops between members so it works across home networks.</p>
-      </div>
-      <div class="steps">
-        <div class="step brkt reveal"><div class="n">01</div><h3>Create a room</h3><p>You get a short, speakable invite code — the secret that derives the room's channel key. End-to-end rooms add an <b>-e2e</b> marker so joiners know before anyone speaks.</p><span class="code">swift-amber-otter-comet-4821<b>-e2e</b></span></div>
-        <div class="step brkt reveal"><div class="n">02</div><h3>Share the code — or a browser link</h3><p>Anyone with the code joins in the app. A friend who has not installed Havvn can open the invite link in Chrome, Edge or Firefox for chat, voice and watch-together. Messages are signed, so no one can post under another member's name.</p></div>
-        <div class="step brkt reveal"><div class="n">03</div><h3>Sync, watch, chat</h3><p>Everyone's files flow into a shared folder organized into sections, you watch and listen in sync, and chat is end-to-end encrypted — stored encrypted on disk, never in a cloud.</p></div>
-      </div>
-
-      <div class="together reveal">
-        <div>
-          <div class="eyebrow" style="margin-bottom:12px">In the room</div>
-          <h3>A shared theater, right inside the app.</h3>
-          <p>Open any shared file and turn on "together" — play, pause and seek follow the room, and late joiners snap to the current spot. Audio gets its own stage: album art from the track's ID3 tags, a live spectrum, and a queue that auto-advances for everyone at once.</p>
-          <div class="tagrow"><span class="tag">in-sync playback</span><span class="tag">ID3 album art</span><span class="tag">live spectrum</span><span class="tag">shared queue</span></div>
-        </div>
-        <div class="player" aria-hidden="true">
-          <div class="stage">
-            <div class="bar" style="height:40%"></div><div class="bar" style="height:72%"></div><div class="bar" style="height:55%"></div><div class="bar" style="height:88%"></div><div class="bar" style="height:64%"></div><div class="bar" style="height:38%"></div><div class="bar" style="height:80%"></div><div class="bar" style="height:50%"></div><div class="bar" style="height:70%"></div><div class="bar" style="height:44%"></div><div class="bar" style="height:60%"></div><div class="bar" style="height:34%"></div>
-          </div>
-          <div class="row">
-            <div class="disc"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-            <div class="meta"><div class="tt">Nightdrive.demo.mp3</div><div class="sub">704 KB · 1 / 3</div></div>
-          </div>
-          <div class="track"></div>
-          <div class="who"><span class="dot"></span> 3 listening together</div>
-        </div>
-      </div>
-
-      <div class="relaybox reveal">
-        <div>
-          <h3>Works across networks — with zero servers</h3>
-          <p>Direct, IPv6 and STUN cover most connections. When two members can't reach each other, a third member relays the (still end-to-end encrypted) traffic between them — so a room works without any infrastructure of its own.</p>
-          <div class="tagrow"><span class="tag">AES-256-GCM</span><span class="tag">Ed25519 signed</span><span class="tag">peer-relay</span><span class="tag">no TURN required</span></div>
-        </div>
-        <svg viewBox="0 0 260 150" style="width:100%" role="img" aria-label="Two peers behind strict NAT connect through a third member that relays.">
-          <line x1="40" y1="40" x2="130" y2="110" stroke="#e25117" stroke-width="1.4" stroke-dasharray="3 6" opacity=".85"/>
-          <line x1="220" y1="40" x2="130" y2="110" stroke="#e25117" stroke-width="1.4" stroke-dasharray="3 6" opacity=".85"/>
-          <line x1="40" y1="40" x2="220" y2="40" stroke="rgba(242,230,220,.18)" stroke-width="1" stroke-dasharray="2 5"/>
-          <g font-family="JetBrains Mono, monospace" font-size="9" fill="#b8b0a4" text-anchor="middle">
-            <rect x="14" y="24" width="52" height="32" fill="#181613" stroke="rgba(242,230,220,.16)"/><text x="40" y="44">peer A</text>
-            <rect x="194" y="24" width="52" height="32" fill="#181613" stroke="rgba(242,230,220,.16)"/><text x="220" y="44">peer B</text>
-            <rect x="100" y="96" width="60" height="32" fill="#e25117"/><text x="130" y="116" fill="#140f0c">relay</text>
-            <text x="130" y="20" fill="#8d867b">direct blocked by NAT</text>
-          </g>
-        </svg>
-      </div>
-    </section>
-  </main>
-</div>
-
-<main class="wrap">
-  <section id="privacy">
-    <div class="sec-head reveal">
-      <div class="eyebrow">Privacy by default</div>
-      <h2>You can see exactly what the swarm sees.</h2>
-      <p>Privacy isn't a checkbox buried in settings — it's a live dashboard, and everything sensitive is encrypted on your own machine.</p>
-    </div>
-    <div class="plist">
-      <div class="pitem brkt reveal"><span class="pi"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/></svg></span><div><h3>Live exposure dashboard</h3><p>The public IP peers actually connect to, your ISP, location and VPN status — colour-coded, refreshed only on demand.</p></div></div>
-      <div class="pitem brkt reveal"><span class="pi"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></span><div><h3>IP-leak detection</h3><p>Warns when the IP facing the swarm looks like a consumer ISP rather than your VPN — catch a leak before you download.</p></div></div>
-      <div class="pitem brkt reveal"><span class="pi"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M18.4 18.4A10 10 0 0 1 12 20C5 20 1 12 1 12a18.5 18.5 0 0 1 5.1-6M9.9 4.2A10 10 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.2 3.2M1 1l22 22"/></svg></span><div><h3>VPN kill-switch</h3><p>Auto-pauses every torrent the moment your VPN drops — rooms included — plus a check at startup. Your real IP doesn't leak by accident.</p></div></div>
-      <div class="pitem brkt reveal"><span class="pi"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span><div><h3>Secrets encrypted at rest</h3><p>Provider logins, room keys and chat history are encrypted with OS-level storage (DPAPI / Keychain / libsecret). No telemetry, ever.</p></div></div>
-    </div>
-  </section>
-
-  <section class="download" id="download">
-    <div class="dl-card reveal">
-      <div class="eyebrow" style="margin-bottom:14px">Get Havvn</div>
-      <h2>Download for Windows</h2>
-      <p class="sub">Free and open source. macOS and Linux are planned.</p>
-      <a class="btn btn-primary" style="font-size:15px;padding:14px 26px" href="https://github.com/NIHILcoder/Havvn/releases/latest">
-        <svg class="icn" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 21h14"/></svg>
-        Download the latest release
-      </a>
-      <div class="verify">
-        <div class="vt"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:15px;height:15px"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg> Verify your download — every release ships a SHA-256 checksum and a VirusTotal scan.</div>
-        <pre>Get-FileHash .\Havvn-Setup-&lt;version&gt;.exe -Algorithm SHA256</pre>
-      </div>
-      <p class="note">As an unsigned open-source app, the installer may trigger a Windows SmartScreen "unknown publisher" prompt — verifying the checksum confirms the file is genuine.</p>
-    </div>
-  </section>
-
-  <section id="faq">
-    <div class="sec-head reveal">
-      <div class="eyebrow">Questions</div>
-      <h2>The honest FAQ.</h2>
-    </div>
-    <details class="reveal"><summary>Is it really free? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">Yes — free and open source under the MIT license. There's no paid tier, no accounts, and no telemetry.</div></details>
-    <details class="reveal"><summary>Do you run any servers? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">No. Everything runs on your machine and directly between you and your peers. The only shared infrastructure is the public WebRTC rendezvous trackers used to help peers find each other — they never see your files or any plaintext.</div></details>
-    <details class="reveal"><summary>Do my files go through the cloud? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">No. Streaming, sharing, rooms and voice are all peer-to-peer. In end-to-end encrypted rooms, files are encrypted on your disk before they're seeded and decrypted after download, so even a member relaying for others only ever forwards ciphertext.</div></details>
-    <details class="reveal"><summary>How do rooms stay private? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">The invite code derives an AES-256-GCM key, so only people with the code can read anything. In end-to-end encrypted rooms the content key is distributed in a config the room owner signs with an Ed25519 key, so a mere code-holder can't plant or forge one. Chat is signed per device, so no one can post under another member's identity, and history is encrypted on disk.</div></details>
-    <details class="reveal"><summary>Is this legal? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">BitTorrent is a protocol, and Havvn bundles no indexers for copyrighted material — you bring your own sources and are responsible for what you download and share. Use it for legal content.</div></details>
-    <details class="reveal"><summary>macOS and Linux? <span class="chev"><svg class="icn" aria-hidden="true" viewBox="0 0 24 24" style="width:18px;height:18px"><path d="M6 9l6 6 6-6"/></svg></span></summary><div class="ans">The app is built cross-platform (Electron), and macOS / Linux builds are planned. Today the published installer is Windows only.</div></details>
-    <div class="legal reveal" style="margin-top:28px"><strong>Legal use only.</strong> Havvn does not bundle indexers for copyrighted material. Any search providers or feeds are added by you, and you are responsible for what you download and share.</div>
-  </section>
-</main>
-
-<footer>
-  <div class="wrap">
-    <div class="foot">
-      <div class="fcol" style="max-width:300px">
-        <div class="logo" style="margin-bottom:12px">
-          <svg class="mark" viewBox="0 0 512 295.8" aria-hidden="true"><path fill="#161311" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/><path fill="#e25117" d="M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z"/><g fill="#f4c1b0"><path d="M478.6 34.2C478.6 34.2 402.4 153.1 402.4 153.1C402.4 153.1 407.5 139.6 409.5 132.9C411.6 126.2 413.4 118.7 414.7 112.9C415.9 107.1 416.7 102.4 417 98.2C417.4 93.9 417.1 89.8 416.7 87.5C416.4 85.3 415.6 85.1 414.9 84.6C414.2 84.1 417.3 82.5 412.6 84.5C407.8 86.5 386.5 96.6 386.5 96.6C386.5 96.6 478.6 34.2 478.6 34.2Z"/><path d="M186.4 137.3C186.4 137.3 176.1 145.7 171.4 150.5C166.6 155.2 161 162 157.7 165.8C154.5 169.7 153.4 171.2 151.6 173.6C149.9 176.1 148.4 178.6 147.3 180.7C146.1 182.8 145.5 184.1 144.8 186.2C144 188.3 143.3 190.6 142.7 193.2C142.2 195.9 141.4 202.1 141.4 202.1C141.4 202.1 117.8 165.3 117.8 165.3C117.8 165.3 123.9 164.1 127.6 162.6C131.3 161.1 134.3 159.6 139.8 156.5C145.4 153.4 154.7 148.3 161 144.1C167.2 140 177.6 131.4 177.6 131.4C177.6 131.4 186.4 137.3 186.4 137.3Z"/><path d="M361.5 113.3C361.5 113.3 360.4 116.8 359.1 119.6C357.8 122.5 358.1 122.8 353.6 130.4C349.1 138.1 337.5 155.9 332.2 165.7C326.9 175.4 324.7 181.5 321.7 189.1C318.6 196.8 316 204.9 313.9 211.7C311.7 218.5 309.8 225.6 308.7 230.2C307.6 234.7 307.6 236.6 307.4 239.1C307.2 241.6 307.3 243 307.4 245.2C307.6 247.4 308.3 252.3 308.3 252.3C308.3 252.3 274.7 213.7 274.7 213.7C274.7 213.7 278.7 212.3 280.9 211.1C283 210 284.2 209.3 287.6 206.6C291.1 203.9 297.7 198.4 301.6 194.9C305.4 191.3 307.6 189.3 310.9 185.4C314.2 181.5 318.1 176.3 321.2 171.6C324.3 166.9 326.8 162.6 329.5 157.4C332.2 152.2 335.4 145.5 337.3 140.4C339.3 135.4 337.2 131.4 341.3 126.8C345.3 122.3 361.5 113.3 361.5 113.3Z"/></g></svg>
-          <svg class="wm" viewBox="0 0 440 100" role="img" aria-label="Havvn"><path fill="#f2efe9" d="M11.5 18.0L40.0 0.0L26.0 100.0L0.0 100.0ZM60.0 0.0L86.0 0.0L74.5 82.0L46.0 100.0ZM28.7 38.0L60.7 38.0L57.5 61.0L25.5 61.0ZM138.0 0.0L133.8 30.0L111.0 100.0L85.0 100.0ZM138.0 0.0L163.0 100.0L137.0 100.0L133.8 30.0ZM110.3 62.0L148.3 62.0L145.2 84.0L107.2 84.0ZM364.0 0.0L390.0 0.0L376.0 100.0L350.0 100.0ZM411.5 18.0L440.0 0.0L426.0 100.0L400.0 100.0ZM364.0 0.0L390.0 0.0L426.0 100.0L400.0 100.0Z"/><path fill="#e25117" d="M190.0 0.0L218.0 0.0L218.9 72.0L215.0 100.0ZM268.0 0.0L240.0 0.0L218.9 72.0L215.0 100.0ZM273.0 0.0L301.0 0.0L301.9 72.0L298.0 100.0ZM351.0 0.0L323.0 0.0L301.9 72.0L298.0 100.0Z"/></svg>
-        </div>
-        <p style="color:var(--muted);font-size:13.5px">A private, serverless P2P hub. Built with Electron, React, Transmission and WebTorrent.</p>
-      </div>
-      <div class="fcol"><h4>Product</h4><a href="#features">Features</a><a href="#rooms">Rooms</a><a href="#privacy">Privacy</a><a href="https://github.com/NIHILcoder/Havvn/releases/latest">Download</a></div>
-      <div class="fcol"><h4>Project</h4><a href="https://github.com/NIHILcoder/Havvn">GitHub</a><a href="https://github.com/NIHILcoder/Havvn/releases">Releases</a><a href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md">Changelog</a><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE">License (MIT)</a></div>
-    </div>
-    <div class="foot-bottom">
-      <span>© 2026 Havvn — MIT licensed.</span>
-      <span class="mono">No servers · No telemetry · No cloud</span>
-    </div>
-  </div>
-</footer>
-
-<script>
-(function(){
-  try{
-    if('IntersectionObserver' in window){
-      var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.14});
-      document.querySelectorAll('.reveal').forEach(function(el){io.observe(el);});
-    }else{document.querySelectorAll('.reveal').forEach(function(el){el.classList.add('in');});}
-  }catch(e){document.querySelectorAll('.reveal').forEach(function(el){el.classList.add('in');});} // any failure → show everything
-})();
-</script>
+<footer><div class="wrap"><div class="footer-top"><a class="brand" href="#"><img src="assets/mark-gloss-768.png" width="768" height="440" alt=""><img class="brand-wordmark" src="assets/wordmark.svg" width="440" height="100" alt=""><span class="brand-dot"></span></a><p data-ru="Между вами. Напрямую.">Between you. Directly.</p><div><a href="https://github.com/NIHILcoder/Havvn">GitHub ↗</a><a href="https://github.com/NIHILcoder/Havvn/issues" data-ru="Обратная связь ↗">Feedback ↗</a><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE">MIT ↗</a></div></div><div class="footer-bottom"><span>© 2026 HAVVN</span><span data-ru="Сделано для свободы соединяться.">Built for the freedom to connect.</span><a href="#" data-ru="Наверх ↑">Back to top ↑</a></div></div></footer>
 </body>
 </html>
