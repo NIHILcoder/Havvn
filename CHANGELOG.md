@@ -1,5 +1,67 @@
 # Changelog
 
+## Unreleased
+
+## [3.2.0] - 2026-10-13
+
+This release adds room chat and workspace tools, expands local game-server administration, and reduces unnecessary runtime and interface work.
+
+### Added
+
+- Settings search lists individual parameters and their descriptions, then navigates to and highlights the selected control. The search index follows setting labels in renderer builds.
+
+- Multi-file selection in rooms with click/Ctrl/Shift and keyboard shortcuts, bulk download/pause, folder moves and removal. Selection markers appear after the first selection; the file speed budget now opens from a compact toolbar button.
+
+- Shared room chat pins with owner controls, authenticated snapshots and navigation back to recent messages.
+- First-unread navigation and read receipts for visible chat messages, including detached windows.
+- Per-room notification modes: all activity, explicit @mentions, or off.
+- Local chat archive search with author, date, link, request and mention filters.
+- File request statuses with links to shared room files, and an optional watch-together start after every participating viewer is ready.
+
+- Minecraft settings templates with a before/after preview and custom templates saved on the device.
+- Server health panels with bounded CPU/RAM history, host disk space and explicit Paper/spark tick measurements.
+- Full server snapshots covering the world, game files, mods, settings and version metadata. Updates retain a full snapshot and restore the previous assembly if installation fails.
+
+- Room layout presets for conversation, cinema, gaming and administration, plus named custom layouts with panel widths and the selected server/tab. Saved layouts fold detached panels back into the room.
+- A server preparation checklist showing server and LAN state, the required version and published content folders, with explicit file reception and client-pack confirmation.
+- Server console search, warning/error filters, frozen output, navigation to the latest error and locally saved commands that prefill the command input.
+
+### Changed
+
+- Room state crosses desktop IPC as an initial snapshot followed by coalesced changes. Renderer subscribers share a decoder, request a new snapshot after a missed revision and retain references to unchanged data.
+- Room storage uses scoped JSON snapshots and a bounded cache of decrypted text. Unread counts use metadata; persisting unchanged messages retains their existing encrypted text.
+- WebTorrent piece caches share byte budgets across transfers: 32 MiB for Classic downloads, 16 MiB for rooms and 8 MiB for shared links. Empty file clients and sharing windows are released after idle periods without ending active publications, rooms or calls.
+- The Native engine respects active-download limits across startup, pauses, streaming and settings changes. Polls no longer overlap, and expensive peer statistics are refreshed separately from progress.
+- Transfer pages, sidebar counters and playback-buffer indicators share one download model and statistics subscription. Unchanged entries retain their references; live speed/progress sorting continues to update.
+
+### Fixed
+
+- Removed perpetual glow animations from persistent connection, room-presence and call indicators, allowing idle windows to stop submitting animation frames. Reduced-motion preferences now also cover pseudo-elements.
+
+- Unified compact search/room control shapes, fixed squeezed RSS rule actions, removed nested input focus frames and rounded external-player preference borders. Settings alerts sit lower; torrent file selection uses round markers with keyboard support.
+
+- Completion-action and export menus in Downloads now render above the transfer list when glass headers are enabled. Long menu labels wrap within correctly sized rows.
+
+- The room member-count button now hides/restores the People panel at its current dock position instead of collapsing the left column and its unrelated tabs.
+
+- Replaced system dropdown menus in search filters, provider connections, player preferences, episode prefetch and torrent creation with Havvn menus. RSS and subtitle delay fields now use themed number controls; profile capture fixtures use the app's styled buttons.
+
+- Fixed overlapping multiline pinned chat messages and unified spacing, wrapping and control sizes in room pins, file requests, profile actions, room layouts and server forms. Narrow chat composers now keep the input and send action on separate rows.
+
+- Torrent size in detailed and expanded download rows now comes from metadata instead of dividing lifetime transferred bytes by current progress, preventing inflated sizes after pausing and restarting. Native polling restores the full metadata size independently of file selection and repairs older saved values.
+
+- Repeated clicks on room member avatars could clear the entire desktop interface. Profile anchors are now captured during the click event before React defers the state update. The same fix covers chat author avatars.
+- Removed the unused action-header spacer above the room people list so participants start at the normal panel padding.
+- Room member profiles and anchored menus now dismiss when their trigger is hidden, removed, moved to another window, scrolled or resized. Long profiles and menus stay inside small windows without losing their controls.
+- Repeated Enter presses in room creation, joining and profile editing no longer submit multiple concurrent requests. Pending dialogs lock their settings, and confirming IME composition does not submit them.
+- Extended the real two-client UI regression to cover repeated profile toggles, switching participants, Escape dismissal, chat profiles and people-list spacing.
+
+### Verification
+
+- Added regression tests for signed chat pins, room history/search, workspace layouts, file selection, server health/snapshots, download queues, bounded caches, shared download state and settings search.
+- Isolated Electron checks cover room panel controls, menus above glass surfaces, themed inputs, native file-selection markers, server administration, sharing-engine lifetimes and idle rendering. Synthetic fixtures and software/forced-awake compositor measurements are identified in the corresponding test documentation.
+- Physical multi-computer/NAT/TURN compatibility, device hotplug, installer upgrades and GPU utilization during real transfers remain separate manual checks.
+
 ## [3.1.1] - 2026-10-06
 
 This update fixes current-format room invitations being rejected by the desktop join dialog and adds the first Linux x64 packages.

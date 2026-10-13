@@ -1,8 +1,107 @@
 # Testing rooms (friend swarms) on one machine
 
+## Chat conveniences (12 October 2026)
+
+`node scripts/smoke-room-chat-tools.cjs` mounts the production React chat in an
+isolated Electron profile with fixture IPC. It checks first-unread navigation,
+visible-row receipts, hidden and unfocused chats, a second window's document,
+shared pin actions, archive search with delayed responses, request completion and
+file links, narrow dark/light layouts, and readiness countdown cancellation.
+Search layout checks cover 260–600 px windows and a short window: collapsed
+filters, active-filter counts, equal control heights, full built-in labels,
+separate filter scrolling, clear-query keyboard focus, and a custom blue palette.
+The fixture controls focus and IPC; it does not certify two physical computers.
+
+`room-chat-pins.test.ts` runs the engine's actual pin functions with real Ed25519
+keys and an injected storage boundary: durable publication, owner/author proofs,
+replay and previous-owner rejection, ten-pin capacity, edits, and code rotation.
+Browser-guest tests validate the same frames through encrypted ingress and render
+request statuses as readable text. Guests can view shared pins; management belongs
+to the desktop room owner. Older clients do not gain the new controls automatically
+and may display the structured request body as plain text; update those clients
+for the request cards and shared pin view.
+
+Search scans only this device's retained archive (up to 5000 entries), returning
+50 matches per page. Pins retain at most ten authenticated message snapshots until
+unpinning or forgetting the room, independently of the short chat window. Read
+receipts use locally ordered arrival timestamps and advance only to a visible
+message ID, or through an explicit “mark all read” action. Notification modes
+retain the global notification setting and cooldown; mentions require explicit
+`@name` outside URLs and code. File request status changes use the original
+author's signed chat edits. Linked files use the existing explicit receive action.
+
+The watch start must be armed by a participant allowed to control playback. It
+waits for the current file's synchronized viewers, restarts its three-second
+countdown when readiness or membership changes, and cancels on source/control
+changes. Unknown readiness from an old client does not count as ready.
+
+## Server templates, health and full snapshots (12 October 2026)
+
+Run `node scripts/smoke-server-health.cjs` to verify native memory readings and
+CPU deltas on the current Windows/Linux process. It performs bounded work in its
+own test process and never contacts a running user server. Linux `/proc` parsing
+also has unit coverage. `node scripts/smoke-room-workspaces.cjs` renders the real
+React templates, health charts and full-backup confirmation in isolated Electron;
+fixture IPC verifies template previews, explicit saves, preserved port/auth values,
+tick-query deduplication and narrow-window layout. Screenshots are emitted in the
+reported temporary directory.
+
+`server-snapshot.test.ts` exercises real temporary trees: complete world/mod/core
+restoration, removal of newer files, digest failures, low disk space, directory
+publication failures, metadata-commit failures and linked paths. `server-update.test.ts`
+uses the actual manager and snapshot pipeline with an injected installer to test
+maintenance exclusion, automatic rollback, pinned room content and room/network
+changes during installation.
+
+Full snapshots preserve the working tree and game version/configuration. They do
+not restore room membership, operator grants, schedules or network latches.
+Managed Java runtimes remain shared by instances. Restoring a full snapshot pauses
+automatic room-content synchronization and pins the installed files until an
+explicit sync or rebind. Installation failures roll back automatically; failures
+after the user's later game launch can be reverted from the full snapshot in Backups.
+Servers are never launched by the update or restore action.
+
+Tick measurement sends `tps` and `mspt` to Paper, or `spark tps` to other Minecraft
+loaders, only when requested by the host. Replies must match supported console
+formats; absent data stays unknown. CPU means total machine capacity and RAM means
+resident process memory, not Java heap. The history keeps at most 60 samples.
+
+If a full restore loses power or its rollback also fails, `.server-restore-*`
+beside `root/` retains a recovery journal and any previous tree. Startup and further
+maintenance are blocked, including when `root/` is missing. Preserve the instance
+folder before inspecting the retained tree and version/config data in `recovery.json`.
+
+## Room workspaces and server preparation (11 October 2026)
+
+Run `node scripts/smoke-room-workspaces.cjs`. The isolated Electron profile renders
+the production layout menu, server panel, preparation checklist and console with
+fixture IPC. It checks custom-layout persistence, selected server/tab restoration
+during delayed loading, preset application, console search and severity filtering,
+frozen output with a bounded live buffer, saved-command prefill, duplicate-send
+protection, explicit content reception, network-state changes and a narrow light
+layout. PNGs are written to the reported temporary directory. The scenario is also
+part of `scripts/acceptance-rooms.cjs`.
+
+Layouts are stored on this device. Applying a layout folds detached groups into
+the room and changes panel presentation; it does not launch servers or join voice.
+Custom layouts retain their selected server when that instance still exists.
+
+The checklist uses the room's existing LAN state, including peer relay. A server
+status advert is not an independent game handshake. Installed client versions and
+mod compatibility require explicit user confirmation. Published server-content
+folders are not a client install manifest: server-only mods, plugins and datapacks
+may be present. File reception never installs or executes that content. Old hosts
+without folder metadata display an unknown content requirement.
+
+## Desktop invitation and member-profile regression (7 October 2026)
+
+Run `npm run build` followed by `npm run test:room-invites`. This starts two isolated desktop clients with a loopback tracker, checks generated encrypted invitations through manual input, clipboard and deep links, and connects a second peer. It then opens/closes the self profile 20 times, switches between participants, dismisses a profile with Escape, toggles a chat author profile 20 times and checks that the people list starts at the panel padding. It does not read or join the user's rooms.
+
+The same fixture holds create/join/profile IPC requests and sends eight Enter presses, asserting one request, locked settings and IME-safe confirmation. `node scripts/smoke-room-overlays.cjs` separately checks real React overlays on scroll, resize, hidden/removed anchors, internal scrolling, narrow windows and detached-window ownership. It uses synthetic data and its own temporary profile.
+
 ## Stage 7: complete local automatic acceptance (5 October 2026)
 
-Run `npm run test:rooms` for the full build, three TypeScript checks, complete `npm test` and ten native scenarios. Against an already rebuilt application, run `node scripts/acceptance-rooms.cjs --native-only`. Results, logs and screenshots are saved under temporary acceptance directories. See [scope, three-process relay/ten-rotation scenario, compatibility and physical checks still unavailable](rooms-local-acceptance.md). The peer fixture uses `TH_INSTANCE` and local trackers; it does not validate the production privacy policy on a physical network.
+Run `npm run test:rooms` for the full build, three TypeScript checks, complete `npm test` and twelve native scenarios. Against an already rebuilt application, run `node scripts/acceptance-rooms.cjs --native-only`. Results, logs and screenshots are saved under temporary acceptance directories. See [scope, three-process relay/ten-rotation scenario, compatibility and physical checks still unavailable](rooms-local-acceptance.md). The peer fixture uses `TH_INSTANCE` and local trackers; it does not validate the production privacy policy on a physical network.
 
 ## Game-server maintenance (5 October 2026)
 
