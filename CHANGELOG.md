@@ -36,6 +36,8 @@ This release adds room chat and workspace tools, expands local game-server admin
 
 ### Fixed
 
+- Updated the development runner to concurrently 10.0.6 with shell-quote 1.12.0, addressing command injection advisory GHSA-pqg4-j6r4-53mv.
+
 - Removed perpetual glow animations from persistent connection, room-presence and call indicators, allowing idle windows to stop submitting animation frames. Reduced-motion preferences now also cover pseudo-elements.
 
 - Unified compact search/room control shapes, fixed squeezed RSS rule actions, removed nested input focus frames and rounded external-player preference borders. Settings alerts sit lower; torrent file selection uses round markers with keyboard support.
