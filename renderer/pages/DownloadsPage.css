@@ -259,6 +259,8 @@
   min-width: 180px;
 }
 
+.dropdown-menu.downloads-completion-menu { min-width: min(224px, calc(100vw - 16px)); }
+
 .dropdown-item {
   display: flex;
   align-items: center;

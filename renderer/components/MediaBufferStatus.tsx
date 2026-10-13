@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { bufferedSecondsAhead, playbackPhase, readBufferedRanges, type PlaybackSnapshot, type PlaybackSource } from '../../shared/playback-buffer';
 import { useTranslation } from '../utils/i18nContext';
+import { downloadsModel, useDownloads } from '../state/downloads';
 import './MediaBufferStatus.css';
 
 const EMPTY_MEDIA: PlaybackSnapshot = { attached: false, readyState: 0, paused: true, ended: false, seeking: false, waiting: false };
@@ -15,21 +16,17 @@ export function MediaBufferStatus({ media, downloadId, resolving = false, transc
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState(EMPTY_MEDIA);
   const [ahead, setAhead] = useState(0);
-  const [source, setSource] = useState<PlaybackSource | null>(null);
+  const download = useDownloads(s => s.byId.get(downloadId));
+  const stat = useDownloads(s => s.statsById.get(downloadId));
+  const source = useMemo<PlaybackSource | null>(() => {
+    const current = stat ?? download;
+    return current ? { ...current, metadataPending: !download?.totalSize && current.progress === 0 } : null;
+  }, [download, stat]);
   useEffect(() => {
-    let disposed = false;
-    let receivedStats = false;
-    setSource(null);
-    const unsubscribe = window.api.onDownloadStats(stats => {
-      const stat = stats.find(item => item.id === downloadId);
-      if (stat) { receivedStats = true; setSource(previous => ({ ...stat, metadataPending: previous?.metadataPending && stat.progress === 0 })); }
-    });
-    void window.api.getDownloads().then(downloads => {
-      const download = downloads.find(item => item.id === downloadId);
-      if (!disposed && !receivedStats && download) setSource({ ...download, metadataPending: !download.totalSize });
-    }).catch(() => { /* Missing stats must not interrupt local playback. */ });
-    return () => { disposed = true; unsubscribe(); };
-  }, [downloadId]);
+    const release = downloadsModel.retain();
+    void downloadsModel.refresh().catch(() => { /* Local playback remains usable. */ });
+    return release;
+  }, []);
   useEffect(() => {
     if (!media) { setSnapshot(EMPTY_MEDIA); setAhead(0); return; }
     let waiting = media.readyState < 3;

@@ -2,10 +2,10 @@
  * Havvn Main App Component
  */
 
-import React, { useState, useEffect, useMemo, useRef, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { HostToaster } from './utils/hostToast';
-import { TitleBar, Sidebar, StatusBar, PageId, FilterMode, RoomPresence, VoiceCallInfo, OnlinePerson } from './layout';
-import { CompletionPending, DownloadStats, Download, RoomSummary, RoomState } from '../shared/types';
+import { TitleBar, PageId, FilterMode, RoomPresence, VoiceCallInfo, OnlinePerson } from './layout';
+import { CompletionPending, RoomSummary, RoomState } from '../shared/types';
 // Downloads is the default route — keep it eager. The rest are code-split into
 // their own chunks so the initial bundle is smaller and the app (and the startup
 // splash) reaches interactive sooner.
@@ -32,6 +32,8 @@ import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
 import { dismissSplash, setSplashStage } from './utils/splash';
 import { receiveExternalWatch } from './utils/externalWatch';
+import { downloadsModel } from './state/downloads';
+import { DownloadSidebar, DownloadStatusBar } from './layout/DownloadIndicators';
 
 
 /** Dismissible warning strip above the page content (VPN / bind / disk guards). */
@@ -60,8 +62,6 @@ const AppContent: React.FC = () => {
     try { return localStorage.getItem('startPage') === 'rooms' ? 'rooms' : 'downloads'; }
     catch { return 'downloads'; }
   });
-  const [stats, setStats] = useState<DownloadStats[]>([]);
-  const [downloads, setDownloads] = useState<Download[]>([]);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   // Torrent/magnet handed to us by the OS — passed to DownloadsPage to open the add dialog
   const [openTorrentUri, setOpenTorrentUri] = useState<string | null>(null);
@@ -148,26 +148,12 @@ const AppContent: React.FC = () => {
     } catch { /* prefs are cosmetic — never block boot */ }
   }, []);
 
-  // Load downloads for counts
+  // One window-wide subscription and coalesced metadata refresh.
   useEffect(() => {
     setSplashStage('downloads');
-    const loadDownloads = async () => {
-      try {
-        const list = await window.api.getDownloads();
-        setDownloads(list.filter(d => d.status !== 'removed'));
-      } catch (error) {
-        console.error('Failed to load downloads:', error);
-      } finally {
-        // Initial data is in (or failed) — fade out the startup splash. Idempotent
-        // and runs even on error, so the splash can never trap the user.
-        dismissSplash();
-      }
-    };
-    loadDownloads();
-
-    // Refresh periodically
-    const interval = setInterval(loadDownloads, 5000);
-    return () => clearInterval(interval);
+    const release = downloadsModel.retain();
+    void downloadsModel.refresh().finally(dismissSplash).catch(() => {});
+    return release;
   }, []);
 
   // First-run onboarding: only when the user has never seen it AND the app
@@ -181,32 +167,11 @@ const AppContent: React.FC = () => {
     } catch { return; /* storage unavailable — can't persist dismissal, don't nag */ }
     (async () => {
       try {
-        const list = await window.api.getDownloads();
+        await downloadsModel.refresh();
+        const list = downloadsModel.store.getState().downloads;
         if (Array.isArray(list) && list.length === 0) setShowOnboarding(true);
       } catch { /* engine unavailable — can't tell it's fresh, stay quiet */ }
     })();
-  }, []);
-
-  // Subscribe to stats for status bar
-  useEffect(() => {
-    const unsubscribe = window.api.onDownloadStats((newStats) => {
-      setStats(newStats);
-
-      // Update download statuses from stats — but ONLY when a status actually
-      // flips. Live progress/speed are read from the stats Map by the rows, so
-      // rebuilding every download object every tick just churns GC and defeats
-      // memoization. Returning the same array reference makes React bail out.
-      setDownloads(prev => {
-        let changed = false;
-        const next = prev.map(d => {
-          const stat = newStats.find(s => s.id === d.id);
-          if (stat && stat.status !== d.status) { changed = true; return { ...d, status: stat.status }; }
-          return d;
-        });
-        return changed ? next : prev;
-      });
-    });
-    return () => unsubscribe();
   }, []);
 
   // Listen for opening torrent files/magnet links from OS.
@@ -374,8 +339,7 @@ const AppContent: React.FC = () => {
     return () => { cancelled = true; clearInterval(interval); offUpdate(); offSync(); };
   }, []);
 
-  // Tell the main process which room is on screen (so it won't OS-notify it and
-  // marks it read), and refresh the list so its unread badge clears immediately.
+  // Notification suppression follows the open room; the visible chat owns read receipts.
   useEffect(() => {
     const open = currentPage === 'rooms' ? activeRoomId : null;
     window.api.rooms.setActiveRoom(open).catch(() => { /* ignore */ });
@@ -462,26 +426,11 @@ const AppContent: React.FC = () => {
     };
   }, []);
 
-  // Calculate download counts for sidebar
-  const downloadCounts = useMemo(() => ({
-    all: downloads.length,
-    downloading: downloads.filter(d => ['downloading', 'queued'].includes(d.status)).length,
-    completed: downloads.filter(d => ['completed', 'seeding'].includes(d.status)).length,
-    paused: downloads.filter(d => d.status === 'paused').length,
-    error: downloads.filter(d => d.status === 'error').length,
-  }), [downloads]);
-
   // Open the rooms page focused on a specific room (rail click / status-bar Join)
   const openRoom = (roomId: string) => {
     setRoomFocusId(roomId);
     setCurrentPage('rooms');
   };
-
-  // Calculate aggregate stats
-  const activeDownloads = stats.filter(s => s.status === 'downloading').length;
-  const totalDownSpeed = stats.reduce((sum, s) => sum + s.downSpeedBps, 0);
-  const totalUpSpeed = stats.reduce((sum, s) => sum + s.upSpeedBps, 0);
-  const totalPeers = stats.reduce((sum, s) => sum + s.peers, 0);
 
   const renderPage = () => {
     switch (currentPage) {
@@ -524,13 +473,11 @@ const AppContent: React.FC = () => {
       <div className="app-shell">
         <TitleBar />
         <div className="app-container">
-        <Sidebar
+        <DownloadSidebar
           currentPage={currentPage}
           onNavigate={setCurrentPage}
           filterMode={filterMode}
           onFilterChange={setFilterMode}
-          downloadCounts={downloadCounts}
-          activeDownloads={activeDownloads}
           rooms={roomSummaries}
           onlinePeople={onlinePeople}
           onOpenRoom={openRoom}
@@ -584,11 +531,7 @@ const AppContent: React.FC = () => {
             />
           )}
 
-          <StatusBar
-            activeDownloads={activeDownloads}
-            totalDownSpeed={totalDownSpeed}
-            totalUpSpeed={totalUpSpeed}
-            connectedPeers={totalPeers}
+          <DownloadStatusBar
             roomPresence={roomPresence}
             onJoinRoom={() => (roomPresence ? openRoom(roomPresence.roomId) : setCurrentPage('rooms'))}
             voiceCall={voiceCall}

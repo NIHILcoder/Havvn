@@ -6,7 +6,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { CompletionAction, Download, DownloadStats } from '../../shared/types';
+import { CompletionAction } from '../../shared/types';
 import { canPause, canResume } from '../../shared/state-machine';
 import {
   Button,
@@ -30,7 +30,8 @@ import {
   ViewMode, FilterMode, SortMode,
   formatBytes, formatDate,
 } from './download-helpers';
-import { DownloadItem } from './DownloadItem';
+import { ConnectedDownloadItem } from './DownloadItem';
+import { downloadsModel, useDownloads } from '../state/downloads';
 import { cleanError } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
 
@@ -43,12 +44,6 @@ interface DownloadsPageProps {
   onOpenHandled?: () => void;
 }
 
-// Last stats snapshot, kept at module scope so it survives the page unmounting.
-// Pages unmount on tab switch; a fresh mount used to start with an empty stats
-// map, so every return to Downloads flashed "no peers" on active rows until the
-// next stats tick arrived (~1s later).
-let lastStatsSnapshot: Map<string, DownloadStats> | null = null;
-
 const DownloadsPage: React.FC<DownloadsPageProps> = ({
   filterMode: externalFilterMode = 'all',
   onFilterChange,
@@ -57,8 +52,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
-  const [downloads, setDownloads] = useState<Download[]>([]);
-  const [stats, setStats] = useState<Map<string, DownloadStats>>(() => lastStatsSnapshot ?? new Map());
+  const downloads = useDownloads(s => s.downloads);
+  const downloadsById = useDownloads(s => s.byId);
+  const setDownloads = downloadsModel.updateDownloads;
   const [loading, setLoading] = useState(true);
 
   // Toast notifications
@@ -109,15 +105,16 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
   // Torrent control modal
   const [controlModalId, setControlModalId] = useState<string | null>(null);
-  const controlModalDownload = controlModalId ? downloads.find(d => d.id === controlModalId) : null;
+  const controlModalDownload = controlModalId ? downloadsById.get(controlModalId) : null;
   const [streamModalId, setStreamModalId] = useState<string | null>(null);
-  const streamModalDownload = streamModalId ? downloads.find(d => d.id === streamModalId) : null;
+  const streamModalDownload = streamModalId ? downloadsById.get(streamModalId) : null;
   const [shareModalId, setShareModalId] = useState<string | null>(null);
-  const shareModalDownload = shareModalId ? downloads.find(d => d.id === shareModalId) : null;
+  const shareModalDownload = shareModalId ? downloadsById.get(shareModalId) : null;
   // "Share to room" — the row's Share button + context menu
   const [shareRoomId, setShareRoomId] = useState<string | null>(null);
-  const shareRoomDownload = shareRoomId ? downloads.find(d => d.id === shareRoomId) : null;
+  const shareRoomDownload = shareRoomId ? downloadsById.get(shareRoomId) : null;
 
+  const shareRoomProgress = useDownloads(s => shareRoomId ? s.statsById.get(shareRoomId)?.progress : undefined);
   // Refs
   const searchInputRef = useRef<HTMLInputElement>(null);
   const scrollParentRef = useRef<HTMLDivElement>(null);
@@ -220,9 +217,11 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     };
   }, []);
 
-  // Load downloads on mount
+  // Standalone mounts share the same connection as the app shell.
   useEffect(() => {
-    loadDownloads();
+    const release = downloadsModel.retain();
+    void loadDownloads();
+    return release;
   }, []);
 
   // Mirror the one-shot completion action (tray can change it too)
@@ -264,40 +263,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     setShowFileSelector(true);
     onOpenHandled?.();
   }, [openTorrentUri]);
-
-  // Subscribe to stats updates
-  useEffect(() => {
-    const unsubscribe = window.api.onDownloadStats((newStats) => {
-
-      const statsMap = new Map<string, DownloadStats>();
-      for (const stat of newStats) {
-        statsMap.set(stat.id, stat);
-      }
-      lastStatsSnapshot = statsMap;
-      setStats(statsMap);
-
-      // Update download statuses from stats — ONLY when a status actually flips.
-      // Rows read live progress/speed from the stats Map, so rebuilding every
-      // download object each tick just churns GC and re-sorts the whole list for
-      // nothing. Same-reference return makes React skip the update.
-      setDownloads((prev) => {
-        let changed = false;
-        const next = prev.map((d) => {
-          const stat = statsMap.get(d.id);
-          if (stat && stat.status !== d.status) { changed = true; return { ...d, status: stat.status }; }
-          return d;
-        });
-        return changed ? next : prev;
-      });
-    });
-
-    // Cleanup listener on unmount to prevent memory leaks
-    return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
-    };
-  }, []);
 
   // Load the alternative-speed toggle state on mount (reflects the toolbar button)
   useEffect(() => {
@@ -343,7 +308,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       if (e.key === ' ' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
         const promises = Array.from(selectedIds).map(async (id) => {
-          const download = downloads.find(d => d.id === id);
+          const download = downloadsById.get(id);
           if (download) {
             try {
               if (canPause(download.status)) {
@@ -469,10 +434,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
   }, [sortMode]);
 
-  const loadDownloads = async () => {
+  const loadDownloads = useCallback(async () => {
     try {
-      const list = await window.api.getDownloads();
-      setDownloads(list.filter(d => d.status !== 'removed'));
+      await downloadsModel.refresh();
     } catch (error) {
       console.error('Failed to load downloads:', error);
       addToast(
@@ -482,9 +446,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     } finally {
       setLoading(false);
     }
-  };
-
-
+  }, [addToast, t]);
 
   const handleAddTorrentFile = async () => {
     // Prevent duplicate calls while file dialog is open
@@ -766,7 +728,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // Only the 'progress'/'speed' modes read live stats, so only those depend on
   // the per-tick stats Map. For 'name'/'added' the memo stays stable across stats
   // ticks (statsForSort is null), so we don't re-sort the whole list ~1.3x/second.
-  const statsForSort = (sortMode === 'progress' || sortMode === 'speed') ? stats : null;
+  const statsForSort = useDownloads(s => (sortMode === 'progress' || sortMode === 'speed') ? s.statsById : null);
   const sortedDownloads = useMemo(() => [...filteredDownloads].sort((a, b) => {
     const direction = sortDirection === 'asc' ? 1 : -1;
 
@@ -788,18 +750,6 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         return (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()) * direction;
     }
   }), [filteredDownloads, sortMode, sortDirection, statsForSort]);
-
-  // Header sub-line: "↓ n · ↑ n · ratio×" (language-neutral, mirrors the concept's
-  // "3 downloading · 12 seeding · giving back 2.4×")
-  const headerCounts = {
-    downloading: downloads.filter(d => ['downloading', 'queued'].includes(d.status)).length,
-    seeding: downloads.filter(d => d.status === 'seeding').length,
-  };
-  // Byte totals prefer the live per-tick stats (the download records only
-  // refresh on explicit reloads, so the ratio would otherwise freeze).
-  const totalDownloadedBytes = downloads.reduce((sum, d) => sum + (stats.get(d.id)?.downloadedBytes ?? d.downloadedBytes), 0);
-  const totalUploadedBytes = downloads.reduce((sum, d) => sum + (stats.get(d.id)?.uploadedBytes ?? d.uploadedBytes), 0);
-  const aggregateRatio = totalDownloadedBytes > 0 ? totalUploadedBytes / totalDownloadedBytes : null;
 
   // Virtualize the downloads list so only the rows in view are mounted. The list
   // is its own scroll container (scrollMargin stays 0); rows are absolutely
@@ -840,10 +790,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         <div className="page-title-block">
           <h1 className="page-title">{t('downloads.title')}</h1>
           {downloads.length > 0 && (
-            <div className="page-subtitle">
-              ↓ {headerCounts.downloading} · ↑ {headerCounts.seeding}
-              {aggregateRatio !== null && ` · ${aggregateRatio.toFixed(1)}×`}
-            </div>
+            <DownloadSubtitle />
           )}
         </div>
         <div className="page-actions">
@@ -891,7 +838,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           />
           {/* On-completion action (one-shot) */}
           <DropdownMenu
-            menuClassName="dropdown-menu dropdown-menu-right"
+            portal
+            menuClassName="dropdown-menu dropdown-menu-right downloads-completion-menu"
             renderTrigger={({ toggle }) => (
               <Button
                 variant={onDoneAction !== 'none' ? 'primary' : 'ghost'}
@@ -919,6 +867,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           />
           {/* Export Dropdown */}
           <DropdownMenu
+            portal
             menuClassName="dropdown-menu dropdown-menu-right"
             renderTrigger={({ toggle }) => (
               <Button
@@ -1203,9 +1152,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                       transform: `translateY(${vItem.start}px)`,
                     }}
                   >
-                    <DownloadItem
-                      download={download}
-                      stats={stats.get(download.id)}
+                    <ConnectedDownloadItem
+                      downloadId={download.id}
                       viewMode={viewMode}
                       expanded={expandedIds.has(download.id)}
                       onToggleExpand={handleToggleExpand}
@@ -1218,9 +1166,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                       onStopSeeding={handleStopSeeding}
                       onRetry={handleRetry}
                       onOpenFolder={handleOpenFolder}
-                      onShowFiles={(id) => setPreviewId(id)}
-                      onStream={(id) => setStreamModalId(id)}
-                      onShare={(id) => setShareRoomId(id)}
+                      onShowFiles={setPreviewId}
+                      onStream={setStreamModalId}
+                      onShare={setShareRoomId}
                     />
                   </div>
                 );
@@ -1312,17 +1260,17 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               icon: 'pause',
               // Only enabled when the current state can actually pause — otherwise
               // clicking threw a red "Cannot pause in <state> state" error toast.
-              disabled: !canPause(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
+              disabled: !canPause(downloadsById.get(contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {
                 handlePause(contextMenu.downloadId);
                 setContextMenu(null);
               }
             },
             {
-              label: t(downloads.find(d => d.id === contextMenu.downloadId)?.progress === 1
+              label: t(downloadsById.get(contextMenu.downloadId)?.progress === 1
                 ? 'downloads.resumeSeeding' : 'downloads.resume'),
               icon: 'play',
-              disabled: !canResume(downloads.find(d => d.id === contextMenu.downloadId)?.status ?? 'removed'),
+              disabled: !canResume(downloadsById.get(contextMenu.downloadId)?.status ?? 'removed'),
               onClick: () => {
                 handleResume(contextMenu.downloadId);
                 setContextMenu(null);
@@ -1340,7 +1288,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               label: t('downloads.openFolder'),
               icon: 'folder',
               onClick: () => {
-                const download = downloads.find(d => d.id === contextMenu.downloadId);
+                const download = downloadsById.get(contextMenu.downloadId);
                 if (download) {
                   handleOpenFolder(download.savePath);
                 }
@@ -1437,7 +1385,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           downloadId={shareRoomDownload.id}
           downloadName={shareRoomDownload.name}
           canShare={
-            (stats.get(shareRoomDownload.id)?.progress ?? shareRoomDownload.progress) >= 1 ||
+            (shareRoomProgress ?? shareRoomDownload.progress) >= 1 ||
             ['completed', 'seeding'].includes(shareRoomDownload.status)
           }
           onClose={() => setShareRoomId(null)}
@@ -1449,6 +1397,13 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       )}
     </div>
   );
+};
+
+const DownloadSubtitle: React.FC = () => {
+  const downloading = useDownloads(s => s.counts.downloading), seeding = useDownloads(s => s.counts.seeding);
+  // Subscribe to the displayed ratio rather than the complete stats map.
+  const ratio = useDownloads(s => s.totals.downloaded > 0 ? (s.totals.uploaded / s.totals.downloaded).toFixed(1) : null);
+  return <div className="page-subtitle">↓ {downloading} · ↑ {seeding}{ratio !== null && (' · ' + ratio + '×')}</div>;
 };
 
 export default DownloadsPage;

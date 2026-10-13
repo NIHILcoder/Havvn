@@ -697,6 +697,10 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   gap: var(--space-3);
   width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: 32px;
+  line-height: 1.4;
   padding: 8px var(--space-3);
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
@@ -707,6 +711,9 @@ input[type="range"]::-moz-range-thumb {
   transition: all var(--transition-fast);
   text-align: left;
 }
+
+.dropdown-item > svg { flex: none; }
+.dropdown-item > span { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 
 .dropdown-item:hover {
   background: var(--color-bg-hover);

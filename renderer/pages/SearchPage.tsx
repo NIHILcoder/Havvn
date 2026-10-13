@@ -1,3 +1,4 @@
+import { downloadsModel, useDownloads } from '../state/downloads';
 /**
  * Search Page
  * Plugin-based torrent search using Jackett/Torznab/Custom providers.
@@ -5,7 +6,7 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { SearchProvider, PythonStatus, ProviderStat, PluginManifest, Download } from '../../shared/types';
+import { SearchProvider, PythonStatus, ProviderStat, PluginManifest } from '../../shared/types';
 import { downloadSearchState } from '../../shared/search-download-state';
 import { indexSearchDownloadHistory, matchSearchDownload, type SearchDownloadHistoryEntry, type SearchDownloadMatch } from '../../shared/search-download-history';
 import { ProviderConnectionSettings } from '../components/ProviderConnectionSettings';
@@ -18,6 +19,7 @@ import { DEFAULT_SEARCH_PREFERENCES, evaluateSearchPreferences, sanitizeSearchPr
 import { SearchPreferencesPanel } from '../components/SearchPreferencesPanel';
 import { SearchQueryInput } from '../components/SearchQueryInput';
 import { NumberInput } from '../components/NumberInput';
+import { Select } from '../components/Select';
 import {
   Button,
   Icon,
@@ -107,13 +109,14 @@ const SearchPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
-  const [downloads, setDownloads] = useState<Download[]>([]);
+  const downloads = useDownloads(s => s.downloads);
+  const setDownloads = downloadsModel.updateDownloads;
   const [downloadHistory, setDownloadHistory] = useState<SearchDownloadHistoryEntry[]>([]);
   const [clearingDownloadHistory, setClearingDownloadHistory] = useState(false);
   const historyRevision = useRef(0);
   const [addedIds, setAddedIds] = useState<Map<string, string>>(new Map());
   const downloadIndex = useMemo(() => indexSearchDownloadHistory(downloads, downloadHistory), [downloads, downloadHistory]);
-  const downloadsById = useMemo(() => new Map(downloads.map(d => [d.id, d])), [downloads]);
+  const downloadsById = useDownloads(s => s.byId);
   const resultDownloadState = (result: MergedResult): SearchDownloadMatch | null => {
     const known = matchSearchDownload(result, downloadIndex);
     if (known?.state === 'inDownloads' || known?.state === 'downloaded') return known;
@@ -124,6 +127,7 @@ const SearchPage: React.FC = () => {
     return state ? { state } : known;
   };
   useEffect(() => {
+    const release = downloadsModel.retain();
     let disposed = false;
     let pending = false;
     const refresh = async () => {
@@ -131,11 +135,10 @@ const SearchPage: React.FC = () => {
       pending = true;
       const revision = historyRevision.current;
       try {
-        const [list, history] = await Promise.all([
-          window.api.getDownloads(), window.api.search.getDownloadHistory(),
+        const [, history] = await Promise.all([
+          downloadsModel.refresh(), window.api.search.getDownloadHistory(),
         ]);
         if (!disposed && revision === historyRevision.current) {
-          setDownloads(list);
           setDownloadHistory(history);
         }
       } catch { /* Keep search usable when the engine is temporarily unavailable. */ }
@@ -145,20 +148,7 @@ const SearchPage: React.FC = () => {
     const onFocus = () => { void refresh(); };
     window.addEventListener('focus', onFocus);
     const timer = setInterval(() => { if (!document.hidden) void refresh(); }, 10000);
-    const unsubscribe = window.api.onDownloadStats(stats => {
-      const byId = new Map(stats.map(stat => [stat.id, stat]));
-      setDownloads(previous => {
-        let changed = false;
-        const next = previous.map(record => {
-          const stat = byId.get(record.id);
-          if (!stat || (stat.status === record.status && (stat.progress >= 1) === (record.progress >= 1))) return record;
-          changed = true;
-          return { ...record, status: stat.status, progress: stat.progress };
-        });
-        return changed ? next : previous;
-      });
-    });
-    return () => { disposed = true; clearInterval(timer); window.removeEventListener('focus', onFocus); unsubscribe(); };
+    return () => { disposed = true; clearInterval(timer); window.removeEventListener('focus', onFocus); release(); };
   }, []);
   const clearDownloadHistory = async () => {
     if (clearingDownloadHistory || !(await confirm({
@@ -805,22 +795,16 @@ const SearchPage: React.FC = () => {
                 <summary>{t('search.media.title')}{activeReleaseFilters && <span className="release-filter-status">{t('search.media.active')}</span>}</summary>
                 <div className="release-filter-fields">
                   <label>{t('search.media.resolution')}
-                    <select className="form-select" value={releaseFilters.resolution} onChange={e => setReleaseFilters(f => ({...f, resolution:e.target.value}))}>
-                      <option value="">{t('search.media.any')}</option>
-                      {RESOLUTIONS.map(v => <option key={v} value={v}>{v}</option>)}
-                    </select>
+                    <Select value={releaseFilters.resolution} onChange={value => setReleaseFilters(f => ({...f, resolution:value}))}
+                      ariaLabel={t('search.media.resolution')} options={[{ value: '', label: t('search.media.any') }, ...RESOLUTIONS.map(value => ({ value, label: value }))]} />
                   </label>
                   <label>{t('search.media.codec')}
-                    <select className="form-select" value={releaseFilters.codec} onChange={e => setReleaseFilters(f => ({...f, codec:e.target.value}))}>
-                      <option value="">{t('search.media.any')}</option>
-                      {CODECS.map(v => <option key={v} value={v}>{v}</option>)}
-                    </select>
+                    <Select value={releaseFilters.codec} onChange={value => setReleaseFilters(f => ({...f, codec:value}))}
+                      ariaLabel={t('search.media.codec')} options={[{ value: '', label: t('search.media.any') }, ...CODECS.map(value => ({ value, label: value }))]} />
                   </label>
                   <label>{t('search.media.voice')}
-                    <select className="form-select" value={releaseFilters.voice} onChange={e => setReleaseFilters(f => ({...f, voice:e.target.value}))}>
-                      <option value="">{t('search.media.any')}</option>
-                      {VOICES.map(v => <option key={v} value={v}>{t(`search.media.voice${v}`)}</option>)}
-                    </select>
+                    <Select value={releaseFilters.voice} onChange={value => setReleaseFilters(f => ({...f, voice:value}))}
+                      ariaLabel={t('search.media.voice')} options={[{ value: '', label: t('search.media.any') }, ...VOICES.map(value => ({ value, label: t(`search.media.voice${value}`) }))]} />
                   </label>
                   <label>{t('search.media.maxSize')}
                     <NumberInput className="form-input" min="0" step="0.1" placeholder={t('search.media.unlimited')} value={releaseFilters.maxGiB}
@@ -1069,20 +1053,22 @@ const SearchPage: React.FC = () => {
                   value={newProvider.name}
                   onChange={e => setNewProvider(p => ({ ...p, name: e.target.value }))}
                 />
-                <select
-                  className="form-select"
+                <Select
+                  className="provider-type-select"
+                  ariaLabel={t('search.provider.type')}
                   value={newProvider.type}
-                  onChange={e => {
-                    const type = e.target.value as typeof newProvider.type;
+                  onChange={value => {
+                    const type = value as typeof newProvider.type;
                     setNewProvider(p => ({ ...p, type }));
                     if (type === 'script' && !pythonStatus) checkPython();
                   }}
-                >
-                  <option value="jackett">Jackett</option>
-                  <option value="torznab">Torznab (Prowlarr)</option>
-                  <option value="custom">{t('search.type.custom')}</option>
-                  <option value="script">{t('search.type.script')}</option>
-                </select>
+                  options={[
+                    { value: 'jackett', label: 'Jackett' },
+                    { value: 'torznab', label: 'Torznab (Prowlarr)' },
+                    { value: 'custom', label: t('search.type.custom') },
+                    { value: 'script', label: t('search.type.script') },
+                  ]}
+                />
               </div>
               <div className="form-row">
                 <input

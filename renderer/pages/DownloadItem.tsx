@@ -10,6 +10,14 @@ import { Button, Icon, ProgressBar, StatusBadge, HealthBadge } from '../componen
 import { ViewMode, formatBytes, formatSpeed, formatEta, getTypeIcon, looksLikeMedia, isAudioMedia } from './download-helpers';
 import { useCategories, categoryLabel } from '../utils/useCategories';
 import { useTranslation } from '../utils/i18nContext';
+import { useDownloads } from '../state/downloads';
+
+export const ConnectedDownloadItem = React.memo((props: Omit<DownloadItemProps, 'download' | 'stats'> & { downloadId: string }) => {
+  const { downloadId, ...rowProps } = props;
+  const download = useDownloads(s => s.byId.get(downloadId));
+  const stats = useDownloads(s => s.statsById.get(downloadId));
+  return download ? <DownloadItem {...rowProps} download={download} stats={stats} /> : null;
+});
 
 export interface DownloadItemProps {
   download: Download;
@@ -69,6 +77,11 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
 
   const status = currentStats.status;
   const progress = currentStats.progress;
+  // Transfer counters survive restarts and can exceed the bytes on disk.
+  // Size comes only from metadata, never downloadedBytes / progress.
+  const sizeLabel = Number.isFinite(download.totalSize) && download.totalSize > 0
+    ? formatBytes(download.totalSize)
+    : null;
 
   // One-click "Watch/Listen" shortcut on media rows. Shown while there's
   // something to play (downloading — instant-play streams while it downloads —,
@@ -134,7 +147,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
           <div className="trow-name">
             <div className="trow-title truncate">{download.name}</div>
             <div className="trow-sub">
-              {download.totalSize > 0 && <span>{formatBytes(download.totalSize)}</span>}
+              {sizeLabel && <span>{sizeLabel}</span>}
               {/* Shown only at widths where the progress column is dropped */}
               <span className="trow-sub-pct">{(progress * 100).toFixed(0)}%</span>
               {/* Stored as a Category id, so resolve it — the raw "movies" was
@@ -450,9 +463,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             <div className="stat-content">
               <span className="stat-label">{t('downloads.statSize')}</span>
               <span className="stat-value">
-                {currentStats.progress > 0
-                  ? formatBytes(Math.round(currentStats.downloadedBytes / currentStats.progress))
-                  : '--'}
+                {sizeLabel ?? '--'}
               </span>
             </div>
           </div>
