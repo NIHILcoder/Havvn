@@ -1,6 +1,7 @@
 const path = require('path');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
 const fs = require('fs');
+const buildSettingsSearch = require('./scripts/build-settings-search.cjs');
 
 module.exports = (env, argv) => ({
   entry: {
@@ -45,6 +46,7 @@ module.exports = (env, argv) => ({
     ],
   },
   plugins: [
+    { apply(compiler) { compiler.hooks.beforeCompile.tap('SettingsSearchCatalog', buildSettingsSearch); } },
     new HtmlWebpackPlugin({
       template: './renderer/index.html',
       filename: 'index.html',

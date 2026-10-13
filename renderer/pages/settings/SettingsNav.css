@@ -119,3 +119,9 @@
 @media (max-width: 768px) {
   .stg-nav { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--color-border-subtle); }
 }
+
+.stg-nav-section { min-width: 0; }
+.stg-nav-result { display: flex; flex-direction: column; gap: 3px; width: 100%; padding: 8px 10px 8px 26px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font: inherit; font-size: 12px; line-height: 1.4; text-align: left; cursor: pointer; }
+.stg-nav-result:hover,.stg-nav-result:focus-visible { background: var(--color-bg-hover); color: var(--color-accent-primary); }
+.stg-nav-result > span { overflow-wrap: anywhere; }
+.stg-nav-result > small { display: block; max-width: 100%; font-size: 10px; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

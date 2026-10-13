@@ -7,11 +7,12 @@
  * (SettingsCard / SettingRow / …). The shell only wires the grouped nav with
  * search, the section header, the toast alert, and the sticky Save bar.
  */
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Icon, Alert } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
 import { SettingsNav } from './settings/SettingsNav';
+import { findSettingTarget, type SettingSearchResult } from './settings/settingsSearch';
 import { GeneralSection } from './settings/sections/GeneralSection';
 import { DownloadsSection } from './settings/sections/DownloadsSection';
 import { ConnectionSection } from './settings/sections/ConnectionSection';
@@ -49,6 +50,27 @@ const SettingsShell: React.FC = () => {
   const { t } = useTranslation();
   const ctx = useSettings();
   const { activeCategory, setActiveCategory, loading, message, setMessage, hasChanges, saving, handleSave, handleReset } = ctx;
+  const content = useRef<HTMLDivElement>(null);
+  const [searchTarget, setSearchTarget] = useState<{ result: SettingSearchResult } | null>(null);
+  useEffect(() => {
+    const root = content.current;
+    if (!root || !searchTarget || searchTarget.result.section !== activeCategory) return;
+    const target = findSettingTarget(root, searchTarget.result, t);
+    if (!target) return;
+    for (let parent = target.parentElement; parent && parent !== root; parent = parent.parentElement) {
+      if (parent.tagName === 'DETAILS') (parent as HTMLDetailsElement).open = true;
+    }
+    target.dataset.settingsSearchTarget = '';
+    const previousTabIndex = target.getAttribute('tabindex');
+    target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+    const win = root.ownerDocument.defaultView;
+    target.scrollIntoView({ block: 'center', behavior: win?.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    return () => {
+      delete target.dataset.settingsSearchTarget;
+      if (previousTabIndex === null) target.removeAttribute('tabindex'); else target.setAttribute('tabindex', previousTabIndex);
+    };
+  }, [activeCategory, searchTarget, loading, t]);
 
   if (loading) {
     return (
@@ -71,7 +93,8 @@ const SettingsShell: React.FC = () => {
         </div>
       )}
 
-      <SettingsNav active={activeCategory} onSelect={setActiveCategory} />
+      <SettingsNav active={activeCategory} onSelect={id => { setSearchTarget(null); setActiveCategory(id); }}
+        onSelectSetting={result => { setSearchTarget({ result }); setActiveCategory(result.section); }} />
 
       <div className="stg-main">
         <header className="stg-head">
@@ -82,7 +105,7 @@ const SettingsShell: React.FC = () => {
         </header>
 
         <div className="stg-scroll">
-          <div className="stg-col">
+          <div className="stg-col" ref={content}>
             <Section />
           </div>
         </div>

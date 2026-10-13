@@ -147,7 +147,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
             {hotkeys
               .filter((h) => h.category === category)
               .map((hotkey) => (
-                <div key={hotkey.id} className="hotkey-item">
+                <div key={hotkey.id} className="hotkey-item" data-setting-label={hotkeyLabels[hotkey.id] || hotkey.description}>
                   <div className="hotkey-info">
                     <div className="hotkey-label">{hotkeyLabels[hotkey.id] ?? hotkey.label}</div>
                     <div className="hotkey-description">{hotkeyDescriptions[hotkey.id] ?? hotkey.description}</div>

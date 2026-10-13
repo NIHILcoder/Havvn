@@ -18,7 +18,7 @@ export const SettingsCard: React.FC<{
   description?: string;
   children: React.ReactNode;
 }> = ({ title, icon, description, children }) => (
-  <section className="stg-card">
+  <section className="stg-card" data-setting-label={title}>
     <header className="stg-card-h">
       {icon && <span className="stg-card-ic"><Icon name={icon} size={16} /></span>}
       <div className="stg-card-ht">
@@ -46,7 +46,7 @@ export const SettingRow: React.FC<{
    */
   stack?: boolean;
 }> = ({ label, description, icon, control, wide, stack }) => (
-  <div className={`stg-row${stack ? ' stg-row--stack' : ''}`}>
+  <div className={`stg-row${stack ? ' stg-row--stack' : ''}`} data-setting-label={label}>
     <div className="stg-row-info">
       <div className="stg-row-label">
         {icon && <Icon name={icon} size={15} />}

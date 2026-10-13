@@ -6,6 +6,8 @@ import React, { useState } from 'react';
 import { Icon, LogoMark } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { SETTINGS_GROUPS, SETTINGS_NAV } from './nav';
+import { SETTINGS_SEARCH_ENTRIES } from './settingsSearchCatalog';
+import { normalizeSettingsSearch, searchSettings, type SettingSearchResult } from './settingsSearch';
 import './SettingsNav.css';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -14,14 +16,17 @@ type TKey = any;
 export const SettingsNav: React.FC<{
   active: string;
   onSelect: (id: string) => void;
-}> = ({ active, onSelect }) => {
+  onSelectSetting?: (result: SettingSearchResult) => void;
+}> = ({ active, onSelect, onSelectSetting }) => {
   const { t } = useTranslation();
   const [q, setQ] = useState('');
-  const query = q.trim().toLowerCase();
+  const query = normalizeSettingsSearch(q);
+  const results = searchSettings(SETTINGS_SEARCH_ENTRIES, query, t);
 
   const matches = (id: string, keywords: string) => {
     if (!query) return true;
-    return t(`settings.${id}` as TKey).toLowerCase().includes(query) || keywords.toLowerCase().includes(query);
+    const text = normalizeSettingsSearch(t(`settings.${id}` as TKey) + ' ' + keywords);
+    return query.split(' ').every(term => text.includes(term)) || results.some(result => result.section === id);
   };
   const visible = SETTINGS_NAV.filter((i) => matches(i.id, i.keywords));
 
@@ -37,6 +42,10 @@ export const SettingsNav: React.FC<{
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Escape') { event.preventDefault(); setQ(''); }
+            else if (event.key === 'Enter' && results[0]) { event.preventDefault(); onSelectSetting?.(results[0]); }
+          }}
           placeholder={t('settings.searchPlaceholder')}
           aria-label={t('settings.searchPlaceholder')}
         />
@@ -56,15 +65,22 @@ export const SettingsNav: React.FC<{
             <div key={g} className="stg-nav-grp">
               <div className="stg-nav-grp-h">{t(`settings.group.${g}` as TKey)}</div>
               {items.map((item) => (
-                <button
-                  key={item.id}
-                  className={`stg-nav-item${active === item.id ? ' on' : ''}`}
-                  onClick={() => onSelect(item.id)}
-                >
-                  <Icon name={item.icon} size={16} />
-                  <span className="stg-nav-item-label">{t(`settings.${item.id}` as TKey)}</span>
-                  {active === item.id && <span className="stg-nav-dot" />}
-                </button>
+                <div key={item.id} className="stg-nav-section">
+                  <button
+                    className={`stg-nav-item${active === item.id ? ' on' : ''}`}
+                    onClick={() => onSelect(item.id)}
+                  >
+                    <Icon name={item.icon} size={16} />
+                    <span className="stg-nav-item-label">{t(`settings.${item.id}` as TKey)}</span>
+                    {active === item.id && <span className="stg-nav-dot" />}
+                  </button>
+                  {query && results.filter(result => result.section === item.id).map(result => (
+                    <button type="button" key={result.labelKey} className="stg-nav-result" onClick={() => onSelectSetting ? onSelectSetting(result) : onSelect(result.section)}>
+                      <span>{result.label}</span>
+                      {result.description && <small title={result.description}>{result.description}</small>}
+                    </button>
+                  ))}
+                </div>
               ))}
             </div>
           );
