@@ -61,6 +61,7 @@ import ip3country = require('ip3country');
 const log = logger.child('NativeEngine');
 
 const STATS_INTERVAL_MS = 750;
+const PEER_STATS_INTERVAL_MS = 5_000;
 const PERSIST_EVERY_TICKS = 7; // ≈5.25s, mirrors the webtorrent manager's 5s batch persist
 
 // Magnet metadata preview: same 30s budget as the webtorrent manager.
@@ -105,6 +106,11 @@ export class NativeTorrentManager {
 
   private lastStats: DownloadStats[] = [];
   private statsTimer: NodeJS.Timeout | null = null;
+  private tickInFlight = false;
+  private pollGeneration = 0;
+  private readonly pendingStarts = new Map<string, { poll: number; until: number }>();
+  private nextPeerStatsAt = 0;
+  private seedCounts = new Map<string, number>();
   private persistCounter = 0;
   private altSpeedEnabled = false;
 
@@ -126,6 +132,7 @@ export class NativeTorrentManager {
   private mediaServer: NativeMediaServer | null = null;
   private readonly streamToken = crypto.randomBytes(12).toString('hex');
   private readonly streamHeads = new Map<string, Set<number>>();
+  private readonly startingStreams = new Map<string, number>();
 
   // IP blocklist: a tiny loopback server serves the generated P2P list, which the
   // daemon fetches via blocklist-update (transmission has no file:// blocklist).
@@ -172,12 +179,14 @@ export class NativeTorrentManager {
       binaryPath: env.engineBinary,
       configDir: env.engineStateDir,
       downloadDir: this.settings.defaultDownloadDir,
+      pausedOnStart: true,
       peerPort: (this.settings.portMin ?? 0) > 0 ? this.settings.portMin : undefined,
       // Main's existing UPnP service owns the router mapping (honors the
       // portForwarding toggle); don't let the daemon double-map the port.
       settingsOverrides: {
         'port-forwarding-enabled': false,
         encryption: encryptionToSettingsInt(normalizeProtocolEncryption(this.settings.encryption)),
+        ...this.queueSettings(this.settings),
         ...bindOverrides,
       },
       env: daemonProxyEnv(this.settings),
@@ -214,11 +223,27 @@ export class NativeTorrentManager {
     this.mediaServer = null;
     if (this.blocklistServer) { try { this.blocklistServer.close(); } catch { /* ignore */ } this.blocklistServer = null; }
     this.rpc = null;
+    this.seedCounts.clear();
+    this.pendingStarts.clear();
+    this.startingStreams.clear();
     await this.sidecar?.stop();
     this.sidecar = null;
   }
 
   // ── Session settings ────────────────────────────────────────────────────────
+  private queueSettings(s: AppSettings): Record<string, unknown> {
+    const limit = Number.isFinite(s.maxActiveDownloads) ? Math.max(0, Math.floor(s.maxActiveDownloads)) : 3;
+    return {
+      'download-queue-enabled': true,
+      'download-queue-size': limit,
+      // Idle torrents still hold a slot; otherwise a stalled swarm can exceed
+      // the user's memory/connection budget when Transmission promotes others.
+      'queue-stalled-enabled': false,
+      // Seeding does not consume an active-download slot in either engine.
+      'seed-queue-enabled': false,
+    };
+  }
+
   private async applySessionSettings(s: AppSettings): Promise<void> {
     const args: Record<string, unknown> = {
       'dht-enabled': s.enableDHT ?? true,
@@ -231,6 +256,7 @@ export class NativeTorrentManager {
       'speed-limit-down-enabled': (s.maxDownKbps ?? 0) > 0,
       'alt-speed-enabled': s.altSpeedEnabled ?? false,
       seedRatioLimited: (s.defaultSeedRatioLimit ?? 0) > 0,
+      ...this.queueSettings(s),
       // BOTH upload ceilings (and the limiter switch) come from one composition
       // of the manual caps with the adaptive one — never from s.maxUpKbps
       // directly. Writing the raw setting here would stomp the adaptive cap on
@@ -355,6 +381,8 @@ export class NativeTorrentManager {
     const daemonByHash = new Map(daemonList.map((t) => [t.hashString.toLowerCase(), t]));
     const claimed = new Set<string>();
 
+    // Give higher-priority records the first chance at a download slot.
+    all.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
     for (const d of all) {
       if (d.status === 'removed') { await db.deleteDownload(d.id); continue; } // boot purge, same as webtorrent manager
       this.records.set(d.id, d);
@@ -369,7 +397,10 @@ export class NativeTorrentManager {
           if (!d.infoHash) await db.updateDownloadField(d.id, 'infoHash', hash);
           // Persisted intent wins over whatever run-state the daemon resumed with.
           if (!wantActive && t.status !== TrStatus.Stopped) await this.rpc!.torrentStop(hash);
-          else if (wantActive && t.status === TrStatus.Stopped) await this.rpc!.torrentStartNow(hash);
+          else if (wantActive && t.status === TrStatus.Stopped) {
+            await this.rpc!.torrentStart(hash);
+            this.noteStart(d);
+          }
         } else if (wantActive) {
           claimed.add(await this.addToDaemon(d, false));
         }
@@ -408,9 +439,9 @@ export class NativeTorrentManager {
         await db.updateDownloadField(d.id, 'torrentFilePath', healed);
       }
       const buf = fs.readFileSync(file);
-      res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: d.savePath, paused: paused || isSeed, filesUnwanted: unwantedIndices(buf, d.selectedFiles) });
+      res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: d.savePath, paused: true, filesUnwanted: unwantedIndices(buf, d.selectedFiles) });
     } else {
-      res = await this.rpc!.torrentAdd({ filename: d.sourceUri, downloadDir: d.savePath, paused });
+      res = await this.rpc!.torrentAdd({ filename: d.sourceUri, downloadDir: d.savePath, paused: true });
     }
     const hash = res.hashString.toLowerCase();
     this.link(d.id, hash);
@@ -418,7 +449,6 @@ export class NativeTorrentManager {
     if (isSeed && !res.duplicate) {
       await this.mapSeedRootToDisk(hash, res.name, d.seedPaths![0]);
       await this.rpc!.torrentVerify(hash);
-      if (!paused) await this.rpc!.torrentStartNow(hash);
     }
     // Re-apply the user's tracker edits — the daemon's own resume state has them
     // only if it kept the torrent across the restart; on a fresh re-add it doesn't.
@@ -432,6 +462,7 @@ export class NativeTorrentManager {
         seedRatioMode: d.seedRatioLimit > 0 ? 1 : 2,
       });
     }
+    if (!paused) { await this.rpc!.torrentStart(hash); this.noteStart(d); }
     return hash;
   }
 
@@ -490,9 +521,11 @@ export class NativeTorrentManager {
       let res;
       if (localTorrentPath) {
         const buf = fs.readFileSync(localTorrentPath);
-        res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: savePath, paused, filesUnwanted: unwantedIndices(buf, params.selectedFiles) });
+        res = await this.rpc!.torrentAdd({ metainfo: buf, downloadDir: savePath, paused: true, filesUnwanted: unwantedIndices(buf, params.selectedFiles) });
       } else {
-        res = await this.rpc!.torrentAdd({ filename: params.sourceUri, downloadDir: savePath, paused });
+        // Unpaused magnet adds bypass Transmission's queue to fetch metadata.
+        // Add stopped and request a normal start after the record is durable.
+        res = await this.rpc!.torrentAdd({ filename: params.sourceUri, downloadDir: savePath, paused: true });
       }
       const hash = res.hashString.toLowerCase();
       if (res.duplicate) throw new TorrentError('This torrent is already in your downloads', 'DUPLICATE', this.hashToId.get(hash));
@@ -504,15 +537,19 @@ export class NativeTorrentManager {
         sourceUri: params.sourceUri,
         torrentFilePath: storedTorrentPath ?? undefined,
         savePath,
-        status: paused ? 'paused' : 'downloading',
+        status: paused ? 'paused' : 'queued',
         selectedFiles: params.selectedFiles,
         category: params.categoryId ?? null,
       });
       download.infoHash = hash;
-      download.status = paused ? 'paused' : 'downloading';
+      download.status = paused ? 'paused' : 'queued';
       await db.updateDownloadField(download.id, 'infoHash', hash);
       this.records.set(download.id, download);
       this.link(download.id, hash);
+      if (!paused) {
+        try { await this.rpc!.torrentStart(hash); this.noteStart(download); }
+        catch (e) { await this.setStatus(download, 'error', e instanceof Error ? e.message : String(e)); throw e; }
+      }
       log.info('Download added', { id: download.id, hash, name: download.name });
       return download;
     } finally {
@@ -617,15 +654,18 @@ export class NativeTorrentManager {
     const hash = this.idToHash.get(id);
     if (hash) await this.rpc!.torrentStop(hash);
     log.info('Torrent pause requested by app', { id, previousStatus: d.status });
+    this.pendingStarts.delete(id);
     await this.setStatus(d, 'paused');
+    this.seedCounts.delete(id);
   }
 
   async resumeDownload(id: string): Promise<void> {
     await this.whenReady();
     const d = this.getRecord(id);
     const hash = await this.ensureInDaemon(d);
-    await this.rpc!.torrentStartNow(hash);
-    await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading');
+    await this.rpc!.torrentStart(hash);
+    this.noteStart(d);
+    await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'queued');
   }
 
   async removeDownload(id: string, deleteFiles: boolean): Promise<void> {
@@ -650,6 +690,8 @@ export class NativeTorrentManager {
       this.hashToId.delete(hash);
     }
     this.metaCache.delete(id);
+    this.pendingStarts.delete(id);
+    this.seedCounts.delete(id);
     this.streamHeads.delete(id); // any pinned stream head goes away with the torrent
     // Tombstone until next boot (same as webtorrent manager) so late stats
     // ticks/UI reads don't resurrect the row; reconcile() purges it.
@@ -666,8 +708,9 @@ export class NativeTorrentManager {
     await this.whenReady();
     const d = this.getRecord(id);
     const hash = await this.ensureInDaemon(d);
-    await this.rpc!.torrentStartNow(hash);
-    await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading', undefined);
+    await this.rpc!.torrentStart(hash);
+    this.noteStart(d);
+    await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'queued', undefined);
   }
 
   async stopSeeding(id: string): Promise<void> {
@@ -675,6 +718,7 @@ export class NativeTorrentManager {
     const d = this.getRecord(id);
     const hash = this.idToHash.get(id);
     if (hash) await this.rpc!.torrentStop(hash);
+    this.pendingStarts.delete(id);
     await this.setStatus(d, 'completed');
   }
 
@@ -1044,10 +1088,11 @@ export class NativeTorrentManager {
     await db.updateDownloadFields(download.id, { infoHash: hash, totalSize: download.totalSize });
     this.records.set(download.id, download);
     this.link(download.id, hash);
-    // verify existing data → start-now → seeding (add PAUSED first so it doesn't
+    // verify existing data → start → seeding (add PAUSED first so it doesn't
     // announce/try to download before the recheck runs).
     await this.rpc!.torrentVerify(hash);
-    await this.rpc!.torrentStartNow(hash);
+    await this.rpc!.torrentStart(hash);
+    this.noteStart(download);
     void this.warmMetaCache(download.id);
     log.info('Seed added', { id: download.id, hash, name: download.name });
     return download;
@@ -1077,32 +1122,42 @@ export class NativeTorrentManager {
     const d = this.getRecord(id);
     if (opts?.noResume && (d.status !== 'downloading' && d.status !== 'seeding' || !this.idToHash.has(id))) throw new TorrentError('Media unavailable: resume the download manually', 'NOT_ACTIVE', id);
     const hash = opts?.noResume ? this.idToHash.get(id)! : await this.ensureInDaemon(d);
-    // ensureInDaemon re-adds a non-live record PAUSED — a stream needs it running
-    // or the head never downloads.
-    if (!opts?.noResume) await this.rpc!.torrentStartNow(hash).catch(() => undefined);
-    if (d.status === 'paused' || d.status === 'queued') await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading');
-    if (!this.metaCache.get(id)?.[fileIndex]) await (opts?.noResume ? this.getHistoryFiles(id) : this.getFiles(id)); // read-only history must never re-add a daemon record
-    const info = this.getCastFileInfo(id, fileIndex);
-    if (!info) throw new TorrentError('Invalid file index', 'INVALID_INPUT', id);
-    await this.prioritizeStreamHead(hash, id, fileIndex);
+    this.startingStreams.set(id, (this.startingStreams.get(id) ?? 0) + 1);
+    try {
+      // ensureInDaemon re-adds a non-live record PAUSED — a stream needs it running
+      // or the head never downloads.
+      if (!opts?.noResume) {
+        await this.rpc!.torrentStartNow(hash);
+        this.noteStart(d);
+      }
+      if (d.status === 'paused' || d.status === 'queued') await this.setStatus(d, d.progress >= 1 ? 'seeding' : 'downloading');
+      if (!this.metaCache.get(id)?.[fileIndex]) await (opts?.noResume ? this.getHistoryFiles(id) : this.getFiles(id)); // read-only history must never re-add a daemon record
+      const info = this.getCastFileInfo(id, fileIndex);
+      if (!info) throw new TorrentError('Invalid file index', 'INVALID_INPUT', id);
+      await this.prioritizeStreamHead(hash, id, fileIndex);
 
-    const port = await this.ensureMediaServer();
-    const q = `k=${this.streamToken}&t=${Date.now()}`;
-    const wantTranscode = opts?.transcode === true || !info.direct;
-    const mode = wantTranscode && this.ffmpegPath ? 'transcode' : 'direct';
-    // Audio-track choice rides the URL (a new URL remounts <video key={url}> in
-    // the renderer, which closes the old response and thereby kills the old
-    // ffmpeg — the same restart mechanism forceTranscode already uses). Only
-    // meaningful for transcode; the guard only checks k=, extra params are safe.
-    const audio = mode === 'transcode' ? audioTrackParam(opts?.audioTrack) : '';
-    const startTime = mode === 'transcode' ? requestedStart : 0;
-    return {
-      url: `http://127.0.0.1:${port}/${mode}/${encodeURIComponent(id)}/${fileIndex}?${q}${audio}${streamStartParam(startTime)}`,
-      name: info.name,
-      kind: info.kind,
-      transcoded: mode === 'transcode',
-      startTime,
-    };
+      const port = await this.ensureMediaServer();
+      const q = `k=${this.streamToken}&t=${Date.now()}`;
+      const wantTranscode = opts?.transcode === true || !info.direct;
+      const mode = wantTranscode && this.ffmpegPath ? 'transcode' : 'direct';
+      // Audio-track choice rides the URL (a new URL remounts <video key={url}> in
+      // the renderer, which closes the old response and thereby kills the old
+      // ffmpeg — the same restart mechanism forceTranscode already uses). Only
+      // meaningful for transcode; the guard only checks k=, extra params are safe.
+      const audio = mode === 'transcode' ? audioTrackParam(opts?.audioTrack) : '';
+      const startTime = mode === 'transcode' ? requestedStart : 0;
+      return {
+        url: `http://127.0.0.1:${port}/${mode}/${encodeURIComponent(id)}/${fileIndex}?${q}${audio}${streamStartParam(startTime)}`,
+        name: info.name,
+        kind: info.kind,
+        transcoded: mode === 'transcode',
+        startTime,
+      };
+    } finally {
+      const remaining = (this.startingStreams.get(id) ?? 1) - 1;
+      if (remaining > 0) this.startingStreams.set(id, remaining);
+      else this.startingStreams.delete(id);
+    }
   }
 
   async stopStream(id: string, _fileIndex?: number): Promise<void> {
@@ -1245,41 +1300,121 @@ export class NativeTorrentManager {
   onListening(cb: () => void): () => void { this.listeningCbs.add(cb); return () => this.listeningCbs.delete(cb); }
 
   // ── Stats loop ──────────────────────────────────────────────────────────────
+  private noteStart(d: Download): void {
+    // An RPC acknowledgement can precede the daemon's actual state change.
+    // Ignore the current poll and briefly retain start intent across Stopped
+    // snapshots, rather than persisting a spurious pause after resume.
+    this.pendingStarts.set(d.id, { poll: this.pollGeneration, until: Date.now() + 30_000 });
+  }
+  /** Lowering the limit must also defer downloads which are already running.
+   * Playback holds its slot even if several viewers temporarily exceed the cap. */
+  private async enforceDownloadLimit(rpc: TransmissionRpc, torrents: TrTorrent[]): Promise<void> {
+    const running = torrents.flatMap(t => {
+      const id = this.hashToId.get(t.hashString.toLowerCase());
+      const d = id ? this.records.get(id) : undefined;
+      return d && ACTIVE.has(d.status) && t.status === TrStatus.Downloading && t.percentDone < 1 ? [{ d, t }] : [];
+    });
+    const limit = this.queueSettings(this.settings)['download-queue-size'] as number;
+    if (running.length <= limit) return;
+    const isStreaming = (d: Download) => this.streamHeads.has(d.id) || this.startingStreams.has(d.id);
+    const streams = running.filter(({ d }) => isStreaming(d));
+    const ordinary = running.filter(({ d }) => !isStreaming(d))
+      .sort((a, b) => (b.d.priority ?? 0) - (a.d.priority ?? 0));
+    const overflow = ordinary.slice(Math.max(0, limit - streams.length));
+    if (!overflow.length || this.rpc !== rpc) return;
+    const hashes = overflow.map(({ t }) => t.hashString);
+    await rpc.torrentStop(hashes);
+    if (this.rpc !== rpc) return;
+    // A pause/remove while RPC was in flight takes precedence over re-queuing.
+    const pending = overflow.filter(({ d, t }) => ACTIVE.has(d.status) && this.idToHash.get(d.id) === t.hashString.toLowerCase());
+    if (pending.length) await rpc.torrentStart(pending.map(({ t }) => t.hashString));
+    for (const { d, t } of pending) {
+      if (this.rpc !== rpc) return;
+      if (!ACTIVE.has(d.status)) {
+        // A user pause which arrived during restart still wins.
+        if (d.status === 'paused' || d.status === 'completed') await rpc.torrentStop(t.hashString);
+        continue;
+      }
+      this.noteStart(d);
+      await this.setStatus(d, 'queued');
+    }
+  }
+
   private async tick(): Promise<void> {
-    if (!this.rpc) return;
-    const torrents = await this.rpc.torrentGet(ENGINE_STAT_FIELDS);
-    const byHash = new Map(torrents.map((t) => [t.hashString.toLowerCase(), t]));
-    const stats: DownloadStats[] = [];
-    for (const d of this.records.values()) {
-      if (d.status === 'removed') continue;
-      const hash = this.idToHash.get(d.id);
-      const t = hash ? byHash.get(hash) : undefined;
-      if (t) await this.applyTransitions(d, t);
-      stats.push(mapStats(d, t));
-    }
-    this.lastStats = stats;
-    for (const cb of this.statsCbs) { try { cb(stats); } catch { /* ignore */ } }
-    if (++this.persistCounter >= PERSIST_EVERY_TICKS) {
-      this.persistCounter = 0;
-      await db.updateDownloadsProgressBatch(stats.map((s) => ({
-        id: s.id, progress: s.progress, downloadedBytes: s.downloadedBytes, uploadedBytes: s.uploadedBytes,
-        downSpeedBps: s.downSpeedBps, upSpeedBps: s.upSpeedBps, etaSeconds: s.etaSeconds, peers: s.peers, seeds: s.seeds,
-      })));
-    }
+    const rpc = this.rpc;
+    if (!rpc || this.tickInFlight) return;
+    this.tickInFlight = true;
+    const poll = ++this.pollGeneration;
+    try {
+      const withPeers = Date.now() >= this.nextPeerStatsAt;
+      const torrents = await rpc.torrentGet(withPeers ? [...ENGINE_STAT_FIELDS, 'peers'] : ENGINE_STAT_FIELDS);
+      if (this.rpc !== rpc) return; // shutdown/restart invalidates the response
+      await this.enforceDownloadLimit(rpc, torrents);
+      if (this.rpc !== rpc) return;
+      if (withPeers) this.nextPeerStatsAt = Date.now() + PEER_STATS_INTERVAL_MS;
+      const byHash = new Map(torrents.map((t) => [t.hashString.toLowerCase(), t]));
+      const stats: DownloadStats[] = [];
+      for (const d of this.records.values()) {
+        if (d.status === 'removed') continue;
+        const hash = this.idToHash.get(d.id);
+        let t = hash ? byHash.get(hash) : undefined;
+        const starting = this.pendingStarts.get(d.id);
+        if (starting) {
+          const fatal = t && t.error !== 0 && t.error !== 1 && t.error !== 2;
+          if (poll <= starting.poll || (t?.status === TrStatus.Stopped && !fatal && Date.now() < starting.until)) t = undefined;
+          else this.pendingStarts.delete(d.id);
+        }
+        // Explicit stop intent wins while Transmission asynchronously closes
+        // peers. It must not resurrect a paused/completed record in the DB.
+        if ((d.status === 'paused' || d.status === 'completed') && t?.status !== TrStatus.Stopped) t = undefined;
+        if (t) await this.applyTransitions(d, t);
+        if (this.rpc !== rpc) return;
+        if ((d.status === 'paused' || d.status === 'completed') && t?.status !== TrStatus.Stopped) t = undefined;
+        if (!t || !t.peersConnected || t.status === TrStatus.Stopped || t.status === TrStatus.DownloadWait) this.seedCounts.delete(d.id);
+        else if (t.peers) this.seedCounts.set(d.id, t.peers.reduce((count, peer) => count + (peer.progress >= 1 ? 1 : 0), 0));
+        stats.push(mapStats(d, t, this.seedCounts.get(d.id)));
+      }
+      this.lastStats = stats;
+      for (const cb of this.statsCbs) { try { cb(stats); } catch { /* ignore */ } }
+      if (++this.persistCounter >= PERSIST_EVERY_TICKS) {
+        this.persistCounter = 0;
+        await db.updateDownloadsProgressBatch(stats.map((s) => ({
+          id: s.id, progress: s.progress, downloadedBytes: s.downloadedBytes, uploadedBytes: s.uploadedBytes,
+          downSpeedBps: s.downSpeedBps, upSpeedBps: s.upSpeedBps, etaSeconds: s.etaSeconds, peers: s.peers, seeds: s.seeds,
+        })));
+      }
+    } finally { this.tickInFlight = false; }
   }
 
   /** Detect and persist lifecycle transitions surfaced by the daemon. */
   private async applyTransitions(d: Download, t: TrTorrent): Promise<void> {
-    // Metadata arrival (magnets): freeze name/size, warm the cast cache, and
-    // apply the add-dialog's file selection (magnet adds can't pass
-    // files-unwanted up front — the file list doesn't exist yet).
-    if (!d.totalSize && t.metadataPercentComplete >= 1 && t.sizeWhenDone > 0) {
-      d.totalSize = t.sizeWhenDone;
-      d.name = t.name;
-      await db.updateDownloadFields(d.id, { totalSize: t.sizeWhenDone, name: t.name });
-      void this.warmMetaCache(d.id);
-      void this.applyMagnetFileSelection(d);
+    const rpc = this.rpc;
+    // totalSize is the complete torrent's metadata size. sizeWhenDone depends
+    // on wanted files and must not become the persisted total (including on
+    // restore). Repair old values once; an unchanged size needs no DB write.
+    if (t.metadataPercentComplete >= 1 && Number.isSafeInteger(t.totalSize) && t.totalSize > 0 && d.totalSize !== t.totalSize) {
+      const metadataArrived = !(Number.isFinite(d.totalSize) && d.totalSize > 0);
+      const fields: Partial<Download> = { totalSize: t.totalSize };
+      d.totalSize = t.totalSize;
+      if (metadataArrived) {
+        d.name = t.name;
+        fields.name = t.name;
+      }
+      await db.updateDownloadFields(d.id, fields);
+      if (this.rpc !== rpc || d.status === 'removed') return;
+      // First metadata arrival also resolves the name/cast cache and the
+      // add-dialog's selection. A size repair must not reapply that selection.
+      if (metadataArrived) {
+        void this.warmMetaCache(d.id);
+        void this.applyMagnetFileSelection(d);
+      }
     }
+
+    // A user control may have arrived while metadata was being persisted.
+    if (this.rpc !== rpc || d.status === 'removed') return;
+    if ((d.status === 'paused' || d.status === 'completed') && t.status !== TrStatus.Stopped) return;
+    const starting = this.pendingStarts.get(d.id);
+    if (starting && starting.poll >= this.pollGeneration) return;
 
     d.progress = t.percentDone;
     d.downloadedBytes = t.downloadedEver;

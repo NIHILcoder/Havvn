@@ -27,6 +27,8 @@ export interface SidecarOptions {
   downloadDir: string;
   rpcPort?: number;     // default: pick a free ephemeral port
   peerPort?: number;    // default: pick a free ephemeral port
+  /** Restore paused so the app can apply persisted intent before starting torrents. */
+  pausedOnStart?: boolean;
   /** Extra settings.json keys layered over the managed defaults (e.g. speed limits). */
   settingsOverrides?: Record<string, unknown>;
   /** Merged over `process.env` for the daemon (tracker proxy via libcurl). */
@@ -90,7 +92,9 @@ export class TransmissionSidecar {
     this.writeSettings(username, password);
 
     fs.mkdirSync(this.opts.downloadDir, { recursive: true });
-    const child = spawn(this.opts.binaryPath, ['-f', '--config-dir', this.opts.configDir], {
+    const args = ['-f', '--config-dir', this.opts.configDir];
+    if (this.opts.pausedOnStart) args.push('--paused');
+    const child = spawn(this.opts.binaryPath, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: this.opts.env ? { ...process.env, ...this.opts.env } : undefined,
@@ -214,8 +218,8 @@ export class TransmissionSidecar {
       // from the final name, so a ".part" suffix would break serving a file
       // mid-download. Purely an on-disk-naming choice; safe to flip.
       'rename-partial-files': false,
-      // The app has its own queue/limits semantics; don't let the daemon's
-      // download queue hold torrents in "queued" states the UI doesn't know.
+      // Standalone harnesses opt out; NativeTorrentManager supplies the app's
+      // queue policy through settingsOverrides before the daemon starts.
       'download-queue-enabled': false,
       'seed-queue-enabled': false,
       'watch-dir-enabled': false,

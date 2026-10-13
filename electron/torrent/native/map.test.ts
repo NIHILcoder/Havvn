@@ -29,7 +29,7 @@ const dl = (over: Partial<Download>): Download => ({
 describe('mapStatus', () => {
   it('maps daemon activity to app statuses', () => {
     expect(mapStatus(tr({ status: TrStatus.Downloading }), 'paused')).toBe('downloading');
-    expect(mapStatus(tr({ status: TrStatus.DownloadWait }), 'paused')).toBe('downloading');
+    expect(mapStatus(tr({ status: TrStatus.DownloadWait }), 'paused')).toBe('queued');
     expect(mapStatus(tr({ status: TrStatus.Seeding }), 'downloading')).toBe('seeding');
     expect(mapStatus(tr({ status: TrStatus.SeedWait }), 'downloading')).toBe('seeding');
   });
@@ -76,6 +76,12 @@ describe('mapStats', () => {
   it('falls back to the persisted snapshot with zero speeds when the torrent is not live', () => {
     const s = mapStats(dl({ status: 'paused', progress: 0.4 }), undefined);
     expect(s).toMatchObject({ progress: 0.4, downSpeedBps: 0, upSpeedBps: 0, peers: 0, seeds: 0, etaSeconds: null, status: 'paused' });
+  });
+  it('uses the sampled seed count between peer polls and bounds it by live connections', () => {
+    expect(mapStats(dl({}), tr({ peersConnected: 5 }), 3).seeds).toBe(3);
+    expect(mapStats(dl({}), tr({ peersConnected: 1 }), 3).seeds).toBe(1);
+    expect(mapStats(dl({}), tr({ peersConnected: 0 }), 3).seeds).toBe(0);
+    expect(mapStats(dl({}), tr({ peers: [] }), 3).seeds).toBe(0);
   });
   it('normalizes eta sentinels (-1/-2) to null', () => {
     expect(mapStats(dl({}), tr({ eta: -1 })).etaSeconds).toBeNull();

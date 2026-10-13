@@ -193,7 +193,9 @@ export class TransmissionRpc {
   }
 
   torrentStop(ids: TrIds): Promise<void> { return this.call('torrent-stop', { ids }).then(() => undefined); }
-  /** start-now skips the download queue — what a user-initiated resume expects. */
+  /** Normal starts respect the session's active-download limit. */
+  torrentStart(ids: TrIds): Promise<void> { return this.call('torrent-start', { ids }).then(() => undefined); }
+  /** Reserved for playback, which must not wait behind the download queue. */
   torrentStartNow(ids: TrIds): Promise<void> { return this.call('torrent-start-now', { ids }).then(() => undefined); }
   torrentVerify(ids: TrIds): Promise<void> { return this.call('torrent-verify', { ids }).then(() => undefined); }
   torrentRemove(ids: TrIds, deleteLocalData: boolean): Promise<void> {

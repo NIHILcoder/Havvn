@@ -12,8 +12,8 @@ import { TorrentError } from '../errors';
 /** torrent-get fields the 750ms stats tick requests (request only what you read). */
 export const ENGINE_STAT_FIELDS = [
   'hashString', 'name', 'status', 'percentDone', 'metadataPercentComplete',
-  'rateDownload', 'rateUpload', 'peersConnected', 'peers',
-  'sizeWhenDone', 'downloadedEver', 'uploadedEver', 'eta', 'isFinished',
+  'rateDownload', 'rateUpload', 'peersConnected',
+  'totalSize', 'downloadedEver', 'uploadedEver', 'eta', 'isFinished',
   'error', 'errorString',
 ];
 
@@ -31,8 +31,9 @@ export function mapStatus(t: TrTorrent, prev: DownloadStatus): DownloadStatus {
     case TrStatus.Stopped:
       return t.isFinished || t.percentDone >= 1 ? 'completed' : 'paused';
     case TrStatus.Downloading:
-    case TrStatus.DownloadWait:
       return 'downloading';
+    case TrStatus.DownloadWait:
+      return 'queued';
     case TrStatus.Seeding:
     case TrStatus.SeedWait:
       return 'seeding';
@@ -49,7 +50,7 @@ export function mapStatus(t: TrTorrent, prev: DownloadStatus): DownloadStatus {
  * completed / error rows kept only in the DB) → persisted snapshot, zero speeds,
  * mirroring the webtorrent manager's semantics.
  */
-export function mapStats(d: Download, t?: TrTorrent): DownloadStats {
+export function mapStats(d: Download, t?: TrTorrent, cachedSeeds = 0): DownloadStats {
   if (!t) {
     return {
       id: d.id,
@@ -75,7 +76,7 @@ export function mapStats(d: Download, t?: TrTorrent): DownloadStats {
     peers: t.peersConnected,
     // A seed has the entire torrent, even when it is currently choking us.
     // peersSendingToUs counts active uploaders, including incomplete peers.
-    seeds: (t.peers ?? []).filter((peer) => peer.progress >= 1).length,
+    seeds: t.peers ? t.peers.reduce((count, peer) => count + (peer.progress >= 1 ? 1 : 0), 0) : Math.min(t.peersConnected, cachedSeeds),
     status: mapStatus(t, d.status),
   };
 }
