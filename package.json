@@ -58,7 +58,7 @@
     "fs-chunk-store": "5.0.1",
     "hls.js": "^1.7.3",
     "ip3country": "^5.0.0",
-    "koffi": "^2.12.0",
+    "koffi": "^3.3.2",
     "nat-pmp": "^1.0.0",
     "parse-torrent": "9.1.5",
     "protobufjs": "^8.8.0",
