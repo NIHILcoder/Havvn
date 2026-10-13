@@ -26,7 +26,7 @@ html[data-app-background="aero"] body::before { background-image: var(--ap-overl
 html[data-app-background="sunset"] body::before { background-image: var(--ap-overlay),radial-gradient(ellipse at 90% 10%,#e7ad6b,transparent 60%),linear-gradient(140deg,#603c99,#ad547a,#252b60); }
 html[data-radius-overrides~="panels"] :is(.um-card,.player-modal) { border-radius: var(--ap-radius-panels); }
 html[data-radius-overrides~="cards"] :is(.stg-card,.download-item,.dock-panel,.ap-preview-surface) { border-radius: var(--ap-radius-cards); }
-html[data-radius-overrides~="buttons"] :is(.btn,.um-x) { border-radius: var(--ap-radius-buttons); clip-path: none; }
+html[data-radius-overrides~="buttons"] :is(.btn,.um-x,.rooms-profile-chip,.filter-toggle,.filter-chip-clear,.refine-wrap,.min-seeds) { border-radius: var(--ap-radius-buttons); clip-path: none; }
 html[data-radius-overrides~="inputs"] :is(.stg-text,.custom-select-trigger,.number-input,input:not([type="range"]):not([type="color"]):not([type="checkbox"]),textarea) { border-radius: var(--ap-radius-inputs); clip-path: none; }
 html:not([data-material="solid"])[data-glass-scopes~="sidebar"] .sidebar,
 html:not([data-material="solid"])[data-glass-scopes~="header"] :is(.titlebar,.page-header,.status-bar),

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { shouldPrefetchEpisode, type EpisodePrefetchState } from '../../shared/episode-prefetch';
 import { bufferedSecondsAhead, readBufferedRanges } from '../../shared/playback-buffer';
 import { useTranslation } from '../utils/i18nContext';
+import { Select } from './Select';
 import './EpisodePrefetchControl.css';
 
 const KEY = 'havvn.player.episodePrefetch.v1';
@@ -70,9 +71,9 @@ export function EpisodePrefetchControl({ media, downloadId, currentFile, nextFil
     <div className="episode-prefetch-fields">
       <label><input type="checkbox" disabled={supported !== true} checked={supported === true && settings.enabled}
         onChange={event => setSettings(previous => ({ ...previous, enabled: event.target.checked }))} />{t('player.prefetch.enable')}</label>
-      <label>{t('player.prefetch.budget')}<select value={settings.budgetMiB} disabled={supported !== true} onChange={event => setSettings(previous => ({ ...previous, budgetMiB: Number(event.target.value) }))}>
-        {[16, 32, 64].map(size => <option key={size} value={size}>{size} MiB</option>)}
-      </select></label>
+      <label>{t('player.prefetch.budget')}<Select value={String(settings.budgetMiB)} disabled={supported !== true}
+        ariaLabel={t('player.prefetch.budget')} onChange={value => setSettings(previous => ({ ...previous, budgetMiB: Number(value) }))}
+        options={[16, 32, 64].map(size => ({ value: String(size), label: `${size} MiB` }))} /></label>
       <label><input type="checkbox" disabled={supported !== true || !settings.enabled} checked={settings.allowExcluded}
         onChange={event => setSettings(previous => ({ ...previous, allowExcluded: event.target.checked }))} />{t('player.prefetch.allowExcluded')}</label>
     </div>

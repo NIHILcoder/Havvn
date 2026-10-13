@@ -11,6 +11,8 @@ if (!process.versions.electron) {
   const out = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'havvn-player-prefs-'));
   app.setPath('userData', path.join(out, 'profile')); app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+  app.commandLine.appendSwitch('in-process-gpu');
+  app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess');
   const deadline = setTimeout(() => { console.error('player preferences deadline'); app.exit(1); }, 55000);
   app.on('window-all-closed', () => {});
   let server;
@@ -34,8 +36,8 @@ if (!process.versions.electron) {
     server = new NativeMediaServer((_id, i) => ({ diskPath: disk[i], length: fs.statSync(disk[i]).size, name: path.basename(disk[i]), kind: 'video' }),
       () => ffmpeg, async (_id, i) => fs.statSync(disk[i]).size, 'test-token');
     const port = await server.ensure();
-    const css = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css', 'renderer/components/StreamPlayerModal.css',
-      'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/EpisodePrefetchControl.css', 'renderer/components/PlayerPreferencesPanel.css']
+    const css = require('./smoke-ui-fonts.cjs')(root) + ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css', 'renderer/components/StreamPlayerModal.css',
+      'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/EpisodePrefetchControl.css', 'renderer/components/PlayerPreferencesPanel.css', 'renderer/components/Select.css', 'renderer/components/NumberInput.css']
       .map(p => fs.readFileSync(path.join(root, p), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const page = path.join(out, 'preview.html'); fs.writeFileSync(page, '<html><style>' + css + 'body{background:#101114}</style><div id="root"></div></html>');
     const win = new BrowserWindow({ show: false, width: 1000, height: 700, webPreferences: { nodeIntegration: true, contextIsolation: false, offscreen: true, backgroundThrottling: false } });
@@ -71,7 +73,7 @@ if (!process.versions.electron) {
       function mount(){window.reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Player,{downloadId:'test',downloadName:'Series',onClose:()=>{}}));}
       function button(title){return [...document.querySelectorAll('button')].find(b=>b.title===translate(title));}
       function item(text){return [...document.querySelectorAll('.player-sub-item')].find(b=>b.textContent.trim().replace(/ ●$/,'')===text);}
-      function setSelect(label,value){const node=[...document.querySelectorAll('.player-preferences label')].find(l=>l.textContent.startsWith(translate(label))).querySelector('select');node.value=value;node.dispatchEvent(new Event('change',{bubbles:true}));}
+      function setSelect(label,value){const trigger=document.querySelector('.player-preferences button[aria-label="'+translate(label)+'"]');require(path.join(root,'node_modules/react-dom')).flushSync(()=>trigger.click());const options=[...trigger.parentElement.querySelectorAll('[role=option]')];const list=options.map(node=>node.textContent);const values=label==='player.preferences.size'?[75,100,125,150,175,200].map(String):label==='player.preferences.background'?['dark','none']:label==='player.preferences.subMode'?['off','auto','on']:['','ru','en','uk','ja','ko','zh','fr','de','es','it','pt','pl','tr'];const option=options[values.indexOf(value)];if(!option)throw Error('Missing '+label+' option '+value+' in '+list);require(path.join(root,'node_modules/react-dom')).flushSync(()=>option.click());}
       mount();
     `);
     await wait(`document.querySelector('video')?.readyState>=3&&!!button('player.audioTracks')`);

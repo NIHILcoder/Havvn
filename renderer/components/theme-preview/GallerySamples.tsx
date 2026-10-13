@@ -17,6 +17,7 @@
  */
 import React from 'react';
 import Icon from '../Icon';
+import { NumberInput } from '../NumberInput';
 import '../../pages/DownloadsPage.css';
 import '../../pages/RoomsPage.css';
 import '../Toggle.css';
@@ -208,8 +209,8 @@ export const RoomsSample: React.FC = () => (
       <button className="btn btn-ghost btn-sm room-add-files"><Icon name="file-plus" size={14} /> Add files</button>
       <div className="room-limits" title="Per-room speed limits">
         <Icon name="gauge" size={13} />
-        <label className="room-limit">↑<input type="number" min={0} placeholder="∞" defaultValue="" />KB/s</label>
-        <label className="room-limit">↓<input type="number" min={0} placeholder="∞" defaultValue="2048" />KB/s</label>
+        <label className="room-limit">↑<NumberInput min={0} placeholder="∞" defaultValue="" onValueChange={() => {}} />KB/s</label>
+        <label className="room-limit">↓<NumberInput min={0} placeholder="∞" defaultValue="2048" onValueChange={() => {}} />KB/s</label>
       </div>
     </div>
   </div>

@@ -9,6 +9,7 @@
 .tsm-input-wrap {
   display: flex;
   flex: 1;
+  min-width: 0;
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.7rem;
@@ -18,8 +19,14 @@
   border-radius: var(--radius-sm);
 }
 
+.tsm-input-wrap:focus-within { border-color: var(--color-border-focus); }
+.tsm-input-wrap > svg { flex: none; }
+.tsm-input:focus-visible { box-shadow: none; }
+
 .tsm-input {
   flex: 1;
+  min-width: 0;
+  padding: 2px;
   font: inherit;
   font-size: 0.9rem;
   color: var(--color-text-primary);
@@ -36,12 +43,14 @@
 }
 
 .tsm-options-label {
+  flex: none;
   font-size: 0.8rem;
   color: var(--color-text-muted);
 }
 
 .tsm-category {
-  min-width: 160px;
+  min-width: 0;
+  flex: 1;
 }
 
 .tsm-error {

@@ -3,6 +3,7 @@ import type { SearchProvider } from '../../shared/types';
 import type { SearchNetworkSettings } from '../../shared/provider-network';
 import { useTranslation } from '../utils/i18nContext';
 import { NumberInput } from './NumberInput';
+import { Select } from './Select';
 import './ProviderConnectionSettings.css';
 
 export function ProviderConnectionSettings({ provider, onConnectionChange }: { provider: SearchProvider; onConnectionChange?: () => void }) {
@@ -103,19 +104,20 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
     <fieldset disabled={busy} className="provider-connection-body">
     <p className="connection-hint">{t('search.connection.scope')}</p>
     <label className="connection-field">{t('search.connection.route')}
-      <select className="form-select" value={profileId} onChange={e => setProfileId(e.target.value)} disabled={busy}>
-        <option value="legacy">{t('search.connection.legacy')}</option>
-        <option value="system">{t('search.connection.system')}</option>
-        <option value="direct">{t('search.connection.direct')}</option>
-        {settings.profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        <option value="new">{t('search.connection.new')}</option>
-      </select>
+      <Select value={profileId} onChange={setProfileId} disabled={busy} ariaLabel={t('search.connection.route')}
+        options={[
+          ...(['legacy', 'system', 'direct'] as const).map(value => ({ value, label: t(`search.connection.${value}`) })),
+          ...settings.profiles.map(p => ({ value: p.id, label: p.name })),
+          { value: 'new', label: t('search.connection.new') },
+        ]} />
     </label>
     {provider.type === 'script' && <p className="connection-hint">{t('search.connection.script')}</p>}
     {profileId === 'system' && <p className="connection-hint">{t('search.connection.systemHelp')}</p>}
     {profileId === 'new' && <div className="connection-proxy">
       <label className="connection-field">{t('search.connection.name')}<input className="form-input" placeholder={t('search.connection.name')} value={name} onChange={e => setName(e.target.value)} /></label>
-      <label className="connection-field">{t('search.connection.protocol')}<select className="form-select" value={protocol} onChange={e => setProtocol(e.target.value as 'http' | 'socks5')}><option value="http">HTTP</option><option value="socks5">SOCKS5</option></select></label>
+      <label className="connection-field">{t('search.connection.protocol')}<Select value={protocol} disabled={busy}
+        ariaLabel={t('search.connection.protocol')} onChange={value => setProtocol(value as 'http' | 'socks5')}
+        options={[{ value: 'http', label: 'HTTP' }, { value: 'socks5', label: 'SOCKS5' }]} /></label>
       <label className="connection-field">{t('search.connection.host')}<input className="form-input" placeholder="127.0.0.1" value={host} onChange={e => setHost(e.target.value)} /></label>
       <label className="connection-field">{t('search.connection.port')}<NumberInput className="form-input" min={1} max={65535} value={port} onValueChange={setPort} /></label>
       <p className="connection-hint">{t('search.connection.noAuth')}</p>

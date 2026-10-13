@@ -3,6 +3,7 @@ import { RESOLUTIONS, VOICES } from '../../shared/release-metadata';
 import { DEFAULT_SEARCH_PREFERENCES, SEARCH_PREFERENCE_PRESETS, type SearchPreferences } from '../../shared/search-preferences';
 import { useTranslation } from '../utils/i18nContext';
 import { NumberInput } from './NumberInput';
+import { Select } from './Select';
 
 interface Props {
   value: SearchPreferences;
@@ -21,27 +22,24 @@ export function SearchPreferencesPanel({ value, ranked, onChange, onRankedChange
     <p className="search-preference-hint">{t('search.preferences.hint')}</p>
     <div className="search-preference-fields">
       <label>{t('search.preferences.profile')}
-        <select className="form-select preference-preset" value={preset} onChange={e => {
-          if (e.target.value === 'custom') return;
-          onChange({ ...(SEARCH_PREFERENCE_PRESETS[e.target.value] ?? DEFAULT_SEARCH_PREFERENCES) });
-          onRankedChange(e.target.value !== 'none');
-        }}>
-          <option value="none">{t('search.preferences.none')}</option>
-          <option value="hd">1080p · ≤ 15 GiB</option>
-          <option value="uhd">2160p · ≤ 40 GiB</option>
-          <option value="compact">720p · ≤ 5 GiB</option>
-          {preset === 'custom' && <option value="custom">{t('search.preferences.custom')}</option>}
-        </select>
+        <Select className="preference-preset" value={preset} ariaLabel={t('search.preferences.profile')} onChange={selected => {
+          if (selected === 'custom') return;
+          onChange({ ...(SEARCH_PREFERENCE_PRESETS[selected] ?? DEFAULT_SEARCH_PREFERENCES) });
+          onRankedChange(selected !== 'none');
+        }} options={[
+          { value: 'none', label: t('search.preferences.none') },
+          { value: 'hd', label: '1080p · ≤ 15 GiB' },
+          { value: 'uhd', label: '2160p · ≤ 40 GiB' },
+          { value: 'compact', label: '720p · ≤ 5 GiB' },
+          ...(preset === 'custom' ? [{ value: 'custom', label: t('search.preferences.custom') }] : []),
+        ]} />
       </label>
-      <label>{t('search.media.resolution')}<select className="form-select" value={value.resolution} onChange={e => update('resolution', e.target.value)}>
-        <option value="">{t('search.media.any')}</option>{RESOLUTIONS.map(r => <option key={r}>{r}</option>)}
-      </select></label>
-      <label>{t('search.media.voice')}<select className="form-select" value={value.voice} onChange={e => update('voice', e.target.value)}>
-        <option value="">{t('search.media.any')}</option>{VOICES.map(v => <option key={v} value={v}>{t(`search.media.voice${v}`)}</option>)}
-      </select></label>
-      <label>{t('search.preferences.language')}<select className="form-select" value={value.language} onChange={e => update('language', e.target.value)}>
-        <option value="">{t('search.media.any')}</option><option value="ru">{t('search.preferences.ru')}</option><option value="en">{t('search.preferences.en')}</option>
-      </select></label>
+      <label>{t('search.media.resolution')}<Select value={value.resolution} onChange={selected => update('resolution', selected)}
+        ariaLabel={t('search.media.resolution')} options={[{ value: '', label: t('search.media.any') }, ...RESOLUTIONS.map(value => ({ value, label: value }))]} /></label>
+      <label>{t('search.media.voice')}<Select value={value.voice} onChange={selected => update('voice', selected)}
+        ariaLabel={t('search.media.voice')} options={[{ value: '', label: t('search.media.any') }, ...VOICES.map(value => ({ value, label: t(`search.media.voice${value}`) }))]} /></label>
+      <label>{t('search.preferences.language')}<Select value={value.language} onChange={selected => update('language', selected)}
+        ariaLabel={t('search.preferences.language')} options={[{ value: '', label: t('search.media.any') }, ...(['ru', 'en'] as const).map(value => ({ value, label: t(`search.preferences.${value}`) }))]} /></label>
       <label>{t('search.media.maxSize')}<NumberInput className="form-input" min="0" step="0.5" value={value.maxGiB} onValueChange={value => update('maxGiB', value)} placeholder={t('search.preferences.unlimited')} /></label>
       <label>{t('search.minSeeds')}<NumberInput className="form-input" min="0" step="1" value={value.minSeeds} onValueChange={value => update('minSeeds', value)} placeholder={t('search.preferences.unlimited')} /></label>
     </div>

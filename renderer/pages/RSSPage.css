@@ -389,6 +389,7 @@
 .rule-editor-section h4 { margin: 0; font-size: 0.875rem; color: var(--color-text-primary); }
 .rule-editor-section .form-field { min-width: 0; }
 .rule-editor .field-input { min-width: 0; width: 100%; }
+.rule-editor .number-input, .rss-feed-modal .number-input { width: 100%; }
 .rule-editor .form-row-2 { align-items: end; }
 .rule-editor .filter-chip { white-space: normal; overflow-wrap: anywhere; text-align: left; max-width: 100%; }
 .rule-editor .items-filter-row { margin-bottom: 0; }
@@ -543,13 +544,19 @@
 
 .rules-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 0.85rem;
 }
 
+.rules-toolbar > .btn { flex: none; max-width: 100%; }
+.rules-toolbar > .btn > svg { flex: none; }
+
 .rules-desc {
+  min-width: 0;
+  flex: 1 1 240px;
   margin: 0;
   font-size: 0.82rem;
   color: var(--color-text-muted);

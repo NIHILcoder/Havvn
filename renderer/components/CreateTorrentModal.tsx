@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Button, Icon, Input, ProgressBar } from '../components';
 import { Modal } from './Modal';
+import { Select } from './Select';
 import { useTranslation } from '../utils/i18nContext';
 import { CreateTorrentOptions, CreateTorrentProgress, CreateTorrentResult } from '../../shared/types';
 import './CreateTorrentModal.css';
@@ -359,17 +360,10 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
 
                     <div className="form-group">
                       <label className="label">{t('create.pieceSize')}</label>
-                      <select
-                        className="input"
-                        value={pieceLength}
-                        onChange={(e) => setPieceLength(Number(e.target.value))}
-                      >
-                        {PIECE_SIZE_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label === 'Auto' ? t('create.pieceAuto') : opt.label}
-                          </option>
-                        ))}
-                      </select>
+                      <Select value={String(pieceLength)} onChange={value => setPieceLength(Number(value))}
+                        ariaLabel={t('create.pieceSize')} options={PIECE_SIZE_OPTIONS.map(opt => ({
+                          value: String(opt.value), label: opt.value === 0 ? t('create.pieceAuto') : opt.label,
+                        }))} />
                       <span className="help-text">{t('create.pieceHelp')}</span>
                     </div>
 

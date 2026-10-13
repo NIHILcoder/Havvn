@@ -9,6 +9,7 @@ import { Button, Icon, Input, ProgressBar, ToastContainer, FileTreeSelector, Fil
 import { CreateTorrentOptions, CreateTorrentProgress, CreateTorrentResult } from '../../shared/types';
 import { useTranslation } from '../utils/i18nContext';
 import { useCreateTorrentStore } from '../stores/createTorrentStore';
+import { Select } from '../components/Select';
 import './CreateTorrentPage.css';
 
 // Utility functions
@@ -820,17 +821,10 @@ export const CreateTorrentPage: React.FC<CreateTorrentPageProps> = ({ onNavigate
                         <Icon name="grid" size={14} />
                         {t('create.pieceSize')}
                       </label>
-                      <select
-                        className="field-select"
-                        value={pieceLength}
-                        onChange={(e) => setPieceLength(Number(e.target.value))}
-                      >
-                        {PIECE_SIZE_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.value === 0 ? t('create.pieceAuto') : opt.label}
-                          </option>
-                        ))}
-                      </select>
+                      <Select value={String(pieceLength)} onChange={value => setPieceLength(Number(value))}
+                        ariaLabel={t('create.pieceSize')} options={PIECE_SIZE_OPTIONS.map(opt => ({
+                          value: String(opt.value), label: opt.value === 0 ? t('create.pieceAuto') : opt.label,
+                        }))} />
                       <p className="field-hint">
                         {t('create.pieceHint')}
                       </p>

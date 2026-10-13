@@ -87,7 +87,6 @@ code, pre {
 :focus-visible {
   outline: none;
   box-shadow: var(--shadow-focus);
-  border-radius: var(--radius-md);
 }
 
 /* === Selection === */

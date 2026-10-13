@@ -99,3 +99,4 @@
   .connection-actions .btn { width: 100%; }
 }
 .connection-field > .number-input { width: 100%; }
+.connection-field > .custom-select-container { min-width: 0; }

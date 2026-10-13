@@ -11,6 +11,7 @@ import { useTranslation } from '../utils/i18nContext';
 import './RSSPage.css';
 import '../components/Toggle.css';
 import { Modal } from '../components/Modal';
+import { NumberInput } from '../components/NumberInput';
 
 const formatDate = (dateStr?: string): string => {
   if (!dateStr) return '—';
@@ -955,12 +956,11 @@ const RSSPage: React.FC = () => {
                   {t('rss.rule.minSeeds')}
                   <span className="field-hint">{t('rss.rule.boundHint')}</span>
                 </label>
-                <input
-                  type="number"
+                <NumberInput
                   min="0"
                   className="field-input"
                   value={editingRule.minSeeds ?? ''}
-                  onChange={e => setEditingRule(r => ({ ...r, minSeeds: e.target.value ? parseInt(e.target.value) : undefined }))}
+                  onValueChange={value => setEditingRule(r => ({ ...r, minSeeds: value ? parseInt(value) : undefined }))}
                 />
               </div>
               <div className="form-field">
@@ -968,12 +968,11 @@ const RSSPage: React.FC = () => {
                   {t('rss.rule.maxAge')}
                   <span className="field-hint">{t('rss.rule.boundHint')}</span>
                 </label>
-                <input
-                  type="number"
+                <NumberInput
                   min="0"
                   className="field-input"
                   value={editingRule.maxAgeDays ?? ''}
-                  onChange={e => setEditingRule(r => ({ ...r, maxAgeDays: e.target.value ? parseInt(e.target.value) : undefined }))}
+                  onValueChange={value => setEditingRule(r => ({ ...r, maxAgeDays: value ? parseInt(value) : undefined }))}
                 />
               </div>
             </div>
@@ -981,29 +980,27 @@ const RSSPage: React.FC = () => {
             <div className="form-row-2">
               <div className="form-field">
                 <label>{t('rss.rule.minSize')}</label>
-                <input
-                  type="number"
+                <NumberInput
                   min="0"
                   className="field-input"
                   placeholder="GB"
                   value={editingRule.minSize ? editingRule.minSize / (1024 ** 3) : ''}
-                  onChange={e => setEditingRule(r => ({
+                  onValueChange={value => setEditingRule(r => ({
                     ...r,
-                    minSize: e.target.value ? Math.round(parseFloat(e.target.value) * 1024 ** 3) : undefined,
+                    minSize: value ? Math.round(parseFloat(value) * 1024 ** 3) : undefined,
                   }))}
                 />
               </div>
               <div className="form-field">
                 <label>{t('rss.rule.maxSize')}</label>
-                <input
-                  type="number"
+                <NumberInput
                   min="0"
                   className="field-input"
                   placeholder="GB"
                   value={editingRule.maxSize ? editingRule.maxSize / (1024 ** 3) : ''}
-                  onChange={e => setEditingRule(r => ({
+                  onValueChange={value => setEditingRule(r => ({
                     ...r,
-                    maxSize: e.target.value ? Math.round(parseFloat(e.target.value) * 1024 ** 3) : undefined,
+                    maxSize: value ? Math.round(parseFloat(value) * 1024 ** 3) : undefined,
                   }))}
                 />
               </div>
@@ -1161,13 +1158,12 @@ const RSSPage: React.FC = () => {
             <div className="form-row-2">
               <div className="form-field">
                 <label>{t('rss.form.interval')}</label>
-                <input
-                  type="number"
+                <NumberInput
                   className="field-input"
                   min="5"
                   max="1440"
                   value={editingFeed.intervalMinutes ?? 30}
-                  onChange={e => setEditingFeed(f => ({ ...f, intervalMinutes: parseInt(e.target.value) || 30 }))}
+                  onValueChange={value => setEditingFeed(f => ({ ...f, intervalMinutes: parseInt(value) || 30 }))}
                 />
               </div>
               <div className="form-field">

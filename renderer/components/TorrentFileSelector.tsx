@@ -10,6 +10,7 @@ import { DropdownMenu } from './DropdownMenu';
 import { Modal } from './Modal';
 import { useTranslation } from '../utils/i18nContext';
 import './TorrentFileSelector.css';
+import { SelectionCheckbox, SelectionMarker } from './SelectionCheckbox';
 
 interface TorrentFile {
   path: string;
@@ -331,9 +332,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
               variant="ghost"
               size="sm"
               icon={
-                selectAllState === 'all' ? <Icon name="check-circle" size={16} /> :
-                selectAllState === 'partial' ? <Icon name="minus" size={16} /> :
-                <Icon name="inbox" size={16} />
+                <SelectionMarker checked={selectAllState === 'all'} indeterminate={selectAllState === 'partial'} />
               }
               onClick={handleSelectAll}
             >
@@ -393,8 +392,8 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
                 className={`file-item ${selectedFiles.has(file.index) ? 'selected' : ''}`}
                 onClick={() => handleToggleFile(file.index)}
               >
-                <input
-                  type="checkbox"
+                <SelectionCheckbox
+                  aria-label={file.path}
                   checked={selectedFiles.has(file.index)}
                   onChange={() => handleToggleFile(file.index)}
                   onClick={(e) => e.stopPropagation()}

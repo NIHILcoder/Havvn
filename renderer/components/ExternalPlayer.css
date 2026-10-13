@@ -4,7 +4,7 @@
 .external-player-selected svg, .external-player-file svg { flex-shrink: 0; color: var(--color-accent-primary); margin-top: 2px; }
 .external-player-selected p, .external-player-file p { overflow-wrap: anywhere; margin: 5px 0 0; font-size: 12px; color: var(--color-text-secondary); }
 .external-player-file strong { overflow-wrap: anywhere; }
-.external-player-preferences { margin: 16px 0; padding: 16px; border: 1px solid var(--color-border-default); background: var(--color-bg-secondary); }
+.external-player-preferences { margin: 16px 0; padding: 16px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-secondary); }
 .external-player-hint { margin: 12px 0 0; color: var(--color-text-secondary); font-size: 13px; line-height: 1.5; }
 .external-player-error { margin: 12px 0 0; color: var(--color-error, #ff6035); font-size: 13px; line-height: 1.5; }
 .external-player-resume { display: flex; align-items: center; gap: 8px; font-size: 13px; }

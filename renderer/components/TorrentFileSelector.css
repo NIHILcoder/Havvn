@@ -233,13 +233,6 @@
   border-color: var(--color-accent-primary);
 }
 
-.file-item input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-  accent-color: var(--color-accent-primary);
-}
-
 .file-icon {
   display: flex;
   align-items: center;

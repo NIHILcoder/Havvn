@@ -33,10 +33,10 @@
 /* === Alert Banner === */
 .settings-alert {
   position: fixed;
-  top: 16px;
+  top: 40px;
   right: 16px;
   z-index: var(--z-popover);
-  max-width: 400px;
+  max-width: min(400px, calc(100vw - 32px));
 }
 
 /* === Content Area === */

@@ -5,7 +5,8 @@
 .episode-prefetch summary span { font-weight: 400; color: var(--color-text-muted); }
 .episode-prefetch-fields { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; margin-top: 12px; }
 .episode-prefetch-fields label { display: flex; align-items: center; gap: 8px; }
-.episode-prefetch select { background: var(--color-bg-primary); border: 1px solid var(--color-border); color: var(--color-text-primary); padding: 5px 8px; }
+.episode-prefetch-fields .custom-select-container { width: 110px; flex-shrink: 0; }
+.episode-prefetch-fields .custom-select-trigger { min-height: 36px; padding: 6px 10px; background: var(--color-bg-primary); font-size: inherit; }
 .episode-prefetch p { line-height: 1.5; margin: 10px 0 0; color: var(--color-text-muted); }
 .episode-prefetch-next { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .episode-prefetch[open] { max-height: min(36vh, 260px); overflow-y: auto; }

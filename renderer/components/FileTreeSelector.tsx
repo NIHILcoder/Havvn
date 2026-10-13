@@ -8,6 +8,7 @@ import React, { useState, useMemo } from 'react';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import './FileTreeSelector.css';
+import { SelectionCheckbox } from './SelectionCheckbox';
 
 export interface FileNode {
   path: string;
@@ -85,16 +86,15 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, level, excludedPaths, onToggl
         )}
         
         <label className="node-checkbox-label" onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
+          <SelectionCheckbox
+            aria-label={node.name}
+            indeterminate={!isExcluded && hasExcludedChildren}
             checked={!isExcluded}
             onChange={(e) => {
               e.stopPropagation();
               onToggle(node.path, node.isDirectory);
             }}
-            className="node-checkbox"
           />
-          <span className="checkbox-mark"></span>
         </label>
 
         <div className="node-icon">
@@ -181,8 +181,9 @@ export const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
     <div className="file-tree-selector">
       <div className="tree-header">
         <label className="tree-header-checkbox">
-          <input
-            type="checkbox"
+          <SelectionCheckbox
+            aria-label={t('create.allFilesSelected')}
+            indeterminate={!allIncluded && includedCount > 0}
             checked={allIncluded}
             onChange={(e) => onToggleAll(e.target.checked)}
           />
