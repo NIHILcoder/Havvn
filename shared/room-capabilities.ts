@@ -1,7 +1,7 @@
 /** Advertisements guide UI/compatibility only; they never grant authority. */
 export const ROOM_PROTOCOL_VERSION = 2;
-export const DESKTOP_ROOM_CAPABILITIES = ['chat-v2', 'manifest-pages-v1', 'voice-mesh-v1', 'voice-state-v2', 'watch-v2', 'watch-host-v1', 'files', 'file-proofs-v1', 'owner-transfer-v1', 'ban-state-v1', 'owner-manage', 'e2e-files', 'e2e-keys-v2', 'lan', 'server'] as const;
-export const GUEST_ROOM_CAPABILITIES = ['chat-v2', 'manifest-pages-v1', 'voice-mesh-v1', 'voice-state-v2', 'watch-v2', 'watch-host-v1', 'files', 'file-proofs-v1', 'owner-transfer-v1', 'ban-state-v1'] as const;
+export const DESKTOP_ROOM_CAPABILITIES = ['chat-v2', 'chat-pins-v1', 'file-requests-v1', 'manifest-pages-v1', 'voice-mesh-v1', 'voice-state-v2', 'watch-v2', 'watch-host-v1', 'files', 'file-proofs-v1', 'owner-transfer-v1', 'ban-state-v1', 'owner-manage', 'e2e-files', 'e2e-keys-v2', 'lan', 'server'] as const;
+export const GUEST_ROOM_CAPABILITIES = ['chat-v2', 'chat-pins-v1', 'file-requests-v1', 'manifest-pages-v1', 'voice-mesh-v1', 'voice-state-v2', 'watch-v2', 'watch-host-v1', 'files', 'file-proofs-v1', 'owner-transfer-v1', 'ban-state-v1'] as const;
 export type RoomCapability = typeof DESKTOP_ROOM_CAPABILITIES[number];
 export interface RoomCapabilities { protocolVersion?: number; capabilities?: RoomCapability[] }
 export function validRoomCapabilities(m: { protocolVersion?: unknown; capabilities?: unknown }): boolean {

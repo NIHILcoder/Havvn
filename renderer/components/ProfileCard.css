@@ -1,6 +1,10 @@
 /* Member profile popover — portaled to the anchor's document body. */
 .profile-card {
   position: fixed;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow-y: auto;
   z-index: 1000;
   display: flex;
   flex-direction: column;
@@ -50,20 +54,28 @@
   font-weight: 600;
 }
 .profile-card-acts {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   padding-top: 8px;
   border-top: 1px solid var(--color-border-subtle);
 }
-.profile-card-act {
+.profile-card .profile-card-act {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex: 1;
-  justify-content: center;
-  height: 26px;
-  padding: 0 8px;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 34px;
+  height: auto;
+  padding: 7px 10px;
   font-size: 12px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);
   background: transparent;
@@ -71,5 +83,6 @@
   cursor: pointer;
   transition: color var(--transition-fast), border-color var(--transition-fast);
 }
+.profile-card-act svg { flex-shrink: 0; }
 .profile-card-act:hover { color: var(--color-text-primary); border-color: var(--color-border-strong); }
 .profile-card-act.danger:hover { color: var(--color-error, #ef4444); border-color: var(--color-error, #ef4444); }

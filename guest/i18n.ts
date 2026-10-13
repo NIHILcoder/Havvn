@@ -1,6 +1,7 @@
 export type GuestLang = 'en' | 'ru';
 
 const en = {
+  chatPins: 'Pinned messages', fileRequest: 'File request', requestopen: 'Open', requestfulfilled: 'Fulfilled', requestcancelled: 'Cancelled',
   watchShared: "Shared control",
   watchHost: "Host",
   watchHostAbsent: "The host is not watching this file in sync. The owner can choose another host.",
@@ -97,6 +98,7 @@ const en = {
 };
 
 const ru: typeof en = {
+  chatPins: 'Закреплённые сообщения', fileRequest: 'Запрос файла', requestopen: 'Открыт', requestfulfilled: 'Выполнен', requestcancelled: 'Отменён',
   watchShared: "Совместное управление",
   watchHost: "Ведущий",
   watchHostAbsent: "Ведущий не смотрит этот файл в синхроне. Владелец может выбрать другого ведущего.",

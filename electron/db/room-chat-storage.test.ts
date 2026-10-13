@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RoomChatMessage } from '../../shared/types';
-const state = vi.hoisted(() => ({ stores: new Map<string, Record<string, unknown>>(), fail: false, writes: [] as unknown[] }));
+import { EMPTY_CHAT_FILTER } from '../../shared/room-chat-tools';
+const state = vi.hoisted(() => ({ stores: new Map<string, Record<string, unknown>>(), fail: false, writes: [] as unknown[], encryptions: 0, decryptions: 0, available: true }));
 vi.mock('electron', () => ({ app: { getPath: () => 'D:/isolated-test' } }));
 vi.mock('./secrets', () => ({
-  encryptSecret: (value: string) => 'encrypted:' + Buffer.from(value).toString('base64'),
-  decryptSecret: (value: string) => value.startsWith('encrypted:') ? Buffer.from(value.slice(10), 'base64').toString() : value,
+  isEncryptionAvailable: () => state.available,
+  encryptSecret: (value: string) => { state.encryptions++; return 'encrypted:' + Buffer.from(value).toString('base64'); },
+  decryptSecret: (value?: string) => { state.decryptions++; return state.available && typeof value === 'string' ? value.startsWith('encrypted:') ? Buffer.from(value.slice(10), 'base64').toString() : value : ''; },
 }));
 vi.mock('../utils/logger', () => ({ logger: { warn: vi.fn() } }));
 vi.mock('electron-store', () => ({ default: class {
@@ -26,9 +28,45 @@ vi.mock('electron-store', () => ({ default: class {
 import * as db from './store';
 const room = 'chat-storage';
 const message = (i = 1): RoomChatMessage => ({ id: i.toString(16).padStart(32, '0'), memberId: 'A', name: 'Alice', text: 'private body ' + i, at: i, pub: 'pub', sig: 'signed', replyTo: 'parent', replyText: 'private quote' });
-beforeEach(() => { state.fail = false; db.clearRoomChats(room); db.clearRoomChatEdits(room); state.writes = []; });
+beforeEach(() => { state.fail = false; state.available = true; db.clearRoomChats(room); db.clearRoomChatEdits(room); state.writes = []; state.encryptions = state.decryptions = 0; });
 
 describe('durable room chat storage', () => {
+  it('keeps missing stored text readable as an empty value', () => {
+    const stored = state.stores.get('rooms')!;
+    stored.roomChats = { ...(stored.roomChats as object), [room]: [{ ...message(), text: undefined, receivedAt: Date.now() }] };
+    expect(db.getRoomChats(room)[0].text).toBe('');
+  });
+
+  it('counts unread without decrypting and reuses protected text only while storage is available', () => {
+    db.commitRoomChat(room, message()); state.decryptions = 0;
+    expect(db.getRoomUnreadCount(room, 'B')).toBe(1); expect(db.getRoomUnreadCount(room, 'A')).toBe(0);
+    expect(state.decryptions).toBe(0);
+    const first = db.getRoomChats(room); const count = state.decryptions;
+    first[0].text = 'mutated by caller';
+    expect(db.getRoomChats(room)[0].text).toBe(message().text); expect(state.decryptions).toBe(count);
+    state.available = false; expect(db.getRoomChats(room)[0].text).toBe('');
+    state.available = true; expect(db.getRoomChats(room)[0].text).toBe(message().text); expect(state.decryptions).toBeGreaterThan(count);
+  });
+
+  it('encrypts only new or upgraded incoming messages, preserving prior ciphertext', () => {
+    db.appendRoomChats(room, [message(), message(2)]);
+    const before = structuredClone((state.stores.get('rooms')?.roomChats as Record<string, RoomChatMessage[]>)[room]);
+    state.encryptions = 0; db.appendRoomChats(room, [message(3)]);
+    const after = (state.stores.get('rooms')?.roomChats as Record<string, RoomChatMessage[]>)[room];
+    expect(after.slice(0, 2)).toEqual(before); expect(state.encryptions).toBe(2);
+    state.encryptions = 0; expect(db.appendRoomChats(room, [message(3)])).toBe(false); expect(state.encryptions).toBe(0);
+  });
+
+  it('clears all room partitions in one atomic write and preserves another room', () => {
+    db.commitRoomChat(room, message()); db.commitRoomChat('other', message(2));
+    db.setRoomChatDraft(room, { text: 'private draft' }); db.setRoomLastRead(room, 4);
+    state.writes = []; state.fail = true;
+    expect(() => db.clearRoomLocalData(room)).toThrow('disk full'); expect(db.getRoomChats(room)).toHaveLength(1);
+    state.fail = false; db.clearRoomLocalData(room); expect(state.writes).toHaveLength(1);
+    expect(db.getRoomChats(room)).toEqual([]); expect(db.getRoomChatDraft(room)).toEqual({ text: '' }); expect(db.getRoomLastRead(room)).toBe(0);
+    expect(db.getRoomChats('other')).toHaveLength(1); db.clearRoomLocalData('other');
+  });
+
   it('atomically writes the body and retry receipt once, with content encrypted', () => {
     const msg = message(); const result = db.commitRoomChat(room, msg);
     expect(result).toEqual({ duplicate: false, message: { ...msg, receivedAt: expect.any(Number) } });
@@ -163,4 +201,50 @@ it('uses the archive to reject conflicting retries after the recent window and r
   state.stores.get('rooms')!.roomChatReceipts={};
   expect(db.commitRoomChat(room,message(1))).toMatchObject({duplicate:true,message:{id:message(1).id}});
   expect(()=>db.commitRoomChat(room,{...message(1),text:'different body'})).toThrow(/different content/);
+});
+
+it('searches beyond the recent 200 messages, matches edited text and pages results without exposing ciphertext', () => {
+  for (let i = 1; i <= 270; i++) db.commitRoomChat(room, { ...message(i), text: 'needle ' + i });
+  db.setRoomChatEdits(room, { [message(270).id]: { text: 'changed text', at: Date.now(), by: 'A', pub: 'pub', sig: 'sig' } });
+  const first = db.searchRoomChat(room, { ...EMPTY_CHAT_FILTER, query: 'needle' });
+  expect(first.messages).toHaveLength(50); expect(first.messages.at(-1)?.id).toBe(message(269).id);
+  let page = first;
+  while (page.next) page = db.searchRoomChat(room, { ...EMPTY_CHAT_FILTER, query: 'needle' }, page.next);
+  expect(page.messages[0].id).toBe(message(1).id);
+  const changed = db.searchRoomChat(room, { ...EMPTY_CHAT_FILTER, query: 'changed' });
+  expect(changed.messages[0].text).toBe('needle 270'); expect(changed.edits[message(270).id].text).toBe('changed text');
+  expect(() => db.searchRoomChat(room, EMPTY_CHAT_FILTER, '../bad')).toThrow();
+});
+
+it('keeps read receipts ordered within the same millisecond, including late arrivals after a read', () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(new Date('2026-10-12T12:00:00Z'));
+    const first = db.commitRoomChat(room, message(1)).message;
+    db.setRoomLastRead(room, first.receivedAt);
+    db.appendRoomChats(room, [{ ...message(2), memberId: 'B' }]);
+    expect(db.getRoomChats(room)[1].receivedAt).toBe(first.receivedAt! + 1);
+    expect(db.getRoomUnreadCount(room, 'A')).toBe(1);
+    db.setRoomLastRead(room, db.getRoomChats(room)[1].receivedAt);
+    const watermark = db.getRoomLastRead(room);
+    db.clearRoomChats(room);
+    vi.setSystemTime(new Date('2026-10-12T11:00:00Z'));
+    db.appendRoomChats(room, [{ ...message(3), memberId: 'B' }]);
+    expect(db.getRoomChats(room)[0].receivedAt).toBe(watermark + 1);
+    expect(db.getRoomUnreadCount(room, 'A')).toBe(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it('protects complete pin snapshots, ignores stale writes and forgets them with the room', () => {
+  const pins = { t: 'chat-pins-v1' as const, by: 'A', ownerAt: 0, at: 100, pub: 'pub', sig: 'sig', items: [{ topic: 'topic', message: message(1) }] };
+  db.setRoomChatPins(room, pins);
+  expect(db.getRoomChatPins(room)).toEqual(pins);
+  expect(JSON.stringify(state.stores.get('rooms')?.roomChatPins)).not.toContain('private body');
+  db.setRoomChatPins(room, { ...pins, at: 99, items: [] });
+  expect(db.getRoomChatPins(room)?.items).toHaveLength(1);
+  state.fail = true;
+  expect(() => db.setRoomChatPins(room, { ...pins, at: 101, items: [] })).toThrow('disk full');
+  state.fail = false;
+  expect(db.getRoomChatPins(room)?.items).toHaveLength(1);
+  db.clearRoomLocalData(room); expect(db.getRoomChatPins(room)).toBeUndefined();
 });

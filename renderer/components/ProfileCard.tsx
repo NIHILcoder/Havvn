@@ -14,6 +14,7 @@ import { Button } from './Button';
 import { Avatar } from './Avatar';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import { useAnchoredOverlayDismiss } from '../utils/useAnchoredOverlayDismiss';
 import './ProfileCard.css';
 
 interface ProfileCardProps {
@@ -37,20 +38,23 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
+  useAnchoredOverlayDismiss(anchor, ref, true, onClose);
+
   // Place beside the anchor, clamped to the anchor window's viewport.
   useLayoutEffect(() => {
     const r = anchor.getBoundingClientRect();
     const h = ref.current?.offsetHeight ?? 180;
-    const x = Math.max(8, Math.min(r.right + 8, win.innerWidth - CARD_W - 8));
+    const w = ref.current?.offsetWidth ?? CARD_W;
+    const x = Math.max(8, Math.min(r.right + 8, win.innerWidth - w - 8));
     const y = Math.max(8, Math.min(r.top, win.innerHeight - h - 8));
     setPos({ x, y });
-  }, [anchor, win]);
+  }, [anchor, win, member]);
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node) && !anchor.contains(e.target as Node)) onClose();
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
     doc.addEventListener('mousedown', onDown);
     doc.addEventListener('keydown', onKey);
     return () => { doc.removeEventListener('mousedown', onDown); doc.removeEventListener('keydown', onKey); };

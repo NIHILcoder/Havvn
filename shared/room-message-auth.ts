@@ -4,6 +4,7 @@ import { banSnapshotCanonical } from './room-bans';
 import { keyMetadataCanonical, keyPageCanonical } from './room-keyring';
 import { watchCanonical, watchHostCanonical, type WatchMessage } from './room-watch-sync';
 import { watchPolicyCanonical, type WatchPolicy } from './room-watch-host';
+import { chatPinsCanonical, type RoomChatPins } from './room-chat-pins';
 import type { GossipMessage } from './room-protocol';
 
 export interface GossipProof { memberId: string; pub: string; sig: string; bytes: Uint8Array; chainLink?: boolean }
@@ -26,6 +27,7 @@ export function currentHelloProofs(m: GossipMessage, topic: string, root: string
   if (out.banState && !valid({ t: 'hello', banState: out.banState })) delete out.banState;
   if (out.cfg && !valid({ t: 'hello', cfg: out.cfg })) delete out.cfg;
   if (out.watchPolicy && !valid({ t: 'watch-policy-v1', ...out.watchPolicy })) delete out.watchPolicy;
+  if (out.chatPins && !valid({ t: 'chat-pins-v1', ...out.chatPins })) delete out.chatPins;
   return out;
 }
 /** Called only after validateGossip. Historical canonical field order is preserved. */
@@ -40,10 +42,20 @@ export function gossipProofs(m: GossipMessage, topic: string, rootOwnerId: strin
   const revive = (f: any) => {
     if (f.revSig) add({ pub: f.revPub, sig: f.revSig }, f.revBy, json(['revive', topic, f.fileId, f.revAt, f.revBy]));
   };
+  const pins = (p: RoomChatPins) => {
+    add(p, p.by, chatPinsCanonical(topic, p));
+    for (const i of p.items) {
+      const c = i.message;
+      add(c, c.memberId, chatCanonical(i.topic, c));
+      if (c.chatV === 2) add(c, c.memberId, chatContextCanonical(i.topic, c), c.contextSig);
+      if (i.edit) add(i.edit, i.edit.by, editCanonical(i.edit.topic, { msgId: c.id, memberId: i.edit.by, at: i.edit.at, text: i.edit.text }));
+    }
+  };
   const transfer = (p: any, root: string) => add(p, p.by, json(['th-room-transfer:v1', root, p.by, p.newOwnerId, p.at]));
   switch (m.t) {
     case 'e2e-keys': add(m, m.ownerId, keyPageCanonical(topic, m as any)); break;
     case 'chat': chat(m); break;
+    case 'chat-pins-v1': pins(m as unknown as RoomChatPins); break;
     case 'chat-log': m.msgs.forEach(chat); break;
     case 'chat-edit': add(m, m.memberId, editCanonical(topic, m as any)); break;
     case 'sync-v2':
@@ -92,6 +104,7 @@ export function gossipProofs(m: GossipMessage, topic: string, rootOwnerId: strin
       }
       if (m.banState) add(m.banState, m.banState.ownerId, banSnapshotCanonical(topic, m.banState));
       if (m.watchPolicy) add(m.watchPolicy, m.watchPolicy.by, watchPolicyCanonical(topic, m.watchPolicy));
+      if (m.chatPins) pins(m.chatPins);
       const chain = m.transferChain || [];
       for (const p of chain) { transfer(p, chain[0].by); out[out.length - 1].chainLink = true; }
       break;

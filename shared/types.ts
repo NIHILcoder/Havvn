@@ -240,6 +240,7 @@ export interface RoomChatMessage {
   chatV?: 2;            // absent = legacy body signature; quote is not authenticated
   contextSig?: string;  // v2 signs the body AND reply pointer/name/text, topic-bound
   receivedAt?: number;  // local receipt clock only; never trusted from gossip
+  signedTopic?: string; // local signature context, retained for authenticated pins across a rekey
   // Renderer resolves the parent by id and falls back to this quote snapshot.
   replyTo?: string;
   replyName?: string;    // parent author name at reply time
@@ -342,6 +343,8 @@ export interface RoomState {
   fileReacts?: Record<string, Record<string, string[]>>; // fileId → emoji → reacting memberIds
   chatReacts?: Record<string, Record<string, string[]>>; // chat msgId → emoji → reacting memberIds
   chatEdits?: Record<string, { text: string; at: number }>; // chat msgId → author's latest edit (LWW by at)
+  chatPins?: import('./room-chat-pins').RoomChatPin[];
+  chatLastReadAt?: number; // this device's receipt watermark; never gossiped
   memberProg?: Record<string, Record<string, number>>;   // memberId → fileId → coarse download % (0-100; a member's 'have' implies 100)
   voice: RoomVoiceState; // serverless mesh voice channel state (who's in the call, who's talking)
   lan: RoomLanState; // serverless virtual-LAN session state (who's admitted, their vIPs) — mirrors `voice`
@@ -449,6 +452,7 @@ export interface RoomSummary {
   unread?: number;
   /** OS notifications silenced for this room (per-install preference). */
   notifyMuted?: boolean;
+  notifyMode?: import('./room-chat-tools').RoomNotifyMode;
 }
 
 /** This install's identity in rooms. */
@@ -1519,7 +1523,9 @@ export interface IpcApi {
     rename: (roomId: string, name: string) => Promise<RoomState>;
     setTopic: (roomId: string, text: string) => Promise<RoomState>;
     requestFile: (roomId: string, text: string) => Promise<{ ok: boolean }>;
-    markRead: (roomId: string) => Promise<{ ok: boolean }>;
+    markRead: (roomId: string, messageId?: string) => Promise<{ ok: boolean }>;
+    pinChat: (roomId: string, messageId: string, on: boolean) => Promise<{ ok: boolean }>;
+    searchChat: (roomId: string, filter: import('./room-chat-tools').RoomChatFilter, before?: string) => Promise<import('./room-chat-tools').RoomChatSearchPage>;
     setActiveRoom: (roomId: string | null) => Promise<{ ok: boolean }>;
     // Folders/sections (any member may manage; convergence is last-writer-wins)
     createFolder: (roomId: string, name: string, icon: string, color: string, parentId?: string) => Promise<RoomState>;
@@ -1531,6 +1537,7 @@ export interface IpcApi {
     setMuted: (roomId: string, memberId: string, muted: boolean) => Promise<RoomPreferenceResult>;
     setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<RoomPreferenceResult>;
     setNotifyMuted: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
+    setNotifyMode: (roomId: string, mode: import('./room-chat-tools').RoomNotifyMode) => Promise<{ ok: boolean }>;
     fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
     pauseReceive: (roomId: string, fileId: string) => Promise<RoomState>;
     prioritizeReceive: (roomId: string, fileId: string) => Promise<RoomState>;

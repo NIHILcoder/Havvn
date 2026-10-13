@@ -753,6 +753,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:get', wrapHandler('rooms:get',
     async (_event, roomId: string) => roomManager.getRoom(roomId)
   ));
+  ipcMain.handle('rooms:resyncState', wrapHandler('rooms:resyncState', async (_event, roomId: string) => {
+    validateRoomId(roomId); roomManager.resyncRendererState(roomId);
+  }));
 
   // Room sharing caps (also used by the "share from download" path below).
   const ROOM_SHARE_MAX_FILES = 25;
@@ -981,8 +984,16 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('rooms:markRead', wrapHandler('rooms:markRead',
-    async (_event, roomId: string) => roomManager.markRead(roomId)
+    async (_event, roomId: string, messageId?: string) => { validateRoomId(roomId); return roomManager.markRead(roomId, messageId); }
   ));
+  ipcMain.handle('rooms:pinChat', wrapHandler('rooms:pinChat', async (_event, roomId: string, messageId: string, on: boolean) => {
+    validateRoomId(roomId);
+    if (typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId) || typeof on !== 'boolean') throw new Error('Invalid chat pin');
+    return roomManager.pinChat(roomId, messageId, on);
+  }));
+  ipcMain.handle('rooms:searchChat', wrapHandler('rooms:searchChat', async (_event, roomId: string, filter: import('../../shared/room-chat-tools').RoomChatFilter, before?: string) => {
+    validateRoomId(roomId); return roomManager.searchChat(roomId, filter, before);
+  }));
 
   // ── Voice ─────────────────────────────────────────────────────────────────
   ipcMain.handle('rooms:voiceJoin', wrapHandler('rooms:voiceJoin',
@@ -1414,6 +1425,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:setNotifyMuted', wrapHandler('rooms:setNotifyMuted',
     async (_event, roomId: string, muted: boolean) => roomManager.setNotifyMuted(roomId, !!muted)
   ));
+  ipcMain.handle('rooms:setNotifyMode', wrapHandler('rooms:setNotifyMode', async (_event, roomId: string, mode: import('../../shared/room-chat-tools').RoomNotifyMode) => {
+    validateRoomId(roomId);
+    if (!['all', 'mentions', 'off'].includes(mode)) throw new Error('Invalid room notification mode');
+    return roomManager.setNotifyMode(roomId, mode);
+  }));
 
   ipcMain.handle('rooms:fetchFile', wrapHandler('rooms:fetchFile',
     async (_event, roomId: string, fileId: string) => roomManager.fetchFile(roomId, fileId)

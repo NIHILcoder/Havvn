@@ -4,6 +4,7 @@ import { chatEnvelope, validChatTime, ROOM_CHAT_LIMIT } from './room-chat-histor
 import { CHAT_REACT_EMOJIS } from './reactions';
 import { validWatchMessage } from './room-watch-sync';
 import { validWatchPolicy } from './room-watch-host';
+import { validChatPins } from './room-chat-pins';
 import { MAX_LAN_REACH } from './lan-types';
 import { sanitizeProfileImg, PROFILE_COLOR_RE } from './profile';
 import { validRoomCapabilities } from './room-capabilities';
@@ -16,7 +17,7 @@ export const ROOM_WIRE_LIMIT = 64;
 export const ROOM_IDENTITY_LIMIT = 2048;
 export const ROOM_RELAY_TYPES = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit',
   'e2e-keys', 'e2e-key-request', 'sync-v2', 'watch-policy-v1', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic',
-  'react-chat', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer',
+  'react-chat', 'chat-pins-v1', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer',
   'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach', 'srv-mirror', 'srv-cmd', 'srv-cmd-v2', 'srv-result-v2']);
 const TYPES = new Set([...ROOM_RELAY_TYPES, 'sync', 'chat-log', 'rekey', 'kicked']);
 // Dynamic shape is confined to this boundary; consumers still use their discriminated unions.
@@ -82,6 +83,7 @@ export function validateGossip(value: unknown): GossipMessage | null {
           && opt(m.tombsAt, x => record(x, 5000, validChatTime))
           && opt(m.tombSigs, x => record(x, 500, y => proof(y) && str(y.by)))
           && opt(m.chatEdits, x => record(x, ROOM_CHAT_LIMIT, edit))
+          && opt(m.chatPins, validChatPins)
           && opt(m.topicMsg, x => proof(x) && str(x.by) && str(x.text, 300, true))
           && opt(m.folders, x => list(x, 5000, folder)) && opt(m.folderTombs, x => record(x, 5000, validChatTime))
           && opt(m.fileReacts, reacts) && opt(m.chatReacts, reacts) && opt(m.transferChain, x => list(x, 8, transfer))
@@ -127,6 +129,7 @@ export function validateGossip(value: unknown): GossipMessage | null {
         && list(m.reach, MAX_LAN_REACH, x => typeof x === 'string' && /^[0-9a-f]{32}$/.test(x))
         && m.reach.every((x: string, i: number) => !i || x > m.reach[i - 1]); break;
       case 'srv-mirror': ok = proof(m) && str(m.hostId) && str(m.body, 200_000, true); break;
+      case 'chat-pins-v1': ok = validChatPins(m); break;
       case 'srv-cmd-v2': ok = proof(m) && validCommandRequest(m as unknown as import('./server-command').ServerCommandRequest); break;
       case 'srv-result-v2': ok = proof(m) && str(m.hostId, 128) && str(m.to, 128) && str(m.instanceId, 128) && validCommandId(m.commandId) && bool(m.ok) && (m.ok ? m.reason === undefined : str(m.reason, 64)); break;
       case 'srv-cmd': ok = proof(m) && str(m.by) && str(m.instanceId) && str(m.command, 512); break;

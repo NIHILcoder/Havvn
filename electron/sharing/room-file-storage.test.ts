@@ -1,3 +1,4 @@
+import { PieceCache } from '../torrent/piece-cache';
 import { ROOM_FILE_LIMIT, storeRoomManifestFile } from '../../shared/room-manifest-sync';
 /* eslint-disable @typescript-eslint/no-explicit-any -- Execute the real preload functions with a local swarm double. */
 import fs from 'node:fs';
@@ -160,7 +161,8 @@ async function engineFixture(item: Awaited<ReturnType<typeof sharedFile>>, compl
   const client: any = { add: vi.fn((_src, options, cb) => { client.options = options; queueMicrotask(() => cb(torrent)); return torrent; }), remove: vi.fn() };
   const room: any = { roomId: 'room', folder: root, cacheDir: path.join(root, 'cache'), files: new Map([[item.file.fileId, item.file]]),
     transfers: new Map(), folders: new Map(), tombstones: new Map(), revives: new Map(), members: new Map(), self: { memberId: 'self' }, trackers: [], prevSecrets: [] };
-  const context: any = { ROOM_FILE_LIMIT, storeRoomManifestFile, RoomReceiveQueue, RoomDiskBudget, setTimeout, clearTimeout, ...storage, contentKeyEpoch, currentRoomDeletion, fs, path, crypto, Buffer, WeakMap, Map, Promise, queueMicrotask, RoomChunkStore, decryptFile,
+  const context: any = { ROOM_FILE_LIMIT, storeRoomManifestFile, RoomReceiveQueue, RoomDiskBudget, setTimeout, clearTimeout, ...storage, contentKeyEpoch, currentRoomDeletion, fs, path, crypto, Buffer, WeakMap, Map, Promise, queueMicrotask, RoomChunkStore: new PieceCache(16 * 1024 * 1024).store(RoomChunkStore), decryptFile,
+    clientReaper: { hold: () => () => {} },
     rooms: new Map([['room', room]]), clients: new Map([['room', client]]), netSuspended: false,
     isTombstonedAt: () => false, ensureClient: () => client, findTorrent: () => undefined,
     addKnownTorrent: (_c: unknown, _hash: string, source: unknown, opts: unknown, cb: unknown) => client.add(source, opts, cb),

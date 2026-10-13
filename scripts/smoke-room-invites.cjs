@@ -1,5 +1,5 @@
 // Real desktop UI regression: generated E2E invite -> deep link, manual paste,
-// clipboard and a second local peer. Synthetic profiles and loopback tracker only.
+// clipboard, member profiles and a second local peer. Synthetic profiles and loopback tracker only.
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { spawn, spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
@@ -26,6 +26,21 @@ if (process.versions.electron) {
     // Copy the real preload body: sandboxed preload cannot require an arbitrary file.
     fs.writeFileSync(uiWrapper, "localStorage.setItem('onboarded','1');localStorage.setItem('language','en');\n" + fs.readFileSync(path.join(root,'dist/electron/electron/preload.js'),'utf8'));
     fs.writeFileSync(engineWrapper, `require(${JSON.stringify(path.join(root,'dist/electron/electron/sharing/ice-servers.js'))}).STUN_SERVERS.length=0;require(${JSON.stringify(path.join(root,'dist/electron/electron/sharing/room-engine.js'))});`);
+    const fixtureIpc = new Proxy(electron.ipcMain, {get(target,key) {
+      if (key !== 'handle') return Reflect.get(target,key);
+      return (channel,handler) => target.handle(channel,async (...args) => {
+        if (['rooms:create','rooms:join','rooms:setProfile'].includes(channel)) {
+          fs.appendFileSync(path.join(base,'requests.jsonl'),JSON.stringify({channel})+'\n');
+          const gate=path.join(base,'hold-'+channel.split(':')[1]);
+          const until=Date.now()+15000;
+          while(fs.existsSync(gate)) {
+            if(Date.now()>until)throw Error('Fixture request gate timed out');
+            await new Promise(r=>setTimeout(r,25));
+          }
+        }
+        return handler(...args);
+      });
+    }});
     class FixtureWindow extends electron.BrowserWindow {
       constructor(options) {
         const preload = path.basename(options.webPreferences?.preload || '');
@@ -39,7 +54,7 @@ if (process.versions.electron) {
       show() {} // Fixtures never open visible application windows.
     }
     Module._load = function (name, ...args) {
-      if (name === 'electron') return new Proxy(electron, { get: (target,key) => key === 'BrowserWindow' ? FixtureWindow : target[key] });
+      if (name === 'electron') return new Proxy(electron, { get: (target,key) => key === 'BrowserWindow' ? FixtureWindow : key === 'ipcMain' ? fixtureIpc : target[key] });
       return original.call(this, name, ...args);
     };
     require(path.join(root, 'dist/electron/electron/main.js'));
@@ -112,8 +127,77 @@ if (process.versions.electron) {
       await wait(async()=>{const state=await a.run('window.api.rooms.get('+JSON.stringify(room.roomId)+')');return state.peerCount>0;},'second real peer connected',45000);
       await b.run("Object.defineProperty(navigator.clipboard,'readText',{configurable:true,value:async()=>"+JSON.stringify(room.invite)+"});[...document.querySelectorAll('.rooms-page button')].find(b=>b.textContent.trim()==="+JSON.stringify(dict['rooms.join'])+").click()");
       await wait(()=>b.run("document.querySelector('.rooms-input-code')?.value === "+JSON.stringify(room.invite)),'new clipboard prefill');
+      // Open/close state updaters must retain a real element after React clears
+      // the click event. A third avatar click previously unmounted the entire UI.
+      await b.run("[...document.querySelectorAll('.um-foot button')].find(b=>b.textContent.includes("+JSON.stringify(dict['common.cancel'])+")).click()");
+      await b.run("document.querySelector('[data-dock-tab=people]').click()");
+      await wait(()=>b.run("!!document.querySelector('.room-members .identicon-ring')"),'self in people list');
+      const spacing=await b.run("(()=>{const list=document.querySelector('.room-members'),panel=list.closest('.dock-panel');return {gap:list.getBoundingClientRect().top-panel.getBoundingClientRect().top,padding:parseFloat(getComputedStyle(panel).paddingTop)};})()");
+      assert.ok(spacing.gap<=spacing.padding+2,'people list must start at the panel padding, without a blank header');
+      const toggleCard=async selector=>{
+        for(let i=0;i<20;i++){
+          await b.run("document.querySelector("+JSON.stringify(selector)+").click()");await pause(35);
+          const ui=await b.run("({alive:!!document.querySelector('.pillar-switch'),cards:document.querySelectorAll('.profile-card').length})");
+          assert.equal(ui.alive,true,'repeated profile clicks must not unmount the app');
+          assert.equal(ui.cards,i%2===0?1:0,'profile opens and closes on each click');
+        }
+      };
+      await toggleCard('.room-members .identicon-ring');
+      const buttons=await b.run("document.querySelectorAll('.room-members .room-member-open').length");assert.equal(buttons,2);
+      for(let i=0;i<10;i++){
+        await b.run("document.querySelectorAll('.room-members .room-member-open')["+(i%2)+"].click()");await pause(35);
+        assert.equal(await b.run("document.querySelectorAll('.profile-card').length"),1,'switching participants keeps one profile');
+      }
+      await b.run("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");await pause(50);
+      assert.equal(await b.run("document.querySelectorAll('.profile-card').length"),0,'Escape dismisses profile');
+      await a.run('window.api.rooms.sendChat('+JSON.stringify(room.roomId)+',"Profile fixture message")');
+      await wait(()=>b.run("!!document.querySelector('.room-chat .room-member-open')"),'chat author avatar');
+      await toggleCard('.room-chat .room-member-open');
+      // Held IPC makes repeated Enter deterministic without real network delays.
+      const profileBase=path.join(out,'B');
+      const requestCount=channel=>fs.readFileSync(path.join(profileBase,'requests.jsonl'),'utf8').trim().split('\n').filter(line=>JSON.parse(line).channel===channel).length;
+      await b.run("[...document.querySelectorAll('.rooms-page button')].find(b=>b.textContent.trim()==="+JSON.stringify(dict['rooms.create'])+").click()");
+      await wait(()=>b.run("!!document.querySelector('.rooms-e2e-toggle')"),'create dialog');
+      const before=requestCount('rooms:create');
+      await b.run("document.querySelector('.um-body .rooms-input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))");await pause(100);
+      assert.equal(requestCount('rooms:create'),before,'IME confirmation must not create a room');
+      fs.writeFileSync(path.join(profileBase,'hold-create'),'');
+      try {
+        await b.run("(()=>{const input=document.querySelector('.um-body .rooms-input');for(let i=0;i<8;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()");
+        await wait(()=>requestCount('rooms:create')>before,'pending room creation');await pause(200);
+        assert.equal(requestCount('rooms:create')-before,1,'held Enter must create only one room');
+        assert.equal(await b.run("document.querySelector('.um-body .rooms-input').disabled && document.querySelector('.rooms-e2e-toggle').disabled"),true,'pending creation locks its settings');
+      } finally {fs.rmSync(path.join(profileBase,'hold-create'),{force:true});}
+      await wait(()=>b.run("!document.querySelector('.rooms-e2e-toggle')"),'creation completed');
+      await b.run("[...document.querySelectorAll('.um-foot button')].find(b=>b.textContent.includes("+JSON.stringify(dict['common.done'])+")).click()");
+      await b.run("[...document.querySelectorAll('.rooms-page button')].find(b=>b.textContent.trim()==="+JSON.stringify(dict['rooms.join'])+").click()");
+      await wait(()=>b.run("document.querySelector('.rooms-input-code')?.value === "+JSON.stringify(room.invite)),'join prefill for repeat submission');
+      const beforeJoin=requestCount('rooms:join');
+      await b.run("document.querySelector('.rooms-input-code').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))");await pause(100);
+      assert.equal(requestCount('rooms:join'),beforeJoin,'IME confirmation must not join');
+      fs.writeFileSync(path.join(profileBase,'hold-join'),'');
+      try {
+        await b.run("(()=>{const input=document.querySelector('.rooms-input-code');for(let i=0;i<8;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()");
+        await wait(()=>requestCount('rooms:join')>beforeJoin,'pending join');await pause(200);
+        assert.equal(requestCount('rooms:join')-beforeJoin,1,'repeat Enter must join only once');
+        assert.equal(await b.run("document.querySelector('.rooms-input-code').disabled"),true);
+      } finally {fs.rmSync(path.join(profileBase,'hold-join'),{force:true});}
+      await wait(()=>b.run("!document.querySelector('.rooms-input-code')"),'join completed');
+      await b.run("document.querySelector('.rooms-profile-chip').click()");
+      await wait(()=>b.run("!!document.querySelector('.rooms-profile-edit')"),'edit profile');
+      const beforeSave=requestCount('rooms:setProfile');
+      await b.run("document.querySelector('.rooms-profile-edit input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true}))");await pause(100);
+      assert.equal(requestCount('rooms:setProfile'),beforeSave,'IME confirmation must not save a profile');
+      fs.writeFileSync(path.join(profileBase,'hold-setProfile'),'');
+      try {
+        await b.run("(()=>{const input=document.querySelector('.rooms-profile-edit input');for(let i=0;i<8;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})()");
+        await wait(()=>requestCount('rooms:setProfile')>beforeSave,'pending profile save');await pause(200);
+        assert.equal(requestCount('rooms:setProfile')-beforeSave,1,'repeat Enter must save only once');
+        assert.equal(await b.run("[...document.querySelectorAll('.um-body input,.um-body button')].every(el=>el.disabled)"),true,'profile settings stay locked during save');
+      } finally {fs.rmSync(path.join(profileBase,'hold-setProfile'),{force:true});}
+      await wait(()=>b.run("!document.querySelector('.rooms-profile-edit')"),'profile save completed');
       const report={ok:true,generatedFormat:true,deepLinkPrefill:true,deepLinkRequiresConfirmation:true,
-        invalidOwnerPinRejected:true,manualPasteAccepted:true,encryptedPeerConnected:true,clipboardPrefill:true};
+        invalidOwnerPinRejected:true,manualPasteAccepted:true,encryptedPeerConnected:true,clipboardPrefill:true,memberProfileToggles:true,profileSwitching:true,chatProfileToggles:true,compactPeopleList:true,singleCreateRequest:true,singleJoinRequest:true,singleProfileSave:true,imeConfirmationSafe:true};
       fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2));
       console.log('PASS: room invitation UI and two real peers',JSON.stringify({...report,output:out}));
     } finally {

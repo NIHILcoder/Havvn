@@ -16,7 +16,8 @@ const checks = [
     ['typecheck-guest', ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.guest.json', '--noEmit']],
     ['tests', ['--npm-test']],
   ] : []),
-  ...['lifecycle', 'invites', 'peers', 'voice', 'playback', 'controls', 'data-ui', 'diagnostics', 'secrets', 'storage', 'network-lifecycle']
+  ['native-server-health', ['scripts/smoke-server-health.cjs']],
+  ...['lifecycle', 'invites', 'overlays', 'peers', 'voice', 'playback', 'controls', 'workspaces', 'chat-tools', 'data-ui', 'diagnostics', 'secrets', 'storage', 'network-lifecycle']
     .map(name => ['native-' + name, ['scripts/smoke-room-' + name + '.cjs']]),
 ];
 

@@ -8,6 +8,7 @@ import { chatCanonical, chatContextCanonical, editCanonical } from '../shared/ro
 import { RoomIngressBudget } from '../shared/room-protocol';
 import { WatchSender, watchCanonical } from '../shared/room-watch-sync';
 import { chatBackfillPages } from '../shared/room-chat-history';
+import { chatPinsCanonical } from '../shared/room-chat-pins';
 
 vi.mock('./tracker', () => ({ startRendezvous: vi.fn() }));
 vi.mock('./voice', () => ({ GuestVoice: class { participants() { return []; } reannounce() {} } }));
@@ -32,6 +33,25 @@ async function fixture() {
 }
 
 describe('browser guest retained chat protocol', () => {
+  it('displays and re-serves authenticated pins even when their messages leave chat; rejects tampering and stale owner data', async () => {
+    const f = await fixture(); f.internals.ownerId = memberId;
+    const pins = { t: 'chat-pins-v1' as const, by: memberId, ownerAt: 0, at: Date.now(), pub, sig: '', items: [{ message: message(1), topic }] };
+    pins.sig = sign(chatPinsCanonical(topic, pins));
+    await f.frame(pins);
+    expect(f.room.snapshot().chatPins?.[0].message.id).toBe('m1');
+    f.internals.chat = [];
+    expect(f.room.snapshot().chatPins).toHaveLength(1);
+    expect(f.internals.helloMsg().chatPins.items[0].message.id).toBe('m1');
+    const bad = structuredClone(pins); bad.at++; bad.items[0].message.text = 'forged author text'; bad.sig = sign(chatPinsCanonical(topic, bad));
+    await f.frame(bad);
+    expect(f.room.snapshot().chatPins?.[0].message.text).toBe('body 1');
+    const cleared = { ...pins, at: pins.at + 2, items: [] }; cleared.sig = sign(chatPinsCanonical(topic, cleared));
+    await f.frame(cleared); await f.frame(pins);
+    expect(f.room.snapshot().chatPins).toEqual([]);
+    f.internals.ownerId = 'different-owner'; f.internals.transferAt = 100;
+    const oldOwner = { ...pins, at: pins.at + 3 }; oldOwner.sig = sign(chatPinsCanonical(topic, oldOwner));
+    await f.frame(oldOwner); expect(f.room.snapshot().chatPins).toEqual([]);
+  });
   it('receives all 150 offline messages and replies in bounded pages despite sender clock skew', async () => {
     const f = await fixture();
     const history = Array.from({ length: 150 }, (_, i) => message(i, i === 80 ? { replyTo: 'old-parent', replyName: 'Alice', replyText: 'original quote' } : {}));

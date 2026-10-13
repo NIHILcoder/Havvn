@@ -4,11 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_ROOM_RESOURCES } from '../../shared/room-resources';
 import { RoomConnectionMonitor } from '../../shared/room-diagnostics';
 import type { RoomState } from '../../shared/types';
+import { RoomStateEncoder, RoomStateDecoder } from '../../shared/room-state-ipc';
 
 const env = vi.hoisted(() => ({
   windows: [] as any[], listeners: new Map<string, (...args: any[]) => void>(), handlers: new Map<string, (...args: any[]) => any>(),
   chat: [] as any[], edits: {} as Record<string, any>, draft: { text: '' } as any, lastRead: 0,
-  manifestBatch: vi.fn(), historyBatch: vi.fn(), committed: vi.fn(), preferenceWrites: vi.fn(),
+  manifestBatch: vi.fn(), historyBatch: vi.fn(), committed: vi.fn(), preferenceWrites: vi.fn(), notifications: vi.fn(),
   rooms: [] as any[], load: null as null | (() => Promise<void>), autoReady: false, autoReply: false,
   gone: vi.fn(), shutdown: vi.fn(async () => {}),
   captureAccess: null as null | (() => { audio: boolean; video: boolean }),
@@ -54,8 +55,16 @@ vi.mock('../i18n', () => ({ t: (s: string) => s }));
 vi.mock('../db/store', () => {
   const db: Record<string, any> = {
     pruneRoomLocalHistory: () => [],
+    withRoomRead: (operation: () => unknown) => operation(),
     upsertRoomManifestFiles: env.manifestBatch, appendRoomEvents: env.historyBatch,
     getPersistedRooms: () => env.rooms,
+    getPersistedRoom: (id: string) => env.rooms.find(r => r.roomId === id),
+    hasPersistedRoom: (id: string) => env.rooms.some(r => r.roomId === id),
+    getRoomUnreadCount: (_id: string, self: string) => env.chat.filter(m => (m.receivedAt ?? m.at) > env.lastRead && m.memberId !== self).length,
+    getRoomChatPins: () => undefined,
+    setRoomChatPins: vi.fn(),
+    setRoomLastRead: (_id: string, at: number) => { env.lastRead = Math.max(env.lastRead, at); },
+    clearRoomLocalData: () => { if (env.cleanupError) throw new Error('cleanup failed'); },
     getRoomProfile: () => ({ memberId: 'A', name: 'Alice', avatarSeed: 'a' }),
     getRoomIdentity: () => ({ pub: 'pub', priv: 'priv' }),
     getSettings: async () => ({ defaultDownloadDir: 'D:/downloads', roomResources: env.resourcePolicy }),
@@ -89,7 +98,7 @@ vi.mock('../gameserver/server-mirror', () => ({}));
 vi.mock('../utils/global-ptt', () => ({ decideGlobalPtt: () => ({ run: false }), stopGlobalPtt: vi.fn(), isGlobalPttAvailable: () => false }));
 vi.mock('../lan/lan-manager', () => ({ getLanManager: () => ({ configure: vi.fn(), onEngineGone: env.gone, onVpnSuspend: vi.fn(), stopRoom: vi.fn(async () => {}), shutdown: env.shutdown }) }));
 vi.mock('./ice-servers', () => ({ customTurnToIce: () => [], resolveTrackers: () => [] }));
-vi.mock('../utils/os-notify', () => ({}));
+vi.mock('../utils/os-notify', () => ({ showOsNotification: env.notifications }));
 
 import { RoomManager } from './room-manager';
 
@@ -123,10 +132,45 @@ beforeEach(() => {
   env.handlers.clear(); env.chat = []; env.edits = {}; env.draft = { text: '' }; env.committed.mockClear(); env.preferenceWrites.mockClear();
   env.removedEmpty.mockClear(); env.removedFiles.mockClear(); env.saved.mockClear(); env.deleted.mockClear();
   env.lastRead = 0; env.manifestBatch.mockClear(); env.historyBatch.mockClear();
+  env.notifications.mockClear();
   manager = new RoomManager();
 });
 
 describe('room setup transactions', () => {
+  it('decodes engine deltas, forwards renderer deltas and resynchronizes missing baselines', async () => {
+    await joinRoom(); const win = env.windows[0], main = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+    manager.setMainWindow(main as any);
+    const encoder = new RoomStateEncoder(), decoder = new RoomStateDecoder(), state = roomState();
+    const hook = vi.fn(); manager.onRoomUpdate(hook);
+    emit(win, 'room-state', structuredClone(encoder.encode(state)));
+    const packet = () => main.webContents.send.mock.calls.filter(c => c[0] === 'rooms:state').at(-1)![1];
+    decoder.accept(packet());
+    state.peerCount = 7; emit(win, 'room-state', structuredClone(encoder.encode(state)));
+    expect(packet()).toHaveProperty('patch'); expect(decoder.accept(packet())?.peerCount).toBe(7);
+    expect(hook.mock.calls.at(-1)![0].peerCount).toBe(7);
+    const fresh = new RoomStateDecoder(); expect(fresh.accept(packet())).toBeUndefined();
+    manager.resyncRendererState('room-A'); expect(fresh.accept(packet())?.peerCount).toBe(7);
+    state.peerCount = 8; encoder.encode(state); state.peerCount = 9;
+    emit(win, 'room-state', structuredClone(encoder.encode(state))); await flush();
+    expect(commands(win).at(-1)?.type).toBe('snapshotIpc');
+    emit(win, 'room-state', structuredClone(encoder.encode(state, true)));
+    expect((await manager.getRoom('room-A'))?.peerCount).toBe(9);
+    await manager.leaveRoom('room-A');
+    expect(main.webContents.send.mock.calls.some(c => c[0] === 'rooms:state-drop' && c[1] === 'room-A')).toBe(true);
+  });
+
+  it('releases IPC baselines while networking is paused and rebuilds them on resume', async () => {
+    await joinRoom(); const main = { isDestroyed: () => false, webContents: { send: vi.fn() } };
+    manager.setMainWindow(main as any);
+    const encoder = new RoomStateEncoder(); emit(env.windows[0], 'room-state', encoder.encode(roomState()));
+    await manager.suspendNetworking();
+    expect((manager as any).rendererStates.size).toBe(0);
+    expect((manager as any).engineStates.rooms.size).toBe(0);
+    expect(main.webContents.send.mock.calls.some(c => c[0] === 'rooms:state-drop')).toBe(true);
+    await manager.resumeNetworking();
+    emit(env.windows[0], 'room-state', new RoomStateEncoder().encode(roomState()));
+    expect((manager as any).rendererStates.size).toBe(1);
+  });
   it('does not save a room before the engine confirms the join', async () => {
     const joining = manager.joinRoom('test-code'); await flush(); const win = env.windows[0];
     await ready(win); const command = commands(win).find((c: any) => c.type === 'join');
@@ -616,6 +660,34 @@ describe('room recovery', () => {
 
 
 describe('chat unread uses the local receipt clock', () => {
+  it('keeps mention-only rooms silent for ordinary activity and honors a full mute', async () => {
+    env.rooms = [{ roomId: 'room-A', name: 'Room', notifyMode: 'mentions' }];
+    await (manager as any).notifyRoomActivity('room-A', 'Bob', 'ordinary message');
+    expect(env.notifications).not.toHaveBeenCalled();
+    await (manager as any).notifyRoomActivity('room-A', 'Bob', '@Alice, hello', true);
+    expect(env.notifications).toHaveBeenCalledTimes(1);
+    env.rooms[0].notifyMode = 'off';
+    vi.advanceTimersByTime(3000);
+    await (manager as any).notifyRoomActivity('room-A', 'Bob', '@Alice', true);
+    expect(env.notifications).toHaveBeenCalledTimes(1);
+    env.rooms[0].notifyMode = 'all';
+    vi.advanceTimersByTime(9000);
+    await (manager as any).notifyRoomActivity('room-A', 'Bob', 'shared file');
+    expect(env.notifications).toHaveBeenCalledTimes(2);
+  });
+  it('opening a room does not consume messages; marking a visible ID leaves later arrivals unread', async () => {
+    env.rooms = [{ roomId: 'room-A', name: 'Room A' }];
+    env.chat = [{ id: 'visible', memberId: 'B', at: 9999999999999, receivedAt: 100 }, { id: 'later', memberId: 'B', at: 1, receivedAt: 101 }];
+    await manager.setActiveRoom('room-A');
+    expect(env.lastRead).toBe(0);
+    await manager.markRead('room-A', 'visible');
+    expect(env.lastRead).toBe(100);
+    expect((await manager.list())[0].unread).toBe(1);
+    await manager.markRead('room-A', 'missing');
+    expect(env.lastRead).toBe(100);
+    await manager.markRead('room-A', 'later');
+    expect((await manager.list())[0].unread).toBe(0);
+  });
   it('does not leave future sender timestamps unread after viewing and counts delayed arrivals', async () => {
     env.rooms = [{ roomId: 'room-A', name: 'Room A', folder: 'D:/rooms/a', code: 'code' }];
     env.lastRead = 100;

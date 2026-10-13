@@ -17,6 +17,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useAnchoredOverlayDismiss } from '../utils/useAnchoredOverlayDismiss';
 import { useHostWindow, resolveHostWindow, portalTargetFor } from '../utils/hostWindow';
 
 export interface DropdownMenuItem {
@@ -81,6 +82,9 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const host = useHostWindow();
 
+  const close = useCallback(() => setOpen(false), []);
+  useAnchoredOverlayDismiss(wrapperRef.current, menuRef, open, close);
+
   const toggle = useCallback(() => setOpen((o) => !o), []);
 
   // Position the portaled menu below-right-aligned to the trigger, clamped to
@@ -129,7 +133,7 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
       ref={menuRef}
       className={menuClassName}
       role="menu"
-      style={portal ? { position: 'fixed', left: pos?.x ?? -9999, top: pos?.y ?? -9999, right: 'auto', marginTop: 0, visibility: pos ? 'visible' : 'hidden', zIndex: 1000 } : undefined}
+      style={portal ? { position: 'fixed', left: pos?.x ?? -9999, top: pos?.y ?? -9999, right: 'auto', marginTop: 0, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)', overflowY: 'auto', boxSizing: 'border-box', visibility: pos ? 'visible' : 'hidden', zIndex: 1000 } : undefined}
     >
       {items.map((item) => (
         <button

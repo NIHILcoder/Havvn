@@ -1,0 +1,32 @@
+.room-file-budget { display: inline-flex; flex: 0 0 auto; }
+.room-file-budget-popover {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 14px;
+  box-sizing: border-box;
+  overflow: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated, var(--color-bg-secondary));
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.room-file-budget-popover:popover-open { display: grid; gap: 8px; }
+.room-file-budget-popover > strong { margin-bottom: 2px; font-weight: 600; }
+.room-file-budget-speed { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.room-file-budget-speed > span,
+.room-file-budget-priority { display: inline-flex; align-items: center; gap: 6px; }
+.room-file-budget-speed > span { color: var(--color-text-secondary); }
+.room-file-budget-speed > b { font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
+.room-file-budget-priority { color: var(--color-accent-primary); }
+.room-file-budget-popover > p {
+  margin: 2px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}

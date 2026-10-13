@@ -1,8 +1,13 @@
+import { roomPieceCache } from '../torrent/piece-cache';
+import { IdleClientReaper } from './idle-client';
+import { RoomStateEncoder } from '../../shared/room-state-ipc';
 import { PendingServerCommands, validCommandRequest, commandCanonical, commandReplyCanonical, type ServerCommandRequest, type ServerCommandReply } from '../../shared/server-command';
 import { historyDays, retainLocalHistory } from '../../shared/room-local-data';
 import { managedCopy, deleteManagedCopy, roomTreeBytes, type RoomCopy } from './room-copy-storage';
 import type { RoomDiskUsage } from '../../shared/room-local-data';
 import { WatchHostState, watchPolicyCanonical, type WatchPolicy } from '../../shared/room-watch-host';
+import { chatPinsCanonical, cleanChatPin, newerChatPins, validChatPins, ROOM_PIN_LIMIT, type RoomChatPins, type RoomChatPin } from '../../shared/room-chat-pins';
+import { parseFileRequest } from '../../shared/room-chat-tools';
 import { roomHelloParts, RoomHelloAssembly, RoomHelloOutbox, ROOM_FILE_LIMIT, ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT, ROOM_HELLO_ENTRIES, roomChannelHasCapacity, roomManifestCanFit, storeRoomManifestFile, type ManifestPart } from '../../shared/room-manifest-sync';
 import { useChromiumWebRTC as configureChromiumWebRTC } from './chromium-webrtc';
 /**
@@ -24,7 +29,8 @@ import { useChromiumWebRTC as configureChromiumWebRTC } from './chromium-webrtc'
  * Talks to the main process over ipcRenderer:
  *   main → here:  'room-cmd'    { type, reqId, ... }
  *   here → main:  'room-res'    { reqId, ok, data|error }
- *   here → main:  'room-update' RoomState           (pushed on change, throttled)
+ *   here → main:  'room-state'  RoomStatePacket     (baseline, then throttled deltas)
+ *   here → main:  'room-update' RoomState           (legacy IPC clients)
  *   here → main:  'room-log'    string
  */
 
@@ -71,7 +77,7 @@ async function loadNetworkingModules(): Promise<void> {
   networkingModules ??= Promise.all([import('webtorrent'), import('bittorrent-tracker'), import('fs-chunk-store')]).then(([wt, tracker, store]) => {
     WebTorrent = wt.default;
     TrackerClient = tracker.default;
-    RoomChunkStore = store.default;
+    RoomChunkStore = roomPieceCache.store(store.default);
   }).catch(error => { networkingModules = undefined; throw error; });
   await networkingModules;
 }
@@ -194,7 +200,7 @@ type Msg =
   // emoji → memberIds) so late joiners converge by unioning member sets.
   | RoomKeyPage
   | { t: 'e2e-key-request'; memberId: string; root: string; page: number }
-  | { t: 'hello'; manifestFull?: boolean; manifestPart?: ManifestPart; manifestRequest?: boolean; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; chatSync?: number; watchSync?: number; chatIds?: string[]; transferChain?: TransferLink[]; banState?: RoomBanSnapshot; watchPolicy?: WatchPolicy; guest?: boolean; protocolVersion?: number; capabilities?: string[] }
+  | { t: 'hello'; manifestFull?: boolean; manifestPart?: ManifestPart; manifestRequest?: boolean; memberId: string; name: string; avatarSeed: string; pub?: string; have: string[]; files: RoomFile[]; tombs: string[]; tombsAt?: Record<string, number>; tombSigs?: Record<string, TombProof>; roomName: string; nameAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string }; ownerId: string; e2e: boolean; secret: string; cfg?: E2ECfg; fileReacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; folders?: RoomFolder[]; folderTombs?: Record<string, number>; chatAt?: number; chatSync?: number; watchSync?: number; chatIds?: string[]; transferChain?: TransferLink[]; banState?: RoomBanSnapshot; watchPolicy?: WatchPolicy; chatPins?: RoomChatPins; guest?: boolean; protocolVersion?: number; capabilities?: string[] }
   | { t: 'add'; file: RoomFile }
   // A folder/section was created, renamed/recolored (upsert) or deleted (del).
   // Last-writer-wins by `at`; unknown to older peers, who ignore it and keep
@@ -254,6 +260,7 @@ type Msg =
   // messages it missed while offline, each carrying its own pub/sig so they
   // re-verify independently of who re-served them. Never broadcast/relayed.
   | { t: 'chat-log'; msgs: RoomChatMessage[] }
+  | RoomChatPins
   // Owner renamed the room. OWNER-SIGNED + last-writer-wins by `at`, so it can
   // actually change an already-set name (the plain HELLO roomName only bootstraps
   // a placeholder). Relayed verbatim; peers verify `by === ownerId`.
@@ -374,6 +381,8 @@ interface Room {
   lastTypingSent: number;                // rate-limit for OUR outgoing typing broadcasts
   fileReacts: Map<string, Map<string, Set<string>>>; // fileId → emoji → reacting memberIds (persisted)
   chatReacts: Map<string, Map<string, Set<string>>>; // chat msgId → emoji → reacting memberIds (persisted)
+  chatPins?: RoomChatPins;
+  chatPinsTopic?: string;
   chatEdits: Map<string, { text: string; at: number; by: string; pub: string; sig: string }>; // chat msgId → author's latest signed edit (LWW by at, persisted)
   pendingEdits: Map<string, { text: string; at: number; by: string; pub: string; sig: string }>; // VERIFIED edits whose target message we don't hold yet — flushed by addChat when it arrives (session-only, capped)
   memberProg: Map<string, Map<string, number>>;      // memberId → fileId → coarse download % (session-only)
@@ -407,6 +416,7 @@ interface Room {
   snapshotTimer: any;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   lastSnapshot: number;
+  stateEncoder?: RoomStateEncoder;
 }
 
 // One WebTorrent client PER ROOM: webtorrent throttles only at the client
@@ -459,6 +469,14 @@ function refreshFileBudget(): boolean {
 function removeFileClient(id: string): void {
   try { trafficBudget.remove(id); } catch (error) { log('Room budget reallocation failed: ' + String(error)); }
 }
+const clientReaper = new IdleClientReaper(client => {
+  for (const [id, current] of clients) {
+    if (current !== client) continue;
+    clients.delete(id);
+    try { current.destroy(); } catch (error) { log('Empty room client cleanup failed: ' + String(error)); }
+    removeFileClient(id); pushResourceStates(); break;
+  }
+});
 function pushResourceStates(): void { for (const r of rooms.values()) pushState(r, true); }
 function applyResourcePolicy(value: unknown): void {
   trafficBudget.configure(value);
@@ -528,6 +546,7 @@ function ensureClient(room: Room): any {
   // leaking on the real IP for the whole outage.
   if (netSuspended || rooms.get(room.roomId) !== room) throw new Error('Room networking is suspended (VPN kill-switch)');
   let c = clients.get(room.roomId);
+  if (c?.destroyed) { clients.delete(room.roomId); removeFileClient(room.roomId); c = undefined; }
   if (!c) {
     c = new WebTorrent({
       natUpnp: false, natPmp: false,
@@ -540,6 +559,7 @@ function ensureClient(room: Room): any {
     } as any);
     c.on('error', (e: any) => log('wt client error: ' + (e?.message || e)));
     clients.set(room.roomId, c);
+    clientReaper.watch(c);
     trafficBudget.register(room.roomId, c, room.upKbps, room.downKbps);
     pushResourceStates();
     log('WebTorrent client ready (Chromium WebRTC) for room ' + room.roomId);
@@ -927,6 +947,7 @@ function buildState(room: Room): RoomState {
     fileReacts: reactsToRecord(room),
     chatReacts: chatReactsToRecord(room),
     ...(room.chatEdits.size ? { chatEdits: chatEditsToState(room) } : {}),
+    ...(room.chatPins?.by === room.ownerId && room.chatPins.ownerAt === room.transferAt && room.chatPinsTopic === room.topic ? { chatPins: room.chatPins.items } : {}),
     memberProg,
     voice: room.voice.getState(),
     lan: room.lan ? room.lan.getState() : idleLanState(),
@@ -947,9 +968,22 @@ function pushState(room: Room, immediate = false): void {
     if (rooms.get(room.roomId) !== room) return;
     room.lastSnapshot = Date.now();
     room.snapshotTimer = null;
-    try { ipcRenderer.send('room-update', buildState(room)); } catch { /* ignore */ }
+    try {
+      const state = buildState(room);
+      if (room.stateEncoder) {
+        const packet = room.stateEncoder.encode(state);
+        if (packet) ipcRenderer.send('room-state', packet);
+      } else ipcRenderer.send('room-update', state);
+    } catch { /* ignore */ }
   };
-  if (immediate) { if (room.snapshotTimer) { clearTimeout(room.snapshotTimer); } send(); return; }
+  if (immediate) {
+    if (room.snapshotTimer) clearTimeout(room.snapshotTimer);
+    // File batches and voice/resource changes can request dozens of snapshots
+    // in one turn. Controls still act immediately; their UI state coalesces at 20 Hz.
+    if (room.stateEncoder) room.snapshotTimer = setTimeout(send, Math.max(0, 50 - (Date.now() - room.lastSnapshot)));
+    else send();
+    return;
+  }
   if (room.snapshotTimer) return;
   const wait = Math.max(0, SNAPSHOT_THROTTLE - (Date.now() - room.lastSnapshot));
   room.snapshotTimer = setTimeout(send, wait);
@@ -1076,6 +1110,7 @@ function adoptBanState(room: Room, proof: RoomBanSnapshot): boolean {
 }
 
 function helloMsg(room: Room, full = true): Msg {
+  refreshChatPins(room);
   const watch = watchState(room);
   let policy = watch.host.current(room.ownerId, room.transferAt);
   if (policy && watch.policyTopic !== room.topic && room.ownerId === room.self.memberId) {
@@ -1091,7 +1126,7 @@ function helloMsg(room: Room, full = true): Msg {
     avatarSeed: room.self.avatarSeed,
     pub: room.self.pub, // our identity key — TOFU-bound by peers so they can verify our signed commands
 
-    have: buildState(room).members[0].have,
+    have: Array.from(room.files.keys()).filter(id => room.transfers.get(id)?.haveLocally),
     files: Array.from(room.files.values()),
     tombs: Array.from(room.tombstones.keys()), // legacy: bare deletions so ≤2.15 peers converge
     tombsAt: Object.fromEntries(room.tombstones), // legacy: timestamps let a newer re-share revive
@@ -1109,6 +1144,7 @@ function helloMsg(room: Room, full = true): Msg {
     ...(room.fileReacts.size ? { fileReacts: reactsToRecord(room) } : {}), // late joiners union this in
     ...(room.chatReacts.size ? { chatReacts: chatReactsToRecord(room) } : {}),
     ...(room.chatEdits.size ? { chatEdits: chatEditsToRecord(room) } : {}), // author-signed edits — receivers re-verify
+    ...(room.chatPins && room.chatPinsTopic === room.topic && room.chatPins.by === room.ownerId && room.chatPins.ownerAt === room.transferAt ? { chatPins: room.chatPins } : {}),
     ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
     ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
     // Legacy clock retained only for older clients; v2 reconciles by ID.
@@ -1124,7 +1160,7 @@ function helloMsg(room: Room, full = true): Msg {
     // as a reply once the peer identifies (see case 'hello').
     m.secret = ''; m.files = []; m.have = []; m.tombs = [];
     delete m.tombsAt; delete m.tombSigs; delete m.cfg; delete m.fileReacts;
-    delete m.chatReacts; delete m.chatEdits; delete m.folders; delete m.folderTombs; delete m.chatAt; delete m.chatIds;
+    delete m.chatReacts; delete m.chatEdits; delete m.chatPins; delete m.folders; delete m.folderTombs; delete m.chatAt; delete m.chatIds;
     // Public owner/ban proofs may be sent before identification so an excluded
     // profile can learn its status without receiving secrets or file metadata.
     if (!m.banState) delete m.transferChain;
@@ -1134,6 +1170,72 @@ function helloMsg(room: Room, full = true): Msg {
     try { return crypto.verify(null, p.bytes, crypto.createPublicKey(p.pub), Buffer.from(p.sig, 'base64')); }
     catch { return false; }
   }) as Msg;
+}
+
+function verifiedChatPin(room: Room, item: RoomChatPin): boolean {
+  if (!verifyChat({ ...room, topic: item.topic }, item.message)) return false;
+  return !item.edit || verifyEdit({ ...room, topic: item.edit.topic }, { msgId: item.message.id, memberId: item.edit.by, ...item.edit });
+}
+function adoptChatPins(room: Room, pins: RoomChatPins, local = false): boolean {
+  if (!newerChatPins(pins, room.chatPins, room.ownerId, room.transferAt)) return false;
+  const topic = local && typeof pins.signedTopic === 'string' ? pins.signedTopic : room.topic;
+  if (!verifySignedBy(room, pins.by, pins.pub, pins.sig, Buffer.from(chatPinsCanonical(topic, pins)))
+    || !pins.items.every(i => verifiedChatPin(room, i))) return false;
+  room.chatPins = { t: 'chat-pins-v1', by: pins.by, ownerAt: pins.ownerAt, at: pins.at, pub: pins.pub, sig: pins.sig, items: pins.items.map(cleanChatPin), signedTopic: topic };
+  room.chatPinsTopic = topic;
+  if (!local) { try { ipcRenderer.send('room-chat-pins', { roomId: room.roomId, pins: room.chatPins }); } catch { /* best effort */ } }
+  pushState(room);
+  return true;
+}
+function chatPinSnapshot(room: Room, item: RoomChatPin): RoomChatPin {
+  const edit = room.chatEdits.get(item.message.id);
+  if (!edit || item.edit && edit.at <= item.edit.at
+    || !verifyEdit(room, { msgId: item.message.id, memberId: edit.by, ...edit })) return cleanChatPin(item);
+  return cleanChatPin({ ...item, edit: { ...edit, topic: room.topic } });
+}
+/** Re-sign after owner/code changes; also retain edits before a pinned message ages out. */
+function refreshChatPins(room: Room): void {
+  const old = room.chatPins;
+  if (!old || room.ownerId !== room.self.memberId) return;
+  const items = old.items.map(i => chatPinSnapshot(room, i));
+  if (old.by === room.ownerId && old.ownerAt === room.transferAt && room.chatPinsTopic === room.topic
+    && JSON.stringify(items) === JSON.stringify(old.items)) return;
+  const pins: RoomChatPins = { t: 'chat-pins-v1', by: room.self.memberId, ownerAt: room.transferAt,
+    at: Math.max(Date.now(), old.at + 1), pub: room.self.pub, sig: '', items, signedTopic: room.topic };
+  pins.sig = signBytes(room, Buffer.from(chatPinsCanonical(room.topic, pins)));
+  if (pins.sig) adoptChatPins(room, pins);
+}
+const chatPinQueues = new Map<string, Promise<unknown>>();
+async function pinChat(roomId: string, msgId: string, on: boolean): Promise<{ ok: boolean }> {
+  const operation = (chatPinQueues.get(roomId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const room = rooms.get(roomId);
+    if (!room || room.kicked || netSuspended) throw new Error('Room not active');
+    if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can pin messages');
+    let items = (room.chatPins?.items ?? []).map(i => chatPinSnapshot(room, i));
+    if (on && !items.some(i => i.message.id === msgId)) {
+      if (items.length >= ROOM_PIN_LIMIT) throw new Error('Room pin limit reached');
+      const message = room.chat.find(m => m.id === msgId);
+      if (!message) throw new Error('Message not found');
+      const item = chatPinSnapshot(room, { message, topic: message.signedTopic ?? room.topic });
+      if (!verifiedChatPin(room, item)) throw new Error('Message signature could not be verified');
+      items.push(item);
+    } else if (!on) items = items.filter(i => i.message.id !== msgId);
+    const pins: RoomChatPins = { t: 'chat-pins-v1', by: room.self.memberId, ownerAt: room.transferAt,
+      at: Math.max(Date.now(), (room.chatPins?.at ?? 0) + 1), pub: room.self.pub, sig: '', items, signedTopic: room.topic };
+    pins.sig = signBytes(room, Buffer.from(chatPinsCanonical(room.topic, pins)));
+    if (!pins.sig || !validChatPins(pins)) throw new Error('Could not sign chat pins');
+    await ipcRenderer.invoke('room-persist-chat-pins', { roomId, pins });
+    if (rooms.get(roomId) !== room || room.kicked || netSuspended || room.ownerId !== pins.by || room.transferAt !== pins.ownerAt) throw new Error('Room session changed while saving pins');
+    if (!adoptChatPins(room, pins, true)) throw new Error('Pins changed while saving; retry the action');
+    refreshChatPins(room);
+    try { broadcast(room, { ...room.chatPins!, signedTopic: undefined }); }
+    catch (error) { log('Locally saved pins will be available through greetings: ' + String(error)); }
+    pushState(room, true);
+    return { ok: true as const };
+  });
+  chatPinQueues.set(roomId, operation);
+  void operation.finally(() => { if (chatPinQueues.get(roomId) === operation) chatPinQueues.delete(roomId); }).catch(() => {});
+  return operation;
 }
 
 /** Persist a folder create/edit to main so it (and the grouping) survives restart. */
@@ -1606,7 +1708,7 @@ function addChat(room: Room, msg: RoomChatMessage, backfill = false, persisted =
     pushState(room, true);
     return;
   }
-  if (!persisted) msg = { ...msg, receivedAt: Date.now() };
+  if (!persisted) msg = { ...msg, receivedAt: Date.now(), signedTopic: room.topic };
   room.chat.push(msg);
   // A verified edit that arrived before this message (fresh-joiner HELLO ahead of
   // the backfill, or relay reorder) was buffered — apply it now that its target
@@ -1617,6 +1719,7 @@ function addChat(room: Room, msg: RoomChatMessage, backfill = false, persisted =
     if (applyChatEdit(room, msg.id, pending)) persistChatEdits(room);
   }
   if (room.chat.length > ROOM_CHAT_LIMIT) {
+    refreshChatPins(room);
     room.chat = room.chat.slice(-ROOM_CHAT_LIMIT);
     if (pruneChatReacts(room)) persistChatReacts(room); // aged-out msgs free their cap slots
     if (pruneChatEdits(room)) persistChatEdits(room);   // and their edit overlay
@@ -2810,7 +2913,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
   if (msg.t === 'transfer' && room.ownerId && msg.by !== room.ownerId) return;
   if (msg.t === 'transfer' && msg.banState && (msg.banState.ownerId !== msg.by || msg.banState.bans.includes(msg.newOwnerId) || !adoptBanState(room, msg.banState))) return;
   if (room.kicked) return;
-  if (['rename', 'topic', 'rekey', 'kicked'].includes(msg.t) && (!room.ownerId || meta.by !== room.ownerId)) return;
+  if (['rename', 'topic', 'rekey', 'kicked', 'chat-pins-v1'].includes(msg.t) && (!room.ownerId || meta.by !== room.ownerId)) return;
   if (msg.t === 'del') {
     const file = room.files.get(msg.fileId);
     if (file && !canDeleteRoomFile(room.ownerId, file.addedBy, msg.memberId)) return;
@@ -2956,6 +3059,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       if (mergeReacts(room, msg.fileReacts)) persistReacts(room);
       if (mergeChatReacts(room, msg.chatReacts)) persistChatReacts(room);
       if (mergeChatEdits(room, msg.chatEdits)) persistChatEdits(room);
+      if (msg.chatPins) adoptChatPins(room, msg.chatPins);
       // Chat backfill: if this peer is behind our chat (or hasn't said how caught-up
       // it is), UNICAST it the messages it's missing — only ones we can re-serve with
       // a signature, so they self-authenticate on its side. Only on a DIRECT hello,
@@ -3363,6 +3467,7 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       }
       break;
     }
+    case 'chat-pins-v1': adoptChatPins(room, msg); break;
     case 'typing': {
       // Only KNOWN, unmuted members get a stamp — that bounds the map by the
       // roster (hostile gossip can't spray phantom ids into it).
@@ -3714,10 +3819,11 @@ function persistManifest(room: Room, file: RoomFile, localPath?: string, cipherP
 function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
   if (room.files.size >= ROOM_FILE_LIMIT) return Promise.reject(new Error("Room file limit reached (5000). Remove files before adding more."));
   const c = ensureClient(room);
+  const releaseClient = clientReaper.hold(c);
   const name = path.basename(filePath);
   const seedSecret = room.secret;
   const seedEpoch = room.e2e && seedSecret ? contentKeyEpoch(seedSecret) : undefined;
-  roomDiskName({ name, enc: room.e2e });
+  try { roomDiskName({ name, enc: room.e2e }); } catch (error) { releaseClient(); throw error; }
   return new Promise<RoomFile>((resolve, reject) => {
     if (!fs.existsSync(filePath)) return reject(new Error('File not found: ' + filePath));
 
@@ -3729,7 +3835,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
       const onErr = (e: any) => { c.removeListener('error', onErr); if (!settled) { settled = true; reject(e instanceof Error ? e : new Error(String(e))); } };
       c.once('error', onErr);
       try {
-        c.seed(seedPath, { announce: room.trackers, name: seedName } as any, (torrent: any) => {
+        c.seed(seedPath, { announce: room.trackers, name: seedName, store: RoomChunkStore, storeCacheSlots: 0 } as any, (torrent: any) => {
           if (settled) return;
           void (async () => {
           const file: RoomFile = {
@@ -3785,7 +3891,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
     } else {
       doSeed(filePath, name);
     }
-  });
+  }).finally(releaseClient);
 }
 
 /** Make sure a manifest file exists locally — seed it if already on disk,
@@ -3825,7 +3931,12 @@ function ensureLocal(room: Room, file: RoomFile, allowDownload = true): Promise<
 
 async function prepareLocal(room: Room, file: RoomFile, isCurrent: () => boolean, allowDownload: boolean): Promise<void> {
   if (!isCurrent()) return;
-  const c = ensureClient(room), state = storageFor(room);
+  const c = ensureClient(room), releaseClient = clientReaper.hold(c);
+  try { await prepareLocalWithClient(room, file, isCurrent, allowDownload, c); }
+  finally { releaseClient(); }
+}
+async function prepareLocalWithClient(room: Room, file: RoomFile, isCurrent: () => boolean, allowDownload: boolean, c: any): Promise<void> {
+  const state = storageFor(room);
   const existing = findTorrent(c, file.infoHash);
   if (existing) {
     const tr = room.transfers.get(file.fileId);
@@ -3930,7 +4041,7 @@ async function prepareLocal(room: Room, file: RoomFile, isCurrent: () => boolean
   };
   if (lease) lease.holding = true;
   const torrent = addKnownTorrent(c, file.infoHash, source,
-    { path: path.dirname(target), announce: room.trackers, skipVerify: false,
+    { path: path.dirname(target), announce: room.trackers, skipVerify: false, storeCacheSlots: 0,
       store: class {
         constructor(chunkLength: number, options: any) {
           try {
@@ -4324,8 +4435,8 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
 }
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
-function startRoom(p: { roomId: string; name: string; code: string; folder: string;
-  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; banState?: RoomBanSnapshot; e2eCfg?: E2ECfg | null; keyPages?: RoomKeyPage[]; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number; resources?: RoomResourcePolicy }): RoomState {
+function startRoom(p: { roomId: string; name: string; code: string; folder: string; stateIpc?: number;
+  self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; chatPins?: RoomChatPins; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; banState?: RoomBanSnapshot; e2eCfg?: E2ECfg | null; keyPages?: RoomKeyPage[]; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number; resources?: RoomResourcePolicy }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
   // manager clears this via 'netResume' before it re-joins on VPN restore.
@@ -4437,6 +4548,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     snapshotTimer: null,
     heartbeatTimer: null,
     lastSnapshot: 0,
+    stateEncoder: p.stateIpc === 1 ? new RoomStateEncoder() : undefined,
   };
   rooms.set(p.roomId, room);
   try {
@@ -4455,6 +4567,8 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     if (room.bans.size > ROOM_BAN_LIMIT) throw new Error('Room ban history exceeds the supported limit');
     if (p.banState) adoptBanState(room, p.banState);
     mintBanState(room);
+    if (p.chatPins) adoptChatPins(room, p.chatPins, true);
+    refreshChatPins(room);
     if (room.bans.has(room.self.memberId)) { markKicked(room, '?'); return buildState(room); }
 
     // E2E authenticity: the owner mints the signed config fresh (it holds the
@@ -4511,7 +4625,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     const beat = setInterval(() => {
       const r = rooms.get(p.roomId);
       if (r !== room) { clearInterval(beat); return; }
-      broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: buildState(r).members[0].have, roomName: r.name, ownerId: r.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
+      broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: Array.from(r.files.keys()).filter(id => r.transfers.get(id)?.haveLocally), roomName: r.name, ownerId: r.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
       // Voice-roster liveness: a member who dropped offline (crash/sleep — no 'bye',
       // no voice-state) would otherwise linger in the voice panel with a stale mute
       // badge, and their MediaPeer would never be reclaimed. onMemberGone is a cheap
@@ -4972,44 +5086,46 @@ async function watchStream(roomId: string, fileId: string): Promise<{ port: numb
   const key = `${roomId}:${fileId}`;
   const existing = streamServers.get(key);
   if (existing) return { port: existing.port, index: 0 };
-  const c = ensureClient(room);
-  let t = findTorrent(c, file.infoHash);
-  if (!t) {
-    if (room.transfers.get(fileId)?.receivePaused) throw new Error('Receiving is paused. Resume this file before starting playback.');
-    const job = ensureLocal(room, file);
-    receiveQueue.prioritize(room, fileId);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([job, new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('This file is waiting in the receive queue. Pause another receive or try playback later.')), 5000);
-      })]);
-    } finally { if (timer) clearTimeout(timer); }
-    t = findTorrent(c, file.infoHash);
-  }
-  if (!t) throw new Error('Could not start streaming this file');
-  // Serving /0 needs the torrent's file list, which arrives with metadata (a
-  // magnet download fetches it from peers first). Wait, bounded, for a sleeping room.
-  if (!t.ready) {
+  const c = ensureClient(room), releaseClient = clientReaper.hold(c);
+  try {
+    let t = findTorrent(c, file.infoHash);
+    if (!t) {
+      if (room.transfers.get(fileId)?.receivePaused) throw new Error('Receiving is paused. Resume this file before starting playback.');
+      const job = ensureLocal(room, file);
+      receiveQueue.prioritize(room, fileId);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([job, new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('This file is waiting in the receive queue. Pause another receive or try playback later.')), 5000);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+      t = findTorrent(c, file.infoHash);
+    }
+    if (!t) throw new Error('Could not start streaming this file');
+    // Serving /0 needs the torrent's file list, which arrives with metadata (a
+    // magnet download fetches it from peers first). Wait, bounded, for a sleeping room.
+    if (!t.ready) {
+      await new Promise<void>((resolve, reject) => {
+        const to = setTimeout(() => reject(new Error('Timed out waiting for file info from peers — is anyone online with this file?')), Math.max(1, 25000 - (Date.now() - startedAt)));
+        const done = () => { clearTimeout(to); resolve(); };
+        t.once('ready', done);
+        t.once('metadata', done);
+      });
+    }
+    // A room started/torn down while we awaited metadata — don't leak a server.
+    if (netSuspended || rooms.get(roomId) !== room) throw new Error('The room session ended');
+    const server = createTorrentStreamServer(t);
     await new Promise<void>((resolve, reject) => {
-      const to = setTimeout(() => reject(new Error('Timed out waiting for file info from peers — is anyone online with this file?')), Math.max(1, 25000 - (Date.now() - startedAt)));
-      const done = () => { clearTimeout(to); resolve(); };
-      t.once('ready', done);
-      t.once('metadata', done);
+      try { server.listen(0, '127.0.0.1', () => resolve()); server.on('error', reject); }
+      catch (e) { reject(e); }
     });
-  }
-  // A room started/torn down while we awaited metadata — don't leak a server.
-  if (netSuspended || rooms.get(roomId) !== room) throw new Error('The room session ended');
-  const server = createTorrentStreamServer(t);
-  await new Promise<void>((resolve, reject) => {
-    try { server.listen(0, '127.0.0.1', () => resolve()); server.on('error', reject); }
-    catch (e) { reject(e); }
-  });
-  const address = server.address();
-      if (!address || typeof address === 'string') throw new Error('Stream server did not bind TCP');
-      const port = address.port;
-  streamServers.set(key, { server, port });
-  log('room stream server started for ' + file.name + ' on 127.0.0.1:' + port);
-  return { port, index: 0 };
+    const address = server.address();
+        if (!address || typeof address === 'string') throw new Error('Stream server did not bind TCP');
+        const port = address.port;
+    streamServers.set(key, { server, port });
+    log('room stream server started for ' + file.name + ' on 127.0.0.1:' + port);
+    return { port, index: 0 };
+  } finally { releaseClient(); }
 }
 
 /** Close every stream server a room opened (leave / kick / VPN suspend). */
@@ -5056,13 +5172,14 @@ function sendChat(roomId: string, rawText: string, replyToId?: string, messageId
   if (parent) {
     msg.replyTo = parent.id;
     msg.replyName = parent.name.slice(0, 256);
-    msg.replyText = (room.chatEdits.get(parent.id)?.text ?? parent.text).slice(0, 140);
+    const parentText = room.chatEdits.get(parent.id)?.text ?? parent.text;
+    msg.replyText = (parseFileRequest(parentText)?.title ?? parentText).slice(0, 140);
   }
   const sig = prior?.sig || signChat(room, msg);
   if (!sig) throw new Error('Could not sign this chat message');
   const contextSig = prior?.contextSig || signBytes(room, Buffer.from(chatContextCanonical(room.topic, msg)));
   if (!contextSig) throw new Error('Could not sign this chat reply');
-  const result: { duplicate: boolean; message?: RoomChatMessage } = await ipcRenderer.invoke('room-persist-chat', { roomId, message: prior ?? { ...msg, pub: room.self.pub, sig, chatV: 2, contextSig } });
+  const result: { duplicate: boolean; message?: RoomChatMessage } = await ipcRenderer.invoke('room-persist-chat', { roomId, message: prior ?? { ...msg, pub: room.self.pub, sig, chatV: 2, contextSig, signedTopic: room.topic } });
   if (rooms.get(roomId) !== room || room.kicked || netSuspended) throw new Error('Room session ended while saving the message');
   // Bind our own identity locally too, so the roster is complete on our side.
   if (!room.identities.has(room.self.memberId)) room.identities.set(room.self.memberId, room.self.pub);
@@ -5168,7 +5285,7 @@ function updateProfile(p: { name?: string; avatarSeed?: string; color?: string; 
     if (typeof p.color === 'string') room.self.color = p.color;
     if (typeof p.status === 'string') room.self.status = p.status;
     if (typeof p.avatarImg === 'string') room.self.avatarImg = p.avatarImg;
-    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: buildState(room).members[0].have, roomName: room.name, ownerId: room.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
+    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: Array.from(room.files.keys()).filter(id => room.transfers.get(id)?.haveLocally), roomName: room.name, ownerId: room.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
     const pm = selfProfileMsg(room);
     if (pm) broadcast(room, pm);
     pushState(room, true);
@@ -5216,6 +5333,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       for (const id of room.chatReacts.keys()) if (!ids.has(id)) room.chatReacts.delete(id);
       pushState(room,true); data = { ok: true };
     }
+    else if (type === 'pinChat') { data = await pinChat(msg.roomId, msg.messageId, msg.on); }
     else if (type === 'diskUsage') { data = await diskUsage(msg.roomId); }
     else if (type === 'cleanupCopies') { data = await cleanupCopies(msg.roomId, msg.previewId, msg.fileIds); }
     else if (type === 'releaseFile') { await releaseFile(msg.roomId, msg.fileId); data = { ok: true }; }
@@ -5507,6 +5625,11 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       pushState(r, true); data = buildState(r);
     }
     else if (type === 'snapshot') { const r = rooms.get(msg.roomId); data = r ? buildState(r) : null; }
+    else if (type === 'snapshotIpc') {
+      const r = rooms.get(msg.roomId);
+      if (r?.stateEncoder) ipcRenderer.send('room-state', r.stateEncoder.encode(buildState(r), true));
+      data = { ok: true };
+    }
     else if (type === 'setAutoFetch') {
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');

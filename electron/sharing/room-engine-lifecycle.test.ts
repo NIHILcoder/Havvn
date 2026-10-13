@@ -41,7 +41,7 @@ function fixture() {
   let trackerFails = false;
   let resolveCapture!: (stream: unknown) => void;
   const context: any = {
-    PendingServerCommands, ROOM_FILE_LIMIT, ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT, ROOM_IDENTITY_LIMIT, resetHelloSync: vi.fn(), ROOM_BAN_LIMIT, mintBanState: vi.fn(), adoptBanState: vi.fn(), requestKeyPages: vi.fn(), mergeContentKeys, completeContentKeys, rooms, clients, pendingScreenEpochs, joinNetworkEpoch: 0, netSuspended: false,
+    PendingServerCommands, ROOM_FILE_LIMIT, ROOM_FOLDER_LIMIT, ROOM_FOLDER_TOMB_LIMIT, ROOM_IDENTITY_LIMIT, resetHelloSync: vi.fn(), ROOM_BAN_LIMIT, refreshChatPins: () => {}, adoptChatPins: () => false, mintBanState: vi.fn(), adoptBanState: vi.fn(), requestKeyPages: vi.fn(), mergeContentKeys, completeContentKeys, rooms, clients, pendingScreenEpochs, joinNetworkEpoch: 0, netSuspended: false,
     fs: { mkdirSync: vi.fn(), readdirSync: () => [] }, path: { join: (...parts: string[]) => parts.join('/') },
     setTimeout, clearTimeout, setInterval, clearInterval, Date,
     TrackerClient: class extends EventEmitter {

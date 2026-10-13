@@ -22,6 +22,8 @@ import type { RoomBanSnapshot } from '../../shared/room-bans';
  */
 
 import Store from 'electron-store';
+import { CachedJsonStore } from './cached-json-store';
+import { RoomTextCache } from './room-text-cache';
 import { sealRoom, openRoom, lockedRoom, type StoredRoom, type RoomStorageError } from './room-secrets';
 import { isEncryptionAvailable } from './secrets';
 import type { RoomE2ECfg, RoomKeyPage } from '../../shared/room-keyring';
@@ -33,6 +35,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
+import { matchesChatFilter, validateChatFilter, type RoomChatFilter, type RoomChatSearchPage } from '../../shared/room-chat-tools';
+import { validChatPins } from '../../shared/room-chat-pins';
 import { normalizeLanPrefs, EMPTY_LAN_PREFS, type LanRoomPrefs } from '../../shared/lan-prefs';
 import { encryptSecret, decryptSecret } from './secrets';
 import { deriveMemberId } from '../sharing/room-crypto';
@@ -84,6 +88,7 @@ interface SearchSchema {
 }
 
 interface RoomsSchema {
+  roomChatPins?: Record<string, string>; // complete signed pin snapshot encrypted at rest
   rooms: Record<string, StoredRoom>;      // Friend swarms / private rooms (Phase 3)
   roomProfile: RoomProfile | null;           // This install's identity in rooms
   roomTombstones: Record<string, Record<string, number>>; // roomId → (deleted fileId → deletedAt ms); a later explicit re-share revives it
@@ -159,6 +164,7 @@ export interface PersistedRoom {
   upKbps?: number;     // per-room upload ceiling, KB/s (0 = shared room budget)
   downKbps?: number;   // per-room download ceiling, KB/s (0 = shared room budget)
   notifyMuted?: boolean; // OS notifications silenced for this room (absent = notify)
+  notifyMode?: import('../../shared/room-chat-tools').RoomNotifyMode;
 }
 
 const defaultCategories: Category[] = [
@@ -301,15 +307,17 @@ const searchStore = new Store<SearchSchema>({
   defaults: { searchProviders: [] },
 });
 
-const roomsStore = new Store<RoomsSchema>({
+const roomsStore = new CachedJsonStore<RoomsSchema>(new Store<RoomsSchema>({
   name: 'rooms',
   defaults: { rooms: {}, roomProfile: null, roomTombstones: {}, roomTombstoneProofs: {}, roomRevives: {}, roomLastRead: {}, roomManifests: {}, roomFolders: {}, roomFolderTombstones: {}, roomHistory: {}, roomMutes: {}, roomLan: {}, roomFolderFetch: {}, roomChats: {}, roomReacts: {}, roomChatReacts: {}, roomChatEdits: {}, roomIdentity: null, roomIdentities: {} },
-});
+}));
 
 const reputationStore = new Store<ReputationSchema>({
   name: 'reputation',
   defaults: { reputation: {}, transactions: {} },
 });
+
+export function withRoomRead<R>(operation: () => R): R { return roomsStore.withSnapshot(operation); }
 
 /**
  * One-time migration from the old single-file layout. Older versions kept
@@ -326,7 +334,7 @@ function migrateToSplitStores(): void {
     delete(key: string): void;
   };
 
-  const move = (key: string, target: Store<any>): void => {
+  const move = (key: string, target: { set(key: any, value: any): void }): void => {
     if (legacy.has(key)) {
       target.set(key, legacy.get(key));
       legacy.delete(key);
@@ -445,7 +453,7 @@ export function migrateMemberIdToKeyDerived(): void {
 }
 
 export function getRoomTombstones(roomId: string): Record<string, number> {
-  return (roomsStore.get('roomTombstones') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomTombstones', roomId) ?? {};
 }
 
 export function addRoomTombstone(roomId: string, fileId: string, at: number = Date.now()): void {
@@ -479,7 +487,7 @@ export function clearRoomTombstones(roomId: string): void {
 // here is a legacy/local one that gossips only as a bare (unauthenticated) tomb.
 
 export function getRoomTombstoneProofs(roomId: string): Record<string, { by: string; pub: string; sig: string }> {
-  return (roomsStore.get('roomTombstoneProofs') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomTombstoneProofs', roomId) ?? {};
 }
 
 export function addRoomTombstoneProof(roomId: string, fileId: string, proof: { by: string; pub: string; sig: string }): void {
@@ -524,7 +532,7 @@ export function clearRoomTombstoneProofs(roomId: string): void {
 // deletion at-or-older than revAt, which is exactly what a revive is meant to do.
 
 export function getRoomRevives(roomId: string): Record<string, number> {
-  return (roomsStore.get('roomRevives') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomRevives', roomId) ?? {};
 }
 
 export function addRoomRevive(roomId: string, fileId: string, revAt: number): void {
@@ -556,7 +564,7 @@ export function clearRoomRevives(roomId: string): void {
 // === Room manifest (known files — resume a room's file list/seeding on restart) ===
 
 export function getRoomManifest(roomId: string): PersistedRoomFile[] {
-  return (roomsStore.get('roomManifests') ?? {})[roomId] ?? [];
+  return roomsStore.getEntry('roomManifests', roomId) ?? [];
 }
 
 /** Add or update one file in a room's persisted manifest (keyed by fileId). */
@@ -592,7 +600,7 @@ export function clearRoomManifest(roomId: string): void {
 // === Room folders (sections — resume a room's folder set on restart) ===
 
 export function getRoomFolders(roomId: string): PersistedRoomFolder[] {
-  return (roomsStore.get('roomFolders') ?? {})[roomId] ?? [];
+  return roomsStore.getEntry('roomFolders', roomId) ?? [];
 }
 
 /** Add or update one folder in a room's persisted set (keyed by id). */
@@ -614,7 +622,7 @@ export function removeRoomFolder(roomId: string, folderId: string): void {
 }
 
 export function getRoomFolderTombstones(roomId: string): Record<string, number> {
-  return (roomsStore.get('roomFolderTombstones') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomFolderTombstones', roomId) ?? {};
 }
 
 export function addRoomFolderTombstone(roomId: string, folderId: string, at: number = Date.now()): void {
@@ -639,10 +647,13 @@ export function clearRoomFolders(roomId: string): void {
 // === Room activity history (locally-observed event log) ===
 
 export function getRoomHistory(roomId: string): RoomEvent[] {
-  return retainLocalHistory((roomsStore.get('roomHistory') ?? {})[roomId] ?? [], getRoomHistoryRetention(roomId), ev => ev.at);
+  return retainLocalHistory(roomsStore.getEntry('roomHistory', roomId) ?? [], getRoomHistoryRetention(roomId), ev => ev.at);
 }
 
 export function appendRoomEvents(roomId: string, events: RoomEvent[]): void {
+  roomsStore.withSnapshot(() => appendRoomEventsOnce(roomId, events));
+}
+function appendRoomEventsOnce(roomId: string, events: RoomEvent[]): void {
   if (!events.length) return;
   const all = roomsStore.get('roomHistory') ?? {};
   const list = retainLocalHistory((all[roomId] ?? []).concat(events), getRoomHistoryRetention(roomId), ev => ev.at).slice(-200);
@@ -662,36 +673,60 @@ export function clearRoomHistory(roomId: string): void {
 // === Room chat (gossiped messages, persisted locally + capped) ===
 // Message text is encrypted at rest (safeStorage/DPAPI) so the on-disk log is
 // not readable plaintext; metadata (id/at/sender) stays clear for indexing.
+const roomTextCache = new RoomTextCache();
+function decodeRoomText(value: string | undefined | null): string {
+  if (!value || typeof value !== 'string') return decryptSecret(value);
+  if (!isEncryptionAvailable()) { roomTextCache.clear(); return decryptSecret(value); }
+  return roomTextCache.get(value, decryptSecret);
+}
 
 export function getRoomChats(roomId: string): RoomChatMessage[] {
-  const list = (roomsStore.get('roomChats') ?? {})[roomId] ?? [];
+  return roomsStore.withSnapshot(() => readRoomChats(roomId));
+}
+function readRoomChats(roomId: string): RoomChatMessage[] {
+  const list = roomsStore.getEntry('roomChats', roomId) ?? [];
   // `replyText` is a snapshot of the PARENT message's body — content, so it's
   // encrypted at rest like `text` (metadata id/at/sender/replyName stay clear).
-  return retainRoomChat(retainLocalHistory(list, getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at).map((m) => ({ ...m, text: decryptSecret(m.text), ...(m.replyText ? { replyText: decryptSecret(m.replyText) } : {}) })));
+  return retainRoomChat(retainLocalHistory(list, getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at).map((m) => ({ ...m, text: decodeRoomText(m.text), ...(m.replyText ? { replyText: decodeRoomText(m.replyText) } : {}) })));
+}
+
+/** Unread is metadata: counting it never opens protected message bodies. */
+export function getRoomUnreadCount(roomId: string, self: string): number {
+  const lastRead = getRoomLastRead(roomId);
+  const list = roomsStore.getEntry('roomChats', roomId) ?? [];
+  return retainRoomChat(retainLocalHistory(list, getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at))
+    .filter(m => (m.receivedAt ?? m.at) > lastRead && m.memberId !== self).length;
 }
 
 /** Returns true if at least one message was new (not a re-delivery/backfill dup). */
 export function appendRoomChats(roomId: string, messages: RoomChatMessage[]): boolean {
+  return roomsStore.withSnapshot(() => appendRoomChatsOnce(roomId, messages));
+}
+function appendRoomChatsOnce(roomId: string, messages: RoomChatMessage[]): boolean {
   if (!messages.length) return false;
   const all = roomsStore.get('roomChats') ?? {};
   const byId = new Map(getRoomChats(roomId).map(m => [m.id, m]));
+  const encoded = new Map((all[roomId] ?? []).map(m => [m.id, m]));
+  const changedIds = new Set<string>();
   let isNew = false, changed = false;
   for (const message of messages) {
     if (!message.id) continue;
     const prior = byId.get(message.id) ?? archivedRoomChat(roomId, message.id);
-    if (!prior) { byId.set(message.id, { ...message, receivedAt: Date.now() }); isNew = changed = true; }
+    if (!prior) { byId.set(message.id, { ...message, receivedAt: Math.max(Date.now(), getRoomLastRead(roomId) + 1, ...[...byId.values()].map(m => (m.receivedAt ?? 0) + 1)) }); changedIds.add(message.id); isNew = changed = true; }
     else {
       const upgrade = upgradeChat(prior, message);
-      if (upgrade) { byId.set(message.id, upgrade); changed = true; }
+      if (upgrade) { byId.set(message.id, upgrade); changedIds.add(message.id); changed = true; }
     }
   }
   if (!changed) return false;
-  all[roomId] = retainRoomChat([...byId.values()]).map(m => ({ ...m, text: encryptSecret(m.text, false), ...(m.replyText ? { replyText: encryptSecret(m.replyText, false) } : {}) }));
+  all[roomId] = retainRoomChat([...byId.values()]).map(m => !changedIds.has(m.id) && encoded.has(m.id) ? encoded.get(m.id)!
+    : ({ ...m, text: encryptSecret(m.text, false), ...(m.replyText ? { replyText: encryptSecret(m.replyText, false) } : {}) }));
   roomsStore.set({ roomChats: all, roomChatArchive: archiveRoomChats(roomId, all[roomId]) });
   return isNew;
 }
 
 export function clearRoomChats(roomId: string): void {
+  roomTextCache.clear();
   const all = roomsStore.get('roomChats') ?? {};
   const receipts = roomsStore.get('roomChatReceipts') ?? {}, drafts = roomsStore.get('roomChatDrafts') ?? {};
   delete all[roomId];
@@ -703,6 +738,9 @@ export function clearRoomChats(roomId: string): void {
 
 /** Commit message + retry receipt in ONE atomic store write, before gossip. */
 export function commitRoomChat(roomId: string, message: RoomChatMessage): { duplicate: boolean; message?: RoomChatMessage } {
+  return roomsStore.withSnapshot(() => commitRoomChatOnce(roomId, message));
+}
+function commitRoomChatOnce(roomId: string, message: RoomChatMessage): { duplicate: boolean; message?: RoomChatMessage } {
   const digest = (m: RoomChatMessage) => crypto.createHash('sha256').update(JSON.stringify([m.id, m.memberId, m.text, m.replyTo || ''])).digest('hex');
   const fingerprint = digest(message);
   const chats = roomsStore.get('roomChats') ?? {}, receipts = roomsStore.get('roomChatReceipts') ?? {};
@@ -712,7 +750,7 @@ export function commitRoomChat(roomId: string, message: RoomChatMessage): { dupl
     if ((receipt ? decryptSecret(receipt.digest) : digest(existing!)) !== fingerprint) throw new Error('Message ID already belongs to different content');
     return { duplicate: true, message: existing };
   }
-  const saved = { ...message, receivedAt: Date.now() };
+  const saved = { ...message, receivedAt: Math.max(Date.now(), getRoomLastRead(roomId) + 1, ...getRoomChats(roomId).map(m => (m.receivedAt ?? 0) + 1)) };
   const encoded = { ...saved, text: encryptSecret(message.text, false), ...(message.replyText ? { replyText: encryptSecret(message.replyText, false) } : {}) };
   roomsStore.set({
     roomChats: { ...chats, [roomId]: [...(chats[roomId] ?? []), encoded].slice(-ROOM_CHAT_LIMIT) },
@@ -723,7 +761,7 @@ export function commitRoomChat(roomId: string, message: RoomChatMessage): { dupl
 }
 
 export function getRoomChatDraft(roomId: string): RoomChatDraft {
-  const encoded = (roomsStore.get('roomChatDrafts') ?? {})[roomId];
+  const encoded = roomsStore.getEntry('roomChatDrafts', roomId);
   return encoded ? normalizeRoomChatDraft(JSON.parse(decryptSecret(encoded))) : { text: '' };
 }
 export function setRoomChatDraft(roomId: string, draft: RoomChatDraft): void {
@@ -735,13 +773,13 @@ export function setRoomChatDraft(roomId: string, draft: RoomChatDraft): void {
 
 // The local archive is independent from the 200-message wire/rejoin window.
 export function getRoomHistoryRetention(roomId: string): RoomHistoryDays {
-  const saved = (roomsStore.get('roomHistoryRetention') ?? {})[roomId];
+  const saved = roomsStore.getEntry('roomHistoryRetention', roomId);
   // Existing installations had no expiry. Do not destroy their history on upgrade.
-  return saved ?? ((roomsStore.get('rooms') ?? {})[roomId] ? 0 : 30);
+  return saved ?? (roomsStore.getEntry('rooms', roomId) ? 0 : 30);
 }
 function archivedRoomChat(roomId: string, id: string): RoomChatMessage | undefined {
-  const value = ((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? []).find(m => m.id === id);
-  return value ? { ...value, text: decryptSecret(value.text), ...(value.replyText ? { replyText: decryptSecret(value.replyText) } : {}) } : undefined;
+  const value = (roomsStore.getEntry('roomChatArchive', roomId) ?? []).find(m => m.id === id);
+  return value ? { ...value, text: decodeRoomText(value.text), ...(value.replyText ? { replyText: decodeRoomText(value.replyText) } : {}) } : undefined;
 }
 function archiveRoomChats(roomId: string, encoded: RoomChatMessage[]): Record<string, RoomChatMessage[]> {
   const archive = roomsStore.get('roomChatArchive') ?? {};
@@ -750,20 +788,27 @@ function archiveRoomChats(roomId: string, encoded: RoomChatMessage[]): Record<st
   return { ...archive, [roomId]: retainLocalHistory([...entries.values()], getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at) };
 }
 export function setRoomHistoryRetention(roomId: string, value: unknown): RoomHistoryDays {
+  return roomsStore.withSnapshot(() => setRoomHistoryRetentionOnce(roomId, value));
+}
+function setRoomHistoryRetentionOnce(roomId: string, value: unknown): RoomHistoryDays {
   const days = historyDays(value), chats = roomsStore.get('roomChatArchive') ?? {}, events = roomsStore.get('roomEventArchive') ?? {};
-  const chat = retainLocalHistory(chats[roomId] ?? (roomsStore.get('roomChats') ?? {})[roomId] ?? [], days, m => m.receivedAt ?? m.at);
+  const chat = retainLocalHistory(chats[roomId] ?? roomsStore.getEntry('roomChats', roomId) ?? [], days, m => m.receivedAt ?? m.at);
   const activity = retainLocalHistory(events[roomId] ?? getRoomHistory(roomId), days, ev => ev.at);
   const overlays = roomsStore.get('roomArchiveEdits') ?? {}, ids = new Set(chat.map(m => m.id));
   roomsStore.set({ roomHistoryRetention: { ...(roomsStore.get('roomHistoryRetention') ?? {}), [roomId]: days },
     roomChatArchive: { ...chats, [roomId]: chat }, roomEventArchive: { ...events, [roomId]: activity },
     roomChats: { ...(roomsStore.get('roomChats') ?? {}), [roomId]: chat.slice(-ROOM_CHAT_LIMIT) },
     roomHistory: { ...(roomsStore.get('roomHistory') ?? {}), [roomId]: activity.slice(-200) },
-    roomChatEdits: { ...(roomsStore.get('roomChatEdits') ?? {}), [roomId]: Object.fromEntries(Object.entries((roomsStore.get('roomChatEdits') ?? {})[roomId] ?? {}).filter(([id])=>ids.has(id))) },
+    roomChatEdits: { ...(roomsStore.get('roomChatEdits') ?? {}), [roomId]: Object.fromEntries(Object.entries(roomsStore.getEntry('roomChatEdits', roomId) ?? {}).filter(([id])=>ids.has(id))) },
     roomArchiveEdits: { ...overlays, [roomId]: Object.fromEntries(Object.entries(overlays[roomId] ?? {}).filter(([id])=>ids.has(id))) } });
+  roomTextCache.clear();
   return days;
 }
 /** Remove expired ciphertext too, even when a room receives no new messages. One atomic write. */
 export function pruneRoomLocalHistory(): string[] {
+  return roomsStore.withSnapshot(pruneRoomLocalHistoryOnce);
+}
+function pruneRoomLocalHistoryOnce(): string[] {
   const keys = ['roomChats', 'roomChatArchive', 'roomHistory', 'roomEventArchive', 'roomChatEdits', 'roomArchiveEdits'] as const;
   const patch: Partial<RoomsSchema> = Object.fromEntries(keys.map(key => [key, roomsStore.get(key) ?? {}]));
   const ids = new Set<string>(keys.flatMap(key => Object.keys(patch[key] ?? {}))), changed: string[] = [];
@@ -784,26 +829,42 @@ export function pruneRoomLocalHistory(): string[] {
     }
     if (modified) changed.push(roomId);
   }
-  if (changed.length) roomsStore.set(patch);
+  if (changed.length) { roomsStore.set(patch); roomTextCache.clear(); }
   return changed;
 }
 export function getRoomLocalHistoryPage(roomId: string, kind: unknown, before?: string): RoomHistoryPage {
+  return roomsStore.withSnapshot(() => readRoomLocalHistoryPage(roomId, kind, before));
+}
+function readRoomLocalHistoryPage(roomId: string, kind: unknown, before?: string): RoomHistoryPage {
   if (kind !== 'chat' && kind !== 'event') throw new Error('Invalid room history kind');
   const retentionDays = getRoomHistoryRetention(roomId);
   if (kind === 'event') {
-    const events = retainLocalHistory((roomsStore.get('roomEventArchive') ?? {})[roomId] ?? getRoomHistory(roomId), retentionDays, ev => ev.at);
+    const events = retainLocalHistory(roomsStore.getEntry('roomEventArchive', roomId) ?? getRoomHistory(roomId), retentionDays, ev => ev.at);
     const page = localHistoryPage(events, before);
     return { ...page, retentionDays, items: page.items.map(event => ({ kind: 'event', event })) };
   }
-  const list = retainLocalHistory((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? (roomsStore.get('roomChats') ?? {})[roomId] ?? [], retentionDays, m => m.receivedAt ?? m.at);
-  const page = localHistoryPage(list, before), edits = (roomsStore.get('roomArchiveEdits') ?? {})[roomId] ?? {};
-  return { ...page, retentionDays, items: page.items.map(m => ({ kind: 'chat', message: { ...m, text: decryptSecret(edits[m.id]?.text ?? m.text), ...(m.replyText ? { replyText: decryptSecret(m.replyText) } : {}) } })) };
+  const list = retainLocalHistory(roomsStore.getEntry('roomChatArchive', roomId) ?? roomsStore.getEntry('roomChats', roomId) ?? [], retentionDays, m => m.receivedAt ?? m.at);
+  const page = localHistoryPage(list, before), edits = roomsStore.getEntry('roomArchiveEdits', roomId) ?? {};
+  return { ...page, retentionDays, items: page.items.map(m => ({ kind: 'chat', message: { ...m, text: decodeRoomText(edits[m.id]?.text ?? m.text), ...(m.replyText ? { replyText: decodeRoomText(m.replyText) } : {}) } })) };
 }
 
 // === Room unread (last time the user viewed a room; chat after it is unread) ===
 
 export function getRoomLastRead(roomId: string): number {
-  return (roomsStore.get('roomLastRead') ?? {})[roomId] ?? 0;
+  return roomsStore.getEntry('roomLastRead', roomId) ?? 0;
+}
+
+export function searchRoomChat(roomId: string, filter: RoomChatFilter, before?: string): RoomChatSearchPage {
+  validateChatFilter(filter);
+  if (before !== undefined && (typeof before !== 'string' || !/^[\w-]{1,128}$/.test(before))) throw new Error('Invalid search cursor');
+  return roomsStore.withSnapshot(() => {
+    const history = retainLocalHistory(roomsStore.getEntry('roomChatArchive', roomId) ?? roomsStore.getEntry('roomChats', roomId) ?? [], getRoomHistoryRetention(roomId), m => m.receivedAt ?? m.at);
+    const edits = roomsStore.getEntry('roomArchiveEdits', roomId) ?? {}, selfName = getRoomProfile().name;
+    const matches = history.filter(m => matchesChatFilter(m, decodeRoomText(edits[m.id]?.text ?? m.text), filter, selfName));
+    const page = localHistoryPage(matches, before);
+    const messages = page.items.map(m => ({ ...m, text: decodeRoomText(m.text), ...(m.replyText ? { replyText: decodeRoomText(m.replyText) } : {}) }));
+    return { messages, next: page.next, edits: Object.fromEntries(messages.filter(m => edits[m.id]).map(m => [m.id, { text: decodeRoomText(edits[m.id].text), at: edits[m.id].at }])) };
+  });
 }
 
 export function setRoomLastRead(roomId: string, at: number = Date.now()): void {
@@ -818,12 +879,30 @@ export function clearRoomLastRead(roomId: string): void {
   roomsStore.set('roomLastRead', all);
 }
 
+/** Forget all room partitions with one atomic JSON rewrite. */
+export function clearRoomLocalData(roomId: string): void {
+  roomsStore.withSnapshot(() => clearRoomLocalDataOnce(roomId));
+}
+function clearRoomLocalDataOnce(roomId: string): void {
+  const keys = ['roomTombstones', 'roomTombstoneProofs', 'roomRevives', 'roomManifests', 'roomFolders', 'roomFolderTombstones',
+    'roomHistory', 'roomEventArchive', 'roomMutes', 'roomLan', 'roomFolderFetch', 'roomChats', 'roomChatReceipts',
+    'roomChatDrafts', 'roomChatArchive', 'roomArchiveEdits', 'roomHistoryRetention', 'roomLastRead', 'roomReacts',
+    'roomChatReacts', 'roomChatEdits', 'roomChatPins', 'roomIdentities'] as const;
+  const patch: Partial<RoomsSchema> = {};
+  for (const key of keys) {
+    const all = roomsStore.get(key) ?? {};
+    delete (all as Record<string, unknown>)[roomId];
+    Object.assign(patch, { [key]: all });
+  }
+  roomsStore.set(patch); roomTextCache.clear();
+}
+
 // === Room file reactions (gossiped emoji toggles, persisted locally + capped) ===
 
 const MAX_REACT_FILES = 200; // per room — matches the engine's hello-summary cap
 
 export function getRoomReacts(roomId: string): Record<string, Record<string, string[]>> {
-  return (roomsStore.get('roomReacts') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomReacts', roomId) ?? {};
 }
 
 /** Replace a room's reaction map (toggles don't append well, so it's set-style). */
@@ -836,7 +915,7 @@ export function setRoomReacts(roomId: string, reacts: Record<string, Record<stri
 }
 
 export function getRoomChatReacts(roomId: string): Record<string, Record<string, string[]>> {
-  return (roomsStore.get('roomChatReacts') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomChatReacts', roomId) ?? {};
 }
 
 /** Replace a room's chat-reaction map (same set-style rule as file reacts). */
@@ -865,9 +944,9 @@ export function clearRoomChatReacts(roomId: string): void {
 // author id stay clear so a peer's HELLO edit can re-verify against the author.
 
 export function getRoomChatEdits(roomId: string): Record<string, { text: string; at: number; by: string; pub: string; sig: string }> {
-  const rec = (roomsStore.get('roomChatEdits') ?? {})[roomId] ?? {};
+  const rec = roomsStore.getEntry('roomChatEdits', roomId) ?? {};
   const out: Record<string, { text: string; at: number; by: string; pub: string; sig: string }> = {};
-  for (const [msgId, e] of Object.entries(rec)) out[msgId] = { ...e, text: decryptSecret(e.text) };
+  for (const [msgId, e] of Object.entries(rec)) out[msgId] = { ...e, text: decodeRoomText(e.text) };
   return out;
 }
 
@@ -878,7 +957,7 @@ export function setRoomChatEdits(roomId: string, edits: Record<string, { text: s
   for (const [msgId, e] of Object.entries(edits ?? {}).sort((a, b) => b[1].at - a[1].at).slice(0, MAX_REACT_FILES)) capped[msgId] = { ...e, text: encryptSecret(e.text, false) };
   all[roomId] = capped;
   const archive = roomsStore.get('roomArchiveEdits') ?? {};
-  const ids = new Set(((roomsStore.get('roomChatArchive') ?? {})[roomId] ?? []).map(m => m.id));
+  const ids = new Set((roomsStore.getEntry('roomChatArchive', roomId) ?? []).map(m => m.id));
   const retained = { ...archive[roomId], ...capped };
   for (const id of Object.keys(retained)) if (!ids.has(id)) delete retained[id];
   roomsStore.set({ roomChatEdits: all, roomArchiveEdits: { ...archive, [roomId]: retained } });
@@ -1089,7 +1168,7 @@ export function importRoomIdentityBundle(bundle: unknown): { rooms: number } {
 
 /** Known (TOFU-bound) memberId → public key map for a room. */
 export function getRoomIdentities(roomId: string): Record<string, string> {
-  return (roomsStore.get('roomIdentities') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomIdentities', roomId) ?? {};
 }
 
 /** Bind a memberId to a public key the first time we see it (trust on first use). */
@@ -1112,7 +1191,7 @@ export function clearRoomIdentities(roomId: string): void {
 // === Room mutes (locally-hidden members — per install, never broadcast) ===
 
 export function getRoomMutes(roomId: string): string[] {
-  return (roomsStore.get('roomMutes') ?? {})[roomId] ?? [];
+  return roomsStore.getEntry('roomMutes', roomId) ?? [];
 }
 
 export function setRoomMute(roomId: string, memberId: string, muted: boolean): void {
@@ -1136,7 +1215,7 @@ export function clearRoomMutes(roomId: string): void {
 // shape. It is a convenience, not an authority — see shared/lan-prefs.ts.
 
 export function getRoomLanPrefs(roomId: string): LanRoomPrefs {
-  return normalizeLanPrefs((roomsStore.get('roomLan') ?? {})[roomId]);
+  return normalizeLanPrefs(roomsStore.getEntry('roomLan', roomId));
 }
 
 /** Persist a value the caller derived from getRoomLanPrefs via the pure helpers.
@@ -1160,7 +1239,7 @@ export function clearRoomLanPrefs(roomId: string): void {
 // folderId → forced on/off; a folder with no entry inherits the room's autoFetch.
 
 export function getRoomFolderFetch(roomId: string): Record<string, boolean> {
-  return (roomsStore.get('roomFolderFetch') ?? {})[roomId] ?? {};
+  return roomsStore.getEntry('roomFolderFetch', roomId) ?? {};
 }
 
 /** mode === null clears the override (folder inherits the room toggle again). */
@@ -1721,6 +1800,7 @@ export async function clearAllData(): Promise<void> {
   blocklistStore.clear();
   searchStore.clear();
   roomsStore.clear();
+  roomTextCache.clear();
   reputationStore.clear();
   // Keep the migration marker set so wiping data doesn't re-trigger migration.
   configStore.set('splitStoresMigrated', true);
@@ -2140,11 +2220,23 @@ export function setManualPeerBans(ips: string[]): void {
 // === Friend swarms / private rooms (Phase 3) ===
 
 export function getPersistedRooms(): PersistedRoom[] {
-  const raw = roomsStore.get('rooms') ?? {};
-  const migrated = { ...raw };
+  return readPersistedRooms(Object.values(roomsStore.get('rooms') ?? {}));
+}
+
+export function hasPersistedRoom(roomId: string): boolean {
+  return roomsStore.hasEntry('rooms', roomId);
+}
+
+export function getPersistedRoom(roomId: string): PersistedRoom | undefined {
+  const record = roomsStore.getEntry('rooms', roomId);
+  return record ? readPersistedRooms([record])[0] : undefined;
+}
+
+function readPersistedRooms(records: StoredRoom[]): PersistedRoom[] {
+  const migrated: Record<string, StoredRoom> = {};
   const result: PersistedRoom[] = [];
   const legacy: string[] = [];
-  for (const record of Object.values(raw)) {
+  for (const record of records) {
     try {
       if (!isEncryptionAvailable()) { result.push(lockedRoom(record, 'unavailable')); continue; }
       const room = openRoom(record);
@@ -2155,9 +2247,9 @@ export function getPersistedRooms(): PersistedRoom[] {
     }
   }
   if (legacy.length) {
-    try { roomsStore.set('rooms', migrated); }
+    try { roomsStore.set('rooms', { ...(roomsStore.get('rooms') ?? {}), ...migrated }); }
     catch {
-      for (let i = 0; i < result.length; i++) if (legacy.includes(result[i].roomId)) result[i] = lockedRoom(raw[result[i].roomId], 'migration-failed');
+      for (let i = 0; i < result.length; i++) if (legacy.includes(result[i].roomId)) result[i] = lockedRoom(records.find(record => record.roomId === result[i].roomId)!, 'migration-failed');
     }
   }
   return result.sort((a, b) => b.createdAt - a.createdAt);
@@ -2193,8 +2285,28 @@ export function setRoomNotifyMuted(roomId: string, notifyMuted: boolean): void {
   const rooms = roomsStore.get('rooms') ?? {};
   const room = rooms[roomId];
   if (!room) return;
-  rooms[roomId] = { ...room, notifyMuted };
+  rooms[roomId] = { ...room, notifyMuted, notifyMode: notifyMuted ? 'off' : 'all' };
   roomsStore.set('rooms', rooms);
+}
+
+export function setRoomNotifyMode(roomId: string, notifyMode: import('../../shared/room-chat-tools').RoomNotifyMode): void {
+  if (!['all', 'mentions', 'off'].includes(notifyMode)) throw new Error('Invalid room notification mode');
+  const rooms = roomsStore.get('rooms') ?? {}, room = rooms[roomId];
+  if (!room) throw new Error('Room not found');
+  roomsStore.set('rooms', { ...rooms, [roomId]: { ...room, notifyMode, notifyMuted: notifyMode === 'off' } });
+}
+
+export function getRoomChatPins(roomId: string): import('../../shared/room-chat-pins').RoomChatPins | undefined {
+  const encoded = roomsStore.getEntry('roomChatPins', roomId);
+  if (!encoded) return;
+  try { return JSON.parse(decodeRoomText(encoded)); } catch { return; }
+}
+export function setRoomChatPins(roomId: string, pins: import('../../shared/room-chat-pins').RoomChatPins): void {
+  if (!validChatPins(pins)) throw new Error('Invalid chat pins');
+  const prior = getRoomChatPins(roomId);
+  if (prior && prior.ownerAt > pins.ownerAt) return;
+  if (prior?.by === pins.by && prior.ownerAt === pins.ownerAt && (prior.at > pins.at || prior.at === pins.at && prior.sig >= pins.sig)) return;
+  roomsStore.set('roomChatPins', { ...(roomsStore.get('roomChatPins') ?? {}), [roomId]: encryptSecret(JSON.stringify(pins), false) });
 }
 
 /** Per-room speed ceilings in KB/s (0 = shared room budget). */

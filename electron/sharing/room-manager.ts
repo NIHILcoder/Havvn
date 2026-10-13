@@ -1,4 +1,5 @@
 import type { ServerCommandRequest, ServerCommandResult } from '../../shared/server-command';
+import { RoomStateEncoder, RoomStateDecoder, type RoomStatePacket } from '../../shared/room-state-ipc';
 /**
  * RoomManager — main-process proxy for friend swarms (Phase 3).
  *
@@ -8,7 +9,7 @@ import type { ServerCommandRequest, ServerCommandResult } from '../../shared/ser
  *   • persists joined rooms (electron-store) and re-joins them on startup,
  *   • supplies this install's identity + ICE/TURN config to the engine,
  *   • caches the latest RoomState per room and forwards live updates to the
- *     renderer (channel 'rooms:update').
+ *     renderer (full baseline followed by deltas on 'rooms:state').
  */
 
 import path from 'path';
@@ -24,6 +25,8 @@ import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo, Ro
 import { readRoomResources, validateRoomResources, type RoomResourcePolicy, type RoomResourceResult } from '../../shared/room-resources';
 import { buildRoomDiagnosticReport, type RoomConnectionDiagnostics, type RoomDiagnosticReport } from '../../shared/room-diagnostics';
 import { normalizeRoomRate } from '../../shared/room-chat-delivery';
+import { hasRoomMention, parseFileRequest, roomNotifyMode, type RoomNotifyMode } from '../../shared/room-chat-tools';
+import { validChatPins, type RoomChatPins } from '../../shared/room-chat-pins';
 import { generateRoomCode, normalizeCode, codeIsE2E, parseInvite } from './room-crypto';
 import { classifyMediaKind, isDirectlyPlayable } from '../../shared/media';
 import { listSubtitleTracks, getSubtitleVtt, SubtitleTrackItem } from '../torrent/subtitle-probe';
@@ -99,6 +102,9 @@ export class RoomManager {
   private reqSeq = 0;
   private ipcWired = false;
   private cache = new Map<string, RoomState>();
+  private engineStates = new RoomStateDecoder();
+  private rendererStates = new Map<string, RoomStateEncoder>();
+  private stateResyncs = new Set<string>();
   private connectionHistory = new Map<string, RoomConnectionDiagnostics>();
   private connectionRetries = new Map<string, Promise<RoomDiagnosticReport>>();
   private unsavedRooms = new Map<string, db.PersistedRoom>();
@@ -169,6 +175,12 @@ export class RoomManager {
       db.setRoomChatEdits(payload.roomId, { ...Object.fromEntries(Object.entries(edits).filter(([id]) => retained.has(id))), [payload.msgId]: edit });
       return edit;
     });
+    ipcMain.handle('room-persist-chat-pins', (event, payload: { roomId: string; pins: RoomChatPins }) => {
+      this.assertEnginePersistence(event, payload?.roomId);
+      if (!validChatPins(payload.pins) || payload.pins.by !== this.cache.get(payload.roomId)?.ownerId) throw new Error('Invalid chat pins');
+      db.setRoomChatPins(payload.roomId, payload.pins);
+      return { ok: true };
+    });
     // Renderer-facing liveness channels live HERE (not ipc/handlers.ts): they
     // are room-stack plumbing end to end, and the singleton constructor makes
     // the ipcMain.handle registration run exactly once.
@@ -198,10 +210,10 @@ export class RoomManager {
   private assertEnginePersistence(event: Pick<IpcMainEvent, 'sender' | 'senderFrame'>, roomId: string): void {
     const contents = this.win?.webContents;
     if (this.destroyed || !contents || this.win?.isDestroyed() || event.sender !== contents || event.senderFrame !== contents.mainFrame
-      || !roomId || this.leaving.has(roomId) || !this.roomRecord(roomId) || !this.cache.has(roomId)) throw new Error('Room persistence request is not from the active engine');
+      || !roomId || this.leaving.has(roomId) || !this.roomKnown(roomId) || !this.cache.has(roomId)) throw new Error('Room persistence request is not from the active engine');
   }
 
-  setMainWindow(win: BrowserWindow): void { this.mainWindow = win; this.setEngineStatus(this.engineStatus); }
+  setMainWindow(win: BrowserWindow): void { this.mainWindow = win; this.rendererStates.clear(); this.setEngineStatus(this.engineStatus); }
 
   getEngineStatus(): RoomEngineStatus { return { ...this.engineStatus }; }
 
@@ -216,9 +228,9 @@ export class RoomManager {
       const contents = this.win?.webContents;
       if (!contents || this.win?.isDestroyed() || event.sender !== contents || event.senderFrame !== contents.mainFrame) return;
       const roomId = (args[0] as { roomId?: unknown } | undefined)?.roomId;
-      if (typeof roomId === 'string' && (this.leaving.has(roomId) || !this.roomRecord(roomId))) return;
+      if (typeof roomId === 'string' && (this.leaving.has(roomId) || !this.roomKnown(roomId))) return;
       const setup = typeof roomId === 'string' ? this.setups.get(roomId) : undefined;
-      if (setup && !['room-update', 'room-owner', 'room-transfer', 'room-rekey', 'room-bans', 'room-e2e', 'room-name', 'room-topic'].includes(channel)) {
+      if (setup && !['room-update', 'room-state', 'room-owner', 'room-transfer', 'room-rekey', 'room-bans', 'room-e2e', 'room-name', 'room-topic'].includes(channel)) {
         setup.events.push(() => listener(event, ...args)); return;
       }
       listener(event, ...args);
@@ -247,6 +259,20 @@ export class RoomManager {
     });
     this.onEngine('room-update', (_e, state: RoomState) => {
       const setup = state?.roomId ? this.setups.get(state.roomId) : undefined;
+      if (setup) { setup.state = state; return; }
+      this.publishRoomState(state);
+    });
+    this.onEngine('room-state', (_e, packet: RoomStatePacket) => {
+      const state = this.engineStates.accept(packet);
+      if (!state) {
+        if (!this.stateResyncs.has(packet.roomId)) {
+          this.stateResyncs.add(packet.roomId);
+          void this.call('snapshotIpc', { roomId: packet.roomId }).catch(() => { /* engine restarting */ })
+            .finally(() => this.stateResyncs.delete(packet.roomId));
+        }
+        return;
+      }
+      const setup = this.setups.get(state.roomId);
       if (setup) { setup.state = state; return; }
       this.publishRoomState(state);
     });
@@ -394,20 +420,13 @@ export class RoomManager {
         if (isNew && !payload.backfill && m.memberId && m.memberId !== db.getRoomProfile().memberId) {
           // If you're looking at this room (and the window is focused), the message
           // is already read — no badge; else notify (rate-limited per room).
-          if (payload.roomId === this.activeRoomId && this.mainWindowFocused()) db.setRoomLastRead(payload.roomId, Date.now());
           // A message naming the user is a mention — it may bypass the normal
           // per-room notification cooldown (but never a muted room). Word-
           // boundary match: a short name must not fire inside ordinary words
           // ("Ann" in "channel"), and the text is peer-controlled.
-          const selfName = (db.getRoomProfile().name || '').trim();
-          let mentioned = false;
-          if (selfName.length >= 2) {
-            try {
-              const esc = selfName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-              mentioned = new RegExp(`(^|[^\\p{L}\\p{N}_])${esc}($|[^\\p{L}\\p{N}_])`, 'iu').test(m.text || '');
-            } catch { /* exotic name — fall back to no bypass */ }
-          }
-          this.notifyRoomActivity(payload.roomId, m.name || t('notify.room.someone'), m.text || '', mentioned);
+          const body = parseFileRequest(m.text || '')?.title ?? m.text ?? '';
+          const mentioned = hasRoomMention(body, db.getRoomProfile().name || '');
+          this.notifyRoomActivity(payload.roomId, m.name || t('notify.room.someone'), body, mentioned);
         }
       } catch { /* ignore */ }
     });
@@ -421,6 +440,9 @@ export class RoomManager {
     });
     this.onEngine('room-chat-edits', (_e, payload: { roomId: string; edits: Record<string, { text: string; at: number; by: string; pub: string; sig: string }> }) => {
       try { if (payload?.roomId && payload?.edits) db.setRoomChatEdits(payload.roomId, payload.edits); } catch { /* ignore */ }
+    });
+    this.onEngine('room-chat-pins', (_e, payload: { roomId: string; pins: RoomChatPins }) => {
+      try { if (payload?.roomId && validChatPins(payload.pins)) db.setRoomChatPins(payload.roomId, payload.pins); } catch { /* retried by future snapshots */ }
     });
     // The engine TOFU-bound a member's public key — persist so the binding (and
     // thus anti-impersonation) survives restarts.
@@ -542,6 +564,7 @@ export class RoomManager {
   }
 
   private publishRoomState(state: RoomState): void {
+    state = this.withChatReceipts(state);
     if (state.connection) this.connectionHistory.set(state.roomId, state.connection);
     const prev = this.cache.get(state.roomId);
     this.cache.set(state.roomId, state);
@@ -550,14 +573,44 @@ export class RoomManager {
       void getLanManager().stopRoom(state.roomId).catch(error => log.warn('Room LAN stop failed', { error: String(error) }));
     }
     this.reevalGlobalPtt();
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:update', state);
+    this.sendRendererState(state);
     for (const hook of this.roomUpdateHooks) {
       try { hook(state, prev); } catch (e) { log.warn('room update hook failed', { err: String(e) }); }
     }
   }
 
+  private withChatReceipts(state: RoomState): RoomState {
+    const receipts = new Map(db.getRoomChats(state.roomId).map(m => [m.id, m.receivedAt]));
+    return { ...state, chatLastReadAt: db.getRoomLastRead(state.roomId),
+      chat: state.chat.map(m => ({ ...m, receivedAt: receipts.get(m.id) ?? m.receivedAt })) };
+  }
+
+  private sendRendererState(state: RoomState, full = false): void {
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    let encoder = this.rendererStates.get(state.roomId);
+    if (!encoder) { encoder = new RoomStateEncoder(); this.rendererStates.set(state.roomId, encoder); }
+    const packet = encoder.encode(state, full);
+    if (packet) this.mainWindow.webContents.send('rooms:state', packet);
+  }
+
+  /** Sent as an event so the baseline and later deltas keep IPC delivery order. */
+  resyncRendererState(roomId: string): void {
+    const state = this.cache.get(roomId);
+    if (state) this.sendRendererState(state, true);
+    else if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:state-drop', roomId);
+  }
+
+  private forgetState(roomId: string): void {
+    this.engineStates.delete(roomId); this.rendererStates.delete(roomId);
+    if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:state-drop', roomId);
+  }
+
+  private roomKnown(roomId: string): boolean {
+    return this.setups.has(roomId) || this.unsavedRooms.has(roomId) || db.hasPersistedRoom(roomId);
+  }
+
   private roomRecord(roomId: string): db.PersistedRoom | undefined {
-    return this.setups.get(roomId)?.draft ?? this.unsavedRooms.get(roomId) ?? db.getPersistedRooms().find((r) => r.roomId === roomId);
+    return this.setups.get(roomId)?.draft ?? this.unsavedRooms.get(roomId) ?? db.getPersistedRoom(roomId);
   }
 
   private saveRoomRecord(record: db.PersistedRoom): void {
@@ -582,15 +635,8 @@ export class RoomManager {
   }
 
   private clearRoomData(roomId: string): void {
-    const errors: unknown[] = [];
-    for (const clear of [db.clearRoomTombstones, db.clearRoomTombstoneProofs, db.clearRoomRevives,
-      db.clearRoomManifest, db.clearRoomFolders, db.clearRoomHistory, db.clearRoomMutes, db.clearRoomLanPrefs,
-      db.clearRoomFolderFetch, db.clearRoomChats, db.clearRoomLastRead, db.clearRoomReacts,
-      db.clearRoomChatReacts, db.clearRoomChatEdits, db.clearRoomIdentities]) {
-      try { clear(roomId); } catch (error) { errors.push(error); }
-    }
+    db.clearRoomLocalData(roomId);
     try { fs.rmSync(this.encCacheDir(roomId), { recursive: true, force: true }); } catch { /* ignore */ }
-    if (errors.length) throw errors[0];
   }
 
   private failAll(message: string): void {
@@ -615,13 +661,15 @@ export class RoomManager {
     // A final offline snapshot clears stale voice, screen and LAN state in all UIs.
     for (const state of this.cache.values()) {
       const offline = offlineRoom(state);
-      if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:update', offline);
+      this.sendRendererState(offline);
+      this.forgetState(state.roomId);
       for (const hook of this.roomUpdateHooks) {
         try { hook(offline, state); } catch (e) { log.warn('room offline hook failed', { err: String(e) }); }
       }
     }
     if (crashed && this.cache.size > 0) this.recoveryWanted = true;
     this.cache.clear();
+    this.engineStates.clear(); this.rendererStates.clear(); this.stateResyncs.clear();
     this.reactivating.clear();
     this.voiceIntents.clear();
     this.screenIntents.clear(); this.micTestIntent++; this.micTestAllowedUntil = 0;
@@ -813,10 +861,10 @@ export class RoomManager {
       trackers = resolveTrackers(s.customTrackers);
     } catch { /* default on, no custom TURN, public trackers */ }
     const lanSession = db.getRoomLanPrefs(roomId).session;
-    return {
+    return db.withRoomRead(() => ({
       type: 'join',
       payload: {
-        roomId, name, code, folder, resources: this.resourcePolicy ?? readRoomResources(),
+        roomId, name, code, folder, stateIpc: 1, resources: this.resourcePolicy ?? readRoomResources(),
         self: { memberId: profile.memberId, name: profile.name, avatarSeed: profile.avatarSeed, color: profile.color ?? '', status: profile.status ?? '', avatarImg: profile.avatarImg ?? '', pub: identity.pub, priv: identity.priv },
         useTurn,
         turnServers,
@@ -849,6 +897,7 @@ export class RoomManager {
         reacts: db.getRoomReacts(roomId),
         chatReacts: db.getRoomChatReacts(roomId),
         chatEdits: db.getRoomChatEdits(roomId),
+        chatPins: db.getRoomChatPins(roomId),
         identities: db.getRoomIdentities(roomId),
         e2e: e2e ?? false,
         secret: secret ?? '',
@@ -865,7 +914,7 @@ export class RoomManager {
         upKbps: persisted?.upKbps ?? 0,
         downKbps: persisted?.downKbps ?? 0,
       },
-    };
+    }));
   }
 
   // ── Public API ─────────────────────────────────────────────────────────────
@@ -972,6 +1021,7 @@ export class RoomManager {
       else if ((this.roomEpochs.get(roomId) ?? 0) === epoch) await this.stopEngineRoom(roomId);
       this.setups.delete(roomId);
       this.cache.delete(roomId);
+      this.forgetState(roomId);
       this.connectionHistory.delete(roomId);
       if (commitAttempted) { try { db.deletePersistedRoom(roomId); } catch (error) { log.warn('Room setup record rollback failed', { err: String(error) }); } }
       try { this.clearRoomData(roomId); } catch (error) { log.warn('Room setup data rollback failed', { err: String(error) }); }
@@ -1038,7 +1088,7 @@ export class RoomManager {
       // A failed process stop keeps the room record for retry, but clears capture.
       const cached = this.cache.get(roomId);
       try { if (cached) this.publishRoomState(offlineRoom(cached)); }
-      finally { this.cache.delete(roomId); this.reevalGlobalPtt(); }
+      finally { this.cache.delete(roomId); this.forgetState(roomId); this.reevalGlobalPtt(); }
     }
     db.deletePersistedRoom(roomId);
     this.unsavedRooms.delete(roomId);
@@ -1052,10 +1102,9 @@ export class RoomManager {
 
   async list(): Promise<RoomSummary[]> {
     const self = db.getRoomProfile().memberId;
-    return db.getPersistedRooms().map((r) => {
+    return db.withRoomRead(() => db.getPersistedRooms().map((r) => {
       const s = this.cache.get(r.roomId);
-      const lastRead = db.getRoomLastRead(r.roomId);
-      const unread = db.getRoomChats(r.roomId).filter((m) => (m.receivedAt ?? m.at) > lastRead && m.memberId !== self).length;
+      const unread = db.getRoomUnreadCount(r.roomId, self);
       return {
         roomId: r.roomId,
         name: r.name,
@@ -1071,8 +1120,9 @@ export class RoomManager {
         lan: s?.lan?.active === true, // rail-collapsed LAN badge (built per-field)
         unread,
         notifyMuted: r.notifyMuted === true,
+        notifyMode: roomNotifyMode(r),
       };
-    });
+    }));
   }
 
   /**
@@ -1160,13 +1210,13 @@ export class RoomManager {
     if (unsaved) this.saveRoomRecord(unsaved);
     const cached = this.cache.get(roomId);
     if (cached) return cached;
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted) return null;
-    return this.reactivate(persisted);
+    return this.withChatReceipts(await this.reactivate(persisted));
   }
 
   async addFiles(roomId: string, paths: string[], opts?: { folderId?: string; folderName?: string }): Promise<RoomState> {
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted) throw new Error('Room not found');
     if (!this.cache.has(roomId) || !this.win || this.win.isDestroyed() || !this.ready) await this.reactivate(persisted);
     const state = await this.call<RoomState>('addFiles', { roomId, paths, opts }, 10 * 60_000);
@@ -1176,7 +1226,7 @@ export class RoomManager {
   }
 
   folderOf(roomId: string): string | null {
-    return db.getPersistedRooms().find((r) => r.roomId === roomId)?.folder ?? null;
+    return db.getPersistedRoom(roomId)?.folder ?? null;
   }
 
   /**
@@ -1281,6 +1331,10 @@ export class RoomManager {
     if (!this.roomRecord(roomId)) throw new Error('Room not found');
     return db.getRoomLocalHistoryPage(roomId, kind, before);
   }
+  searchChat(roomId: string, filter: import('../../shared/room-chat-tools').RoomChatFilter, before?: string) {
+    if (!this.roomRecord(roomId)) throw new Error('Room not found');
+    return db.searchRoomChat(roomId, filter, before);
+  }
   async setHistoryRetention(roomId: string, days: import('../../shared/room-local-data').RoomHistoryDays) {
     if (!this.roomRecord(roomId)) throw new Error('Room not found');
     const saved = db.setRoomHistoryRetention(roomId, days);
@@ -1303,7 +1357,7 @@ export class RoomManager {
   // ── Folders / sections ──────────────────────────────────────────────────────
   /** Route a folder command through a live engine (reactivating the room if idle). */
   private async folderCmd(roomId: string, type: string, extra: Record<string, unknown>): Promise<RoomState> {
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted) throw new Error('Room not found');
     if (!this.cache.has(roomId)) await this.reactivate(persisted);
     const state = await this.call<RoomState>(type, { roomId, ...extra });
@@ -1356,7 +1410,7 @@ export class RoomManager {
     try {
       await this.ensureMicAccess();
       if (this.voiceIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
-      const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+      const persisted = db.getPersistedRoom(roomId);
       if (persisted && !this.cache.has(roomId)) await this.reactivate(persisted);
       if (this.voiceIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
       return await this.call<{ ok: boolean }>('voiceJoin', { roomId }, 15000, {
@@ -1493,7 +1547,7 @@ export class RoomManager {
   async lanStart(roomId: string, memberIds: string[]): Promise<{ ok: boolean; sessionId?: string; warning?: string }> {
     const epoch = this.roomEpochs.get(roomId) ?? 0;
     this.assertRoomOperation(roomId, epoch); // a LAN adapter exposes the real interface just like seeding
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted || this.leaving.has(roomId)) throw new Error('Room not available');
     if (!this.cache.has(roomId)) await this.reactivate(persisted);
     const selfMemberId = db.getRoomProfile().memberId;
@@ -1741,7 +1795,7 @@ export class RoomManager {
   async lanAccept(roomId: string): Promise<{ ok: boolean; warning?: string }> {
     const epoch = this.roomEpochs.get(roomId) ?? 0;
     this.assertRoomOperation(roomId, epoch);
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted || this.leaving.has(roomId)) throw new Error('Room not available');
     if (!this.cache.has(roomId)) await this.reactivate(persisted);
     const lan = this.cache.get(roomId)?.lan;
@@ -1837,15 +1891,20 @@ export class RoomManager {
 
   /** Mark a room read up to now (clears its unread badge). The renderer refreshes
    *  its list once this resolves; live chat refreshes via the room-update push. */
-  async markRead(roomId: string): Promise<{ ok: boolean }> {
-    db.setRoomLastRead(roomId, Date.now());
+  async markRead(roomId: string, messageId?: string): Promise<{ ok: boolean }> {
+    if (!this.roomRecord(roomId)) throw new Error('Room not found');
+    const messages = db.getRoomChats(roomId);
+    if (messageId !== undefined && (typeof messageId !== 'string' || !/^[\w-]{1,128}$/.test(messageId))) throw new Error('Invalid read cursor');
+    const target = messageId ? messages.find(m => m.id === messageId) : messages.at(-1);
+    if (target) db.setRoomLastRead(roomId, target.receivedAt ?? target.at);
+    const state = this.cache.get(roomId);
+    if (state) this.publishRoomState(state);
     return { ok: true };
   }
 
   /** The renderer tells us which room is on screen, so we don't OS-notify it. */
   async setActiveRoom(roomId: string | null): Promise<{ ok: boolean }> {
     this.activeRoomId = roomId || null;
-    if (roomId) db.setRoomLastRead(roomId, Date.now()); // opening a room reads it
     return { ok: true };
   }
 
@@ -1860,8 +1919,9 @@ export class RoomManager {
     try {
       // Looking right at it (and the app is focused)? No notification.
       if (roomId === this.activeRoomId && this.mainWindowFocused()) return;
-      const rec = db.getPersistedRooms().find((r) => r.roomId === roomId);
-      if (rec?.notifyMuted) return;
+      const rec = db.getPersistedRoom(roomId);
+      const mode = roomNotifyMode(rec ?? {});
+      if (mode === 'off' || mode === 'mentions' && !urgent) return;
       // Rate-limit: one toast per room per cooldown, so a burst/backfill can't
       // spam. Mentions shorten the window but keep a floor — the text is
       // peer-controlled, and a mention-per-message flood must still be bounded.
@@ -1913,6 +1973,13 @@ export class RoomManager {
   async setNotifyMuted(roomId: string, muted: boolean): Promise<{ ok: boolean }> {
     db.setRoomNotifyMuted(roomId, muted);
     return { ok: true };
+  }
+  async setNotifyMode(roomId: string, mode: RoomNotifyMode): Promise<{ ok: boolean }> {
+    db.setRoomNotifyMode(roomId, mode);
+    return { ok: true };
+  }
+  async pinChat(roomId: string, messageId: string, on: boolean): Promise<{ ok: boolean }> {
+    return this.call('pinChat', { roomId, messageId, on });
   }
 
   /** Manual mode: explicitly download one shared file. Returns the fresh state. */
@@ -2022,7 +2089,7 @@ export class RoomManager {
     const body = String(text || '').trim();
     if (!body || body.length > 2000 || !/^[a-f0-9]{32}$/.test(messageId)) throw new Error('Invalid chat message');
     this.assertNotSuspended();
-    const persisted = db.getPersistedRooms().find((r) => r.roomId === roomId);
+    const persisted = db.getPersistedRoom(roomId);
     if (!persisted) throw new Error('Room not found');
     if (!this.cache.has(roomId) || !this.win || this.win.isDestroyed() || !this.ready) await this.reactivate(persisted);
     const epoch = this.roomEpochs.get(roomId) ?? 0;
@@ -2092,7 +2159,9 @@ export class RoomManager {
         try { await this.call('netSuspend', {}, 8000); }
         catch (e) { this.engineGone(win, 'Room engine did not confirm the network pause: ' + String(e), true); }
       }
-      for (const state of [...this.cache.values()]) this.publishRoomState(offlineRoom(state));
+      for (const state of [...this.cache.values()]) {
+        this.publishRoomState(offlineRoom(state)); this.forgetState(state.roomId);
+      }
       this.cache.clear(); this.reevalGlobalPtt();
       if (this.mainWindow && !this.mainWindow.isDestroyed()) this.mainWindow.webContents.send('rooms:netSuspended', { suspended: true });
     });
@@ -2159,7 +2228,9 @@ export class RoomManager {
     void getLanManager().shutdown().catch(() => { /* best-effort teardown */ }); // revert any LAN adapter/firewall/route
     if (this.win && !this.win.isDestroyed()) { try { this.win.destroy(); } catch { /* ignore */ } }
     this.win = null; this.ready = false;
+    for (const roomId of this.cache.keys()) this.forgetState(roomId);
     this.cache.clear(); this.reevalGlobalPtt();
+    this.engineStates.clear(); this.rendererStates.clear(); this.stateResyncs.clear();
     this.setEngineStatus({ state: 'stopped' });
     log.info('RoomManager destroyed');
   }

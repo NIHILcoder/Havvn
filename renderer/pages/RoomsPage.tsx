@@ -17,13 +17,16 @@ import { ROOM_VOICE_PARTICIPANTS } from '../../shared/room-voice-policy';
  */
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
-import { roomChatPage, ROOM_CHAT_LIMIT } from '../../shared/room-chat-history';
+import { RoomChat } from './rooms/RoomChat';
+import { RoomFileBudgetInfo } from './rooms/RoomFileBudgetInfo';
+import { roomFileReceiveActions, selectRoomFiles, type FileSelectionGesture } from './rooms/roomFileSelection';
+import { fileRequestText, roomNotifyMode, type RoomNotifyMode } from '../../shared/room-chat-tools';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { createPortal } from 'react-dom';
 import Hls from 'hls.js';
 import toast from 'react-hot-toast';
 import { RoomDiagnostics } from '../components/RoomDiagnostics';
-import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, RoomChatMessage, LanDiagReport, RoomEngineStatus } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, RoomFile, RoomFolder, RoomMember, LanDiagReport, RoomEngineStatus } from '../../shared/types';
 import { Button, Icon, IconName, EmptyState, Identicon, Avatar, ProfileCard, TransferPickerModal, Toggle, PlayerControls, Modal, isModalOpen, useConfirm, VoiceSettingsModal, ScreenSourcePicker, ScreenView, Select, Tabs, DropdownMenu } from '../components';
 import { VoicePrefs, VOICE_PREFS_EVENT, loadVoicePrefs, saveVoicePrefs, toVoiceSettings, PeerVoicePref, loadPeerVoicePrefs, savePeerVoicePref, effectivePeerGain } from '../utils/voicePrefs';
 import { loadRoomLayout, saveRoomLayout, DEFAULT_ROOM_LAYOUT, RAIL_MIN, RAIL_MAX, CHAT_MIN, CHAT_MAX } from '../utils/roomLayout';
@@ -37,6 +40,9 @@ import { RoomFilesPrefs, loadRoomFilesPrefs, saveRoomFilesPrefs, loadRoomSort, s
 import { ContextMenu } from '../components/ContextMenu';
 import { RoomLanPanel } from './rooms/RoomLanPanel';
 import { RoomServerPanel } from './rooms/RoomServerPanel';
+import { RoomWorkspaceMenu } from './rooms/RoomWorkspaceMenu';
+import { WatchReadyGate } from './rooms/WatchReadyGate';
+import { applyServerView, loadServerView, type RoomWorkspace } from './rooms/roomWorkspace';
 import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
 import type { DockStripInteractions, DockTabAction } from './rooms/dock/DockTabStrip';
 import { DockWindowHost } from './rooms/dock/DockWindowHost';
@@ -60,13 +66,11 @@ import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
 import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
-import { parseChatSegments, isCopyworthy, splitLinks } from '../../shared/chat-format';
 import { isRoomInvite } from '../../shared/room-invite';
 import { buildGuestUrl } from '../../shared/room-guest-url';
 import { parseTrackers } from '../../shared/trackers';
 import { roomTransferView } from '../../shared/room-transfer';
-import { discardRoomChatComposer, useRoomChatComposer } from '../utils/useRoomChatComposer';
-import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
+import { discardRoomChatComposer } from '../utils/useRoomChatComposer';
 import { classifyMediaKind, isDirectlyPlayable, isImage } from '../../shared/media';
 import { PLAYER_ROOM_FRAME } from '../../shared/player-windows';
 import { AudioSettings, AudioOutputDevice } from './rooms/AudioSettings';
@@ -171,48 +175,6 @@ const DOCK_REFUSAL_TEXT: Record<DockRefusal, RoomsTKey> = {
   'unknown-zone': 'rooms.dock.refuse.unknown',
 };
 
-/** Human text for one activity-log event (actor name is rendered separately). */
-function eventText(t: RoomsTFn, ev: import('../../shared/types').RoomEvent): string {
-  switch (ev.type) {
-    case 'created': return t('rooms.ev.created');
-    case 'joined': return t('rooms.ev.joined');
-    case 'left': return t('rooms.ev.left');
-    case 'file-added': return `${t('rooms.ev.fileAdded')} ${ev.fileName || ''}`.trim();
-    case 'file-removed': return `${t('rooms.ev.fileRemoved')} ${ev.fileName || ''}`.trim();
-    case 'kicked': return `${t('rooms.ev.kicked')} ${ev.targetName || ''}`.trim();
-    case 'rekeyed': return t('rooms.ev.rekeyed');
-    case 'ownership-transferred': return `${t('rooms.ev.ownerTransferred')} ${ev.targetName || ''}`.trim();
-    default: return ev.type;
-  }
-}
-
-function shortTime(at: number): string {
-  try { return new Date(at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
-  catch { return ''; }
-}
-
-/** Time-of-day only — chat messages carry the date via the day separators. */
-function timeOnly(at: number): string {
-  try { return new Date(at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
-  catch { return ''; }
-}
-
-/** Label for a chat day separator: Today / Yesterday / a locale date. */
-function dayLabel(at: number, t: RoomsTFn): string {
-  const d = new Date(at);
-  const now = new Date();
-  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diffDays = Math.round((startOf(now) - startOf(d)) / 86_400_000);
-  if (diffDays === 0) return t('rooms.today');
-  if (diffDays === 1) return t('rooms.yesterday');
-  try {
-    return d.toLocaleDateString(undefined, {
-      month: 'long', day: 'numeric',
-      year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric',
-    });
-  } catch { return ''; }
-}
-
 interface RoomsPageProps {
   /** Room requested from outside (sidebar rail / status-bar Join). */
   focusRoomId?: string | null;
@@ -232,6 +194,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const [room, setRoom] = useState<RoomState | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const dialogPending = useRef(false);
   const [engineStatus, setEngineStatus] = useState<RoomEngineStatus>({ state: 'stopped' });
   const [loadError, setLoadError] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
@@ -419,6 +382,8 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   }, [selectedId]);
 
   const handleCreate = async () => {
+    if (busy || dialogPending.current) return;
+    dialogPending.current = true;
     setBusy(true);
     try {
       const state = await window.api.rooms.create(createName.trim() || t('rooms.defaultName'), createE2E, createAutoFetch);
@@ -429,7 +394,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       setCreateName('');
       setCreateE2E(true); // back to the safe default for the next room
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
-    finally { setBusy(false); }
+    finally { dialogPending.current = false; setBusy(false); }
   };
 
   // Opening the Join dialog peeks at the clipboard ONCE (an explicit user
@@ -478,6 +443,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   }, [pendingJoinInvite]);
 
   const handleJoin = async () => {
+    if (busy || dialogPending.current) return;
     if (!joinCode.trim()) return;
     // Share the invite parser with clipboard/deep-link validation so generated
     // codes and historical rooms follow the same copy/paste rules.
@@ -485,6 +451,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       toast.error(t('rooms.joinBadFormat'));
       return;
     }
+    dialogPending.current = true;
     setBusy(true);
     try {
       const state = await window.api.rooms.join(joinCode.trim(), joinAutoFetch);
@@ -495,7 +462,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       setJoinCode('');
       toast.success(t('rooms.joined'));
     } catch (e) { toast.error(t(joinErrorKey(e))); }
-    finally { setBusy(false); }
+    finally { dialogPending.current = false; setBusy(false); }
   };
 
   // Open the leave dialog (which chooses keep-files vs delete-files); if the
@@ -604,6 +571,8 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   };
 
   const handleSaveProfile = async () => {
+    if (busy || dialogPending.current) return;
+    dialogPending.current = true;
     setBusy(true);
     try {
       const p = await window.api.rooms.setProfile({
@@ -617,7 +586,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       setDialog(null);
       toast.success(t('rooms.profileSaved'));
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
-    finally { setBusy(false); }
+    finally { dialogPending.current = false; setBusy(false); }
   };
 
   const copy = (text: string, msg: string) => {
@@ -646,7 +615,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
               <span style={profile.color ? { color: profile.color } : undefined}>{profile.name || t('rooms.you')}</span>
             </button>
           )}
-          <Button variant="ghost" size="sm" onClick={() => setDialog('join')} icon={<Icon name="link" size={14} />}>
+          <Button variant="secondary" size="sm" onClick={() => setDialog('join')} icon={<Icon name="link" size={14} />}>
             {t('rooms.join')}
           </Button>
           <Button variant="primary" size="sm" onClick={() => { setCreateName(''); setDialog('create'); }} icon={<Icon name="plus" size={14} />}>
@@ -700,9 +669,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
                 room={room}
                 onDiagnostics={() => setDiagnosticRoomId(room.roomId)}
                 suspended={rooms.find((r) => r.roomId === room.roomId)?.suspended === true}
-                notifyMuted={rooms.find((r) => r.roomId === room.roomId)?.notifyMuted === true}
-                onToggleNotifyMuted={(muted) => {
-                  window.api.rooms.setNotifyMuted(room.roomId, muted)
+                notifyMode={roomNotifyMode(rooms.find((r) => r.roomId === room.roomId) ?? {})}
+                onSetNotifyMode={(mode) => {
+                  window.api.rooms.setNotifyMode(room.roomId, mode)
                     .then(() => refreshList())
                     .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
                 }}
@@ -746,11 +715,11 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           <input
             className="rooms-input" data-autofocus
             placeholder={t('rooms.namePlaceholder')}
-            value={createName}
+            value={createName} disabled={busy}
             onChange={(e) => setCreateName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+            onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleCreate()}
           />
-          <button type="button" className={`rooms-e2e-toggle ${createE2E ? 'on' : ''}`} onClick={() => setCreateE2E((v) => !v)}>
+          <button type="button" disabled={busy} className={`rooms-e2e-toggle ${createE2E ? 'on' : ''}`} onClick={() => setCreateE2E((v) => !v)}>
             <span className="rooms-e2e-check">{createE2E && <Icon name="check" size={12} />}</span>
             <span className="rooms-e2e-text">
               <span className="rooms-e2e-label"><Icon name="lock" size={12} /> {t('rooms.e2e')} <em>{t('rooms.e2eRecommended')}</em></span>
@@ -776,9 +745,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           <input
             className="rooms-input rooms-input-code" data-autofocus
             placeholder="swift-amber-calm-otter-comet-48219"
-            value={joinCode}
+            value={joinCode} disabled={busy}
             onChange={(e) => setJoinCode(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleJoin()}
+            onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleJoin()}
           />
           <p className="rooms-join-hint">{t('rooms.joinServerlessHint')}</p>
           <div className="rooms-new-fetch">
@@ -827,17 +796,17 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
               <input
                 className="rooms-input" data-autofocus
                 placeholder={t('rooms.namePlaceholder')}
-                value={profileName}
+                value={profileName} disabled={busy}
                 onChange={(e) => setProfileName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
+                onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleSaveProfile()}
               />
               <input
                 className="rooms-input"
                 placeholder={t('rooms.profileStatusPlaceholder')}
                 maxLength={140}
-                value={profileStatus}
+                value={profileStatus} disabled={busy}
                 onChange={(e) => setProfileStatus(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSaveProfile()}
+                onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleSaveProfile()}
               />
             </div>
           </div>
@@ -847,7 +816,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           </div>
           <div className="rooms-profile-colors">
             <button
-              type="button"
+              type="button" disabled={busy}
               className={`rooms-color-swatch none ${profileColor === '' ? 'active' : ''}`}
               onClick={() => setProfileColor('')}
               title={t('rooms.profileColorNone')}
@@ -858,7 +827,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
             {['#e8590c', '#f59f00', '#40c057', '#22b8cf', '#4dabf7', '#748ffc', '#9775fa', '#f06595'].map((c) => (
               <button
                 key={c}
-                type="button"
+                type="button" disabled={busy}
                 className={`rooms-color-swatch ${profileColor === c ? 'active' : ''}`}
                 style={{ background: c }}
                 onClick={() => setProfileColor(c)}
@@ -867,7 +836,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
               />
             ))}
             <input
-              type="color"
+              type="color" disabled={busy}
               className="rooms-color-custom"
               value={PROFILE_COLOR_RE.test(profileColor) ? profileColor : '#e8590c'}
               onChange={(e) => setProfileColor(e.target.value)}
@@ -876,13 +845,13 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           </div>
           <div className="rooms-avatar-pick-head">
             <span className="rooms-avatar-pick-label">{t('rooms.avatarPick')}</span>
-            <button type="button" className="rooms-avatar-shuffle" onClick={() => setAvatarPool(avatarCandidates(2, profileSeed))} title={t('rooms.avatarShuffle')}>
+            <button type="button" disabled={busy} className="rooms-avatar-shuffle" onClick={() => setAvatarPool(avatarCandidates(2, profileSeed))} title={t('rooms.avatarShuffle')}>
               <Icon name="refresh" size={13} /> {t('rooms.avatarShuffle')}
             </button>
           </div>
           <div className="rooms-avatar-grid">
             {avatarPool.map((seed) => (
-              <button key={seed} type="button" className={`rooms-avatar-option ${seed === profileSeed ? 'active' : ''}`} onClick={() => setProfileSeed(seed)} aria-pressed={seed === profileSeed}>
+              <button key={seed} type="button" disabled={busy} className={`rooms-avatar-option ${seed === profileSeed ? 'active' : ''}`} onClick={() => setProfileSeed(seed)} aria-pressed={seed === profileSeed}>
                 <Identicon seed={seed} size={44} />
               </button>
             ))}
@@ -1070,7 +1039,7 @@ interface FilesPanelProps {
   soloHandle?: React.ReactNode;
 }
 
-const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy, showTitle = true, soloHandle }) => {
+export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onWatch, onWatchJoin, watchCounts, onInvite, onShared, onToggleAutoFetch, busy, showTitle = true, soloHandle }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   // Realm-routed toasts: this panel can be torn onto another monitor, and the
@@ -1096,8 +1065,20 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
   const [typeFilter, setTypeFilter] = useState<'all' | 'video' | 'audio' | 'image' | 'other'>('all');
   const [onlyMine, setOnlyMine] = useState(false);
   const [onlyMissing, setOnlyMissing] = useState(false);
-  const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const selecting = selected.size > 0;
+  const selectionAnchor = useRef<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<'fetch' | 'pause' | 'move' | 'remove' | null>(null);
+  const [bulkProgress, setBulkProgress] = useState<{ done: number; total: number } | null>(null);
+  const bulkBusyRef = useRef(false);
+  const bulkRun = useRef(0);
+  const latestRoom = useRef(room);
+  latestRoom.current = room;
+  useEffect(() => () => { bulkRun.current++; bulkBusyRef.current = false; }, []);
+  const clearSelection = useCallback(() => {
+    selectionAnchor.current = null;
+    setSelected(new Set());
+  }, []);
   // View prefs (density / reactions / type icons) + per-room collapsed folders.
   const [viewPrefs, setViewPrefs] = useState<RoomFilesPrefs>(loadRoomFilesPrefs);
   const [viewOpen, setViewOpen] = useState(false);
@@ -1164,9 +1145,6 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     };
     return [...arr].sort((a, b) => (sortDir === 'asc' ? cmp(a, b) : -cmp(a, b)));
   }, [room.files, room.transfers, room.members, fileQuery, typeFilter, onlyMine, onlyMissing, selfId, sortKey, sortDir, statusRank]);
-  const toggleSelect = useCallback((fileId: string) => {
-    setSelected((prev) => { const next = new Set(prev); if (next.has(fileId)) next.delete(fileId); else next.add(fileId); return next; });
-  }, []);
   // Drop selected ids that no longer exist (a file was removed elsewhere).
   useEffect(() => {
     setSelected((prev) => {
@@ -1183,7 +1161,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     const q = requestDraft.trim();
     setRequesting(false); setRequestDraft('');
     if (!q) return;
-    window.api.rooms.requestFile(room.roomId, `🙋 ${t('rooms.requestPrefix')}: ${q}`)
+    window.api.rooms.requestFile(room.roomId, fileRequestText({ title: q, status: 'open', fileIds: [] }))
       .then(() => toast.success(t('rooms.requestSent')))
       .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
   };
@@ -1192,7 +1170,8 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     setSortKeyRaw(loadRoomSort(room.roomId)); // per-room remembered sort
     setSortDirRaw(loadRoomSortDir(room.roomId, loadRoomSort(room.roomId)));
     setTypeFilter('all'); setOnlyMine(false); setOnlyMissing(false);
-    setSelecting(false); setSelected(new Set());
+    clearSelection();
+    bulkRun.current++; bulkBusyRef.current = false; setBulkBusy(null); setBulkProgress(null);
     setCollapsed(loadCollapsedFolders(room.roomId));
     setViewOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1215,6 +1194,94 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
       .map((s) => ({ ...s, children: s.children.filter((c) => c.files.length > 0) }))
       .filter((s) => s.files.length > 0 || s.children.length > 0);
   }, [visibleFiles, room.folders, fileQuery]);
+  // Follow the actual row order: child folders precede a section's own files.
+  // Virtualized rows count even when offscreen; collapsed folders do not.
+  const selectionOrder = useMemo(() => {
+    if (!hasFolders) return visibleFiles.map(file => file.fileId);
+    const searching = !!fileQuery.trim();
+    return grouped.flatMap(section => {
+      if (!searching && collapsed.has(section.section?.id ?? 'uncategorized')) return [];
+      return [
+        ...section.children.flatMap(child => !searching && collapsed.has(child.folder!.id) ? [] : child.files.map(file => file.fileId)),
+        ...section.files.map(file => file.fileId),
+      ];
+    });
+  }, [hasFolders, visibleFiles, grouped, collapsed, fileQuery]);
+  const toggleSelect = useCallback((fileId: string, gesture: FileSelectionGesture = {}) => {
+    if (bulkBusyRef.current || !selectionOrder.includes(fileId)) return;
+    const anchor = selectionAnchor.current;
+    if (!gesture.range || anchor === null || !selectionOrder.includes(anchor)) selectionAnchor.current = fileId;
+    setSelected(prev => selectRoomFiles(prev, selectionOrder, anchor, fileId, gesture));
+  }, [selectionOrder]);
+  const selectAllShown = () => {
+    if (bulkBusyRef.current) return;
+    selectionAnchor.current = selectionOrder[0] ?? null;
+    setSelected(new Set(selectionOrder));
+  };
+  const handleSelectionKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || bulkBusyRef.current || (event.target as Element).closest('input:not([type="checkbox"]),textarea,select,[contenteditable="true"]')) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && selectionOrder.length) {
+      event.preventDefault(); event.stopPropagation(); selectAllShown();
+    } else if (event.key === 'Escape' && selecting && !isModalOpen()) {
+      event.preventDefault(); event.stopPropagation(); clearSelection();
+    }
+  };
+  const receiveActions = useMemo(() => roomFileReceiveActions(room.files, room.transfers, room.autoFetch, selected), [room.files, room.transfers, room.autoFetch, selected]);
+  const shownIds = new Set(selectionOrder);
+  const hiddenSelected = [...selected].filter(id => !shownIds.has(id)).length;
+  const beginBulk = (action: NonNullable<typeof bulkBusy>) => {
+    if (bulkBusyRef.current || busy || room.kicked) return null;
+    bulkBusyRef.current = true; setBulkBusy(action);
+    const token = ++bulkRun.current, roomId = room.roomId;
+    return { roomId, current: () => token === bulkRun.current && latestRoom.current.roomId === roomId, finish: () => {
+      if (token === bulkRun.current) { bulkBusyRef.current = false; setBulkBusy(null); setBulkProgress(null); }
+    } };
+  };
+  const receiveSelected = async (action: 'fetch' | 'pause') => {
+    const ids = receiveActions[action];
+    if (!ids.length) return;
+    const job = beginBulk(action); if (!job) return;
+    let failed = 0, firstError = '';
+    setBulkProgress({ done: 0, total: ids.length });
+    try {
+      for (const [index, id] of ids.entries()) {
+        if (!job.current()) break;
+        const live = latestRoom.current;
+        // A live room push can remove a file or finish its transfer mid-batch.
+        if (roomFileReceiveActions(live.files, live.transfers, live.autoFetch, new Set([id]))[action].length) {
+          try { await window.api.rooms[action === 'fetch' ? 'fetchFile' : 'pauseReceive'](job.roomId, id); }
+          catch (error) { failed++; firstError ||= cleanError(error); }
+        }
+        if (job.current()) setBulkProgress({ done: index + 1, total: ids.length });
+      }
+      if (job.current() && failed) toast.error(`${t('rooms.selection.failed').replace('{n}', String(failed))}: ${firstError}`);
+    } finally { job.finish(); }
+  };
+  const moveSelected = async (folderId: string | null) => {
+    const ids = [...selected]; if (!ids.length) return;
+    const job = beginBulk('move'); if (!job) return;
+    try {
+      const state = await window.api.rooms.assignFiles(job.roomId, ids, folderId);
+      if (job.current()) { onShared(state); clearSelection(); }
+    } catch (error) { if (job.current()) toast.error(cleanError(error)); }
+    finally { job.finish(); }
+  };
+  const removeSelected = async () => {
+    const ids = [...selected]; if (!ids.length) return;
+    const job = beginBulk('remove'); if (!job) return;
+    try {
+      const others = room.canManage ? 0 : ids.filter(id => room.files.find(file => file.fileId === id)?.addedBy !== selfId).length;
+      const own = ids.length - others;
+      const message = others === 0 ? t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length))
+        : own === 0 ? t('rooms.hideSelectedConfirm').replace('{n}', String(ids.length))
+          : t('rooms.deleteSelectedMixed').replace('{own}', String(own)).replace('{other}', String(others));
+      if (!(await confirm({ message, danger: own > 0 })) || !job.current()) return;
+      const result = await window.api.rooms.removeFiles(job.roomId, ids);
+      if (!result.ok) throw new Error(t('rooms.selection.failed').replace('{n}', String(ids.length)));
+      if (job.current()) clearSelection();
+    } catch (error) { if (job.current()) toast.error(cleanError(error)); }
+    finally { job.finish(); }
+  };
   // Section list for "move to section" menus (a folder with children can't
   // become a child itself — the engine enforces the same one-level rule).
   const sectionFolders = useMemo(() => {
@@ -1302,7 +1369,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
     <RoomFileRow
       key={f.fileId} file={f} room={room} onWatch={onWatch} onWatchJoin={onWatchJoin}
       watchCount={watchCounts[f.fileId] || 0} onAssignFile={onAssignFile}
-      selecting={selecting} selected={selected.has(f.fileId)} onToggleSelect={toggleSelect}
+      selecting={selecting} selected={selected.has(f.fileId)} onToggleSelect={toggleSelect} selectionDisabled={!!bulkBusy}
       getDragIds={getDragIds} viewPrefs={viewPrefs} highlightQuery={fileQuery}
     />
   );
@@ -1397,7 +1464,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
   };
 
   return (
-    <div className={`room-section${viewPrefs.density === 'compact' ? ' room-files-compact' : ''}`}>
+    <div className={`room-section room-files-panel${viewPrefs.density === 'compact' ? ' room-files-compact' : ''}`} onKeyDown={handleSelectionKey}>
       <div className="room-section-title-row">
         <div className="room-section-title">
           {showTitle && <>{t('rooms.sharedFiles')} · </>}{room.files.length}
@@ -1460,13 +1527,6 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
         </div>
       </div>
 
-      {room.resources && (
-        <div className="room-file-resources" aria-live="polite">
-          <span>{t('rooms.fileAllocation')}: ↓ {room.resources.fileDownBps < 0 ? t('rooms.unlimited') : formatBytes(room.resources.fileDownBps) + '/s'} · ↑ {room.resources.fileUpBps < 0 ? t('rooms.unlimited') : formatBytes(room.resources.fileUpBps) + '/s'}</span>
-          {room.resources.voicePriorityActive && <span className="room-resource-priority"><Icon name="mic" size={13} /> {t('rooms.voicePriorityActive')}</span>}
-          <span className="room-resource-hint">{t('rooms.fileAllocationHint')}</span>
-        </div>
-      )}
       {room.files.length > 0 && (
         <div className="room-file-search">
           <Icon name="search" size={13} />
@@ -1480,30 +1540,35 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
         </div>
       )}
 
-      {room.files.length > 1 && !selecting && (
+      {(room.files.length > 1 || room.resources) && (
         <div className="room-file-toolbar">
-          <Select
-            className="room-file-select"
-            value={sortKey}
-            onChange={(v) => setSortKey(v as typeof sortKey)}
-            options={[
-              { value: 'added', label: t('rooms.sort.added') },
-              { value: 'name', label: t('rooms.sort.name') },
-              { value: 'size', label: t('rooms.sort.size') },
-              { value: 'status', label: t('rooms.sort.status') },
-              { value: 'author', label: t('rooms.sort.author') },
-            ]}
-          />
-          <button
-            type="button"
-            className="room-newfolder-btn icon-only"
-            title={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
-            aria-label={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
-            onClick={toggleSortDir}
-          >
-            <Icon name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={13} />
-          </button>
-          <span className="room-file-chips">
+          {room.files.length > 1 && (
+            <>
+              <Select
+                className="room-file-select"
+                value={sortKey}
+                onChange={(v) => setSortKey(v as typeof sortKey)}
+                options={[
+                  { value: 'added', label: t('rooms.sort.added') },
+                  { value: 'name', label: t('rooms.sort.name') },
+                  { value: 'size', label: t('rooms.sort.size') },
+                  { value: 'status', label: t('rooms.sort.status') },
+                  { value: 'author', label: t('rooms.sort.author') },
+                ]}
+              />
+              <button
+                type="button"
+                className="room-newfolder-btn icon-only"
+                title={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
+                aria-label={sortDir === 'asc' ? t('rooms.sortAsc') : t('rooms.sortDesc')}
+                onClick={toggleSortDir}
+              >
+                <Icon name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={13} />
+              </button>
+            </>
+          )}
+          {room.resources && <RoomFileBudgetInfo key={room.roomId} resources={room.resources} />}
+          {room.files.length > 1 && <span className="room-file-chips">
             {([['all', t('rooms.filter.all')], ['video', t('rooms.filter.video')], ['audio', t('rooms.filter.audio')], ['image', t('rooms.filter.image')], ['other', t('rooms.filter.other')]] as const).map(([k, label]) => (
               <button
                 key={k}
@@ -1520,55 +1585,47 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
             <button type="button" className={`room-file-chip${onlyMissing ? ' active' : ''}`} onClick={() => setOnlyMissing((v) => !v)}>
               {t('rooms.filter.missing')}
             </button>
-          </span>
-          <button type="button" className="room-file-select-btn" onClick={() => setSelecting(true)}>
-            <Icon name="check-circle" size={13} /> {t('rooms.select')}
-          </button>
+          </span>}
+          {!selecting && room.files.length > 1 && <button type="button" className="room-file-select-btn" disabled={!!bulkBusy} title={t('rooms.selection.hint')} onClick={selectAllShown}>
+            <Icon name="check-circle" size={13} /> {t('rooms.selectAll')}
+          </button>}
         </div>
       )}
 
       {selecting && (
-        <div className="room-file-bulkbar">
-          <span className="room-file-bulk-count">{t('rooms.selectedCount').replace('{n}', String(selected.size))}</span>
-          <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set(visibleFiles.map((f) => f.fileId)))}>{t('rooms.selectAll')}</button>
-          <button type="button" className="room-file-select-btn" onClick={() => setSelected(new Set())}>{t('rooms.clearSelection')}</button>
-          {hasFolders && (
-            <DropdownMenu
-              portal
-              renderTrigger={({ toggle }) => (
-                <button type="button" className="room-file-select-btn" disabled={selected.size === 0} onClick={toggle}>
-                  <Icon name="folder" size={13} /> {t('rooms.moveToFolder')}
-                </button>
-              )}
-              items={[
-                ...folders.map((f) => ({ key: f.id, label: folderLabel(f), onSelect: () => { assignMany(Array.from(selected), f.id); setSelected(new Set()); setSelecting(false); } })),
-                { key: '', label: t('rooms.folder.uncategorized'), onSelect: () => { assignMany(Array.from(selected), null); setSelected(new Set()); setSelecting(false); } },
-              ]}
-            />
-          )}
-          <button
-            type="button" className="room-file-bulk-del" disabled={selected.size === 0}
-            onClick={async () => {
-              const ids = Array.from(selected);
-              if (!ids.length) return;
-              // The engine only tombstones files we're authorized to delete
-              // (ours, or any as owner); the rest degrade to a local hide —
-              // say so up front instead of promising a room-wide delete.
-              const others = room.canManage ? 0 : ids.filter((id) => room.files.find((f) => f.fileId === id)?.addedBy !== selfId).length;
-              const own = ids.length - others;
-              const message = others === 0
-                ? t('rooms.deleteSelectedConfirm').replace('{n}', String(ids.length))
-                : own === 0
-                  ? t('rooms.hideSelectedConfirm').replace('{n}', String(ids.length))
-                  : t('rooms.deleteSelectedMixed').replace('{own}', String(own)).replace('{other}', String(others));
-              if (!(await confirm({ message, danger: own > 0 }))) return;
-              window.api.rooms.removeFiles(room.roomId, ids).catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-              setSelected(new Set()); setSelecting(false);
-            }}
-          >
-            <Icon name="trash" size={13} /> {t('rooms.deleteSelected')}
-          </button>
-          <button type="button" className="room-file-select-btn" onClick={() => { setSelecting(false); setSelected(new Set()); }}>{t('rooms.selectDone')}</button>
+        <div className="room-file-bulkbar" aria-busy={!!bulkBusy}>
+          <div className="room-file-bulk-summary">
+            <span className="room-file-bulk-count" role="status">
+              {t('rooms.selectedCount').replace('{n}', String(selected.size))}
+              {hiddenSelected > 0 && <span className="room-file-bulk-hidden">{t('rooms.selection.hidden').replace('{n}', String(hiddenSelected))}</span>}
+            </span>
+            <button type="button" className="room-file-select-btn" disabled={!!bulkBusy || !selectionOrder.length} onClick={selectAllShown} title={t('rooms.selectAll')} aria-label={t('rooms.selectAll')}>
+              <Icon name="check" size={13} /> {t('rooms.selection.all')}
+            </button>
+            <button type="button" className="room-file-select-btn icon-only" disabled={!!bulkBusy} onClick={clearSelection} title={t('rooms.clearSelection')} aria-label={t('rooms.clearSelection')}>
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+          <div className="room-file-bulk-actions">
+            <button type="button" className="room-file-select-btn room-file-bulk-fetch" disabled={!!bulkBusy || busy || room.kicked || !receiveActions.fetch.length} onClick={() => void receiveSelected('fetch')}>
+              <Icon name={bulkBusy === 'fetch' ? 'loader' : 'download'} size={13} /> {t('rooms.fetch')}{receiveActions.fetch.length > 0 && <span>{receiveActions.fetch.length}</span>}
+            </button>
+            <button type="button" className="room-file-select-btn" disabled={!!bulkBusy || busy || room.kicked || !receiveActions.pause.length} onClick={() => void receiveSelected('pause')}>
+              <Icon name={bulkBusy === 'pause' ? 'loader' : 'pause'} size={13} /> {t('rooms.selection.pause')}{receiveActions.pause.length > 0 && <span>{receiveActions.pause.length}</span>}
+            </button>
+            <DropdownMenu portal renderTrigger={({ toggle }) => (
+              <button type="button" className="room-file-select-btn icon-only" disabled={!!bulkBusy || busy || room.kicked || !selected.size} onClick={toggle} title={t('rooms.selection.actions')} aria-label={t('rooms.selection.actions')}>
+                <Icon name="more-horizontal" size={14} />
+              </button>
+            )} items={[
+              ...(hasFolders ? [
+                ...folders.map(folder => ({ key: 'move-' + folder.id, label: t('rooms.moveToFolder') + ': ' + folderLabel(folder), icon: <Icon name="folder" size={14} />, onSelect: () => void moveSelected(folder.id) })),
+                { key: 'move-root', label: t('rooms.moveToFolder') + ': ' + t('rooms.folder.uncategorized'), icon: <Icon name="folder" size={14} />, onSelect: () => void moveSelected(null) },
+              ] : []),
+              { key: 'delete', label: t('rooms.deleteSelected'), icon: <Icon name="trash" size={14} />, danger: true, onSelect: () => void removeSelected() },
+            ]} />
+          </div>
+          {bulkProgress && <span className="room-file-bulk-progress" role="status">{t('rooms.selection.progress').replace('{done}', String(bulkProgress.done)).replace('{total}', String(bulkProgress.total))}</span>}
         </div>
       )}
 
@@ -1577,6 +1634,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
           <Icon name="file-question" size={14} />
           <input
             type="text" autoFocus placeholder={t('rooms.requestPlaceholder')} value={requestDraft}
+            maxLength={500}
             onChange={(e) => setRequestDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') submitRequest(); if (e.key === 'Escape') { setRequesting(false); setRequestDraft(''); } }}
           />
@@ -1597,7 +1655,7 @@ const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, onDropFil
           <span>{t('rooms.receive.summary').replace('{active}', String(room.receiveQueue.active)).replace('{max}', String(room.receiveQueue.concurrency)).replace('{waiting}', String(room.receiveQueue.waiting)).replace('{bytes}', formatBytes(room.receiveQueue.waitingBytes))}</span>
         </div>
       )}
-      <div className="room-files-scroll" ref={filesScrollRef}>
+      <div className="room-files-scroll" ref={filesScrollRef} tabIndex={0} aria-label={t('rooms.sharedFiles')}>
       {!hasFolders ? (
         room.files.length === 0 ? (
           // Empty-room onboarding: the three steps that bring a room to life.
@@ -1901,8 +1959,8 @@ interface DetailProps {
   /** The VPN kill-switch has this room's networking paused (from the summary). */
   suspended?: boolean;
   /** OS notifications silenced for this room (from the summary). */
-  notifyMuted?: boolean;
-  onToggleNotifyMuted?: (muted: boolean) => void;
+  notifyMode?: RoomNotifyMode;
+  onSetNotifyMode?: (mode: RoomNotifyMode) => void;
   /** Open the OS file picker; folderId assigns the added files to that section. */
   onAddFiles: (folderId?: string) => void;
   /** Files were dropped onto the room — absolute paths, already resolved. */
@@ -1924,7 +1982,7 @@ interface DetailProps {
   busy: boolean;
 }
 
-const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, notifyMuted, onToggleNotifyMuted, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
+const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, notifyMode, onSetNotifyMode, onAddFiles, onDropFiles, onCreateFolder, onUpdateFolder, onDeleteFolder, onAssignFile, onOpenFolder, onInvite, onLeave, onCopyCode, onShared, onToggleAutoFetch, onSetLimits, busy }) => {
   const { t } = useTranslation();
   // Fallback host window (see utils/hostWindow); an element ref outranks it.
   const host = useHostWindow();
@@ -2330,20 +2388,17 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
      */
     notify: typeof toast = toast,
   ): boolean => {
-    let refused: DockRefusal | null = null;
-    let changed = false;
-    setDock((prev) => {
-      const res = op(prev);
-      if (res.refused) { refused = res.refused; return prev; }
-      changed = res.layout !== prev;
-      return res.layout;
+    // Check the result before queuing React state; an updater can run after this
+    // handler returns, which would otherwise lose refusals and focus feedback.
+    const result = op(dock);
+    if (result.refused) { notify.error(t(DOCK_REFUSAL_TEXT[result.refused])); return false; }
+    if (result.layout === dock) return false;
+    setDock(prev => {
+      const fresh = prev === dock ? result : op(prev);
+      return fresh.refused ? prev : fresh.layout;
     });
-    if (refused) { notify.error(t(DOCK_REFUSAL_TEXT[refused])); return false; }
-    if (focus && changed) setFocusPanel(focus);
-    // Applied? Callers that ANNOUNCE (hide has no other visible trace — the panel
-    // simply stops existing on screen) must not speak about a refusal, and must not
-    // speak about a no-op either.
-    return changed;
+    if (focus) setFocusPanel(focus);
+    return true;
   };
   const selectDockPanel = (zone: DockZoneId, panel: DockPanelId) => {
     commitDock((prev) => setActivePanel(prev, zone, panel));
@@ -2360,6 +2415,20 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
     const zone = zoneOfPanel(dock, panel);
     if (zone) selectDockPanel(zone, panel);
   };
+  useEffect(() => {
+    const reveal = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId: string; panel: string }>).detail;
+      if (detail?.roomId !== room.roomId || detail.panel !== 'lan') return;
+      setRailCollapsed(false);
+      setDock(current => {
+        if (isPanelHidden(current, 'lan')) return restorePanel(current, 'lan').layout;
+        const zone = zoneOfPanel(current, 'lan');
+        return zone ? setActivePanel(current, zone, 'lan') : current;
+      });
+    };
+    window.addEventListener('room-reveal-panel', reveal);
+    return () => window.removeEventListener('room-reveal-panel', reveal);
+  }, [room.roomId]);
   /**
    * A dock window is gone, for ANY reason: the user's ✕, close-to-tray (main.ts
    * closes every child on the owner's `hide`), owner close, quit — or it never
@@ -2425,6 +2494,23 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
     saveRoomLayout(dflt);
     setRailCollapsed(false);
     setDock(resetDockLayout());
+  };
+
+  const applyWorkspace = (workspace: RoomWorkspace) => {
+    dragRef.current = null;
+    setRailCollapsed(false);
+    setTheaterOn(false);
+    if (workspace.id !== 'cinema') {
+      if (stageView.kind === 'watch') setStageBg(true);
+      else if (stageView.kind === 'screen') setStageView({ kind: 'files' });
+    } else if (stageView.kind === 'watch') setStageBg(false);
+    setLayout({ ...workspace.widths });
+    saveRoomLayout(workspace.widths);
+    setDock(workspace.dock);
+    if (workspace.server) {
+      applyServerView(room.roomId, { ...workspace.server, instanceId: workspace.server.instanceId ?? loadServerView(room.roomId).instanceId });
+    }
+    setSettingsOpen(false);
   };
 
   /**
@@ -2503,10 +2589,6 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
       case 'people':
         return (
           <div className="room-rail-people">
-            {/* People has no actions of its own, but it still reserves the row every
-                other panel puts them in — without it this column starts a row higher
-                than its neighbours, which is the whole complaint this fixes. */}
-            <div className="room-panel-head-spacer" aria-hidden="true" />
             {/* The scroller stays HERE, not on .dock-panel: overflow-y:auto computes
                 overflow-x to auto, which would make the panel body a clip box and cut
                 off the full-rail-width voice popover. */}
@@ -2773,6 +2855,7 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
   // the only ambient sign that hiding has happened, and deliberately the only one:
   // anything inside the dock would disappear along with the zone it sits in.
   const hiddenCount = hiddenPanels(dock).length;
+  const peopleHidden = isPanelHidden(dock, 'people');
 
   // Connection indicator: removed → connecting → online (peers) → alone (no peers).
   // The label talks about STATE only; the transport peer count (wires, not
@@ -2885,18 +2968,21 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
               <span className="dot" />
               {connLabel}
             </button>
-            {/* People at a glance; also the visible way in/out of a collapsed
-                rail (the splitter's double-click stays as the shortcut). */}
+            {/* Toggle only People, wherever its tab is currently placed. */}
             <button
               type="button"
-              className={`room-people-chip${railCollapsed ? ' collapsed' : ''}`}
-              // Still a collapse toggle; when it OPENS the rail it also selects the
-              // People panel, so the chip lands on what it names. Collapsing leaves
-              // the active tab alone.
+              className={`room-people-chip${peopleHidden ? ' panel-hidden' : ''}`}
+              aria-expanded={!peopleHidden}
+              aria-label={t('rooms.peopleChipHint') + ' · ' + onlineCount + '/' + room.members.length}
               onClick={() => {
-                const collapsed = !railCollapsed;
-                setRailCollapsed(collapsed);
-                if (!collapsed) revealDockPanel('people');
+                if (peopleHidden) {
+                  const target = restoreTargets(dock).find(item => item.panel === 'people');
+                  if (target?.zone === 'left') setRailCollapsed(false);
+                  showDockPanel('people');
+                } else {
+                  const zone = zoneOfPanel(dock, 'people');
+                  if (zone) hideDockPanel(zone, 'people');
+                }
               }}
               title={t('rooms.peopleChipHint')}
             >
@@ -2905,6 +2991,7 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
           </div>
         </div>
         <div className="room-detail-actions">
+          <RoomWorkspaceMenu roomId={room.roomId} dock={dock} widths={layout} onApply={applyWorkspace} />
           <Button variant="ghost" size="sm" onClick={onDiagnostics} icon={<Icon name="activity" size={14} />}>{t('rooms.diag.title')}</Button>
           <Button variant="ghost" size="sm" onClick={onInvite} icon={<Icon name="share-2" size={14} />}>{t('rooms.invite')}</Button>
           <Button variant="ghost" size="sm" onClick={onOpenFolder} icon={<Icon name="folder-open" size={14} />}>{t('rooms.folder')}</Button>
@@ -2947,7 +3034,8 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
                     per-folder overrides it parents) — not duplicated here. */}
                 <div className="room-settings-row">
                   <span>{t('rooms.notifyToggle')}</span>
-                  <Toggle size="small" checked={!notifyMuted} onChange={(v) => onToggleNotifyMuted?.(!v)} ariaLabel={t('rooms.notifyToggle')} />
+                  <Select value={notifyMode ?? 'all'} onChange={v => onSetNotifyMode?.(v as RoomNotifyMode)} ariaLabel={t('rooms.notifyToggle')}
+                    options={(['all', 'mentions', 'off'] as const).map(value => ({ value, label: t(`rooms.notifyMode.${value}`) }))} />
                 </div>
                 <div className="room-settings-row" title={t('rooms.limitsHint')}>
                   <span className="room-settings-limits-label"><Icon name="gauge" size={13} /> {t('rooms.limits')}</span>
@@ -3593,7 +3681,13 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
             type="button"
             className="room-member-open"
             title={t('rooms.profileCardHint')}
-            onClick={(e) => setCardFor((cur) => (cur?.memberId === m.memberId ? null : { memberId: m.memberId, anchor: e.currentTarget }))}
+            aria-haspopup="dialog"
+            aria-expanded={cardFor?.memberId === m.memberId}
+            onClick={(e) => {
+              // React clears currentTarget after dispatch; state updaters may run later.
+              const anchor = e.currentTarget;
+              setCardFor((cur) => (cur?.memberId === m.memberId ? null : { memberId: m.memberId, anchor }));
+            }}
           >
             <Avatar seed={m.avatarSeed} img={m.avatarImg} size={30} online={m.online} ring={m.isSelf} />
           </Button>
@@ -3628,658 +3722,6 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
       ))}
     </div>
   );
-};
-
-// ── Room chat panel ───────────────────────────────────────────────────────
-// Pure text chat — a dock panel like any other (it merely DEFAULTS to the right
-// column); this card is just log + typing indicator + composer.
-// Highlight the current user's name inside a plain-text run (@-less mention).
-const renderWithMention = (text: string, selfName?: string): React.ReactNode => {
-  if (!selfName || selfName.length < 2) return text;
-  const lower = text.toLowerCase();
-  const needle = selfName.toLowerCase();
-  let hit = lower.indexOf(needle);
-  if (hit < 0) return text;
-  const parts: React.ReactNode[] = [];
-  let i = 0, k = 0;
-  while (hit >= 0) {
-    if (hit > i) parts.push(text.slice(i, hit));
-    parts.push(<mark key={k++} className="room-chat-mention">{text.slice(hit, hit + needle.length)}</mark>);
-    i = hit + needle.length;
-    hit = lower.indexOf(needle, i);
-  }
-  if (i < text.length) parts.push(text.slice(i));
-  return parts;
-};
-
-// Highlight the active chat-search query inside a plain run, then mention-
-// highlight the gaps. Search hits win over mention marks where they overlap, so
-// the two passes never nest the same <mark>. `query` arrives pre-trimmed and
-// lowercased (the filter's `q`); empty → mention-only (and no indexOf('') loop).
-const highlightRun = (text: string, selfName: string | undefined, query?: string): React.ReactNode => {
-  if (!query) return renderWithMention(text, selfName);
-  const lower = text.toLowerCase();
-  let hit = lower.indexOf(query);
-  if (hit < 0) return renderWithMention(text, selfName);
-  const parts: React.ReactNode[] = [];
-  let i = 0, k = 0;
-  while (hit >= 0) {
-    if (hit > i) parts.push(<React.Fragment key={k++}>{renderWithMention(text.slice(i, hit), selfName)}</React.Fragment>);
-    // Slice from the ORIGINAL text to keep display casing (match is case-insensitive).
-    parts.push(<mark key={k++} className="room-chat-search-hit">{text.slice(hit, hit + query.length)}</mark>);
-    i = hit + query.length;
-    hit = lower.indexOf(query, i);
-  }
-  if (i < text.length) parts.push(<React.Fragment key={k++}>{renderWithMention(text.slice(i), selfName)}</React.Fragment>);
-  return parts;
-};
-
-// One chat message body, split into text / fenced-code segments, with a copy
-// button for anything multiline (pasted scripts etc.).
-const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string; selfName?: string; query?: string }> = ({ text, copyLabel, copiedLabel, selfName, query }) => {
-  const segments = useMemo(() => parseChatSegments(text), [text]);
-  const toast = useHostToast(); // same realm rule as the rest of the chat subtree
-  const copy = (e: React.MouseEvent) => {
-    // Use the clicked element's OWN realm: in the detached chat window the main
-    // document is unfocused and ITS clipboard would reject ('not focused').
-    const win = (e.currentTarget as HTMLElement).ownerDocument.defaultView ?? window;
-    win.navigator.clipboard.writeText(
-      // Copy the CODE when the message is a single fence, else the whole body.
-      segments.length === 1 && segments[0].kind === 'code' ? segments[0].text : text,
-    ).then(() => toast.success(copiedLabel)).catch((err) => toast.error(String(err instanceof Error ? err.message : err)));
-  };
-  return (
-    <span className="room-chat-bubble">
-      {segments.map((s, i) => s.kind === 'code'
-        ? <pre key={i} className="room-chat-code">{s.text}</pre>
-        : (
-          <span key={i} className="room-chat-text">
-            {/* http(s)-only linkify; main routes target=_blank to the system
-                browser (setWindowOpenHandler), incl. from the detached window. */}
-            {splitLinks(s.text).map((r, j) => r.kind === 'link'
-              ? <a key={j} className="room-chat-link" href={r.href} target="_blank" rel="noreferrer" title={r.href}>{highlightRun(r.text, undefined, query)}</a>
-              : <React.Fragment key={j}>{highlightRun(r.text, selfName, query)}</React.Fragment>)}
-          </span>
-        ))}
-      {isCopyworthy(text) && (
-        <button type="button" className="room-chat-copy" onClick={copy} title={copyLabel}>
-          <Icon name="copy" size={12} />
-        </button>
-      )}
-    </span>
-  );
-};
-
-/**
- * The chat panel. It is an ordinary dock panel now: detaching it is
- * `Move to ▸ New window` on its tab, exactly like every other panel, and the
- * right-hand column collapsing while it is away is the ordinary empty-zone
- * rendering rather than a flag of its own. The bespoke `usePopout('havvn-room-chat')`
- * and the `onPoppedChange` contract it needed are GONE — two mechanisms for one job
- * is how a panel ends up open in two windows at once.
- */
-const RoomChat: React.FC<{
-  room: RoomState;
-  /** False when the dock strip above already names this panel. */
-  showTitle?: boolean;
-  onAttachRequest?: () => void;
-  /**
-   * The dock's move affordance when chat is ALONE in a docked zone. It lands in the
-   * CHAT | HISTORY row, which is the eyebrow a one-tab strip above it would
-   * duplicate — so the strip hides and this takes over the gesture.
-   */
-  soloHandle?: React.ReactNode;
-}> = ({ room, showTitle = true, onAttachRequest, soloHandle }) => {
-  const { t } = useTranslation();
-  // Realm-routed toasts — chat is the panel most likely to be on another monitor.
-  const toast = useHostToast();
-  const { composer, state: composeState } = useRoomChatComposer(room.roomId);
-  const text = composeState.draft.text, sending = composeState.phase === 'sending';
-  const setText = (value: string) => composer.setText(value);
-  const [zoneTab, setZoneTab] = useState<'chat' | 'history'>('chat');
-  // Per-message reaction palette — PORTALED to the chat's document at fixed
-  // coords (the log clips overflow, and the chat column can be 260px narrow).
-  const [reactFor, setReactFor] = useState<{ msgId: string; x: number; y: number } | null>(null);
-  useEffect(() => { setReactFor(null); }, [room.roomId]);
-  const toggleChatReact = (msgId: string, emoji: string) => {
-    window.api.rooms.reactChat(room.roomId, msgId, emoji)
-      .catch((e) => toast.error(String(e instanceof Error ? e.message : e)));
-  };
-  // Local chat search: filters the persisted log (no protocol involved).
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [chatQuery, setChatQuery] = useState('');
-  const chatQueryRef = useRef('');
-  chatQueryRef.current = chatQuery.trim().toLowerCase();
-  useEffect(() => { setSearchOpen(false); setChatQuery(''); }, [room.roomId]);
-  // Reply/edit targets. `editing` swaps the composer into edit mode (prefilled);
-  // `replyingTo` prepends a quote to the next send. Both belong to the room draft.
-  const replyingTo = composeState.draft.reply;
-  const editing = composeState.draft.editId ? { id: composeState.draft.editId } : null;
-  // Author avatar click → info-only profile card (actions live in the rail).
-  // Reset on room switch AND on detach/reattach — the card's anchor element
-  // belongs to the previous document and dies with it.
-  const [chatCardFor, setChatCardFor] = useState<{ memberId: string; anchor: HTMLElement } | null>(null);
-  const chatCardMember = chatCardFor ? room.members.find((m) => m.memberId === chatCardFor.memberId) : undefined;
-  useEffect(() => { setChatCardFor(null); }, [room.roomId]);
-  // A zone tab switch remounts the log DOM — the card's anchor element is gone, so
-  // a surviving card would pin to the window corner. (Detach/reattach is covered
-  // too: the dock unmounts this panel when it changes realm.)
-  useEffect(() => { setChatCardFor(null); }, [zoneTab]);
-  const selfId = room.members.find((m) => m.isSelf)?.memberId;
-  const selfName = room.members.find((m) => m.isSelf)?.name;
-  const messages = room.chat || [];
-  const listRef = useRef<HTMLDivElement>(null);
-  const composeRef = useRef<HTMLTextAreaElement>(null);
-  const [historyAnchor, setHistoryAnchor] = useState<{ room: string; id?: string }>({ room: room.roomId });
-  const prependScroll = useRef<{ height: number; top: number } | null>(null);
-  const anchor = historyAnchor.room === room.roomId ? historyAnchor.id : undefined;
-  const anchorIndex = anchor ? messages.findIndex(m => m.id === anchor) : -1;
-  // A pruned anchor exposes the remaining window, rather than jumping to the end.
-  const visibleMessages = anchor ? messages.slice(Math.max(0, anchorIndex)) : roomChatPage(messages).messages;
-  const showEarlier = () => {
-    const page = roomChatPage(messages, visibleMessages[0]?.id);
-    if (!page.messages.length) return;
-    const el = listRef.current;
-    prependScroll.current = el ? { height: el.scrollHeight, top: el.scrollTop } : null;
-    setHistoryAnchor({ room: room.roomId, id: page.messages[0].id });
-  };
-  useLayoutEffect(() => {
-    const before = prependScroll.current, el = listRef.current;
-    prependScroll.current = null;
-    if (before && el) el.scrollTop = before.top + el.scrollHeight - before.height;
-  }, [historyAnchor]);
-  useEffect(() => { setHistoryAnchor({ room: room.roomId }); prependScroll.current = null; }, [room.roomId]);
-
-  // Pin to the newest message only while the user is already near the bottom —
-  // reading older history must not be yanked down by new arrivals (those feed
-  // the "N new ↓" pill instead). The retained log is capped, so
-  // arrivals are counted by the previous last-id's position, not length delta.
-  const atBottomRef = useRef(true);
-  const [newCount, setNewCount] = useState(0);
-  const prevLogRef = useRef<{ room: string; lastId: string | null }>({ room: room.roomId, lastId: null });
-  const scrollToNewest = useCallback(() => {
-    const el = listRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-    atBottomRef.current = true;
-    setNewCount(0);
-  }, []);
-  const onLogScroll = () => {
-    const el = listRef.current;
-    if (!el) return;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-    atBottomRef.current = nearBottom;
-    if (nearBottom) setNewCount(0);
-  };
-  useEffect(() => {
-    const prev = prevLogRef.current;
-    const last = messages.length ? messages[messages.length - 1] : null;
-    prevLogRef.current = { room: room.roomId, lastId: last?.id ?? null };
-    // Room switch FIRST: the reset effect clears the query only on the next
-    // commit, and skipping here would eat the one-shot room-change evidence
-    // (prevLogRef already advanced) — the new room would keep the old scroll.
-    if (prev.room !== room.roomId) { scrollToNewest(); return; } // fresh log
-    if (chatQueryRef.current) return; // a filtered view scrolls freely
-    if (!last || last.id === prev.lastId) return; // state push without new chat
-    const idx = prev.lastId ? messages.findIndex((m) => m.id === prev.lastId) : -1;
-    const arrived = idx >= 0 ? messages.length - 1 - idx : messages.length;
-    if (atBottomRef.current || last.memberId === selfId) scrollToNewest();
-    else setNewCount((c) => c + arrived);
-  }, [room.roomId, messages, selfId, scrollToNewest]);
-  // A zone tab switch REMOUNTS the log DOM (fresh node, scrollTop=0) without the
-  // messages changing — force a re-pin.
-  useEffect(() => { scrollToNewest(); setReactFor(null); }, [zoneTab, scrollToNewest]);
-
-  // The reaction palette closes on outside click — in the CHAT's document
-  // (the zone may live in the detached window).
-  useEffect(() => {
-    if (!reactFor) return;
-    const doc = listRef.current?.ownerDocument ?? document;
-    const onDown = (e: MouseEvent) => {
-      const el = e.target as HTMLElement | null;
-      // Exclude the palette AND the action cluster (the '+' trigger lives there now,
-      // renamed from .room-chat-react-add) so re-clicking the trigger toggles cleanly.
-      if (el && !el.closest('.room-chat-react-pop') && !el.closest('.room-chat-actions')) setReactFor(null);
-    };
-    doc.addEventListener('mousedown', onDown);
-    return () => doc.removeEventListener('mousedown', onDown);
-  }, [reactFor]);
-
-  // Typing liveness. Outbound: at most one ping per 2.5s while composing (the
-  // engine rate-limits the broadcast further). Inbound: mirror the engine's
-  // typingMemberIds, restarting a 4s local TTL on every state push that still
-  // carries ids — the engine drops stale typists itself, so the TTL only has
-  // to cover the case where pushes stop arriving entirely.
-  const typingSentAtRef = useRef(0);
-  const [typingIds, setTypingIds] = useState<string[]>([]);
-  useEffect(() => {
-    const ids = room.typingMemberIds || [];
-    setTypingIds(ids);
-    if (ids.length === 0) return;
-    const timer = window.setTimeout(() => setTypingIds([]), 4000);
-    return () => window.clearTimeout(timer);
-  }, [room]);
-  const typingNames = typingIds
-    .map((id) => room.members.find((m) => m.memberId === id))
-    .filter((m): m is RoomMember => !!m && !m.isSelf && !m.muted)
-    .map((m) => m.name || '?');
-  const pingTyping = (value: string) => {
-    if (!value.trim()) return;
-    const now = Date.now();
-    if (now - typingSentAtRef.current < 2500) return;
-    typingSentAtRef.current = now;
-    window.api.rooms.typing(room.roomId);
-  };
-
-  const focusCompose = () => {
-    const el = composeRef.current;
-    if (!el) return;
-    const win = el.ownerDocument.defaultView ?? window;
-    win.requestAnimationFrame(() => { el.focus(); const n = el.value.length; el.selectionStart = el.selectionEnd = n; });
-  };
-  const startReply = (m: RoomChatMessage) => { composer.reply({ id: m.id, name: m.name, text: room.chatEdits?.[m.id]?.text ?? m.text }); focusCompose(); };
-  const startEdit = (m: RoomChatMessage) => {
-    composer.edit(m.id, room.chatEdits?.[m.id]?.text ?? m.text);
-    focusCompose();
-  };
-  // Canceling an edit restores the composed message and its reply context.
-  const cancelCompose = () => composer.cancel();
-  const send = () => composer.send();
-
-  // @mention autocomplete: track a trailing "@word" at the caret; the popup
-  // intercepts Enter/Tab/arrows while open (send/indent resume when closed).
-  const [mention, setMention] = useState<null | { query: string; start: number; caret: number }>(null);
-  const [mentionIdx, setMentionIdx] = useState(0);
-  useEffect(() => { setMention(null); }, [room.roomId, zoneTab]);
-  const mentionCandidates = useMemo(() => {
-    if (!mention) return [];
-    const seen = new Set<string>();
-    return room.members.filter((m) => {
-      if (m.isSelf || !m.name) return false;
-      const k = m.name.toLowerCase();
-      if (!k.startsWith(mention.query) || seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    }).slice(0, 6);
-  }, [mention, room.members]);
-  // The candidate list recomputes on every room push — a stale index must
-  // clamp, not dereference past the end.
-  const mentionActiveIdx = Math.min(mentionIdx, Math.max(0, mentionCandidates.length - 1));
-  const insertMention = (name: string) => {
-    if (!mention) return;
-    const next = `${text.slice(0, mention.start)}@${name} ${text.slice(mention.caret)}`;
-    setMention(null);
-    if (next.length > 2000) return;
-    setText(next);
-    const el = composeRef.current;
-    if (el) {
-      const pos = mention.start + name.length + 2;
-      const win = el.ownerDocument.defaultView ?? window;
-      win.requestAnimationFrame(() => { el.focus(); el.selectionStart = el.selectionEnd = pos; });
-    }
-  };
-  const trackMention = (value: string, caret: number) => {
-    const upto = value.slice(0, caret);
-    const mm = /(^|\s)@([\p{L}\p{N}_-]{0,24})$/u.exec(upto);
-    setMention(mm ? { query: mm[2].toLowerCase(), start: caret - mm[2].length - 1, caret } : null);
-    setMentionIdx(0);
-  };
-
-  // Tab inserts an indent at the caret (scripts!) instead of moving focus.
-  const onComposeKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.nativeEvent.isComposing) return; // IME: Enter confirms the composition, not send
-    if (mention && mentionCandidates.length > 0) {
-      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIdx((i) => (i + 1) % mentionCandidates.length); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); setMentionIdx((i) => (i - 1 + mentionCandidates.length) % mentionCandidates.length); return; }
-      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionCandidates[mentionActiveIdx].name); return; }
-      if (e.key === 'Escape') { setMention(null); return; }
-    }
-    if (e.key === 'Escape' && (editing || replyingTo)) { e.preventDefault(); cancelCompose(); return; }
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); return; }
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const el = e.currentTarget;
-      const { selectionStart: s, selectionEnd: en } = el;
-      const next = text.slice(0, s) + '\t' + text.slice(en);
-      if (next.length <= 2000) {
-        setText(next);
-        // Restore the caret via the textarea's OWN window — the main window's rAF
-        // is throttled while it is minimized behind a detached chat.
-        const win = el.ownerDocument.defaultView ?? window;
-        win.requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = s + 1; });
-      }
-    }
-  };
-
-  // ONE class list wherever this panel is docked. The room's stacking rules are
-  // `@container room` queries, which cannot reach a child window (it has no `room`
-  // ancestor), and the dock window's own body supplies the fill-the-window layout —
-  // so there is nothing left for a detached variant to undo.
-  const zone = (
-    <div className="room-section room-chat-section">
-      <div className="room-chat-zone-tabs">
-        {showTitle && <span className="room-zone-name">{t('rooms.chat')}</span>}
-        {/* A VIEW SWITCH, not an action — so it sits at the START of the row, where
-            the eye looks for "what am I looking at", and the actions keep the end.
-            Labelled rather than a bare glyph: it was indistinguishable from search
-            sitting next to it, and the two do entirely different things. */}
-        <button
-          type="button"
-          className={`room-zone-switch${zoneTab === 'history' ? ' active' : ''}`}
-          aria-pressed={zoneTab === 'history'}
-          onClick={() => setZoneTab((v) => (v === 'history' ? 'chat' : 'history'))}
-        >
-          <Icon name="list" size={12} />
-          {t('rooms.history')}
-        </button>
-        <button
-          type="button"
-          className={`room-zone-action room-zone-search${searchOpen ? ' active' : ''}`}
-          title={t('rooms.chatSearch')}
-          onClick={() => { setZoneTab('chat'); setSearchOpen((o) => { if (o) setChatQuery(''); return !o; }); }}
-        >
-          <Icon name="search" size={13} />
-        </button>
-        {/* No detach button here: the tab's "Move to ▸ New window" is the ONE way
-            a panel leaves the room, for every panel — and when this zone holds only
-            chat its strip is hidden, so the handle below IS that tab's menu. */}
-        {soloHandle}
-      </div>
-      {zoneTab === 'history' ? (
-        <div className="room-chat room-zone-history">
-          {room.history.length === 0 ? (
-            <div className="room-files-empty">{t('rooms.historyEmpty')}</div>
-          ) : (
-            <div className="room-history room-history-zone">
-              {room.history.slice().reverse().map((ev) => (
-                <div key={ev.id} className="room-history-item">
-                  <span className="room-history-actor">{ev.actorName}</span>
-                  <span className="room-history-text">{eventText(t, ev)}</span>
-                  <span className="room-history-time">{shortTime(ev.at)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-      <div className="room-chat">
-        {chatCardMember && chatCardFor && (
-          <ProfileCard
-            member={chatCardMember}
-            totalFiles={room.files.length}
-            anchor={chatCardFor.anchor}
-            canManage={false}
-            onClose={() => setChatCardFor(null)}
-          />
-        )}
-        {searchOpen && (
-          <div className="room-chat-search">
-            <Icon name="search" size={13} />
-            <input
-              type="text" autoFocus placeholder={t('rooms.chatSearch')} value={chatQuery}
-              onChange={(e) => setChatQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Escape') { setChatQuery(''); setSearchOpen(false); } }}
-            />
-          </div>
-        )}
-        <div className="room-chat-log" ref={listRef} onScroll={onLogScroll}>
-          {!chatQuery.trim() && messages.length > 0 && (
-            <div className="room-chat-history-window">
-              {visibleMessages.length < messages.length ? (
-                <Button variant="ghost" size="sm" onClick={showEarlier}>{t('rooms.chatShowEarlier')}</Button>
-              ) : <span>{t('rooms.chatHistoryWindow').replace('{n}', String(ROOM_CHAT_LIMIT))}</span>}
-            </div>
-          )}
-          {messages.length === 0 ? (
-            <div className="room-files-empty">{t('rooms.chatEmpty')}</div>
-          ) : (() => {
-            const q = chatQuery.trim().toLowerCase();
-            const shown = (q
-              // Match the EDITED body (what's rendered), not the stale original —
-              // else an edit-in text is missed and an edited-out term matches with
-              // no visible highlight.
-              ? messages.filter((m) => (room.chatEdits?.[m.id]?.text ?? m.text).toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q))
-              : visibleMessages
-            );
-            if (q && shown.length === 0) return <div className="room-files-empty">{t('rooms.chatSearchEmpty')}</div>;
-            return shown.map((m, i) => {
-              const mine = m.memberId === selfId;
-              // Live member (if still around) carries the rich profile: custom
-              // avatar, name color, and the click-through card. The message's
-              // own name/seed snapshot is the fallback for departed members.
-              const live = room.members.find((mm) => mm.memberId === m.memberId);
-              const prev = i > 0 ? shown[i - 1] : null;
-              const newDay = !prev || new Date(prev.at).toDateString() !== new Date(m.at).toDateString();
-              // Continuation: same author within 5 min on the same day —
-              // collapse the avatar/name so bursts read as one block.
-              const cont = !!prev && !newDay && prev.memberId === m.memberId && m.at >= prev.at && m.at - prev.at < 5 * 60_000;
-              // An author edit overlays the original text (the stored message is
-              // never mutated); `edit` present → show an "edited" marker.
-              const edit = room.chatEdits?.[m.id];
-              const body = edit?.text ?? m.text;
-              return (
-                <React.Fragment key={m.id}>
-                  {newDay && (
-                    <div className="room-chat-day" aria-hidden="true"><span>{dayLabel(m.at, t)}</span></div>
-                  )}
-                  <div className={`room-chat-msg ${mine ? 'mine' : ''}${cont ? ' cont' : ''}`}>
-                    {!mine && (cont ? (
-                      <span className="room-chat-gutter" aria-hidden="true" />
-                    ) : live ? (
-                      <button
-                        type="button"
-                        className="room-member-open"
-                        title={t('rooms.profileCardHint')}
-                        onClick={(e) => setChatCardFor((cur) => (cur?.memberId === m.memberId ? null : { memberId: m.memberId, anchor: e.currentTarget }))}
-                      >
-                        <Avatar seed={live.avatarSeed} img={live.avatarImg} size={28} />
-                      </button>
-                    ) : (
-                      <Identicon seed={m.avatarSeed} size={28} />
-                    ))}
-                    <div className="room-chat-bubble-wrap">
-                      {!mine && !cont && <span className="room-chat-author" style={live?.color ? { color: live.color } : undefined}>{live?.name || m.name || '?'}</span>}
-                      {/* Reply quote — resolve the live parent by id (edited text
-                          wins), fall back to the carried snapshot for a parent that
-                          scrolled out of the capped window or never arrived. */}
-                      {m.replyTo && (() => {
-                        const parent = messages.find((p) => p.id === m.replyTo);
-                        const pName = parent?.name || m.replyName;
-                        const pText = (parent ? (room.chatEdits?.[parent.id]?.text ?? parent.text) : m.replyText) || '';
-                        return (
-                          <span className="room-chat-quote" title={pText.replace(/^🙋\s*/, '')}>
-                            <span className="room-chat-quote-name">{pName || t('rooms.chatReplyUnknown')}</span>
-                            {m.chatV !== 2 && <span className="room-chat-quote-legacy" title={t('rooms.chatLegacyQuoteHint')}>{t('rooms.chatLegacyQuote')}</span>}
-                            {pText && <span className="room-chat-quote-text">{pText.replace(/^🙋\s*/, '')}</span>}
-                          </span>
-                        );
-                      })()}
-                      {body.startsWith('🙋') ? (
-                        // A file request (the 🙋 prefix rides the plain chat
-                        // pipeline) — render as a card with an attach shortcut.
-                        <span className="room-chat-request">
-                          <span className="room-chat-request-head"><Icon name="file-question" size={12} /> {t('rooms.request.title')}</span>
-                          <span className="room-chat-request-text">{highlightRun(body.replace(/^🙋\s*/, ''), undefined, q)}</span>
-                          {!mine && onAttachRequest && (
-                            <button type="button" className="room-chat-request-attach" onClick={onAttachRequest}>
-                              <Icon name="file-plus" size={12} /> {t('rooms.request.attach')}
-                            </button>
-                          )}
-                        </span>
-                      ) : (
-                        <RoomChatBody text={body} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={mine ? undefined : selfName} query={q} />
-                      )}
-                      {/* Reaction pills — the row exists only when reactions do
-                          (an always-present row would pad EVERY message). */}
-                      {(() => {
-                        const reacts = room.chatReacts?.[m.id];
-                        const present = CHAT_REACT_EMOJIS.filter((e) => (reacts?.[e] || []).length > 0);
-                        if (!present.length) return null;
-                        return (
-                          <span className="room-chat-reacts">
-                            {present.map((emoji) => {
-                              const ids = reacts?.[emoji] || [];
-                              const own = !!selfId && ids.includes(selfId);
-                              return (
-                                <button
-                                  key={emoji}
-                                  type="button"
-                                  className={`room-chat-react${own ? ' mine' : ''}`}
-                                  aria-pressed={own}
-                                  title={ids.map((id) => room.members.find((mm) => mm.memberId === id)?.name || '?').join(', ')}
-                                  onClick={() => toggleChatReact(m.id, emoji)}
-                                >
-                                  {emoji}<span className="room-chat-react-n">{ids.length}</span>
-                                </button>
-                              );
-                            })}
-                          </span>
-                        );
-                      })()}
-                      <span className="room-chat-time">{timeOnly(m.at)}{edit && <span className="room-chat-edited"> · {t('rooms.chatEdited')}</span>}</span>
-                    </div>
-                    {/* Hover actions: reply / edit(own) / react. Absolutely
-                        positioned as a cluster — costs no layout height. */}
-                    <div className="room-chat-actions">
-                      <button type="button" className="room-chat-act" title={t('rooms.chatReply')} onClick={() => startReply(m)}>
-                        <Icon name="reply" size={11} />
-                      </button>
-                      {mine && (
-                        <button type="button" className="room-chat-act" title={t('rooms.chatEdit')} onClick={() => startEdit(m)}>
-                          <Icon name="edit-2" size={11} />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        className="room-chat-act"
-                        title={t('rooms.chatReact')}
-                        onClick={(e) => {
-                          const btn = e.currentTarget as HTMLElement;
-                          const win = btn.ownerDocument.defaultView ?? window;
-                          const r = btn.getBoundingClientRect();
-                          setReactFor((cur) => {
-                            if (cur?.msgId === m.id) return null;
-                            const w = 8 * 26 + 12; // palette width approximation
-                            const x = Math.max(4, Math.min(r.left, win.innerWidth - w - 4));
-                            const y = r.top - 38 < 4 ? r.bottom + 4 : r.top - 38;
-                            return { msgId: m.id, x, y };
-                          });
-                        }}
-                      >
-                        <Icon name="plus" size={11} />
-                      </button>
-                    </div>
-                  </div>
-                </React.Fragment>
-              );
-            });
-          })()}
-          {newCount > 0 && !chatQuery.trim() && (
-            <button type="button" className="room-chat-newpill" onClick={scrollToNewest}>
-              <Icon name="arrow-down" size={12} /> {t('rooms.newMsgs').replace('{n}', String(newCount))}
-            </button>
-          )}
-        </div>
-        {reactFor && createPortal(
-          <span className="room-chat-react-pop" style={{ position: 'fixed', left: reactFor.x, top: reactFor.y }}>
-            {CHAT_REACT_EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                className="room-chat-react-opt"
-                // mousedown-preventDefault: keep composer focus intact.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { const id = reactFor.msgId; setReactFor(null); toggleChatReact(id, emoji); }}
-              >
-                {emoji}
-              </button>
-            ))}
-          </span>,
-          (listRef.current?.ownerDocument ?? document).body,
-        )}
-        <div className={`room-chat-typing${typingNames.length > 0 ? ' on' : ''}`} aria-live="polite">
-          {typingNames.length > 0 && (
-            <>
-              <span className="room-chat-typing-text">
-                {typingNames.length === 1
-                  ? `${typingNames[0]} ${t('rooms.typingOne')}`
-                  : `${typingNames[0]} ${t('rooms.typingAnd')} ${typingNames.length - 1} ${t('rooms.typingMany')}`}
-              </span>
-              <span className="room-chat-typing-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
-            </>
-          )}
-          {/* Near-limit counter only — silence until 1800 keeps the row calm.
-              aria-hidden: this sits inside the typing row's polite live region,
-              and a per-keystroke announcement would bury the screen reader. */}
-          {text.length >= 1800 && (
-            <span className={`room-chat-count${text.length >= 1950 ? ' warn' : ''}`} aria-hidden="true">{text.length}/2000</span>
-          )}
-        </div>
-        <div className="room-chat-compose">
-          {(editing || replyingTo) && (
-            <div className="room-chat-compose-ctx">
-              <Icon name={editing ? 'edit-2' : 'reply'} size={12} />
-              <span className="room-chat-compose-ctx-label">
-                {editing ? t('rooms.chatEditing') : t('rooms.chatReplyingTo')}
-                {replyingTo && <b> {replyingTo.name || '?'}</b>}
-              </span>
-              {replyingTo && <span className="room-chat-compose-ctx-quote">{(room.chatEdits?.[replyingTo.id]?.text ?? replyingTo.text).replace(/^🙋\s*/, '')}</span>}
-              <button type="button" className="room-chat-compose-ctx-x" onClick={cancelCompose} title={t('rooms.chatCancel')}>
-                <Icon name="x" size={12} />
-              </button>
-            </div>
-          )}
-          {mention && mentionCandidates.length > 0 && (
-            <div className="room-chat-mention-pop">
-              {mentionCandidates.map((m, i) => (
-                <button
-                  key={m.memberId}
-                  type="button"
-                  className={`room-chat-mention-item${i === mentionActiveIdx ? ' active' : ''}`}
-                  // mousedown, not click — a click would blur the textarea first.
-                  onMouseDown={(e) => { e.preventDefault(); insertMention(m.name); }}
-                >
-                  <Identicon seed={m.avatarSeed} size={18} />
-                  <span style={m.color ? { color: m.color } : undefined}>{m.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="room-chat-compose-row">
-            <textarea
-              ref={composeRef}
-              className="rooms-input room-chat-input"
-              placeholder={t('rooms.chatPlaceholder')}
-              value={text}
-              disabled={sending || !composeState.ready}
-              maxLength={2000}
-              rows={1}
-              onChange={(e) => {
-                setText(e.target.value);
-                pingTyping(e.target.value);
-                trackMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
-              }}
-              onKeyDown={onComposeKeyDown}
-            />
-            <Button variant="primary" size="sm" onClick={send} loading={sending} disabled={!text.trim() || !composeState.ready} icon={<Icon name="send" size={14} />}>
-              {t(composeState.phase === 'error' ? 'rooms.chatRetry' : 'rooms.chatSend')}
-            </Button>
-          </div>
-          {composeState.phase !== 'idle' && (
-            <div className={`room-chat-send-state ${composeState.phase}`} role="status">
-              {t(`rooms.chatDelivery.${composeState.phase}`)}{composeState.error ? `: ${composeState.error}` : ''}
-            </div>
-          )}
-        </div>
-      </div>
-      )}
-    </div>
-  );
-
-  // ONE tree, docked or detached. When the dock moves this panel into a torn-off
-  // group, DockWindowHost portals the whole zone (strip + panels) into that window
-  // and mounts HostWindowProvider around it, so everything below resolves `document`
-  // to the CHILD window without this component knowing which realm it is in.
-  return zone;
 };
 
 // Highlight the search match inside a file name (case-insensitive, first hit).
@@ -4324,7 +3766,7 @@ const ImageLightbox: React.FC<{ url: string; name: string; onClose: () => void }
   );
 };
 
-const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onWatchJoin?: (file: RoomFile) => void; watchCount?: number; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string) => void; getDragIds?: (fileId: string) => string[]; viewPrefs?: RoomFilesPrefs; highlightQuery?: string }> = ({ file, room, onWatch, onWatchJoin, watchCount = 0, onAssignFile, selecting = false, selected = false, onToggleSelect, getDragIds, viewPrefs, highlightQuery }) => {
+const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: RoomFile) => void; onWatchJoin?: (file: RoomFile) => void; watchCount?: number; onAssignFile: (fileId: string, folderId: string | null) => void; selecting?: boolean; selected?: boolean; onToggleSelect?: (fileId: string, gesture?: FileSelectionGesture) => void; selectionDisabled?: boolean; getDragIds?: (fileId: string) => string[]; viewPrefs?: RoomFilesPrefs; highlightQuery?: string }> = ({ file, room, onWatch, onWatchJoin, watchCount = 0, onAssignFile, selecting = false, selected = false, onToggleSelect, selectionDisabled = false, getDragIds, viewPrefs, highlightQuery }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   // Same realm rule as the row's context menu below: fetch/reveal/release/reseed
@@ -4392,6 +3834,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
   return (
     <div
       ref={rowRef}
+      data-file-id={file.fileId}
+      tabIndex={0}
       className={`room-file ${selecting ? 'selecting' : ''} ${selected ? 'selected' : ''}`}
       draggable={folders.length > 0}
       onDragStart={(e) => {
@@ -4400,10 +3844,19 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
         e.dataTransfer.setData(FILE_DND_TYPE, ids.join('\n'));
         e.dataTransfer.effectAllowed = 'move';
       }}
-      onClick={selecting ? () => onToggleSelect?.(file.fileId) : undefined}
+      onClick={event => {
+        if (selectionDisabled || event.detail > 1 || (event.target as Element).closest('button,input,a')) return;
+        onToggleSelect?.(file.fileId, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey, replace: !event.shiftKey && !event.ctrlKey && !event.metaKey });
+      }}
+      onKeyDown={event => {
+        if (event.target !== event.currentTarget || selectionDisabled || event.key !== ' ') return;
+        event.preventDefault();
+        onToggleSelect?.(file.fileId, { range: event.shiftKey, additive: event.ctrlKey || event.metaKey, replace: !event.shiftKey && !event.ctrlKey && !event.metaKey });
+      }}
       // Double-click does the row's most useful thing: watch when playable,
       // open when merely local, fetch when it hasn't been pulled yet.
-      onDoubleClick={selecting ? undefined : (e) => {
+      onDoubleClick={(e) => {
+        if (selectionDisabled || e.ctrlKey || e.metaKey || e.shiftKey) return;
         // dblclick bubbles from the row's inner controls too (their handlers
         // only stop CLICK propagation) — two fast clicks on a reaction or a
         // hover action must not also open/watch the file.
@@ -4416,12 +3869,12 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
       }}
       onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}
     >
-      {selecting && (
-        <input
-          type="checkbox" className="room-file-check" checked={selected} readOnly
-          aria-label={file.name}
-        />
-      )}
+      <button
+        type="button" role="checkbox" className={'room-file-pick' + (selecting ? '' : ' room-file-pick-hidden')}
+        aria-checked={selected} disabled={selectionDisabled} tabIndex={selecting ? 0 : -1} aria-hidden={!selecting}
+        aria-label={t('rooms.selection.file').replace('{name}', file.name)} title={t('rooms.selection.hint')}
+        onClick={event => { event.stopPropagation(); onToggleSelect?.(file.fileId, { range: event.shiftKey, additive: true }); }}
+      ><span className="room-file-pick-dot" aria-hidden="true" /></button>
       <div className="room-file-owner" title={`${t('rooms.addedBy')}: ${owner?.name || file.addedByName}`}>
         <Identicon seed={owner?.avatarSeed || file.addedBy} size={30} />
       </div>
@@ -4446,7 +3899,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
               return <Icon name={icon} size={13} className={`room-file-kind kind-${isImg ? 'image' : kind}`} />;
             })()
           )}
-          {highlightQuery ? highlightName(file.name, highlightQuery) : file.name}
+          <span className="room-file-label">{highlightQuery ? highlightName(file.name, highlightQuery) : file.name}</span>
         </div>
         <div className="room-file-sub">
           <span>{formatBytes(file.size)}</span>
@@ -5512,6 +4965,9 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                   {hostId && w.together && w.memberId !== hostId && <span>{t('rooms.watchHost.following')}</span>}
                 </span>)}
               </div>
+              <WatchReadyGate fileId={current.fileId} enabled={together && (!hostId || hostId === self.memberId) && !watchers[self.memberId]?.playing}
+                participants={Object.values(watchers).filter(w => w.fileId === current.fileId && w.together && Date.now() - w.lastSeen < 24000).map(w => ({ memberId: w.memberId, ready: w.readiness === 'ready' }))}
+                onStart={async () => { const video = videoRef.current; if (video) await video.play(); }} />
               {hostId === self.memberId && requests.length > 0 && <div className="room-watch-requests">
                 {requests.map(r => <div key={r.memberId} className="room-watch-request">
                   <span>{r.name}: {t(`rooms.watchHost.request.${r.requested || 'state'}`)}{r.requested === 'track' ? ` — ${room.files.find(f => f.fileId === r.fileId)?.name || '?'}` : r.requested === 'seek' ? ` — ${Math.floor(r.position)}s` : r.requested === 'rate' ? ` — ${r.rate}×` : ''}</span>

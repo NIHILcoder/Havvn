@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { chatContextCanonical } from '../../shared/room-canonicals';
 import { ROOM_CHAT_LIMIT, chatEnvelope, upgradeChat } from '../../shared/room-chat-history';
+import { parseFileRequest } from '../../shared/room-chat-tools';
 
 const source = readFileSync(new URL('./room-engine.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 function extract(start: string, end: string) {
@@ -39,7 +40,7 @@ function fixture() {
     return { duplicate: !!prior, message: prior ?? payload.message };
   });
   const context: any = {
-    chatContextCanonical, ROOM_CHAT_LIMIT, chatEnvelope, upgradeChat,
+    chatContextCanonical, ROOM_CHAT_LIMIT, chatEnvelope, upgradeChat, parseFileRequest,
     rooms: new Map([['A', room]]), netSuspended: false, crypto, Buffer, Date,
     ipcRenderer: { invoke, send: vi.fn() }, log: vi.fn(), broadcast: vi.fn(), pushState: vi.fn(), MAX_REACT_MSGS: 500,
     pruneChatReacts: () => false, pruneChatEdits: () => false, persistChatEdits: vi.fn(), persistChatReacts: vi.fn(),

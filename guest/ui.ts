@@ -15,6 +15,7 @@ import { generateIdentityWeb, type GuestIdentity } from '../shared/room-web-cryp
 import { parseChatSegments, splitLinks, isCopyworthy } from '../shared/chat-format';
 import { CHAT_REACT_EMOJIS } from '../shared/reactions';
 import { roomChatPage } from '../shared/room-chat-history';
+import { parseFileRequest } from '../shared/room-chat-tools';
 import { playMagnet, webtorrentOk, type WatchHandle } from './watch';
 
 const ID_KEY = 'havvn.guest.identity.v1';
@@ -61,6 +62,8 @@ function timeLabel(at: number): string {
 }
 
 function renderBody(text: string, lang: GuestLang): string {
+  const request = parseFileRequest(text);
+  if (request) return `<span class="request-head">${t(lang, 'fileRequest')} · ${t(lang, `request${request.status}`)}</span><br><span class="txt">${esc(request.title)}</span>`;
   const segs = parseChatSegments(text);
   return segs.map((s) => {
     if (s.kind === 'code') {
@@ -503,13 +506,13 @@ export class GuestApp {
   }
 
   private patchChat(s: GuestSnapshot): void {
-    const sig = JSON.stringify(s.chat.map((m) => [m.id, s.chatEdits[m.id] || m.text, s.chatReacts[m.id], m.replyTo, m.replyName, m.replyText, m.chatV])) + this.lang + this.historyAnchor;
+    const sig = JSON.stringify([s.chat.map((m) => [m.id, s.chatEdits[m.id] || m.text, s.chatReacts[m.id], m.replyTo, m.replyName, m.replyText, m.chatV]), s.chatPins]) + this.lang + this.historyAnchor;
     if (sig === this.last.chat) return;
     this.last.chat = sig;
     const log = $('#log', this.root);
     if (!log) return;
     const stick = log.scrollHeight - log.scrollTop < log.clientHeight + 80;
-    if (!s.chat.length) {
+    if (!s.chat.length && !s.chatPins?.length) {
       log.innerHTML = `<p class="hint">${this.L('emptyChat')}</p>`;
       return;
     }
@@ -517,6 +520,8 @@ export class GuestApp {
     let lastAuthor = '';
     let lastAt = 0;
     const parts: string[] = [];
+    if (s.chatPins?.length) parts.push(`<details class="chat-pins"><summary>${this.L('chatPins')} (${s.chatPins.length})</summary>${s.chatPins.map(pin =>
+      `<div class="bubble"><header><b>${esc(pin.message.name)}</b></header><div class="body">${renderBody(s.chatEdits[pin.message.id] ?? pin.edit?.text ?? pin.message.text, this.lang)}</div></div>`).join('')}</details>`);
     const selfId = this.room!.identity.memberId;
     const index = this.historyAnchor ? s.chat.findIndex(m => m.id === this.historyAnchor) : -1;
     const shown = this.historyAnchor ? s.chat.slice(Math.max(0, index)) : roomChatPage(s.chat).messages;
@@ -535,7 +540,8 @@ export class GuestApp {
       ).join('');
       const parent = s.chat.find(p => p.id === m.replyTo);
       const quoteName = parent?.name || m.replyName || '';
-      const quoteText = parent ? (s.chatEdits[parent.id] ?? parent.text) : (m.replyText || '');
+      const quoteBody = parent ? (s.chatEdits[parent.id] ?? parent.text) : (m.replyText || '');
+      const quoteText = parseFileRequest(quoteBody)?.title ?? quoteBody;
       parts.push(`<article class="msg ${group ? 'grp' : ''} ${m.memberId === selfId ? 'self' : ''}" data-id="${esc(m.id)}">
         ${group ? '' : identiconSvg(m.avatarSeed, 26)}
         <div class="bubble">
@@ -571,7 +577,8 @@ export class GuestApp {
       return;
     }
     const c = s.chat.find((m) => m.id === this.replyTo);
-    const text = (s.chatEdits[this.replyTo] || c?.text || '').slice(0, 80);
+    const body = s.chatEdits[this.replyTo] || c?.text || '';
+    const text = (parseFileRequest(body)?.title ?? body).slice(0, 80);
     const html = `<span class="reply-q">${esc(c?.name || '')}: ${esc(text)}</span><button type="button" data-act="reply-x" aria-label="×">×</button>`;
     if (html === this.last.reply) return;
     this.last.reply = html;

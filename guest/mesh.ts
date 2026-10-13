@@ -1,4 +1,6 @@
 import { WatchHostState, type WatchPolicy } from '../shared/room-watch-host';
+import { newerChatPins, cleanChatPin, type RoomChatPins, type RoomChatPin } from '../shared/room-chat-pins';
+import { parseFileRequest } from '../shared/room-chat-tools';
 import { roomHelloParts, RoomHelloAssembly, RoomHelloOutbox, ROOM_FILE_LIMIT, roomChannelHasCapacity, roomManifestCanFit, storeRoomManifestFile } from '../shared/room-manifest-sync';
 /**
  * Browser guest mesh — announce, gossip, chat, voice signaling, watch-sync.
@@ -89,6 +91,7 @@ export interface GuestSnapshot {
   members: GuestMember[];
   chat: GuestChat[];
   chatEdits: Record<string, string>;
+  chatPins?: RoomChatPin[];
   chatReacts: Record<string, Record<string, string[]>>;
   typingIds: string[];
   files: GuestFile[];
@@ -141,6 +144,8 @@ export class GuestRoom {
   private chat: GuestChat[] = [];
   private chatEdits = new Map<string, { text: string; at: number; by: string; pub: string; sig: string }>();
   private chatEditTopics = new Map<string, string>();
+  private chatPins?: RoomChatPins;
+  private chatPinsTopic?: string;
   private pendingEdits = new Map<string, { text: string; at: number; memberId: string; pub: string; sig: string }>();
   private chatReacts = new Map<string, Map<string, Set<string>>>();
   private profileAt = new Map<string, number>();
@@ -284,6 +289,7 @@ export class GuestRoom {
       members,
       chat: this.chat.slice(),
       chatEdits: Object.fromEntries([...this.chatEdits].map(([id, e]) => [id, e.text])),
+      chatPins: this.chatPins?.by === this.ownerId && this.chatPins.ownerAt === this.transferAt && this.chatPinsTopic === this.topic ? this.chatPins.items : [],
       chatReacts,
       typingIds,
       files: [...this.files.values()],
@@ -314,7 +320,8 @@ export class GuestRoom {
       if (parent) {
         msg.replyTo = parent.id;
         msg.replyName = parent.name.slice(0, 256);
-        msg.replyText = (this.chatEdits.get(parent.id)?.text ?? parent.text).slice(0, 140);
+        const parentText = this.chatEdits.get(parent.id)?.text ?? parent.text;
+        msg.replyText = (parseFileRequest(parentText)?.title ?? parentText).slice(0, 140);
       }
     }
     const sig = await signWeb(this.identity.priv, chatCanonical(this.topic, msg));
@@ -386,6 +393,7 @@ export class GuestRoom {
     if (full && this.tombs.size) m.tombSigs = Object.fromEntries([...this.tombs].filter(([, p]) => p.topic === this.topic && !this.bans.has(p.by)).slice(0, ROOM_FILE_LIMIT).map(([id, { topic: _topic, ...p }]) => [id, p]));
     if (full) m.chatIds = this.chat.filter(c => c.chatV === 2).map(c => c.id);
     if (full && this.chatEdits.size) m.chatEdits = Object.fromEntries([...this.chatEdits].filter(([id, e]) => this.chatEditTopics.get(id) === this.topic && !this.bans.has(e.by)));
+    if (full && this.chatPins?.by === this.ownerId && this.chatPins.ownerAt === this.transferAt && this.chatPinsTopic === this.topic) m.chatPins = this.chatPins;
     if (full && this.chat.length) m.chatAt = this.chat[this.chat.length - 1].at;
     return m;
   }
@@ -631,6 +639,13 @@ export class GuestRoom {
     this.frameChain = operation.catch(() => {});
     return operation;
   }
+  /** The complete owner + author proof set was checked by authenticate(). */
+  private adoptChatPins(pins: RoomChatPins): void {
+    if (!newerChatPins(pins, this.chatPins, this.ownerId, this.transferAt)) return;
+    this.chatPins = { t: 'chat-pins-v1', by: pins.by, ownerAt: pins.ownerAt, at: pins.at, pub: pins.pub, sig: pins.sig, items: pins.items.map(cleanChatPin) };
+    this.chatPinsTopic = this.topic;
+    this.onChange();
+  }
   private async processFrame(rec: WireRec, raw: string): Promise<void> {
     if (this.kicked) return;
     if (raw.length > MAX_FRAME) return;
@@ -727,6 +742,7 @@ export class GuestRoom {
         for (const [id, p] of Object.entries(msg.tombSigs || {})) await this.acceptTomb(id, p as any);
         if (sync.first) this.voice.reannounce();
         await this.mergeHelloEdits(msg.chatEdits);
+        if (msg.chatPins) this.adoptChatPins(msg.chatPins);
         this.mergeHelloReacts(msg.chatReacts);
         if (direct && (!msg.manifestPart || sync.complete)) await this.sendChatBackfill(rec, msg);
         this.onChange();
@@ -789,6 +805,7 @@ export class GuestRoom {
         this.onChange();
         break;
       }
+      case 'chat-pins-v1': this.adoptChatPins(msg); break;
       case 'typing': {
         const m = this.members.get(msg.memberId);
         if (!m) break;

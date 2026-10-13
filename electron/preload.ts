@@ -1,8 +1,9 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent, webFrame } from 'electron';
+import { RoomStateDecoder, type RoomStatePacket } from '../shared/room-state-ipc';
 
 // webUtils was added in Electron 30; the bundled type defs for older versions
 // don't declare it, so access it defensively without a typed named import.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { webUtils } = require('electron') as { webUtils?: { getPathForFile(file: File): string } };
 import {
   AddDownloadRequest,
@@ -42,6 +43,22 @@ import type {
   ServerScheduleRule,
   ServerAccessState,
 } from '../shared/gameserver-types';
+
+// One decoder per renderer, shared by all subscribers, including late listeners.
+const roomStates = new RoomStateDecoder();
+const roomUpdateListeners = new Set<(state: RoomState) => void>();
+const roomResyncs = new Set<string>();
+ipcRenderer.on('rooms:state', (_event: IpcRendererEvent, packet: RoomStatePacket) => {
+  const state = roomStates.accept(packet);
+  if (state) {
+    for (const callback of roomUpdateListeners) callback(state);
+  } else if (!roomResyncs.has(packet.roomId)) {
+    roomResyncs.add(packet.roomId);
+    void ipcRenderer.invoke('rooms:resyncState', packet.roomId).catch(() => { /* app closing */ })
+      .finally(() => roomResyncs.delete(packet.roomId));
+  }
+});
+ipcRenderer.on('rooms:state-drop', (_event: IpcRendererEvent, roomId: string) => roomStates.delete(roomId));
 
 const api: IpcApi = {
   externalPlayer: {
@@ -810,8 +827,10 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:setTopic', roomId, text),
     requestFile: (roomId: string, text: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:requestFile', roomId, text),
-    markRead: (roomId: string): Promise<{ ok: boolean }> =>
-      ipcRenderer.invoke('rooms:markRead', roomId),
+    markRead: (roomId: string, messageId?: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('rooms:markRead', roomId, messageId),
+    pinChat: (roomId: string, messageId: string, on: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:pinChat', roomId, messageId, on),
+    searchChat: (roomId: string, filter: import('../shared/room-chat-tools').RoomChatFilter, before?: string): Promise<import('../shared/room-chat-tools').RoomChatSearchPage> => ipcRenderer.invoke('rooms:searchChat', roomId, filter, before),
     setActiveRoom: (roomId: string | null): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setActiveRoom', roomId),
     voice: {
@@ -978,6 +997,7 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:setAutoFetch', roomId, autoFetch),
     setNotifyMuted: (roomId: string, muted: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setNotifyMuted', roomId, muted),
+    setNotifyMode: (roomId: string, mode: import('../shared/room-chat-tools').RoomNotifyMode): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:setNotifyMode', roomId, mode),
     fetchFile: (roomId: string, fileId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:fetchFile', roomId, fileId),
     pauseReceive: (roomId: string, fileId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:pauseReceive', roomId, fileId),
@@ -1024,9 +1044,8 @@ const api: IpcApi = {
   },
 
   onRoomUpdate: (callback: (state: RoomState) => void): (() => void) => {
-    const handler = (_event: IpcRendererEvent, state: RoomState) => callback(state);
-    ipcRenderer.on('rooms:update', handler);
-    return () => { ipcRenderer.removeListener('rooms:update', handler); };
+    roomUpdateListeners.add(callback);
+    return () => { roomUpdateListeners.delete(callback); };
   },
 
   onRoomEngineStatus: (callback: (status: RoomEngineStatus) => void): (() => void) => {
