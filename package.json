@@ -69,7 +69,7 @@
     "uiohook-napi": "^1.5.5",
     "uuid": "^14.0.2",
     "webtorrent": "3.0.21",
-    "zustand": "^4.5.0"
+    "zustand": "^5.0.15"
   },
   "overrides": {
     "debug": "^4.3.7",
