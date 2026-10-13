@@ -52,11 +52,15 @@ import { ServerActionError } from '../../shared/gameserver-errors';
 import {
   computeContentManifest, filesInFolder, syncContentSlots, type RoomContentFile,
 } from './content-sync';
-import { backupTagNow, backupWorldDir, listWorldBackups, createWorldBackup, restoreWorldBackup, deleteWorldBackup, backupsFolder } from './world-backup';
+import { listWorldBackups, createWorldBackup, restoreWorldBackup, deleteWorldBackup, backupsFolder } from './world-backup';
 import { findDueScheduleActions, minutesToEvaluate, sanitizeScheduleRule } from './server-scheduler';
 import { readWhitelist, writeWhitelist, readBannedPlayers, writeBannedPlayers } from './minecraft-access';
 import { buildMirrorPayload, mirrorFingerprint, mirroredRole, type ConsoleTailSample } from './server-mirror';
 import { alertOnStatusChange, alertOnLowDisk, AlertThrottle } from './server-alerts';
+import { readProcessHealth, ServerHealthHistory } from './process-health';
+import { parseTickReply, type TickReading } from './tick-health';
+import type { ServerHealthState } from '../../shared/server-health';
+import { createServerSnapshot, listServerSnapshots, restoreServerSnapshot, type ServerSnapshotState } from './server-snapshot';
 
 const log = logger.child('ServerManager');
 
@@ -134,6 +138,11 @@ export class ServerManager extends EventEmitter {
   /** roomId → fingerprint of the mirror we last gossiped, so an unchanged
    *  payload is not re-flooded on every probe tick. */
   private readonly lastMirrorSent = new Map<string, string>();
+  private readonly healthHistories = new Map<string, ServerHealthHistory>();
+  private readonly tickReadings = new Map<string, TickReading & { tickAt: number; pid: number }>();
+  private readonly tickQueries = new Map<string, () => void>();
+  private healthTimer: NodeJS.Timeout | null = null;
+  private samplingHealth = false;
 
   init(deps: ServerManagerDeps): void {
     this.deps = deps;
@@ -142,6 +151,7 @@ export class ServerManager extends EventEmitter {
     purgeStaging();
     this.restoreAll();
     this.startScheduleTicker();
+    this.healthTimer = setInterval(() => void this.sampleHealth(), 5000);
   }
 
   private get selfId(): string {
@@ -285,6 +295,8 @@ export class ServerManager extends EventEmitter {
       moduleId: m.moduleId,
       name: m.name,
       version: m.version,
+      ...(m.health ? { health: m.health } : {}),
+      ...(m.sharedContent ? { sharedContent: m.sharedContent } : {}),
       hostId,
       isHost: false,
       role: this.remoteRole(hostId, m),
@@ -715,6 +727,11 @@ export class ServerManager extends EventEmitter {
   async install(instanceId: string): Promise<void> {
     const entry = this.entry(instanceId);
     if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
+    return this.installEntry(entry);
+  }
+
+  private async installEntry(entry: Entry): Promise<void> {
+    const instanceId = entry.persisted.instanceId;
     if (hasInterruptedMaintenance(instancePaths(instanceId).root)) throw new ServerActionError('maintenance-recovery');
     if (entry.supervisor.pid) throw new ServerActionError('stop-first');
     if (entry.installing) throw new ServerActionError('install-running');
@@ -868,24 +885,28 @@ export class ServerManager extends EventEmitter {
    * artifacts it owns or seeds config `ifAbsent`.
    */
   async applyUpdate(instanceId: string): Promise<void> {
-    const entry = this.entry(instanceId);
-    const pending = entry.pendingUpdate;
+    const entry = this.entry(instanceId), pending = entry.pendingUpdate;
     if (!pending) throw new ServerActionError('no-update-source');
     await this.withMaintenance(entry, async () => {
-      const backup = await backupWorldDir(instanceId, `pre-update-${backupTagNow()}`);
-      if (backup) {
-        log.info('world backed up before update', { instanceId, backup });
-        entry.supervisor.console.system(`world backed up to ${path.basename(path.dirname(backup))}`);
+      const state = this.snapshotState(entry);
+      const backup = await createServerSnapshot(instanceId, state, undefined, true);
+      entry.supervisor.console.system('assembly backed up to ' + backup.id);
+      try {
+        entry.persisted.ref = pending;
+        entry.persisted.installed = false;
+        upsertInstance(entry.persisted);
+        this.refreshView(entry);
+        await this.installEntry(entry);
+        entry.pendingUpdate = undefined;
+        log.info('instance updated', { instanceId, ref: pending.id, backup: backup.id });
+      } catch (error) {
+        const attempted = { ...state, ref: structuredClone(entry.persisted.ref as GameVersionRef), installed: entry.persisted.installed };
+        await restoreServerSnapshot(instanceId, backup.id, attempted, saved => this.applySnapshotState(entry, saved), () => this.applySnapshotState(entry, attempted));
+        entry.installFailure = undefined;
+        entry.supervisor.console.system('update failed; previous assembly restored from ' + backup.id + ': ' + String(error));
+        throw new ServerActionError('update-rolled-back', String(error));
       }
-
-      entry.persisted.ref = pending;
-      entry.persisted.installed = false;
-      upsertInstance(entry.persisted);
-      entry.pendingUpdate = undefined;
-      this.refreshView(entry);
-      log.info('instance updated', { instanceId, ref: pending.id });
     });
-    await this.install(instanceId);
   }
 
   /**
@@ -1026,6 +1047,8 @@ export class ServerManager extends EventEmitter {
     }
 
     this.entries.delete(instanceId);
+    this.healthHistories.delete(instanceId); this.tickReadings.delete(instanceId);
+    this.tickQueries.get(instanceId)?.();
     this.alertThrottle.forget(instanceId);
     removeInstance(instanceId);
     this.pushUpdate(roomId);
@@ -1038,6 +1061,78 @@ export class ServerManager extends EventEmitter {
     const entry = this.entry(instanceId);
     const view = this.viewOf(entry.persisted, entry.module);
     return { schema: entry.module.configSchema(view), values: { ...view.config } };
+  }
+
+  private async sampleEntryHealth(entry: Entry): Promise<void> {
+    const id = entry.persisted.instanceId, pid = entry.supervisor.pid;
+    const now = Date.now(), existing = this.healthHistories.get(id);
+    if (existing?.history.at(-1) && now - existing.history.at(-1)!.at < 4000) return;
+    const reading = pid ? await readProcessHealth(pid) : null;
+    if (this.disposed || this.entries.get(id) !== entry || entry.supervisor.pid !== pid) return;
+    const history = existing ?? new ServerHealthHistory();
+    const sample = history.sample(Date.now(), pid, reading, freeBytes(instancePaths(id).root));
+    const tick = this.tickReadings.get(id);
+    if (tick && tick.pid === pid) Object.assign(sample, { tps: tick.tps, mspt: tick.mspt, tickAt: tick.tickAt, tickSource: tick.tickSource });
+    else this.tickReadings.delete(id);
+    this.healthHistories.set(id, history);
+  }
+
+  private async sampleHealth(): Promise<void> {
+    if (this.disposed || this.samplingHealth) return;
+    this.samplingHealth = true;
+    const rooms = new Set<string>();
+    try {
+      for (const entry of this.entries.values()) {
+        if (!entry.supervisor.pid) continue;
+        await this.sampleEntryHealth(entry);
+        rooms.add(entry.persisted.roomId);
+      }
+      for (const room of rooms) this.pushUpdate(room);
+    } catch (error) { log.warn('server health sample failed', { error: String(error) }); }
+    finally { this.samplingHealth = false; }
+  }
+
+  async healthState(instanceId: string, roomId = ''): Promise<ServerHealthState> {
+    const entry = this.entries.get(instanceId);
+    if (entry) {
+      await this.sampleEntryHealth(entry);
+      const history = this.healthHistories.get(instanceId)?.history ?? [];
+      return { current: history.at(-1) ?? null, history: [...history], running: entry.supervisor.status === 'running', remote: false };
+    }
+    const remote = this.findRemoteInRoom(roomId, instanceId);
+    if (!remote) throw new ServerActionError('unknown-instance');
+    return { current: remote.row.health ?? null, history: remote.row.health ? [remote.row.health] : [], running: remote.row.status === 'running', remote: true };
+  }
+
+  async queryTicks(instanceId: string): Promise<{ available: boolean }> {
+    const entry = this.entry(instanceId), pid = entry.supervisor.pid;
+    if (!pid || entry.supervisor.status !== 'running') throw new ServerActionError('not-running');
+    if (entry.module.id !== 'minecraft') return { available: false };
+    if (this.tickQueries.has(instanceId)) throw new ServerActionError('command-busy');
+    const source = (entry.persisted.ref as GameVersionRef).flavour === 'paper' ? 'paper' : 'spark';
+    const lines: string[] = [];
+    const reading = await new Promise<TickReading | null>(resolve => {
+      const done = (value: TickReading | null) => {
+        clearTimeout(timer); off(); this.tickQueries.delete(instanceId); resolve(value);
+      };
+      const off = entry.supervisor.console.subscribe(line => {
+        if (line.stream === 'sys') return;
+        lines.push(line.text); if (lines.length > 24) lines.shift();
+        const next = parseTickReply(lines, source);
+        if (next?.tps !== undefined && next.mspt !== undefined) done(next);
+      });
+      const timer = setTimeout(() => done(parseTickReply(lines, source)), 8000);
+      this.tickQueries.set(instanceId, () => done(null));
+      for (const command of source === 'paper' ? ['tps', 'mspt'] : ['spark tps']) {
+        if (!entry.supervisor.sendCommand(command).ok) { done(null); break; }
+      }
+    });
+    if (!reading || this.disposed || this.entries.get(instanceId) !== entry || entry.supervisor.pid !== pid || entry.supervisor.status !== 'running') return { available: false };
+    this.tickReadings.set(instanceId, { ...reading, pid, tickAt: Date.now() });
+    const sample = this.healthHistories.get(instanceId)?.history.at(-1);
+    if (sample) Object.assign(sample, reading, { tickAt: Date.now() });
+    this.pushUpdate(entry.persisted.roomId);
+    return { available: true };
   }
 
   /**
@@ -1250,6 +1345,7 @@ export class ServerManager extends EventEmitter {
   }
 
   private refreshContentStatus(entry: Entry): void {
+    if (entry.persisted.contentPinned) { entry.contentSync = 'ok'; entry.contentPending = []; return; }
     const slots = this.contentSlotsOf(entry);
     if (!slots.length || !entry.module.caps.content) {
       entry.contentSync = 'ok';
@@ -1306,6 +1402,7 @@ export class ServerManager extends EventEmitter {
   setContentFolder(instanceId: string, slotId: string, folderId: string): void {
     const entry = this.entry(instanceId);
     if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
+    delete entry.persisted.contentPinned;
     const slots = this.contentSlotsOf(entry);
     if (!slots.some((s) => s.id === slotId)) throw new ServerActionError('unknown-instance', slotId);
     const bindings = this.bindingsOf(entry);
@@ -1342,6 +1439,7 @@ export class ServerManager extends EventEmitter {
 
   private async syncContentStopped(instanceId: string): Promise<ServerContentState> {
     const entry = this.entry(instanceId);
+    delete entry.persisted.contentPinned;
     if (!entry.module.caps.content) throw new ServerActionError('unknown-module', entry.persisted.moduleId);
     const slots = this.contentSlotsOf(entry);
     const bindings = this.bindingsOf(entry);
@@ -1396,8 +1494,24 @@ export class ServerManager extends EventEmitter {
 
   // ── world backups ─────────────────────────────────────────────────────────
 
-  backupState(instanceId: string): Promise<WorldBackupEntry[]> {
-    return listWorldBackups(instanceId);
+  async backupState(instanceId: string): Promise<WorldBackupEntry[]> {
+    this.entry(instanceId);
+    const [worlds, snapshots] = await Promise.all([listWorldBackups(instanceId), listServerSnapshots(instanceId)]);
+    return [...worlds, ...snapshots].sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  private snapshotState(entry: Entry): ServerSnapshotState {
+    return { moduleId: entry.persisted.moduleId, ref: structuredClone(entry.persisted.ref as GameVersionRef), config: this.getConfig(entry.persisted.instanceId).values,
+      installed: entry.persisted.installed, useSystemJava: entry.persisted.useSystemJava === true, contentRev: entry.persisted.contentRev ?? 0,
+      ...(entry.persisted.contentManifest ? { contentManifest: entry.persisted.contentManifest } : {}) };
+  }
+
+  private applySnapshotState(entry: Entry, state: ServerSnapshotState): void {
+    // Restore game facts only. Membership, operators, network pauses, schedules
+    // and restart preferences may have changed while the files were being copied.
+    Object.assign(entry.persisted, { ref: state.ref, config: state.config, installed: state.installed, useSystemJava: state.useSystemJava,
+      contentRev: state.contentRev, contentManifest: state.contentManifest });
+    upsertInstance(entry.persisted); this.refreshView(entry);
   }
 
   private assertStopped(entry: Entry): void {
@@ -1411,20 +1525,30 @@ export class ServerManager extends EventEmitter {
     this.assertStopped(entry);
     const id = entry.persisted.instanceId;
     this.maintenance.add(id);
+    this.pushUpdate(entry.persisted.roomId);
     entry.runEpoch++;
     entry.supervisor.pauseAutoRestart();
     try { return await work(); }
     finally { this.maintenance.delete(id); this.pushUpdate(entry.persisted.roomId); }
   }
 
-  async createBackup(instanceId: string, label?: string): Promise<WorldBackupEntry> {
+  async createBackup(instanceId: string, label?: string, kind: 'world' | 'server' = 'world'): Promise<WorldBackupEntry> {
     const entry = this.entry(instanceId);
-    return this.withMaintenance(entry, () => createWorldBackup(instanceId, label));
+    return this.withMaintenance(entry, () => kind === 'server' ? createServerSnapshot(instanceId, this.snapshotState(entry), label) : createWorldBackup(instanceId, label));
   }
 
   async restoreBackup(instanceId: string, backupId: string): Promise<void> {
     const entry = this.entry(instanceId);
-    await this.withMaintenance(entry, () => restoreWorldBackup(instanceId, backupId));
+    await this.withMaintenance(entry, async () => {
+      if (!backupId.startsWith('full-')) return restoreWorldBackup(instanceId, backupId);
+      const before = this.snapshotState(entry);
+      await restoreServerSnapshot(instanceId, backupId, before, state => {
+        Object.assign(entry.persisted, { contentAutoSync: false, contentPinned: Object.keys(entry.persisted.contentBindings ?? {}).length > 0 });
+        this.applySnapshotState(entry, state);
+        this.refreshContentStatus(entry);
+      }, () => this.applySnapshotState(entry, before));
+      entry.pendingUpdate = undefined; entry.installFailure = undefined;
+    });
     entry.supervisor.console.system(`world restored from backup ${backupId}`);
     this.pushUpdate(entry.persisted.roomId);
   }
@@ -1462,6 +1586,7 @@ export class ServerManager extends EventEmitter {
 
   savePlayers(instanceId: string, patch: { whitelist?: MinecraftPlayerEntry[]; banned?: MinecraftPlayerEntry[]; whitelistEnabled?: boolean }): void {
     const entry = this.entry(instanceId);
+    this.assertStopped(entry);
     if (entry.persisted.moduleId !== 'minecraft') throw new ServerActionError('unknown-module', entry.persisted.moduleId);
     const st = entry.supervisor.status;
     if (st === 'running' || st === 'starting') throw new ServerActionError('stop-first');
@@ -1487,6 +1612,7 @@ export class ServerManager extends EventEmitter {
 
   setUseSystemJava(instanceId: string, enabled: boolean): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     entry.persisted.useSystemJava = enabled === true;
     upsertInstance(entry.persisted);
     // Turning this on is exactly when someone has just installed Java, so drop
@@ -1497,7 +1623,9 @@ export class ServerManager extends EventEmitter {
 
   setContentAutoSync(instanceId: string, enabled: boolean): void {
     const entry = this.entry(instanceId);
+    if (this.maintenance.has(instanceId)) throw new ServerActionError('maintenance-busy');
     if (enabled && !entry.persisted.roomId) throw new ServerActionError('no-content-bindings');
+    if (enabled) { delete entry.persisted.contentPinned; this.refreshContentStatus(entry); }
     entry.persisted.contentAutoSync = enabled === true;
     upsertInstance(entry.persisted);
     this.pushUpdate(entry.persisted.roomId);
@@ -1637,12 +1765,20 @@ export class ServerManager extends EventEmitter {
     const status: ServerStatus = entry.installing ? 'installing' : snap.status;
     const plan = entry.module.probePlan?.(view);
     const port = plan?.port;
+    const bindings = this.bindingsOf(entry);
+    const sharedContent = this.contentSlotsOf(entry).filter(slot => Object.prototype.hasOwnProperty.call(bindings, slot.id)).map(slot => ({
+      slotId: slot.id, folderId: bindings[slot.id] ?? '', extensions: [...slot.extensions], ...(slot.compat ? { compat: slot.compat } : {}),
+    }));
 
     return {
       instanceId: entry.persisted.instanceId,
       moduleId: entry.persisted.moduleId,
       name: entry.persisted.name,
       version: (entry.persisted.ref as GameVersionRef).label,
+      ...(entry.persisted.contentPinned ? { contentPinned: true } : {}),
+      ...(this.maintenance.has(entry.persisted.instanceId) ? { maintenance: true } : {}),
+      ...(this.healthHistories.get(entry.persisted.instanceId)?.history.at(-1) ? { health: this.healthHistories.get(entry.persisted.instanceId)!.history.at(-1) } : {}),
+      sharedContent,
       hostId: this.selfId,
       isHost: true,
       role: this.roleOf(entry),
@@ -1727,6 +1863,10 @@ export class ServerManager extends EventEmitter {
   dispose(): void {
     this.disposed = true;
     this.stopScheduleTicker();
+    if (this.healthTimer) clearInterval(this.healthTimer);
+    this.healthTimer = null;
+    this.healthHistories.clear(); this.tickReadings.clear();
+    for (const cancel of this.tickQueries.values()) cancel();
     for (const entry of this.entries.values()) {
       entry.installAbort?.abort();
       this.stopProbing(entry);

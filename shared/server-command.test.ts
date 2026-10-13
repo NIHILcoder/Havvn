@@ -1,8 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { PendingServerCommands, ServerCommandLedger, SERVER_COMMAND_TIMEOUT, commandCanonical, commandReplyCanonical, validCommandRequest, type ServerCommandRequest } from './server-command';
-const request = (over: Partial<ServerCommandRequest> = {}): ServerCommandRequest => ({
-  commandId: 'command-0000000001', hostId: 'host', by: 'operator', instanceId: 'server', command: 'stop', at: Date.now(), expiresAt: Date.now() + 30000, ...over,
-});
+const request = (over: Partial<ServerCommandRequest> = {}): ServerCommandRequest => {
+  const at = Date.now();
+  return { commandId: 'command-0000000001', hostId: 'host', by: 'operator', instanceId: 'server', command: 'stop', at, expiresAt: at + 30000, ...over };
+};
 afterEach(() => vi.useRealTimers());
 it('deduplicates across process restarts; conflicting IDs and expired retries never execute', () => {
   let now = 1000; const ledger = new ServerCommandLedger(2, () => now); const run = vi.fn(() => ({ ok: true as const }));

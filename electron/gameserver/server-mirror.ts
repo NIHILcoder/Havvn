@@ -10,6 +10,8 @@
 import type {
   MirroredServerInstance, RoomServerInstance, ServerMirrorState, ServerRole, ServerStatus,
 } from '../../shared/gameserver-types';
+import { parseServerSharedContent } from '../../shared/server-preparation';
+import { parseServerHealth } from '../../shared/server-health';
 
 const MAX_CONSOLE_TAIL = 8;
 const MAX_LINE = 240;
@@ -43,6 +45,8 @@ export function buildMirrorPayload(
       moduleId: i.moduleId,
       name: i.name,
       version: i.version,
+      ...(i.health ? { health: i.health } : {}),
+      ...(i.sharedContent ? { sharedContent: i.sharedContent } : {}),
       status: i.status,
       since: i.since,
       ...(i.address ? { address: i.address } : {}),
@@ -69,11 +73,15 @@ export function parseMirrorBody(body: string): ServerMirrorState | null {
       if (!item || typeof item.instanceId !== 'string') continue;
       const tail = item.consoleTail?.length ? item.consoleTail.map(String).slice(-MAX_CONSOLE_TAIL) : [];
       const tailSeq = Number(item.consoleTailSeq);
+      const sharedContent = parseServerSharedContent(item.sharedContent);
+      const health = parseServerHealth(item.health);
       instances.push({
         instanceId: String(item.instanceId),
         moduleId: String(item.moduleId || ''),
         name: String(item.name || 'Server'),
         version: String(item.version || ''),
+        ...(health ? { health } : {}),
+        ...(sharedContent ? { sharedContent } : {}),
         status: (item.status as ServerStatus) || 'stopped',
         since: Number(item.since) || at,
         ...(item.address ? { address: String(item.address) } : {}),

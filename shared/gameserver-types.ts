@@ -517,6 +517,9 @@ export interface ServerAccessState {
 
 /** One world backup on disk beside an instance. */
 export interface WorldBackupEntry {
+  /** Absent for legacy world-only backups. */
+  kind?: 'world' | 'server';
+  version?: string;
   id: string;
   createdAt: number;
   label: string;
@@ -560,6 +563,10 @@ export interface ServerAlert {
 
 /** Compact instance state gossiped by the host for remote viewers/operators. */
 export interface MirroredServerInstance {
+  health?: import('./server-health').ServerHealthSample;
+  /** Published server content folders, for a member's preparation checklist.
+   * These are shared server files, not an executable client install manifest. */
+  sharedContent?: ServerSharedContent[];
   instanceId: string;
   moduleId: string;
   name: string;
@@ -629,6 +636,10 @@ export interface ServerContentState {
 
 /** One instance as the renderer sees it. */
 export interface RoomServerInstance {
+  maintenance?: boolean;
+  contentPinned?: boolean;
+  health?: import('./server-health').ServerHealthSample;
+  sharedContent?: ServerSharedContent[];
   /** Runs locally without room gossip, LAN advertisements or remote operators. */
   local?: boolean;
   instanceId: string;
@@ -695,6 +706,13 @@ export interface RoomServerInstance {
   /** Host-side seq of the last `consoleTail` line — the cursor a remote viewer
    *  appends against. Absent when the tail is. */
   consoleTailSeq?: number;
+}
+
+export interface ServerSharedContent {
+  slotId: string;
+  folderId: string;
+  extensions: string[];
+  compat?: string;
 }
 
 /**

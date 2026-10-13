@@ -1664,6 +1664,8 @@ export interface IpcApi {
        */
       checkUpdate: (instanceId: string) => Promise<{ current: string; available: string | null }>;
       applyUpdate: (instanceId: string) => Promise<{ ok: boolean }>;
+      health: (instanceId: string, roomId?: string) => Promise<import('./server-health').ServerHealthState>;
+      queryTicks: (instanceId: string) => Promise<{ available: boolean }>;
       command: (instanceId: string, command: string, roomId?: string) => Promise<{ ok: boolean; reason?: string }>;
       clearFailure: (instanceId: string) => Promise<{ ok: boolean }>;
       setAutoRestart: (instanceId: string, enabled: boolean) => Promise<{ ok: boolean }>;
@@ -1688,7 +1690,7 @@ export interface IpcApi {
       grantOperator: (instanceId: string, memberId: string) => Promise<{ ok: boolean }>;
       revokeOperator: (instanceId: string, memberId: string) => Promise<{ ok: boolean }>;
       backups: (instanceId: string) => Promise<WorldBackupEntry[]>;
-      createBackup: (instanceId: string, label?: string) => Promise<WorldBackupEntry>;
+      createBackup: (instanceId: string, label?: string, kind?: 'world' | 'server') => Promise<WorldBackupEntry>;
       restoreBackup: (instanceId: string, backupId: string) => Promise<{ ok: boolean }>;
       deleteBackup: (instanceId: string, backupId: string) => Promise<{ ok: boolean }>;
       openBackupsFolder: (instanceId: string) => Promise<{ ok: boolean }>;

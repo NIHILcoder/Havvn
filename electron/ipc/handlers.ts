@@ -1319,9 +1319,15 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:srvBackups', wrapHandler('rooms:srvBackups',
     async (_event, instanceId: string) => serverManager.backupState(String(instanceId || ''))
   ));
+  ipcMain.handle('rooms:srvHealth', wrapHandler('rooms:srvHealth',
+    async (_event, instanceId: string, roomId?: string) => serverManager.healthState(String(instanceId || ''), String(roomId || ''))
+  ));
+  ipcMain.handle('rooms:srvQueryTicks', wrapHandler('rooms:srvQueryTicks',
+    async (_event, instanceId: string) => serverManager.queryTicks(String(instanceId || ''))
+  ));
   ipcMain.handle('rooms:srvCreateBackup', wrapHandler('rooms:srvCreateBackup',
-    async (_event, instanceId: string, label: unknown) =>
-      serverManager.createBackup(String(instanceId || ''), typeof label === 'string' ? label : undefined)
+    async (_event, instanceId: string, label: unknown, kind: unknown) =>
+      serverManager.createBackup(String(instanceId || ''), typeof label === 'string' ? label : undefined, kind === 'server' ? 'server' : 'world')
   ));
   ipcMain.handle('rooms:srvRestoreBackup', wrapHandler('rooms:srvRestoreBackup',
     async (_event, instanceId: string, backupId: string) => {

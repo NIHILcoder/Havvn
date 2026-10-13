@@ -49,8 +49,11 @@ import { ServerSchedulePanel } from './ServerSchedulePanel';
 import { ServerAccessPanel } from './ServerAccessPanel';
 import { ServerBackupPanel } from './ServerBackupPanel';
 import { ServerPlayersPanel } from './ServerPlayersPanel';
+import { ServerPreparation } from './ServerPreparation';
+import { ServerHealthPanel } from './ServerHealthPanel';
 import { useServerError, useServerErrorParts } from './serverErrors';
 import './RoomServerPanel.css';
+import { loadServerView, saveServerView, SERVER_VIEW_EVENT, type ServerView, type ServerViewTab } from './roomWorkspace';
 
 /** Flavours the create form offers as a filter. Order is the order a person
  *  scanning "what kind of Minecraft server" expects — Paper first (most common
@@ -71,7 +74,7 @@ interface RoomServerPanelProps {
   soloHandle?: React.ReactNode;
 }
 
-export type Tab = 'overview' | 'console' | 'content' | 'schedule' | 'access' | 'backup' | 'players' | 'settings';
+export type Tab = ServerViewTab;
 
 const EMPTY_STATE: RoomServerState = { available: true, modules: [], instances: [] };
 
@@ -130,8 +133,31 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   const load = useCallback(() => window.api.rooms.servers.state(roomId), [roomId]);
   const { data, setData: setState, loading, error, reload, ready } = useServerPanelData(load);
   const state = data ?? EMPTY_STATE;
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('overview');
+  const [viewState, setViewState] = useState(() => ({ roomId, view: loadServerView(roomId) }));
+  const view = viewState.roomId === roomId ? viewState.view : loadServerView(roomId);
+  const selectedId = view.instanceId, tab = view.tab;
+  const viewRef = useRef({ roomId, view });
+  viewRef.current = { roomId, view };
+  const updateView = useCallback((patch: Partial<ServerView>) => {
+    if (viewRef.current.roomId !== roomId) return;
+    const next = { ...viewRef.current.view, ...patch };
+    viewRef.current = { roomId, view: next };
+    setViewState({ roomId, view: next }); saveServerView(roomId, next);
+  }, [roomId]);
+  const setSelectedId = useCallback((instanceId: string | null) => {
+    updateView({ instanceId });
+  }, [updateView]);
+  const setTab = useCallback((nextTab: Tab) => {
+    updateView({ tab: nextTab });
+  }, [updateView]);
+  useEffect(() => {
+    const onView = (event: Event) => {
+      const detail = (event as CustomEvent<{ roomId: string; view: ServerView }>).detail;
+      if (detail?.roomId === roomId) setViewState({ roomId, view: detail.view });
+    };
+    window.addEventListener(SERVER_VIEW_EVENT, onView);
+    return () => window.removeEventListener(SERVER_VIEW_EVENT, onView);
+  }, [roomId]);
   /** Creating is now two steps: the picker names the game, then the form fills
    *  it in. `creatingModule` IS the second step — holding the chosen module here
    *  rather than inside the form keeps "which game" out of the form's state, so
@@ -170,9 +196,10 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   // Follow the list when the selection disappears (deleted elsewhere, or the
   // very first instance arriving) so the panel is never pointed at nothing.
   useEffect(() => {
+    if (!ready) return;
     if (selected && selected.instanceId !== selectedId) setSelectedId(selected.instanceId);
     if (!selected && selectedId) setSelectedId(null);
-  }, [selected, selectedId]);
+  }, [selected, selectedId, ready, setSelectedId]);
 
   // A running server's uptime must tick without a state push.
   const [, forceTick] = useState(0);
@@ -346,10 +373,12 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
   const { instanceId, status } = instance;
 
   const live = status === 'running' || status === 'starting' || status === 'stopping';
-  const busy = working || status === 'installing' || status === 'starting' || status === 'stopping';
+  const busy = working || instance.maintenance === true || status === 'installing' || status === 'starting' || status === 'stopping';
   const tone = statusTone(status);
 
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  useEffect(() => { setPreparing(false); }, [instanceId]);
   const [deleteFiles, setDeleteFiles] = useState(false);
 
   /**
@@ -537,6 +566,9 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         specific explanation, and failDetail carries the actual log line or exit
         code underneath — so "it broke" is never the whole message.
       */}
+      <Button size="sm" variant="secondary" aria-expanded={preparing} onClick={() => setPreparing(value => !value)} icon={<Icon name="check-circle" size={14} />}>{t('rooms.server.prepare.title')}</Button>
+      {preparing && <ServerPreparation instance={instance} roomId={roomId} onConsole={() => { setPreparing(false); onTab('console'); }} onContent={() => { setPreparing(false); onTab('content'); }} />}
+      {instance.maintenance && <p className="room-server-note" role="status">{t('rooms.server.maintenanceHint')}</p>}
       {instance.local && <p className="room-server-local-note" role="status">{t('rooms.server.local.note')}</p>}
       {instance.lifecyclePaused && (
         <div className="room-server-failure" role="status">
@@ -750,6 +782,8 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
       <div className="room-server-view">
         {tab === 'overview' && (
           <div className="room-server-overview">
+            <ServerHealthPanel key={instanceId} instance={instance} roomId={roomId} />
+            {instance.contentPinned && <p className="room-server-note">{t('rooms.server.backup.contentPinned')}</p>}
             <div className="room-server-facts">
               {isRemote && (
                 <div className="room-server-fact">
@@ -831,6 +865,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
                 </span>
                 <Toggle
                   checked={usingSystemJava}
+                  disabled={instance.maintenance === true}
                   ariaLabel={t('rooms.server.systemJava')}
                   onChange={(checked) => void api.setUseSystemJava(instanceId, checked)}
                 />
@@ -844,6 +879,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
                 </span>
                 <Toggle
                   checked={instance.contentAutoSync === true}
+                  disabled={instance.maintenance === true}
                   ariaLabel={t('rooms.server.contentAutoSync')}
                   onChange={(checked) => void api.setContentAutoSync(instanceId, checked)}
                 />
@@ -865,11 +901,11 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
         )}
         {tab === 'schedule' && !isRemote && <ServerSchedulePanel instanceId={instanceId} />}
         {tab === 'access' && !isRemote && <ServerAccessPanel roomId={roomId} instanceId={instanceId} />}
-        {tab === 'backup' && !isRemote && <ServerBackupPanel instanceId={instanceId} locked={live} />}
+        {tab === 'backup' && !isRemote && <ServerBackupPanel instanceId={instanceId} locked={live || instance.maintenance === true} maintenance={instance.maintenance} />}
         {tab === 'players' && !isRemote && instance.moduleId === 'minecraft' && (
           <ServerPlayersPanel instanceId={instanceId} />
         )}
-        {tab === 'settings' && !isRemote && <ServerConfigForm instanceId={instanceId} locked={live} />}
+        {tab === 'settings' && !isRemote && <ServerConfigForm instanceId={instanceId} locked={live || instance.maintenance === true} maintenance={instance.maintenance} />}
       </div>
     </div>
   );

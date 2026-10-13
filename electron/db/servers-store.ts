@@ -46,6 +46,8 @@ export interface PersistedInstance {
   useSystemJava?: boolean;
   /** Sync room content when bound files change (server must be stopped). */
   contentAutoSync?: boolean;
+  /** A restored assembly is kept until the host explicitly syncs new content. */
+  contentPinned?: boolean;
 }
 
 interface ServersSchema {

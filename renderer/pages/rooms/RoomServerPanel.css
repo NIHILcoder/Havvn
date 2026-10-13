@@ -982,8 +982,8 @@
 .room-server-input {
   width: 100%;
   min-width: 0;
-  height: 30px;
-  padding: 0 var(--space-2);
+  height: 36px;
+  padding: 0 10px;
   font-family: inherit;
   font-size: 12px;
   color: var(--color-text-primary);
@@ -1020,6 +1020,8 @@
 .server-config-field .custom-select-container {
   width: 100%;
 }
+.room-server-field .custom-select-trigger, .server-config-field .custom-select-trigger { min-height: 36px; height: auto; padding: 8px 10px; line-height: 18px; }
+.room-server-field .custom-select-value, .server-config-field .custom-select-value { white-space: normal; overflow-wrap: anywhere; }
 
 /* Segmented source switch: catalog | own files. */
 .room-server-mode {
@@ -1473,11 +1475,13 @@
 .server-config-foot {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   flex: 0 0 auto;
   padding-top: var(--space-3);
   border-top: 1px solid var(--color-border-subtle);
 }
+.server-config-foot .btn { min-height: 36px; max-width: 100%; white-space: normal; line-height: 1.35; }
 
 .server-config-dirty {
   margin-right: auto;
@@ -1535,8 +1539,8 @@
 .server-config-field input {
   width: 100%;
   min-width: 0;
-  height: 30px;
-  padding: 0 var(--space-2);
+  height: 36px;
+  padding: 0 10px;
   font-family: inherit;
   font-size: 12px;
   color: var(--color-text-primary);
@@ -1955,3 +1959,68 @@
 .room-local-servers-modal .um-body { min-height: min(440px, 60vh); }
 .rooms-leave-servers { margin-bottom: var(--space-4); }
 .rooms-leave-servers ul { padding-left: var(--space-5); overflow-wrap: anywhere; }
+
+.server-preparation { display: grid; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); font-size: var(--font-size-sm); min-width: 0; }
+.server-preparation h4, .server-preparation p { margin: 0; }
+.server-preparation p { color: var(--color-text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+.server-preparation-check { display: flex; gap: var(--space-2); align-items: flex-start; }
+.server-preparation-check > div { flex: 1; min-width: 0; }
+.server-preparation-check > svg { flex-shrink: 0; margin-top: 2px; }
+.server-preparation-files { display: grid; gap: var(--space-2); }
+.server-preparation-files ul { list-style: none; padding: 0; margin: 0; max-height: 180px; overflow-y: auto; }
+.server-preparation-files li { display: flex; align-items: center; gap: var(--space-2); padding: 3px 0; }
+.server-preparation-files li span { overflow-wrap: anywhere; min-width: 0; }
+.server-preparation-files li svg { flex-shrink: 0; }
+.server-preparation-confirm { display: flex; align-items: flex-start; gap: var(--space-2); }
+.server-preparation code { overflow-wrap: anywhere; user-select: text; }
+.server-console-filters, .server-console-save-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.server-console-filters input, .server-console-save-row input { flex: 1 1 180px; box-sizing: border-box; min-width: 0; width: 100%; min-height: 36px; padding: 8px 10px; color: var(--color-text-primary); background: var(--color-bg-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); font: inherit; font-size: var(--font-size-sm); }
+.server-console-filters .custom-select-container { flex: 1 1 150px; min-width: 0; max-width: 240px; }
+.server-console-filters .custom-select-trigger { height: 36px; min-height: 36px; padding: 0 10px; }
+.server-console-jump { position: static; align-self: flex-end; flex: 0 0 auto; }
+.server-console-line.severity-error { color: var(--color-error); }
+.server-console-line.severity-warn { color: var(--color-warning, #eab308); }
+.server-console-saved { font-size: var(--font-size-sm); flex: 0 0 auto; max-height: min(320px, 45dvh); overflow-y: auto; }
+.server-console-saved summary { cursor: pointer; padding: 4px 0; }
+.server-console-saved p { margin: var(--space-2) 0; color: var(--color-text-secondary); }
+.server-console-saved-row { display: flex; gap: 4px; align-items: center; }
+.server-console-saved-row > :first-child { flex: 1; justify-content: flex-start; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.server-console-saved-row .btn, .server-console-save-row .btn { min-height: 36px; line-height: 1.35; }
+.server-console-saved-row .btn-icon-only { flex-shrink: 0; min-width: 36px; }
+.server-console-save-row .btn { flex: 1 1 180px; min-width: 0; max-width: 100%; padding: 8px 10px; white-space: normal; overflow-wrap: anywhere; }
+.server-console-save-row { margin-top: var(--space-2); }
+
+.server-config-presets, .server-health { padding: var(--space-3); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-primary); display: grid; gap: var(--space-2); font-size: var(--font-size-sm); min-width: 0; }
+.server-config-presets { margin-bottom: var(--space-4); }
+.server-config-presets p, .server-health p { margin: 0; color: var(--color-text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+.server-config-presets > strong, .server-health-head { display: flex; align-items: center; gap: var(--space-2); }
+.server-preset-preview { display: grid; gap: var(--space-2); }
+.server-preset-preview > div { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: baseline; gap: var(--space-2); }
+.server-preset-preview > div > span { min-width: 0; overflow-wrap: anywhere; }
+.server-preset-preview > div > span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.server-preset-save { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); align-items: start; gap: var(--space-2); }
+.server-preset-save input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; background: var(--color-bg-secondary); color: var(--color-text-primary); padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); font: inherit; }
+.server-config-presets .custom-select-trigger, .server-config-presets .btn { min-height: 36px; }
+.server-config-presets .custom-select-trigger { height: auto; padding: 8px 10px; line-height: 18px; }
+.server-config-presets .custom-select-value { white-space: normal; overflow-wrap: anywhere; }
+.server-config-presets .btn { min-width: 0; max-width: 100%; padding: 8px 10px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.server-health-head { justify-content: space-between; flex-wrap: wrap; }
+.server-health-head > span { font-size: var(--font-size-xs); color: var(--color-text-tertiary); }
+.server-health-head strong { display: flex; align-items: center; gap: var(--space-2); }
+.server-health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: var(--space-2); }
+.server-health-metric { display: grid; gap: 4px; min-width: 0; }
+.server-health-metric > span { color: var(--color-text-secondary); }
+.server-health-metric > strong { font-size: var(--font-size-lg); font-variant-numeric: tabular-nums; }
+.server-health-metric svg { width: 100%; min-width: 0; height: 60px; color: var(--color-accent-primary); }
+.server-health-disk, .server-health-ticks { display: flex; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+.room-server-backup-create { flex-wrap: wrap; }
+.room-server-backup-create .custom-select-container { flex: 1 0 100%; }
+.room-server-backup-create input { flex: 1 1 180px; box-sizing: border-box; min-height: 36px; padding: 8px 10px; }
+.room-server-backup-create .custom-select-trigger, .room-server-backup-create .btn { min-height: 36px; }
+.room-server-backup-create .custom-select-trigger { height: 36px; padding: 0 10px; }
+.room-server-backup-create .btn { flex: 1 1 140px; max-width: 100%; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.room-server-backup-item { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.room-server-backup-actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; max-width: 100%; }
+.room-server-backup-actions > p { flex-basis: 100%; max-width: 100%; }
+.room-server-backup-actions .btn { min-height: 36px; max-width: 100%; padding: 8px 10px; line-height: 1.35; white-space: normal; overflow-wrap: anywhere; }
+.room-server-backup-label, .room-server-backup-sub { overflow-wrap: anywhere; }

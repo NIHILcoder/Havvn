@@ -887,6 +887,8 @@ const api: IpcApi = {
       checkUpdate: (instanceId: string): Promise<{ current: string; available: string | null }> =>
         ipcRenderer.invoke('rooms:srvCheckUpdate', instanceId),
       applyUpdate: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvApplyUpdate', instanceId),
+      health: (instanceId: string, roomId?: string) => ipcRenderer.invoke('rooms:srvHealth', instanceId, roomId),
+      queryTicks: (instanceId: string) => ipcRenderer.invoke('rooms:srvQueryTicks', instanceId),
       command: (instanceId: string, command: string, roomId?: string): Promise<{ ok: boolean; reason?: string }> =>
         ipcRenderer.invoke('rooms:srvCommand', instanceId, command, roomId),
       clearFailure: (instanceId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:srvClearFailure', instanceId),
@@ -934,8 +936,8 @@ const api: IpcApi = {
       revokeOperator: (instanceId: string, memberId: string): Promise<{ ok: boolean }> =>
         ipcRenderer.invoke('rooms:srvRevokeOperator', instanceId, memberId),
       backups: (instanceId: string) => ipcRenderer.invoke('rooms:srvBackups', instanceId),
-      createBackup: (instanceId: string, label?: string) =>
-        ipcRenderer.invoke('rooms:srvCreateBackup', instanceId, label),
+      createBackup: (instanceId: string, label?: string, kind?: 'world' | 'server') =>
+        ipcRenderer.invoke('rooms:srvCreateBackup', instanceId, label, kind),
       restoreBackup: (instanceId: string, backupId: string) =>
         ipcRenderer.invoke('rooms:srvRestoreBackup', instanceId, backupId),
       deleteBackup: (instanceId: string, backupId: string) =>

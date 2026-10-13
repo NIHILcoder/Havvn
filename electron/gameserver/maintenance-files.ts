@@ -62,6 +62,9 @@ export async function treeFingerprint(root: string): Promise<string> {
 /** A failed rollback or process termination leaves recovery material in root.
  * Refuse a fresh world/process until the host has recovered those files. */
 export function hasInterruptedMaintenance(root: string): boolean {
-  try { return fs.readdirSync(root).some(name => /^\.(restore|content)-/.test(name)); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+  let interrupted = false;
+  try { interrupted = fs.readdirSync(root).some(name => /^\.(restore|content)-/.test(name)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  try { return interrupted || fs.readdirSync(path.dirname(root)).some(name => /^\.server-restore-/.test(name)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return interrupted; throw error; }
 }

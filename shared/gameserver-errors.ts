@@ -38,6 +38,7 @@ export type ServerErrorCode =
   | 'not-installed'          // start attempted before a successful install
   | 'maintenance-busy' | 'content-pending'
   | 'maintenance-recovery' | 'backup-damaged'
+  | 'update-rolled-back'
   | 'install-running'        // an install is in flight
   | 'room-unavailable'
   | 'stop-first'             // the operation needs the process down
@@ -74,6 +75,7 @@ export const SERVER_ERR_PREFIX = 'havvn-server-err:';
 const CODES = new Set<string>([
   'maintenance-busy', 'content-pending',
   'maintenance-recovery', 'backup-damaged',
+  'update-rolled-back',
   'command-unknown', 'command-expired', 'command-conflict', 'command-busy',
   'not-installed', 'install-running', 'room-unavailable', 'stop-first', 'not-running', 'no-console',
   'empty-command', 'runtime-missing', 'host-only', 'legal-pending',

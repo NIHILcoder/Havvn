@@ -4,7 +4,7 @@ import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
  */
 import { Button } from '../../components/Button';
 import React, { useCallback, useState } from 'react';
-import { Icon } from '../../components';
+import { Icon, Select } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
 import { useServerError } from './serverErrors';
@@ -13,6 +13,7 @@ import './RoomServerPanel.css';
 interface ServerBackupPanelProps {
   instanceId: string;
   locked: boolean;
+  maintenance?: boolean;
 }
 
 function formatBytes(n: number): string {
@@ -21,7 +22,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId, locked }) => {
+export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId, locked, maintenance = false }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const errorText = useServerError();
@@ -30,6 +31,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
   const load = useCallback(() => api.backups(instanceId), [api, instanceId]);
   const { data: backups, reload, loading, error, ready } = useServerPanelData(load);
   const [label, setLabel] = useState('');
+  const [kind, setKind] = useState<'world' | 'server'>('world');
   const [busy, setBusy] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
@@ -52,9 +54,11 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
     <div className="room-server-section">
       <p className="room-server-section-intro">{t('rooms.server.backup.intro')}</p>
       {locked && (
-        <p className="room-server-note is-warn">{t('rooms.server.stopFirst')}</p>
+        <p className="room-server-note is-warn">{t(maintenance ? 'rooms.server.maintenanceHint' : 'rooms.server.stopFirst')}</p>
       )}
       <div className="room-server-backup-create">
+        <Select value={kind} onChange={value => setKind(value as 'world' | 'server')} disabled={locked || busy}
+          ariaLabel={t('rooms.server.backup.kind')} options={['world', 'server'].map(value => ({ value, label: t(('rooms.server.backup.kind.' + value) as never) }))} />
         <input
           type="text"
           className="room-server-input"
@@ -68,7 +72,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
           className="room-server-btn" loading={busy}
           disabled={locked}
           onClick={() => void run(async () => {
-            await api.createBackup(instanceId, label.trim() || undefined);
+            await api.createBackup(instanceId, label.trim() || undefined, kind);
             setLabel('');
             toast.success(t('rooms.server.backup.created'));
           })}
@@ -95,6 +99,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
               <div className="room-server-backup-meta">
                 <span className="room-server-backup-label">{b.label}</span>
                 <span className="room-server-backup-sub">
+                  {b.kind === 'server' ? t('rooms.server.backup.kind.server') + ' · ' + b.version + ' · ' : ''}
                   {new Date(b.createdAt).toLocaleString()} · {formatBytes(b.bytes)}
                   {b.auto ? ` · ${t('rooms.server.backup.auto')}` : ''}
                 </span>
@@ -102,6 +107,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
               <div className="room-server-backup-actions">
                 {confirmId === b.id ? (
                   <>
+                    {b.kind === 'server' && <p className="room-server-note">{t('rooms.server.backup.fullRestoreHint')}</p>}
                     <Button size="sm"
                       type="button"
                       className="room-server-btn is-danger"
@@ -109,7 +115,7 @@ export const ServerBackupPanel: React.FC<ServerBackupPanelProps> = ({ instanceId
                       onClick={() => void run(async () => {
                         await api.restoreBackup(instanceId, b.id);
                         setConfirmId(null);
-                        toast.success(t('rooms.server.backup.restored'));
+                        toast.success(t(b.kind === 'server' ? 'rooms.server.backup.fullRestored' : 'rooms.server.backup.restored'));
                       })}
                     >
                       {t('rooms.server.backup.confirmRestore')}

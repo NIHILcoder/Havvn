@@ -20,15 +20,17 @@ import { useHostToast } from '../../utils/hostToast';
 import { ServerConfigField, validServerConfigValue } from './ServerConfigField';
 import { useServerError } from './serverErrors';
 import type { ConfigField } from '../../../shared/types';
+import { ServerConfigPresets } from './ServerConfigPresets';
 
 interface ServerConfigFormProps {
   instanceId: string;
   /** A live server reads its config at boot, so editing it now would show
    *  settings that are not actually in effect. */
   locked: boolean;
+  maintenance?: boolean;
 }
 
-export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, locked }) => {
+export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, locked, maintenance = false }) => {
   const { t } = useTranslation();
   const toast = useHostToast();
   const errorText = useServerError();
@@ -94,10 +96,12 @@ export const ServerConfigForm: React.FC<ServerConfigFormProps> = ({ instanceId, 
         {locked && (
           <p className="server-config-locked">
             <Icon name="lock" size={12} />
-            {t('rooms.server.stopFirst')}
+            {t(maintenance ? 'rooms.server.maintenanceHint' : 'rooms.server.stopFirst')}
           </p>
         )}
 
+        {schema.some(field => field.key === 'havvn-memory-mb') && <ServerConfigPresets key={instanceId} schema={schema} values={values} disabled={locked || saving}
+          onApply={next => { setValues(next); setDirty(true); }} />}
         {basic.map(renderField)}
 
         {advanced.length > 0 && (
