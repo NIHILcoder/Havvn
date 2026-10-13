@@ -221,11 +221,6 @@ svg {
   100% { background-position: 200% center; }
 }
 
-@keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--color-accent-rgb), 0); }
-  50% { box-shadow: 0 0 0 8px rgba(var(--color-accent-rgb), 0.15); }
-}
-
 /* interface prefs */
 /* Segmented UI-scale picker on the Interface settings page. */
 .iface-seg {
@@ -285,7 +280,9 @@ svg {
 .accent-reset:hover { color: var(--color-accent-primary); }
 
 /* Reduced motion: collapse every transition/animation to a single instant. */
-[data-reduce-motion] * {
+[data-reduce-motion] *,
+[data-reduce-motion] *::before,
+[data-reduce-motion] *::after {
   transition-duration: 0.01ms !important;
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;

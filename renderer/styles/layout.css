@@ -266,6 +266,8 @@ body.te-resizing .app-container { transition: none; }
   text-overflow: ellipsis;
 }
 
+/* Persistent online/call indicators keep a static glow. Even a tiny looping
+   shadow forces the whole window to submit frames at the display refresh rate. */
 .room-nav-live {
   width: 7px;
   height: 7px;
@@ -273,7 +275,6 @@ body.te-resizing .app-container { transition: none; }
   border-radius: 50%;
   background: var(--color-accent-primary);
   box-shadow: 0 0 6px rgba(var(--color-accent-rgb), 0.5);
-  animation: pulse-glow 2.2s infinite;
 }
 
 .room-nav-unread {
@@ -620,7 +621,6 @@ body.te-resizing .app-container { transition: none; }
 .status-dot-connected {
   background-color: var(--color-status-connected);
   box-shadow: 0 0 6px rgba(var(--color-success-rgb), 0.4);
-  animation: pulse-glow 2s infinite;
 }
 
 .status-item-download {
@@ -645,7 +645,6 @@ body.te-resizing .app-container { transition: none; }
   border-radius: 50%;
   background: var(--color-success);
   box-shadow: 0 0 6px rgba(64, 192, 87, 0.5);
-  animation: pulse-glow 2.2s infinite;
   flex-shrink: 0;
 }
 .status-voice-dot.muted { background: var(--color-warning); box-shadow: none; animation: none; }
@@ -691,7 +690,6 @@ body.te-resizing .app-container { transition: none; }
   border-radius: 50%;
   background: var(--color-accent-primary);
   box-shadow: 0 0 6px rgba(var(--color-accent-rgb), 0.5);
-  animation: pulse-glow 2.2s infinite;
   flex-shrink: 0;
 }
 
