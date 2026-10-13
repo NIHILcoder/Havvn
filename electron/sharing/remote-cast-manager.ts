@@ -7,7 +7,7 @@
  */
 
 import path from 'path';
-import { BrowserWindow, ipcMain } from 'electron';
+import { HiddenEngine } from './hidden-engine';
 import crypto from 'crypto';
 import { logger } from '../utils';
 import * as db from '../db/store';
@@ -19,78 +19,25 @@ const log = logger.child('RemoteCast');
 const RECEIVER_BASE = 'https://nihilcoder.github.io/Havvn/watch/';
 import { customTurnToIce, resolveTrackers } from './ice-servers';
 
-type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
-
 export class RemoteCastManager {
-  private win: BrowserWindow | null = null;
-  private ready = false;
-  private readyWaiters: Array<() => void> = [];
-  private pending = new Map<number, Pending>();
-  private reqSeq = 0;
-  private ipcWired = false;
-  // (downloadId/fileIndex) → active sessionId, so a re-publish reuses it.
+  // Re-publishing the same file reuses its live session.
   private active = new Map<string, string>();
-
-  private wireIpc(): void {
-    if (this.ipcWired) return;
-    this.ipcWired = true;
-    ipcMain.on('rcast-res', (_e, msg: any) => {
-      const p = this.pending.get(msg?.reqId);
-      if (!p) return;
-      this.pending.delete(msg.reqId);
-      if (msg.ok) p.resolve(msg.data); else p.reject(new Error(msg.error || 'Remote-cast error'));
-    });
-    ipcMain.on('rcast-ready', () => {
-      this.ready = true;
-      const waiters = this.readyWaiters; this.readyWaiters = [];
-      waiters.forEach((f) => f());
-    });
-    ipcMain.on('rcast-log', (_e, m: any) => log.info('Engine', { msg: String(m) }));
-  }
-
-  private failAll(message: string): void {
-    for (const [, p] of this.pending) p.reject(new Error(message));
-    this.pending.clear();
-  }
-
-  private async ensureWindow(): Promise<BrowserWindow> {
-    this.wireIpc();
-    if (this.win && !this.win.isDestroyed()) {
-      if (this.ready) return this.win;
-      await new Promise<void>((res) => this.readyWaiters.push(res));
-      return this.win;
-    }
-    this.ready = false;
-    const preload = path.join(__dirname, 'remote-cast-engine.js');
-    const win = new BrowserWindow({
-      show: false,
-      webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: false, backgroundThrottling: false },
-    });
-    win.webContents.on('render-process-gone', (_e, details) => {
-      log.warn('Remote-cast window gone', { reason: details?.reason });
-      this.failAll('Remote streaming stopped unexpectedly (the engine crashed).');
-      this.ready = false;
-      if (this.win === win) this.win = null;
-    });
-    win.on('closed', () => { if (this.win === win) { this.win = null; this.ready = false; } });
-    this.win = win;
-    await win.loadURL('about:blank');
-    if (!this.ready) await new Promise<void>((res) => this.readyWaiters.push(res));
-    return win;
-  }
-
-  private async call<T = any>(type: string, payload: Record<string, unknown> = {}, timeoutMs = 0): Promise<T> {
-    const win = await this.ensureWindow();
-    const reqId = ++this.reqSeq;
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(reqId, { resolve, reject });
-      if (timeoutMs > 0) setTimeout(() => { if (this.pending.delete(reqId)) reject(new Error('Remote-cast engine did not respond')); }, timeoutMs);
-      win.webContents.send('rcast-cmd', { type, reqId, ...payload });
-    });
-  }
+  private starts = new Map<string, Promise<{ url: string; sessionId: string }>>();
+  private generation = 0;
+  private engine = new HiddenEngine('rcast', path.join(__dirname, 'remote-cast-engine.js'),
+    () => this.active.clear(), message => log.info('Engine', { msg: message }));
 
   /** Publish a file for remote viewing; returns the shareable watch link. */
-  async start(downloadId: string, fileIndex: number): Promise<{ url: string; sessionId: string }> {
+  start(downloadId: string, fileIndex: number): Promise<{ url: string; sessionId: string }> {
+    const key = `${downloadId}/${fileIndex}`, existing = this.starts.get(key);
+    if (existing) return existing;
+    const promise = this.startOnce(downloadId, fileIndex).finally(() => {
+      if (this.starts.get(key) === promise) this.starts.delete(key);
+    });
+    this.starts.set(key, promise); return promise;
+  }
+  private async startOnce(downloadId: string, fileIndex: number): Promise<{ url: string; sessionId: string }> {
+    const generation = this.generation;
     const info = await getTorrentManager().getCastFileInfo(downloadId, fileIndex);
     if (!info) throw new Error('File not available');
     if (info.kind === 'other') throw new Error('This file is not a playable media file');
@@ -98,11 +45,6 @@ export class RemoteCastManager {
     if (!ffmpeg) throw new Error('Remote streaming needs the bundled ffmpeg, which is unavailable');
 
     const key = `${downloadId}/${fileIndex}`;
-    let sessionId = this.active.get(key);
-    if (!sessionId) {
-      sessionId = crypto.randomBytes(16).toString('hex');
-      this.active.set(key, sessionId);
-    }
     let useTurn = true;
     let turnServers: ReturnType<typeof customTurnToIce> = [];
     let trackers = resolveTrackers();
@@ -113,23 +55,33 @@ export class RemoteCastManager {
       trackers = resolveTrackers(s.customTrackers);
     } catch { /* default on, no custom TURN, public trackers */ }
 
-    await this.call('start', { payload: { id: sessionId, contentPath: info.diskPath, ffmpeg, useTurn, turnServers, trackers } }, 15000);
+    // Choose the session after asynchronous settings lookup: an idle engine
+    // may have been retired while those settings were loading.
+    if (generation !== this.generation) throw new Error('Remote streaming was canceled');
+    const previousSession = this.active.get(key);
+    const sessionId = previousSession ?? crypto.randomBytes(16).toString('hex');
+    this.active.set(key, sessionId);
+    try {
+      await this.engine.call('start', { payload: { id: sessionId, contentPath: info.diskPath, ffmpeg, useTurn, turnServers, trackers } }, 15000);
+      if (!this.engine.hasWindow) throw new Error('Remote streaming engine closed');
+    } catch (error) {
+      if (this.active.get(key) === sessionId) this.active.delete(key);
+      if (!previousSession && this.engine.hasWindow) {
+        try { await this.engine.call('stop', { id: sessionId }); } catch { /* engine already closed */ }
+      }
+      throw error;
+    }
     const url = RECEIVER_BASE + '#' + sessionId + (useTurn ? '' : '|nt');
     return { url, sessionId };
   }
 
   async stop(sessionId: string): Promise<{ ok: boolean }> {
     for (const [k, v] of this.active) if (v === sessionId) this.active.delete(k);
-    try { await this.call('stop', { id: sessionId }, 8000); } catch { /* engine may be down */ }
+    if (this.engine.hasWindow) try { await this.engine.call('stop', { id: sessionId }); } catch { /* engine may be down */ }
     return { ok: true };
   }
 
-  destroy(): void {
-    this.failAll('Shutting down');
-    if (this.win && !this.win.isDestroyed()) { try { this.win.destroy(); } catch { /* ignore */ } }
-    this.win = null; this.ready = false;
-    log.info('RemoteCastManager destroyed');
-  }
+  destroy(): void { this.generation++; this.engine.destroy(); this.active.clear(); this.starts.clear(); log.info('RemoteCastManager destroyed'); }
 }
 
 let remoteCastManager: RemoteCastManager | null = null;

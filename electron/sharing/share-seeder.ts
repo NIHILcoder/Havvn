@@ -1,4 +1,5 @@
-import { useChromiumWebRTC } from './chromium-webrtc';
+import { sharePieceCache } from '../torrent/piece-cache';
+import { useChromiumWebRTC as configureChromiumWebRTC } from './chromium-webrtc';
 /**
  * Share seeder — runs as the PRELOAD of a hidden BrowserWindow.
  *
@@ -19,6 +20,7 @@ import fs from 'fs';
 // seed from a path — while WebRTC comes from the window below.
 import type WebTorrentType from 'webtorrent';
 let WebTorrent: typeof WebTorrentType;
+let ShareChunkStore: ReturnType<typeof sharePieceCache.store>;
 
 // GitHub Pages receiver path. The repo was renamed TorrentHunt → Havvn, so Pages
 // now serves at /Havvn/ and NEW links must use it. Links shared under the old
@@ -44,6 +46,26 @@ interface ShareEntry {
 let client: any = null;
 let clientUseTurn = true;
 const shares = new Map<string, ShareEntry>();
+const shareJobs = new Map<string, Promise<ShareEntry>>();
+const shareEpochs = new Map<string, number>();
+function releaseEmptyClient(): void {
+  if (shares.size || shareJobs.size || !client) return;
+  const old = client; client = null;
+  try { old.destroy(); } catch (error) { log('share client cleanup failed: ' + String(error)); }
+}
+function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean,
+  turnServers: any[] = [], trackers: string[] = RENDEZVOUS_TRACKERS): Promise<ShareEntry> {
+  const pending = shareJobs.get(downloadId);
+  if (pending) return pending;
+  const epoch = shareEpochs.get(downloadId) ?? 0;
+  const job = seedShare(downloadId, contentPath, name, useTurn, turnServers, trackers, epoch)
+    .finally(() => {
+      if (shareJobs.get(downloadId) === job) { shareJobs.delete(downloadId); shareEpochs.delete(downloadId); }
+      releaseEmptyClient();
+    });
+  shareJobs.set(downloadId, job);
+  return job;
+}
 
 function log(msg: string): void { try { ipcRenderer.send('share-log', msg); } catch { /* ignore */ } }
 
@@ -57,7 +79,14 @@ function ensureClient(useTurn: boolean, turnServers: any[] = []): any {
       dht: false,
       tracker: { wrtc: nativeWrtc, rtcConfig: { iceServers } },
     } as any);
-    client.on('error', (e: any) => log('share client error: ' + (e?.message || e)));
+    const owned = client;
+    client.on('error', (e: any) => {
+      log('share client error: ' + (e?.message || e));
+      if (client === owned && owned.destroyed) {
+        client = null; shares.clear();
+        try { ipcRenderer.send('share-count', shareJobs.size); } catch { /* shutting down */ }
+      }
+    });
     log('Share client ready (Chromium WebRTC, TURN=' + useTurn + ')');
   }
   return client;
@@ -67,14 +96,16 @@ function toInfo(e: ShareEntry) {
   return { downloadId: e.downloadId, name: e.name, infoHash: e.infoHash, magnetURI: e.magnetURI, link: e.link, createdAt: e.createdAt };
 }
 
-async function doShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[] = [], trackers: string[] = RENDEZVOUS_TRACKERS): Promise<ShareEntry> {
+async function seedShare(downloadId: string, contentPath: string, name: string, useTurn: boolean, turnServers: any[], trackers: string[], epoch: number): Promise<ShareEntry> {
   const existing = shares.get(downloadId);
   if (existing) return Promise.resolve(existing);
   if (!fs.existsSync(contentPath)) {
     return Promise.reject(new Error('File not found on disk — the download must be complete to share'));
   }
-  useChromiumWebRTC();
+  configureChromiumWebRTC();
   WebTorrent ??= (await import('webtorrent')).default;
+  ShareChunkStore ??= sharePieceCache.store((await import('fs-chunk-store')).default);
+  if ((shareEpochs.get(downloadId) ?? 0) !== epoch) throw new Error('Sharing was canceled');
   const c = ensureClient(useTurn, turnServers);
   return new Promise<ShareEntry>((resolve, reject) => {
     let settled = false;
@@ -85,10 +116,20 @@ async function doShare(downloadId: string, contentPath: string, name: string, us
     };
     c.once('error', onError);
     try {
-      c.seed(contentPath, { announce: trackers, name } as any, (torrent: any) => {
+      c.seed(contentPath, { announce: trackers, name, store: ShareChunkStore, storeCacheSlots: 0 } as any, (torrent: any) => {
         if (settled) return; settled = true;
         c.removeListener('error', onError);
-        torrent.on('error', (e: any) => log('torrent error: ' + (e?.message || e)));
+        if ((shareEpochs.get(downloadId) ?? 0) !== epoch) {
+          if (![...shares.values()].some(entry => entry.infoHash === torrent.infoHash)) void Promise.resolve(c.remove(torrent)).catch(() => {});
+          reject(new Error('Sharing was canceled')); return;
+        }
+        torrent.on('error', (e: any) => {
+          log('torrent error: ' + (e?.message || e));
+          if (client !== c) return;
+          for (const [id, entry] of shares) if (entry.infoHash === torrent.infoHash) shares.delete(id);
+          releaseEmptyClient();
+          try { ipcRenderer.send('share-count', shares.size + shareJobs.size); } catch { /* shutting down */ }
+        });
         torrent.on('warning', () => { /* tracker/peer noise */ });
         const entry: ShareEntry = {
           downloadId, name,
@@ -109,14 +150,20 @@ async function doShare(downloadId: string, contentPath: string, name: string, us
   });
 }
 
-function doStop(downloadId: string): void {
-  const entry = shares.get(downloadId);
-  if (!entry || !client) return;
+async function doStop(downloadId: string): Promise<void> {
+  if (shareJobs.has(downloadId)) shareEpochs.set(downloadId, (shareEpochs.get(downloadId) ?? 0) + 1);
+  const entry = shares.get(downloadId), c = client;
+  if (!entry || !c) { releaseEmptyClient(); return; }
   shares.delete(downloadId);
   try {
-    const t = client.torrents.find((x: any) => x.infoHash === entry.infoHash);
-    if (t) client.remove(t);
-  } catch (e) { log('stop failed: ' + String(e)); }
+    // Different download entries can refer to the same swarm.
+    if (![...shares.values()].some(other => other.infoHash === entry.infoHash)) {
+      const torrent = c.torrents.find((t: any) => t.infoHash === entry.infoHash);
+      if (torrent) await new Promise<void>((resolve, reject) => {
+        void Promise.resolve(c.remove(torrent, (error?: Error) => error ? reject(error) : resolve())).catch(reject);
+      });
+    }
+  } finally { releaseEmptyClient(); }
 }
 
 function getInfo(downloadId: string): any {
@@ -135,13 +182,13 @@ ipcRenderer.on('share-cmd', async (_e, msg: any) => {
   try {
     let data: any;
     if (type === 'share') data = toInfo(await doShare(msg.downloadId, msg.contentPath, msg.name, msg.useTurn !== false, msg.turnServers || [], msg.trackers?.length ? msg.trackers : RENDEZVOUS_TRACKERS));
-    else if (type === 'stop') { doStop(msg.downloadId); data = { ok: true }; }
+    else if (type === 'stop') { await doStop(msg.downloadId); data = { ok: true }; }
     else if (type === 'get') data = getInfo(msg.downloadId);
     else if (type === 'list') data = Array.from(shares.values()).map(toInfo).sort((a, b) => b.createdAt - a.createdAt);
     else throw new Error('Unknown command: ' + type);
-    ipcRenderer.send('share-res', { reqId, ok: true, data });
+    ipcRenderer.send('share-res', { reqId, ok: true, data, activeCount: shares.size + shareJobs.size });
   } catch (e: any) {
-    ipcRenderer.send('share-res', { reqId, ok: false, error: e?.message || String(e) });
+    ipcRenderer.send('share-res', { reqId, ok: false, error: e?.message || String(e), activeCount: shares.size + shareJobs.size });
   }
 });
 

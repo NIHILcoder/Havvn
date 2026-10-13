@@ -74,6 +74,7 @@ rel-payload.json
 *.output
 .claude/
 themes/
+artifacts/
 
 # ── Local website mockup (kept out of the repo) ─────────────
 website/

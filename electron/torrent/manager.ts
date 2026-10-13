@@ -1,3 +1,4 @@
+import { downloadPieceCache } from './piece-cache';
 import { mediaPath } from './verified-media';
 import type { ExternalMedia, ExternalMediaRead } from '../../shared/external-player';
 import type WebTorrent from 'webtorrent';
@@ -162,6 +163,7 @@ export class TorrentManager {
   // Created in initialize() so client options (DHT, max connections, listening
   // port, speed limits) can come from the persisted settings.
   private client!: WebTorrent;
+  private cachedStore!: ReturnType<typeof downloadPieceCache.store>;
   private readonly externalEpoch = crypto.randomBytes(16).toString('hex');
   private managedTorrents: Map<string, ManagedTorrent> = new Map();
   private infoHashIndex: Map<string, string> = new Map();
@@ -296,6 +298,7 @@ export class TorrentManager {
    */
   async initialize(): Promise<void> {
     const { default: WebTorrent } = await import('webtorrent');
+    this.cachedStore = downloadPieceCache.store((await import('fs-chunk-store')).default);
     log.info('Initializing TorrentManager');
 
     // Load settings
@@ -648,6 +651,7 @@ export class TorrentManager {
       try {
         const sourceUri = params.torrentPath || params.magnetUri;
         if (!sourceUri) {
+          clearTimeout(timeout); resolved = true; tempClient.destroy();
           reject(new TorrentError('No torrent path or magnet URI provided', 'INVALID_INPUT'));
           return;
         }
@@ -657,7 +661,7 @@ export class TorrentManager {
           sourceInput = fs.readFileSync(params.torrentPath);
         }
 
-        tempClient.add(sourceInput, { path: getHostEnv().tempDir }, (torrent) => {
+        tempClient.add(sourceInput, { path: getHostEnv().tempDir, storeCacheSlots: 0, deselect: true }, (torrent) => {
           if (resolved) return;
           
           clearTimeout(timeout);
@@ -1093,7 +1097,7 @@ export class TorrentManager {
       if (!managed) { reject(new TorrentError('Download not found', 'NOT_FOUND', id)); return; }
 
       const opts = this.seedOptionsCache.get(id) || {};
-      const seedOpts: any = { name: managed.download.name };
+      const seedOpts: any = { name: managed.download.name, store: this.cachedStore, storeCacheSlots: 0 };
       if (opts.announceList && opts.announceList.length) seedOpts.announceList = opts.announceList;
       if (opts.pieceLength) seedOpts.pieceLength = opts.pieceLength;
 
@@ -1193,6 +1197,7 @@ export class TorrentManager {
       
       // Add torrent with options
       const addOptions: any = {
+        store: this.cachedStore, storeCacheSlots: 0,
         path: savePath,
       };
 

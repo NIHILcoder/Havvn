@@ -48,6 +48,8 @@ interface Session {
   tracker: any;
   procs: Set<ChildProcess>;
   peers: Set<any>;
+  stops: Set<() => void>;
+  stopped: boolean;
 }
 
 const sessions = new Map<string, Session>();
@@ -60,6 +62,7 @@ function topicFor(sessionId: string): string {
 
 /** Pump ffmpeg's fragmented-MP4 output to one viewer, respecting backpressure. */
 function streamTo(session: Session, peer: any): void {
+  if (session.stopped || peer.destroyed) return;
   const args = [
     '-i', session.contentPath,
     '-vf', 'scale=-2:720',
@@ -76,35 +79,76 @@ function streamTo(session: Session, peer: any): void {
   const ch = peer._channel as any; // RTCDataChannel (DOM type not in electron lib)
   try { if (ch) ch.bufferedAmountLowThreshold = LOW_WATER; } catch { /* ignore */ }
 
-  const kill = () => { session.procs.delete(proc); try { proc.kill('SIGKILL'); } catch { /* ignore */ } };
-
-  // Tell the receiver what to expect, then stream bytes.
-  try { peer.send(JSON.stringify({ t: 'init', mime: VIDEO_MIME })); } catch { /* ignore */ }
-
-  const onLow = () => { try { proc.stdout?.resume(); } catch { /* ignore */ } };
-
-  proc.stdout?.on('data', (buf: Buffer) => {
+  let disposed = false;
+  let waitingForLow = false;
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined;
+  const onLow = () => {
+    waitingForLow = false;
+    resumeTimer = undefined;
+    if (!disposed) { try { proc.stdout?.resume(); } catch { /* ignore */ } }
+  };
+  const cleanup = () => {
+    disposed = true;
+    if (resumeTimer) clearTimeout(resumeTimer);
+    resumeTimer = undefined;
+    try { ch?.removeEventListener('bufferedamountlow', onLow); } catch { /* ignore */ }
+    peer.removeListener('close', stop);
+    peer.removeListener('error', stop);
+    proc.stdout?.removeListener('data', onData);
+    session.stops.delete(stop);
+  };
+  const stop = () => {
+    if (disposed) return;
+    cleanup();
+    // Keep tracking the child until 'close' confirms it has actually exited.
+    try { proc.kill('SIGKILL'); } catch { /* ignore */ }
+  };
+  const onData = (buf: Buffer) => {
+    if (disposed) return;
     for (let i = 0; i < buf.length; i += CHUNK) {
       try { peer.send(buf.subarray(i, Math.min(i + CHUNK, buf.length))); }
-      catch { kill(); return; }
+      catch { stop(); return; }
     }
-    if (ch && ch.bufferedAmount > HIGH_WATER) {
+    if (ch && ch.bufferedAmount > HIGH_WATER && !waitingForLow) {
+      waitingForLow = true;
       try { proc.stdout?.pause(); ch.addEventListener('bufferedamountlow', onLow, { once: true }); }
-      catch { setTimeout(() => { try { proc.stdout?.resume(); } catch { /* ignore */ } }, 120); }
+      catch { resumeTimer = setTimeout(onLow, 120); }
     }
-  });
+  };
+  session.stops.add(stop);
+  peer.once('close', stop);
+  peer.once('error', stop);
+  proc.stdout?.on('data', onData);
   proc.stderr?.on('data', () => { /* discard */ });
-  proc.on('error', (e) => { log('ffmpeg error: ' + String(e)); kill(); });
-  proc.on('close', () => { try { peer.send(JSON.stringify({ t: 'end' })); } catch { /* ignore */ } session.procs.delete(proc); });
+  proc.once('error', (e) => { log('ffmpeg error: ' + String(e)); stop(); });
+  proc.once('close', () => {
+    const sendEnd = !disposed && !session.stopped;
+    cleanup();
+    session.procs.delete(proc);
+    if (sendEnd) { try { peer.send(JSON.stringify({ t: 'end' })); } catch { /* ignore */ } }
+  });
+  // A failed init means there is no receiver; do not leave ffmpeg running.
+  try { peer.send(JSON.stringify({ t: 'init', mime: VIDEO_MIME })); } catch { stop(); }
 }
 
 function attachViewer(session: Session, peer: any): void {
+  if (session.stopped) { try { peer.destroy(); } catch { /* ignore */ } return; }
+  if (peer.destroyed) return;
   if (session.peers.has(peer)) return;
   session.peers.add(peer);
   const begin = () => streamTo(session, peer);
+  const release = () => {
+    peer.removeListener('connect', begin);
+    peer.removeListener('close', release);
+    peer.removeListener('error', release);
+    session.peers.delete(peer);
+    session.stops.delete(release);
+  };
+  session.stops.add(release);
+  peer.once('close', release);
+  peer.once('error', release);
+  peer.on('error', () => { /* streamTo stops the encoder; keep late errors handled */ });
   if (peer.connected) begin(); else peer.once('connect', begin);
-  peer.on('close', () => { session.peers.delete(peer); });
-  peer.on('error', () => { /* transient */ });
   log('Viewer connected to ' + session.id.slice(0, 8));
 }
 
@@ -117,7 +161,7 @@ function startSession(p: { id: string; contentPath: string; ffmpeg: string; useT
   session = {
     id: p.id, topic, peerId: crypto.randomBytes(20).toString('hex'),
     contentPath: p.contentPath, ffmpeg: p.ffmpeg,
-    tracker: null, procs: new Set(), peers: new Set(),
+    tracker: null, procs: new Set(), peers: new Set(), stops: new Set(), stopped: false,
   };
   sessions.set(p.id, session);
 
@@ -134,6 +178,8 @@ function startSession(p: { id: string; contentPath: string; ffmpeg: string; useT
     log('Remote-cast session ' + p.id.slice(0, 8) + ' (topic ' + topic.slice(0, 8) + ')');
   } catch (e) {
     log('tracker start failed: ' + String(e));
+    stopSession(p.id);
+    throw e;
   }
   return { id: session.id, topic };
 }
@@ -142,8 +188,10 @@ function stopSession(id: string): void {
   const session = sessions.get(id);
   if (!session) return;
   sessions.delete(id);
-  for (const proc of session.procs) { try { proc.kill('SIGKILL'); } catch { /* ignore */ } }
-  for (const peer of session.peers) { try { peer.destroy(); } catch { /* ignore */ } }
+  session.stopped = true;
+  const peers = [...session.peers];
+  for (const stop of [...session.stops]) stop();
+  for (const peer of peers) { try { peer.destroy(); } catch { /* ignore */ } }
   try { session.tracker?.stop(); session.tracker?.destroy(); } catch { /* ignore */ }
 }
 
@@ -155,9 +203,9 @@ ipcRenderer.on('rcast-cmd', async (_e, msg: any) => {
     if (type === 'start') data = startSession(msg.payload);
     else if (type === 'stop') { stopSession(msg.id); data = { ok: true }; }
     else throw new Error('Unknown remote-cast command: ' + type);
-    ipcRenderer.send('rcast-res', { reqId, ok: true, data });
+    ipcRenderer.send('rcast-res', { reqId, ok: true, data, activeCount: sessions.size });
   } catch (e: any) {
-    ipcRenderer.send('rcast-res', { reqId, ok: false, error: e?.message || String(e) });
+    ipcRenderer.send('rcast-res', { reqId, ok: false, error: e?.message || String(e), activeCount: sessions.size });
   }
 });
 

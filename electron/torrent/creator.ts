@@ -292,6 +292,7 @@ export async function createTorrentFile(
 
     // Seed options
     const seedOpts = {
+      storeCacheSlots: 0,
       name: options.name || stagedName || (usingFolderRoot ? path.basename(primaryPath) : undefined),
       comment: options.comment,
       createdBy: options.createdBy || 'Havvn',
