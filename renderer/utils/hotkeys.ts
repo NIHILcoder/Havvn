@@ -26,6 +26,13 @@ export const HOTKEYS_CHANGED_EVENT = 'havvn:hotkeys-changed';
  */
 export const defaultHotkeys: Hotkey[] = [
   {
+    id: 'open-command-palette',
+    label: 'Command Palette',
+    description: 'Find a page, setting, download or room',
+    keys: ['Ctrl', 'KeyK'],
+    category: 'Navigation',
+  },
+  {
     id: 'open-downloads',
     label: 'Open Downloads',
     description: 'Switch to the downloads page',
@@ -108,13 +115,30 @@ export function loadHotkeys(): Hotkey[] {
         }
       }
     }
+    const claimed = new Set([...overrides].filter(([id]) => defaultHotkeys.some(h => h.id === id)).map(([, keys]) => keys.join('+')));
+    const used = new Set<string>();
     return defaultHotkeys.map((h) => {
       const keys = overrides.get(h.id);
-      return { ...h, keys: keys ? [...keys] : [...h.keys] };
+      const binding = keys ?? (claimed.has(h.keys.join('+')) ? [] : h.keys);
+      const signature = binding.join('+');
+      const unique = !signature || !used.has(signature);
+      used.add(signature);
+      return { ...h, keys: unique ? [...binding] : [] };
     });
   } catch {
     return cloneDefaults();
   }
+}
+
+/** Move a binding to its new action instead of leaving two matching commands. */
+export function rebindHotkey(hotkeys: Hotkey[], id: string, keys: string[]): Hotkey[] {
+  return hotkeys.map(h => h.id === id ? { ...h, keys: [...keys] }
+    : keys.length && h.keys.join('+') === keys.join('+') ? { ...h, keys: [] } : h);
+}
+
+export function matchHotkey(hotkeys: readonly Hotkey[], event: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>): Hotkey | undefined {
+  const keys = [event.ctrlKey && 'Ctrl', event.shiftKey && 'Shift', event.altKey && 'Alt', event.metaKey && 'Meta', event.code].filter(Boolean).join('+');
+  return hotkeys.find(h => h.keys.length > 0 && h.keys.join('+') === keys);
 }
 
 /** Persist bindings (id + keys only) and notify live listeners (App.tsx). */
