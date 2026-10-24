@@ -1,0 +1,85 @@
+.download-views {
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+.download-views-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.download-views-toolbar > .download-views-select {
+  width: min(250px, 100%);
+  flex: 0 1 250px;
+}
+.download-views-select .custom-select-trigger {
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 6px 12px;
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+.download-views-note {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+.download-active-filters { margin-top: 10px; display: grid; gap: 6px; min-width: 0; }
+.download-active-filters-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--color-text-secondary); font-size: 11px; }
+.download-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow: auto; }
+.download-filter-chip { max-width: min(100%, 360px); min-width: 0; }
+.download-filter-chip > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.download-filter-chip .btn-label > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.download-filter-chip > svg { flex: none; }
+.download-views-error {
+  color: var(--color-error);
+  font-size: 12px;
+  margin: 8px 0 0;
+}
+.download-views-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.download-views-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+.download-views-form .download-views-check {
+  flex-direction: row;
+  align-items: center;
+}
+.download-views-form .input {
+  min-width: 0;
+  width: 100%;
+}
+.download-views-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.download-views-grid .number-input { width: 100%; }
+.download-views-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.nav-subitem .download-view-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (max-width: 600px) {
+  .download-views-toolbar > .download-views-select {
+    width: 100%;
+    flex-basis: 100%;
+  }
+  .download-views-grid {
+    grid-template-columns: 1fr;
+  }
+}
