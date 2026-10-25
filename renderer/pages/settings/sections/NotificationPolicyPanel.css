@@ -1,0 +1,7 @@
+.notification-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.notification-times { display: flex; gap: 12px; flex-wrap: wrap; }
+.notification-times label { display: flex; align-items: center; gap: 6px; font-size: var(--font-size-xs); }
+.notification-times input { width: 120px; color-scheme: dark; }
+[data-theme="light"] .notification-times input { color-scheme: light; }
+.notification-preview { padding: 14px; margin: 12px 0; border: 1px solid var(--color-border-default); border-left: 3px solid var(--color-accent-primary); background: var(--color-bg-tertiary); border-radius: var(--radius-md); overflow-wrap: anywhere; }
+.notification-preview p { margin: 6px 0 0; color: var(--color-text-secondary); }
