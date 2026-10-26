@@ -1,0 +1,13 @@
+.download-undo-notice { position: fixed; right: 20px; bottom: 50px; z-index: 900; width: min(440px, calc(100vw - 32px)); max-height: min(55vh, 520px); overflow: auto; padding: 16px; background: var(--color-bg-secondary); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
+.download-undo-heading, .download-undo-row, .download-undo-error { display: flex; align-items: center; gap: 10px; }
+.download-undo-heading { font-size: var(--font-size-sm); }
+.download-undo-hint, .download-undo-notice small { color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.5; }
+.download-undo-notice ul { margin: 12px 0 0; padding: 0; list-style: none; }
+.download-undo-notice li { padding: 10px 0; border-top: 1px solid var(--color-border-default); }
+.download-undo-row { justify-content: space-between; }
+.download-undo-row button { flex-shrink: 0; }
+.download-undo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-size-sm); }
+.download-undo-error, .download-undo-warning { margin: 8px 0 0; font-size: var(--font-size-xs); line-height: 1.5; overflow-wrap: anywhere; }
+.download-undo-error { color: var(--color-error); }
+.download-undo-warning { color: var(--color-text-secondary); }
+@media (max-width: 600px) { .download-undo-notice { right: 16px; bottom: 42px; } }
