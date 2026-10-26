@@ -1,0 +1,339 @@
+{
+  "schema": 1,
+  "at": "2026-10-26T16:22:11.064Z",
+  "task": "FUN-06",
+  "stage": "DP-02",
+  "stageComplete": true,
+  "parentResearchComplete": false,
+  "featureReleased": false,
+  "scope": {
+    "physicalMachines": 1,
+    "isolatedProfiles": 2,
+    "nativeProcesses": 6,
+    "actualTlsNetwork": true,
+    "loopbackOnly": true,
+    "liveTlsExporter": true,
+    "mutuallyPinnedPostBootstrapSessions": true,
+    "actualSafeStorage": true,
+    "explicitHarnessConsentOnBothSides": true,
+    "actualUserConsentUi": false,
+    "applicationJournal": false,
+    "dataAdapters": false,
+    "rendererIpc": false,
+    "ordinaryStartupListener": false,
+    "lanOrNatAcceptance": false,
+    "installerTested": false,
+    "validZeroRttGeneratorRun": false
+  },
+  "identity": {
+    "publicVersion": 2,
+    "identityKey": "Ed25519",
+    "tlsLeafKey": "P-256",
+    "perDeviceCa": "P-256; pathLen=0; private key not persisted",
+    "binding": "Ed25519 signature over domain, deviceId, identity SPKI, leaf hash and CA hash",
+    "osProtectedKeys": 2,
+    "legacyV1ReadWithoutRewrite": true,
+    "legacyV1TlsRefused": true,
+    "silentMigration": false
+  },
+  "verification": {
+    "targeted": {
+      "passed": true,
+      "files": 6,
+      "tests": 81,
+      "transportScenarios": 23,
+      "command": "npm run test:device-tls"
+    },
+    "vitest": {
+      "passed": true,
+      "files": 325,
+      "tests": 4248,
+      "command": "npx vitest run --maxWorkers=2"
+    },
+    "node": {
+      "passed": true,
+      "tests": 30
+    },
+    "native": {
+      "passed": true,
+      "checks": 17,
+      "processes": 6,
+      "report": "artifacts/dp02/native.json",
+      "command": "npm run test:device-tls-native"
+    },
+    "typecheck": {
+      "passed": true,
+      "targets": [
+        "electron",
+        "renderer",
+        "guest"
+      ]
+    },
+    "build": {
+      "passed": true,
+      "webpackWarnings": 3,
+      "installerTested": false
+    },
+    "changedCodeLint": {
+      "passed": true,
+      "warnings": 0
+    }
+  },
+  "resumption": {
+    "productionSessionCaching": false,
+    "resumedConnectionsRejected": true,
+    "nodeRealOldTicketReplayBeforeAndAfterRevoke": true,
+    "nodeMaxEarlyData": 0,
+    "nodeEarlyDataDiagnostic": "Git OpenSSL 3.5.7; local optional diagnostic present during this run; session secrets not logged",
+    "nativeTicketProbe": {
+      "tickets": 0,
+      "maxEarlyData": null,
+      "reused": false,
+      "parser": null,
+      "policy": "Native backend suppressed ticket issuance; real old-ticket replay tested separately under Node"
+    },
+    "validZeroRttRecordsGenerated": false
+  },
+  "runtime": {
+    "node": "24.18.1",
+    "openssl": "3.5.7",
+    "electron": "44.4.2",
+    "nativeNode": "24.21.0",
+    "nativeOpenSslReported": "0.0.0",
+    "nativeCryptoBackend": "BoringSSL; 0.0.0 above is the Electron-reported placeholder",
+    "dependencies": {
+      "x509": "2.2.0",
+      "reflectMetadata": "0.2.2"
+    }
+  },
+  "observedNativeIssuesResolved": [
+    "Ed25519 TLS certificate: ERR_SSL_NO_COMMON_SIGNATURE_ALGORITHMS",
+    "direct P-256 self-signed leaf trust: UNABLE_TO_VERIFY_LEAF_SIGNATURE; separate pinned leaf and CA now used"
+  ],
+  "remaining": [
+    "DP-03 allowlisted adapters, causal conflicts, durable apply journal and commit-before-ACK",
+    "DP-04 user consent/UI, cancellation, certificate renewal and explicit legacy research-profile migration",
+    "DP-05 two physical PCs and real networks",
+    "FUN-01 current package/installer, physical/network and real older-build acceptance"
+  ],
+  "roadmap": {
+    "completedLocalBlocks": 22,
+    "totalBlocks": 24,
+    "open": [
+      "FUN-01",
+      "FUN-06"
+    ]
+  },
+  "sourceSha256": "d1363e1ef063b69ed384651a2fa431f7263638883572807f0a17ceef3147f651",
+  "sourceFiles": [
+    {
+      "path": "package.json",
+      "sha256": "ea68acdb199784e3a0dff8fd90808fb9539ef6ab50a34ab8f59d79983c462a9d"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "7b6662afe9dd1b42ade71a8839a4dda846ce20d4bfa3853bf30dff3a7bbfed73"
+    },
+    {
+      "path": "tsconfig.base.json",
+      "sha256": "52d893b81103ea4c1a2802c0de27a6334fcce7c4a50dbd17a03b07c845a8317e"
+    },
+    {
+      "path": "tsconfig.electron.json",
+      "sha256": "f26135974a659dfad952bc8fe3159e57d4ce9bceb669ca6aab677fc718c88391"
+    },
+    {
+      "path": "tsconfig.renderer.json",
+      "sha256": "861ba0c19e0abcb5b5c53102ba18d2f64e6e6615ee0e3dd7f868a6787844fdeb"
+    },
+    {
+      "path": "tsconfig.guest.json",
+      "sha256": "07536d65e1887942debb014afebf9930d9571b57985f13d6764edc1e1393958a"
+    },
+    {
+      "path": "vitest.config.ts",
+      "sha256": "01790b094009202c1c30593023b3c3a63459dcad4a9e79a5275873ee8680ef7a"
+    },
+    {
+      "path": ".eslintrc.js",
+      "sha256": "ca9d090fb883ffe459aff2f00227f926603f28f067ec07d73f84a6d692e579a7"
+    },
+    {
+      "path": "shared/device-pairing.ts",
+      "sha256": "f8244dc69011a0f104293d620994729396182f9354bfe31ac4d66351f6a91c9a"
+    },
+    {
+      "path": "shared/device-pairing.test.ts",
+      "sha256": "56d5c0b030992c9156651dbd6e3a92d6fc588855b39baaa25aa10414fe35aad4"
+    },
+    {
+      "path": "electron/devices/identity.ts",
+      "sha256": "c4da76688eaa30086180078703b585a6a97506ad16c59d82d45c7af883f56ba8"
+    },
+    {
+      "path": "electron/devices/identity.test.ts",
+      "sha256": "364d79cebea5790b042da1b07253de261789d448444c6c164e5c515f9984534f"
+    },
+    {
+      "path": "electron/devices/vault.ts",
+      "sha256": "1e3dc6984abfb375b8d3d3ff829b9e7c3acb7b1aa354064ffef14814fd0037ae"
+    },
+    {
+      "path": "electron/devices/vault.test.ts",
+      "sha256": "e36b4fba8eab5160666d5f5ebddfc444409a94f519270ee705e445cf34933df8"
+    },
+    {
+      "path": "electron/devices/file-persistence.ts",
+      "sha256": "a62f210a803d2021cb03514c0f54ae55ea7e5ed11a2c38d822c3b716d2545a91"
+    },
+    {
+      "path": "electron/devices/file-persistence.test.ts",
+      "sha256": "5f77bab342130520ca98fac402d7c22db9f9548f66947c6685ad1ab5411048b1"
+    },
+    {
+      "path": "electron/devices/runtime.ts",
+      "sha256": "2510cdfa8f1604558c29ef73f221d29fb1d98dfb191880f3a3302a59cc66df52"
+    },
+    {
+      "path": "electron/devices/wire.ts",
+      "sha256": "10c3ffb08935aa0187da530eccf71bfc38ba662e7cdb214c4f9a2e0e0c56f1d4"
+    },
+    {
+      "path": "electron/devices/transport.ts",
+      "sha256": "80edb8b2a45489d1233f7efbf110847092d52a2a4df0c77b2956622c447eba76"
+    },
+    {
+      "path": "electron/devices/transport.test.ts",
+      "sha256": "c91553c3059d5c140bc2628f71e2a65fdc05957f42710d83ad112cf75238ba7b"
+    },
+    {
+      "path": "electron/devices/bootstrap.ts",
+      "sha256": "df391a14150772b6ab335a46400af3372da24c1c708dce7c422fd9802ac1eb9b"
+    },
+    {
+      "path": "electron/devices/session.ts",
+      "sha256": "ce8ccb46fe0af3098ebe9128ddd84e4bea2721c2cbdaaf585b597177164cf623"
+    },
+    {
+      "path": "research/device-pairing/legacy-fixture.ts",
+      "sha256": "a2afe1df64481b9983b5d9566cb91ec55f2422827da266aaaedbaad6b57c9fa7"
+    },
+    {
+      "path": "research/device-pairing/vault-fixture.ts",
+      "sha256": "91bbd0e9729fe497fb4be05e881f0fb09676d61a10b4e3da1b2be0d1c9e6ad97"
+    },
+    {
+      "path": "research/device-pairing/model.ts",
+      "sha256": "2b10ec5dfd38b75036d0585c11dc883398f8368b729cd816dbc847fcbe2e0969"
+    },
+    {
+      "path": "research/device-pairing/model.test.ts",
+      "sha256": "d8f8dae308c59ab782003760efc637a669c1165e99acef9ebd0d830c0e7bfa4c"
+    },
+    {
+      "path": "scripts/smoke-device-tls.cjs",
+      "sha256": "e459a72c790bf6a23e42a954b603915c8a68ae860191671b756e2d6f86ae8028"
+    },
+    {
+      "path": "docs/device-pairing-transport.md",
+      "sha256": "4c954175a7ae0c1053d5fc12d0174ca2827b3c734963bedc79aa46e16e86703b"
+    },
+    {
+      "path": "docs/device-pairing-plan.md",
+      "sha256": "8333ac2551124b4bfb785f2ab8f6ced6a2452e17e63ec7e5106464981fb52fd5"
+    },
+    {
+      "path": "docs/device-pairing-design.md",
+      "sha256": "47cc35b0351e6a5b6aa8fdffb19fad3e3c96e5f56b459c9b1928c29727ba57e2"
+    },
+    {
+      "path": "docs/havvn-implementation-plan.md",
+      "sha256": "b4f81a82bbe2fadb8a9acee7d50504fb325999358382a1934b4c91a13a2c7f95"
+    },
+    {
+      "path": "docs/release-single-pc.md",
+      "sha256": "ae384e4c53173f1a62865de8dbc64731b05cf0b93fe44ceb2e4efb1d537dc850"
+    }
+  ],
+  "evidenceFiles": [
+    {
+      "path": "artifacts/dp02-tests.log",
+      "sha256": "4e85369579ccbac187a29d724f530795be6654b99e7007cfdab25a9aa3b9cb93"
+    },
+    {
+      "path": "artifacts/dp02-full-vitest.log",
+      "sha256": "bf857903e65c161ef9062f6e935740d8066b764f51df652454eb054747570e92"
+    },
+    {
+      "path": "artifacts/dp02-node-tests.log",
+      "sha256": "58c9d73cfa78f24c9115e6f5ec21f073eb0853bdcc2a6212cc7617a24889c301"
+    },
+    {
+      "path": "artifacts/dp02-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/dp02-build.log",
+      "sha256": "12767c716bd8b85a8174b0f2bd866268a77eead80409937616592155d9c00e61"
+    },
+    {
+      "path": "artifacts/dp02-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/dp02-native.log",
+      "sha256": "1469fb958bd4fce620e101677a4751baaf762de9bbf98accccdf6c0a9ee4ea06"
+    },
+    {
+      "path": "artifacts/dp02/native.json",
+      "sha256": "a66b04f76b04068a2c61c791e4bb8fa1413e0aed225722a87c6ae1d4c7597395"
+    },
+    {
+      "path": "artifacts/dp02-native-leaf-failure.log",
+      "sha256": "f73a285801290c00690bdfae46ad0c191a8dc71f5ce312f4b3a27badff40bcfd"
+    },
+    {
+      "path": "dist/electron/electron/devices/identity.js",
+      "sha256": "b7024c25112597dc51b937d5718099988c894af8170ceedaa2f0cd8ae420e27a"
+    },
+    {
+      "path": "dist/electron/electron/devices/vault.js",
+      "sha256": "70018bae907ea9ce3214507eb41ec6b116d08ed67e00d161e6bbd3c2727e685a"
+    },
+    {
+      "path": "dist/electron/electron/devices/file-persistence.js",
+      "sha256": "8dc36b551a6bb42073ff2d9f892a3fe6d7d654f0a9559f38c29803d88f91c7cd"
+    },
+    {
+      "path": "dist/electron/electron/devices/runtime.js",
+      "sha256": "7f7b3965d08a6686c387f22fa3c51501188aaf70ca65fe5bf25407852c7dcd18"
+    },
+    {
+      "path": "dist/electron/electron/devices/wire.js",
+      "sha256": "a35c90cc3b329aedc7acddd6cb8d10e231cb0453c87fa1dbd63ddf7be5f74a4c"
+    },
+    {
+      "path": "dist/electron/electron/devices/transport.js",
+      "sha256": "8f5e82de055297ab1623d024067b5d2c2bc66868add5f888431513d7662463b4"
+    },
+    {
+      "path": "dist/electron/electron/devices/bootstrap.js",
+      "sha256": "50a6e232475c00bfadb849d25763ffd46faf56fca80c3b349315821c2aa6a425"
+    },
+    {
+      "path": "dist/electron/electron/devices/session.js",
+      "sha256": "583b272c43125659ff1bee59a0cbb0a79ff4c034d5d7891b4dc366c777ad8d76"
+    },
+    {
+      "path": "dist/electron/shared/device-pairing.js",
+      "sha256": "91558c38a0afa03a6d11c2477ecaabb52120f838db0240697f0e6cd6d5b5af92"
+    }
+  ],
+  "references": [
+    "https://github.com/nodejs/node/blob/v24.18.0/doc/api/tls.md",
+    "https://github.com/nodejs/node/blob/v24.18.1/lib/internal/tls/wrap.js",
+    "https://www.rfc-editor.org/rfc/rfc9266.html",
+    "https://www.electronjs.org/docs/latest/tutorial/using-native-node-modules",
+    "https://github.com/PeculiarVentures/x509"
+  ]
+}

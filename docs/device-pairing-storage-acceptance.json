@@ -1,0 +1,303 @@
+{
+  "schema": 1,
+  "task": "FUN-06",
+  "stage": "DP-01",
+  "recordedAt": "2026-10-26T14:02:13.4231324Z",
+  "stageComplete": true,
+  "stageScope": "backend identity, strict schemas and protected state",
+  "parentResearchComplete": false,
+  "featureReleased": false,
+  "scope": {
+    "physicalMachines": 1,
+    "platform": "Windows",
+    "osProtection": "real DPAPI",
+    "electron": "44.4.2",
+    "nativeNode": "24.21.0",
+    "nativePublishedCryptoVersion": "0.0.0",
+    "systemNode": "24.18.1",
+    "tlsContextAccepted": true,
+    "liveTlsHandshakeTested": false,
+    "channelBinding": "synthetic test input; no live TLS connection",
+    "networkTransferTested": false,
+    "uiOrPreloadAdded": false,
+    "normalStartupInitializesVault": false,
+    "installerRetested": false,
+    "powerLossTested": false,
+    "processExitAfterCommitTested": true,
+    "profileCopyToDifferentDirectoryRejected": true,
+    "fullVmCloneOrRollbackProtected": false,
+    "fullRepositoryLintPassed": false,
+    "crossProcessOwner": "existing app single-instance lock; custom paths restricted to its userData",
+    "testFixturesShipped": false
+  },
+  "dependencies": {
+    "reflection": "reflect-metadata@0.2.2",
+    "externalCryptographicAuditClaimed": false,
+    "x509": "@peculiar/x509@2.2.0"
+  },
+  "verified": {
+    "targeted": {
+      "tests": 56,
+      "includesEarlierModelTests": 22,
+      "files": 5,
+      "passed": true
+    },
+    "allVitest": {
+      "tests": 4223,
+      "files": 324,
+      "passed": true,
+      "maxWorkers": 2
+    },
+    "nodeTests": {
+      "tests": 30,
+      "files": 5,
+      "passed": true
+    },
+    "native": {
+      "checks": 25.0,
+      "intentionalCrashExit": 29,
+      "passed": true,
+      "processStages": 4,
+      "stages": {
+        "seed": {
+          "passed": true,
+          "checks": [
+            "real OS protection is available",
+            "runtime requires the main-process single-instance lock",
+            "runtime cannot bypass profile ownership with an arbitrary directory",
+            "two independent native identities and certificates",
+            "OpenSSL accepts the generated key/certificate",
+            "one local approval never activates a pair",
+            "both signed approvals and prepared receipts commit active state",
+            "real DPAPI file exposes no key, invitation token or queued value",
+            "public snapshot excludes credential material",
+            "copied profile is rejected without replacing its identity",
+            "room identity store is never created or copied"
+          ]
+        },
+        "crash-after-commit": {
+          "passed": true,
+          "expectedExit": 29,
+          "checks": [
+            "real OS protection is available",
+            "the protected identity survives a fresh Electron process",
+            "second operation is durably committed before abrupt exit"
+          ]
+        },
+        "recover-and-revoke": {
+          "passed": true,
+          "checks": [
+            "real OS protection is available",
+            "the protected identity survives a fresh Electron process",
+            "abrupt exit retains both counter and unacknowledged operations",
+            "failed atomic publication preserves ciphertext and freezes output",
+            "a selected packet cannot escape after failed revocation",
+            "failed publication cleans its encrypted temporary file",
+            "revocation retry persists a tombstone and exact repeats do not write again"
+          ]
+        },
+        "verify-revoked": {
+          "passed": true,
+          "checks": [
+            "real OS protection is available",
+            "the protected identity survives a fresh Electron process",
+            "revocation survives another native process restart",
+            "old queue entries and signed ready receipts cannot reactivate the revoked grant"
+          ]
+        }
+      }
+    },
+    "typecheck": {
+      "targets": [
+        "electron",
+        "renderer",
+        "guest"
+      ],
+      "passed": true
+    },
+    "productionBuild": {
+      "finalElectronRecompiledByNativeCommand": true,
+      "webpackSizeWarnings": 3,
+      "passed": true
+    },
+    "newCodeLint": {
+      "passed": true,
+      "warnings": 0
+    },
+    "standardVaultDiagnosticsRedacted": true
+  },
+  "sourceSha256": "40cfdd67c70fb59f4a625d18cf8aa9e31fe5ff8577145a8d25636a3a462c3f16",
+  "sources": [
+    {
+      "path": "docs/device-pairing-design.md",
+      "sha256": "d4b472a2525f66ab443a4b1e39b92e7e17e63a5506bb49e9227510f9413d707b"
+    },
+    {
+      "path": "docs/device-pairing-plan.md",
+      "sha256": "ce7931bd78624650f4e8d85f7f8d7bbc77a7e88803e63f85023adc6c71caa5fe"
+    },
+    {
+      "path": "docs/device-pairing-storage.md",
+      "sha256": "6f98237a5bb5e106b9247a913fbc8b0aedff4617aca3b8edc86a4a48b551d125"
+    },
+    {
+      "path": "docs/havvn-implementation-plan.md",
+      "sha256": "f05ab892e70f95db0330161c3b7a28791c3771bc139afc4c157c0e5e0b0bd6e9"
+    },
+    {
+      "path": "docs/release-single-pc.md",
+      "sha256": "5dfd7ecf32314c107a9e50e325949972bc3cd1437d4fde6f7606f3ab124585df"
+    },
+    {
+      "path": "electron/db/secrets.ts",
+      "sha256": "9ff7a67d5d116517c43f5c62bcfc354257c187e78fb30214f47032884f8204c0"
+    },
+    {
+      "path": "electron/devices/file-persistence.test.ts",
+      "sha256": "5f77bab342130520ca98fac402d7c22db9f9548f66947c6685ad1ab5411048b1"
+    },
+    {
+      "path": "electron/devices/file-persistence.ts",
+      "sha256": "a62f210a803d2021cb03514c0f54ae55ea7e5ed11a2c38d822c3b716d2545a91"
+    },
+    {
+      "path": "electron/devices/identity.test.ts",
+      "sha256": "3b118b6951fb80c82f2d095a49341ba961ad80a5c73334002b42c7d0547664f8"
+    },
+    {
+      "path": "electron/devices/identity.ts",
+      "sha256": "2d052d4d11d8f72c0daed85e8c1dee8b50654a1010730ffb0814109f740b452c"
+    },
+    {
+      "path": "electron/devices/runtime.ts",
+      "sha256": "2510cdfa8f1604558c29ef73f221d29fb1d98dfb191880f3a3302a59cc66df52"
+    },
+    {
+      "path": "electron/devices/vault.test.ts",
+      "sha256": "e36b4fba8eab5160666d5f5ebddfc444409a94f519270ee705e445cf34933df8"
+    },
+    {
+      "path": "electron/devices/vault.ts",
+      "sha256": "6d8185199b1a960a142024c6b981c5979d702da10ca65140108133a3b0116eac"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "7b6662afe9dd1b42ade71a8839a4dda846ce20d4bfa3853bf30dff3a7bbfed73"
+    },
+    {
+      "path": "package.json",
+      "sha256": "469961c64dcf5bdb2bdd4fe2ac46e5b6da4fecfb85bdbd2706f393747ec5bd09"
+    },
+    {
+      "path": "research/device-pairing/model.test.ts",
+      "sha256": "d8f8dae308c59ab782003760efc637a669c1165e99acef9ebd0d830c0e7bfa4c"
+    },
+    {
+      "path": "research/device-pairing/model.ts",
+      "sha256": "2b10ec5dfd38b75036d0585c11dc883398f8368b729cd816dbc847fcbe2e0969"
+    },
+    {
+      "path": "research/device-pairing/vault-fixture.ts",
+      "sha256": "91bbd0e9729fe497fb4be05e881f0fb09676d61a10b4e3da1b2be0d1c9e6ad97"
+    },
+    {
+      "path": "scripts/smoke-device-vault.cjs",
+      "sha256": "dada22bf4e67b8b4c150502e79a3e3e51c778c26f63fb999ff731b1dd0d000ec"
+    },
+    {
+      "path": "shared/device-pairing.test.ts",
+      "sha256": "56d5c0b030992c9156651dbd6e3a92d6fc588855b39baaa25aa10414fe35aad4"
+    },
+    {
+      "path": "shared/device-pairing.ts",
+      "sha256": "7040c8f8fdf9ed3215dcacf5d694b767a02392a2809ca292cce142823968544e"
+    },
+    {
+      "path": "tsconfig.base.json",
+      "sha256": "52d893b81103ea4c1a2802c0de27a6334fcce7c4a50dbd17a03b07c845a8317e"
+    },
+    {
+      "path": "tsconfig.electron.json",
+      "sha256": "f26135974a659dfad952bc8fe3159e57d4ce9bceb669ca6aab677fc718c88391"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "artifacts/dp01-dependencies.log",
+      "sha256": "655f96a2621416b8dd1b68d75c543ee2f8cf53a61fd92d7ae710365b7bf0e842"
+    },
+    {
+      "path": "artifacts/dp01-tests.log",
+      "sha256": "f6f6416fa51903a17dab16e8d739041749853eaaa7c0394d071f87a5ff9af3cb"
+    },
+    {
+      "path": "artifacts/dp01-full-vitest.log",
+      "sha256": "b8a8ba3a1e3b8174227fb6c27c432091a283fe7bfeb79fe8573d6396c3ccdf2f"
+    },
+    {
+      "path": "artifacts/dp01-node-tests.log",
+      "sha256": "eb22422918f9fde22f6543e2f81d6016cd448186e040e9520b42c237e6edd3cc"
+    },
+    {
+      "path": "artifacts/dp01-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/dp01-build.log",
+      "sha256": "893a891371b608d632e76b57b31e33abe99f09adde76bba7a26ba430e6789bd8"
+    },
+    {
+      "path": "artifacts/dp01-native.log",
+      "sha256": "d41e631e5983a67eb34ce4b9c00df775e7ff8a7a1030f4a9144baf06139330c5"
+    },
+    {
+      "path": "artifacts/dp01/native.json",
+      "sha256": "de2c4c87acb59a005063997b33d0ff493fd60cc52f2eabb537734e93ec180dc4"
+    },
+    {
+      "path": "artifacts/dp01-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "dist/electron/electron/devices/identity.js",
+      "sha256": "abcda007c0e068c1346a5564afa1595ba0fc7e92edf3f9c3eaadd772a3178f67"
+    },
+    {
+      "path": "dist/electron/electron/devices/vault.js",
+      "sha256": "c020ffb159bb8e52567c8182c3670f16997b0f9e3b69bc7fe7a13fdf8791feb0"
+    },
+    {
+      "path": "dist/electron/electron/devices/file-persistence.js",
+      "sha256": "8dc36b551a6bb42073ff2d9f892a3fe6d7d654f0a9559f38c29803d88f91c7cd"
+    },
+    {
+      "path": "dist/electron/electron/devices/runtime.js",
+      "sha256": "7f7b3965d08a6686c387f22fa3c51501188aaf70ca65fe5bf25407852c7dcd18"
+    },
+    {
+      "path": "dist/electron/shared/device-pairing.js",
+      "sha256": "4769b3a0a9207385e0c98326288cf49e66c0c63893a3c44a2be7929820056639"
+    }
+  ],
+  "plan": {
+    "next": "DP-02 authenticated TLS loopback",
+    "dp00": "complete in local scope",
+    "total": 24,
+    "fun06": "in-progress",
+    "closedLocalBlocks": 22,
+    "fun01": "external acceptance open",
+    "dp01": "complete in local scope"
+  },
+  "remaining": [
+    "DP-02 live exporter binding, certificate pinning, TLS bootstrap/mTLS and active-session revocation",
+    "DP-03 allowlisted adapters and durable incoming application/ACK",
+    "DP-04 UI, user confirmation and package acceptance",
+    "DP-05 physical devices and different networks",
+    "Certificate renewal and OS/profile recovery policy before release",
+    "One main-process owner; standalone storage adapter is not a multi-process database"
+  ],
+  "primarySources": [
+    "https://github.com/PeculiarVentures/x509",
+    "https://github.com/electron/electron/blob/v44.4.2/docs/api/safe-storage.md"
+  ]
+}
