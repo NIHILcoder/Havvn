@@ -56,7 +56,7 @@ export const STATE_TRANSITIONS: Record<DownloadStatus, readonly DownloadStatus[]
   downloading: ['queued', 'paused', 'seeding', 'completed', 'error', 'removed'],
   paused: ['queued', 'downloading', 'seeding', 'completed', 'error', 'removed'],
   seeding: ['queued', 'paused', 'completed', 'error', 'removed'],
-  completed: ['queued', 'seeding', 'removed'], // Can re-seed or re-check
+  completed: ['queued', 'seeding', 'error', 'removed'], // Can re-seed/re-check; a restore can fail.
   error: ['queued', 'downloading', 'removed'], // Can retry (goes back to queue) or resume directly to downloading
   removed: [], // Terminal state
 };
