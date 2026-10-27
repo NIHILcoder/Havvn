@@ -1,12 +1,24 @@
 import { downloadPieceCache } from './piece-cache';
+import { torrentFilePriority } from '../../shared/torrent-file-selection';
+import type { DownloadDeletionPlan } from '../../shared/download-removal';
+import { checkDownloadDeletion, DeletionPreviewError, executeDownloadDeletion, prepareDownloadDeletion } from './download-delete-plan';
+import { assertTransfersAllowed, transfersBlocked, onTransfersBlocked } from './transfer-policy';
+import { verifiedFileProgress } from './file-progress';
+import { classicDownloadOperation } from './classic-operation';
+import { deferTorrentDiscovery } from './deferred-discovery';
+import { captureRemovalSnapshot, persistRemovalSnapshot, readRemovalMetadata, removalDataChanged, removalSeedStorePaths } from './download-removal';
+import { DownloadUndoFailure, downloadRemovalSignature, type DownloadRemovalSnapshot, type DownloadUndoWarning } from '../../shared/download-removal';
 import { mediaPath } from './verified-media';
 import type { ExternalMedia, ExternalMediaRead } from '../../shared/external-player';
 import type WebTorrent from 'webtorrent';
 import type { Torrent } from 'webtorrent';
 import { createTorrentStreamServer } from './stream-server';
+import { prepareSeed, persistSeedMetadata, sameSeedSources } from './seed-metadata';
+import { SeedStore } from './seed-store';
 import path from 'path';
 import { clearSelections, hasNoSelections } from './selections';
 import { EpisodePrefetcher, type PrefetchTorrent } from './episode-prefetch';
+import { engineCapabilities } from '../../shared/engine-capabilities';
 import { streamStartSeconds, streamStartParam, parseStreamStart, transcodeInputArgs } from '../../shared/stream-position';
 import { listSubtitleTracks, getSubtitleVtt as extractSubtitleVtt } from './subtitle-probe';
 import type { SubtitleTrack } from '../../shared/player-preferences';
@@ -63,11 +75,12 @@ import { DEFAULT_TRACKERS } from './trackers';
 // Tiny (<300KB) offline IP→country lookup (IP2Location LITE, country-level only).
 // Deliberately NOT a city-level DB — keeps the installer lean; the swarm map
 // places peers at their country. IPv4-only; IPv6/unknown peers are unresolved.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep the CommonJS export shape of this untyped lookup library.
 import ip3country = require('ip3country');
 
 // ffmpeg-static ships a platform binary; in a packaged app it lives in
 // app.asar.unpacked (it can't execute from inside the asar archive).
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const ffmpegStaticPath = require('ffmpeg-static') as string | null;
 function resolveFfmpegPath(): string | null {
   if (!ffmpegStaticPath) return null;
@@ -82,6 +95,9 @@ interface ManagedTorrent {
   id: string;
   torrent: Torrent | null;
   download: Download;
+  statusRevision?: number;
+  resumeDiscovery?: () => void;
+  seedStorePaths?: string[];
   infoHash: string | null;
   selectedFiles?: number[];
   // True once this torrent has reached WebTorrent's 'ready' event at least once
@@ -160,16 +176,21 @@ type CompletionCallback = (info: { id: string; name: string }) => void;
  */
 export class TorrentManager {
   private readonly episodePrefetcher = new EpisodePrefetcher();
+  private resourceEconomy = false;
+  setResourceEconomy(economy: boolean): void {
+    this.resourceEconomy = economy;
+    if (economy) this.episodePrefetcher.clear();
+  }
   // Created in initialize() so client options (DHT, max connections, listening
   // port, speed limits) can come from the persisted settings.
   private client!: WebTorrent;
   private cachedStore!: ReturnType<typeof downloadPieceCache.store>;
   private readonly externalEpoch = crypto.randomBytes(16).toString('hex');
   private managedTorrents: Map<string, ManagedTorrent> = new Map();
+  private recheckRequests = new Map<string, Promise<void>>();
   private infoHashIndex: Map<string, string> = new Map();
   // Creation options for "start seeding" entries, used the first time they seed
   // so the infoHash matches the .torrent the user just created.
-  private seedOptionsCache: Map<string, { announceList?: string[][]; pieceLength?: number }> = new Map();
   // Shared on-the-fly transcoding server (ffmpeg → fragmented MP4) for formats
   // Chromium can't play directly (avi, mkv, HEVC, …). Started lazily.
   private transcodeServer: http.Server | null = null;
@@ -363,6 +384,8 @@ export class TorrentManager {
       peerId: this.generateEphemeralPeerId(),
       utp: enableUtp,
       dht: settings.enableDHT !== false,
+      lsd: settings.enableLSD !== false,
+      utPex: settings.enablePEX !== false,
       // Start at the per-torrent ceiling; applyConnectionLimit() scales it down
       // live as more torrents go active (WebTorrent reads client.maxConns on every
       // connection attempt, so changing it throttles all torrents immediately).
@@ -465,12 +488,13 @@ export class TorrentManager {
    * Restore a torrent from saved state
    */
   private async restoreTorrent(download: Download): Promise<void> {
+    if (transfersBlocked()) { await this.transitionStatus(download.id, 'paused'); return; }
     log.debug('Restoring torrent', { id: download.id, name: download.name });
 
     try {
       let source: string;
       
-      if (download.sourceType === 'torrent_file' && download.torrentFilePath) {
+      if (download.torrentFilePath) {
         if (fs.existsSync(download.torrentFilePath)) {
           source = download.torrentFilePath;
         } else {
@@ -482,6 +506,7 @@ export class TorrentManager {
           const healed = path.join(getHostEnv().userDataDir, 'torrents', path.basename(download.torrentFilePath));
           if (fs.existsSync(healed)) {
             source = healed;
+            download.torrentFilePath = healed;
             await db.updateDownloadField(download.id, 'torrentFilePath', healed);
           } else {
             throw new TorrentError('Torrent file not found', 'FILE_NOT_FOUND', download.id);
@@ -491,9 +516,12 @@ export class TorrentManager {
         source = download.sourceUri;
       }
       
-      await this.addTorrentInternal(download.id, source, download.savePath, false, download.selectedFiles);
+      await this.addTorrentInternal(download.id, source, download.savePath, false, download.selectedFiles, false, await removalSeedStorePaths(download));
       log.debug('Torrent restored successfully', { id: download.id });
     } catch (error) {
+      const current = this.managedTorrents.get(download.id);
+      if (!current || current.download.status === 'paused' || current.download.status === 'removed'
+        || (error instanceof TorrentError && error.code === 'NOT_ACTIVE')) return;
       log.error('Failed to restore torrent', {
         id: download.id,
         error: error instanceof Error ? error.message : String(error),
@@ -532,8 +560,9 @@ export class TorrentManager {
     }
 
     log.debug('Status transition', { id, from: currentStatus, to: newStatus });
-    
+    const revision = managed.statusRevision = (managed.statusRevision ?? 0) + 1;
     await db.updateDownloadStatus(id, newStatus, errorMessage);
+    if (this.managedTorrents.get(id) !== managed || managed.statusRevision !== revision) return;
     // Update local state immediately so stats broadcast reflects new status
     managed.download.status = newStatus;
     if (errorMessage) {
@@ -588,8 +617,8 @@ export class TorrentManager {
     if (!fs.existsSync(appDataDir)) {
       fs.mkdirSync(appDataDir, { recursive: true });
     }
-    const dest = path.join(appDataDir, `${Date.now()}_${path.basename(localTorrentPath)}`);
-    fs.copyFileSync(localTorrentPath, dest);
+    const dest = path.join(appDataDir, `${crypto.randomUUID()}.torrent`);
+    fs.copyFileSync(localTorrentPath, dest, fs.constants.COPYFILE_EXCL);
     return dest;
   }
 
@@ -604,7 +633,7 @@ export class TorrentManager {
    */
   private async extractInfoHashFromFile(filePath: string): Promise<string | null> {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const parseTorrent = require('parse-torrent');
       const buffer = fs.readFileSync(filePath);
       const parsed = await parseTorrent(buffer);
@@ -633,17 +662,46 @@ export class TorrentManager {
     files: { path: string; size: number; index: number }[];
     totalSize: number;
   }> {
+    if (params.torrentPath && fs.existsSync(params.torrentPath)) {
+      // Local metadata needs no client, sockets, peer discovery or chunk store.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const parsed = require('parse-torrent')(fs.readFileSync(params.torrentPath));
+      const files = (parsed.files ?? []).map((file: { path: string; length: number }, index: number) => ({ path: file.path, size: file.length, index }));
+      return { name: parsed.name, files, totalSize: files.reduce((sum: number, file: { size: number }) => sum + file.size, 0) };
+    }
+    assertTransfersAllowed();
+    const previewSettings = await db.getSettings();
     const { default: WebTorrent } = await import('webtorrent');
+    assertTransfersAllowed();
     log.info('Getting torrent info', params);
 
     return new Promise((resolve, reject) => {
-      const tempClient = new WebTorrent({ utp: false } as any);
+      const previewBase = path.resolve(getHostEnv().tempDir);
+      const previewRoot = fs.mkdtempSync(path.join(previewBase, 'havvn-meta-'));
+      const tempClient = new WebTorrent({ utp: false, dht: previewSettings.enableDHT !== false,
+        lsd: previewSettings.enableLSD !== false, utPex: previewSettings.enablePEX !== false,
+        maxConns: Math.max(1, Math.min(8, previewSettings.maxConnections || 55)) } as any);
       let resolved = false;
+      let offBlocked = () => {};
+      const cleanup = () => {
+        offBlocked();
+        tempClient.destroy(() => {
+          // Only the fresh directory created above is owned by this probe.
+          if (path.dirname(path.resolve(previewRoot)) === previewBase && path.basename(previewRoot).startsWith('havvn-meta-')) {
+            void fs.promises.rm(previewRoot, { recursive: true, force: true }).catch(() => {});
+          }
+        });
+      };
+      offBlocked = onTransfersBlocked(() => {
+        if (resolved) return;
+        resolved = true; clearTimeout(timeout); cleanup();
+        reject(new TorrentError('Metadata fetch canceled by transfer protection', 'TRANSFER_BLOCKED'));
+      });
 
       const timeout = setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          tempClient.destroy();
+          cleanup();
           reject(new TorrentError('Timeout loading torrent information', 'TIMEOUT'));
         }
       }, 30000); // 30 second timeout
@@ -651,7 +709,7 @@ export class TorrentManager {
       try {
         const sourceUri = params.torrentPath || params.magnetUri;
         if (!sourceUri) {
-          clearTimeout(timeout); resolved = true; tempClient.destroy();
+          clearTimeout(timeout); resolved = true; cleanup();
           reject(new TorrentError('No torrent path or magnet URI provided', 'INVALID_INPUT'));
           return;
         }
@@ -661,7 +719,7 @@ export class TorrentManager {
           sourceInput = fs.readFileSync(params.torrentPath);
         }
 
-        tempClient.add(sourceInput, { path: getHostEnv().tempDir, storeCacheSlots: 0, deselect: true }, (torrent) => {
+        tempClient.add(sourceInput, { path: previewRoot, storeCacheSlots: 0, deselect: true }, (torrent) => {
           if (resolved) return;
           
           clearTimeout(timeout);
@@ -688,9 +746,7 @@ export class TorrentManager {
           });
 
           // Cleanup
-          tempClient.remove(torrent.infoHash, { destroyStore: true }, () => {
-            tempClient.destroy();
-          });
+          tempClient.remove(torrent.infoHash, { destroyStore: true }, cleanup);
 
           resolve(result);
         });
@@ -700,7 +756,7 @@ export class TorrentManager {
           
           clearTimeout(timeout);
           resolved = true;
-          tempClient.destroy();
+          cleanup();
           
           log.error('Error loading torrent info', { error: err });
           reject(new TorrentError(
@@ -712,7 +768,7 @@ export class TorrentManager {
         clearTimeout(timeout);
         if (!resolved) {
           resolved = true;
-          tempClient.destroy();
+          cleanup();
           reject(err);
         }
       }
@@ -792,17 +848,7 @@ export class TorrentManager {
     });
   }
 
-  async addDownload(params: {
-    sourceType: SourceType;
-    sourceUri: string;
-    savePath?: string;
-    name?: string;
-    selectedFiles?: number[];
-    /** Category id to file the record under (Download.category). */
-    categoryId?: string;
-    /** Add without starting — the record lands paused and waits to be resumed. */
-    paused?: boolean;
-  }): Promise<Download> {
+  async addDownload(params: import('../../shared/types').AddDownloadRequest): Promise<Download> {
     await this.whenReady();
     log.info('Adding new download', { sourceType: params.sourceType, name: params.name });
 
@@ -946,7 +992,7 @@ export class TorrentManager {
       // failure falls back to the floor rather than blocking the add.
       if (params.sourceType === 'torrent_file' && fs.existsSync(localTorrentPath)) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const parseTorrent = require('parse-torrent');
           const parsed = await parseTorrent(fs.readFileSync(localTorrentPath));
           const files: Array<{ length: number }> = parsed.files || [];
@@ -995,6 +1041,7 @@ export class TorrentManager {
       // 'queued': processQueue() only ever promotes queued rows, so the record
       // simply sits in the list until the user resumes it.
       const download = await db.createDownload({
+        automation: params.automation,
         name: params.name || 'Loading...',
         sourceType: params.sourceType,
         sourceUri,
@@ -1003,6 +1050,9 @@ export class TorrentManager {
         status: params.paused ? 'paused' : 'queued',
         selectedFiles: params.selectedFiles,
         category: params.categoryId ?? null,
+        seedRatioLimit: params.seedRatioLimit,
+        seedTimeLimitMinutes: params.seedTimeLimitMinutes,
+        sequentialDownload: params.sequentialDownload,
       });
 
       log.info('Download record created', { id: download.id });
@@ -1048,128 +1098,56 @@ export class TorrentManager {
     }
   }
 
-  /**
-   * Add a "start seeding" entry for a freshly-created torrent. Seeds the actual
-   * source files from disk (client.seed) so a custom torrent name can't break
-   * the content mapping (which would leave it stuck at 0%).
-   */
+  /** Register the exact saved metadata. Never regenerate a torrent from sources. */
   async addSeed(params: {
     sourcePaths: string[];
     name?: string;
     announceList?: string[][];
     pieceLength?: number;
     torrentFilePath?: string;
+    expectedInfoHash?: string;
+    retryExisting?: boolean;
   }): Promise<Download> {
     await this.whenReady();
-    const sourceFolder = path.dirname(params.sourcePaths[0]);
-    const download = await db.createDownload({
-      name: params.name || path.basename(params.sourcePaths[0]),
-      sourceType: 'torrent_file',
-      sourceUri: params.sourcePaths[0],
-      torrentFilePath: params.torrentFilePath,
-      savePath: sourceFolder,
-      status: 'queued',
-      seedPaths: params.sourcePaths,
-    });
-
-    this.managedTorrents.set(download.id, {
-      id: download.id,
-      torrent: null,
-      download,
-      infoHash: null,
-    });
-    this.seedOptionsCache.set(download.id, {
-      announceList: params.announceList,
-      pieceLength: params.pieceLength,
-    });
-
-    await this.processQueue();
-    return download;
-  }
-
-  /**
-   * Seed existing files from disk (used by "start seeding"). The torrent is
-   * complete on arrival, so it goes straight to the seeding state.
-   */
-  private async addSeedInternal(id: string, paths: string[], _savePath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const managed = this.managedTorrents.get(id);
-      if (!managed) { reject(new TorrentError('Download not found', 'NOT_FOUND', id)); return; }
-
-      const opts = this.seedOptionsCache.get(id) || {};
-      const seedOpts: any = { name: managed.download.name, store: this.cachedStore, storeCacheSlots: 0 };
-      if (opts.announceList && opts.announceList.length) seedOpts.announceList = opts.announceList;
-      if (opts.pieceLength) seedOpts.pieceLength = opts.pieceLength;
-
-      let settled = false;
-      const fail = (e: any) => {
-        if (settled) return; settled = true;
-        this.client.removeListener('error', fail);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      };
-
-      try {
-        this.client.seed(paths, seedOpts, async (torrent: any) => {
-          if (settled) return; settled = true;
-          this.client.removeListener('error', fail);
-          try {
-            managed.torrent = torrent;
-            // Snapshot lifetime totals (a re-seeded entry may already have an
-            // upload history we must not reset to 0).
-            managed.sessionBaseDownloaded = managed.download.downloadedBytes || 0;
-            managed.sessionBaseUploaded = managed.download.uploadedBytes || 0;
-            const infoHash = torrent.infoHash;
-
-            const duplicateId = this.getDuplicateByInfoHash(infoHash, id);
-            if (duplicateId) {
-              try { this.client.remove(torrent); } catch { /* ignore */ }
-              managed.torrent = null;
-              await db.deleteDownload(id);
-              this.managedTorrents.delete(id);
-              this.seedOptionsCache.delete(id); // terminal outcome — don't leak the cache entry
-              reject(new TorrentError('This torrent is already added', 'DUPLICATE', id));
-              return;
-            }
-
-            managed.infoHash = infoHash;
-            this.infoHashIndex.set(infoHash, id);
-            managed.download.name = torrent.name || managed.download.name;
-            managed.download.totalSize = torrent.length || 0;
-
-            (torrent as unknown as NodeJS.EventEmitter).on('error', (err: Error) => {
-              log.error('Seed torrent error', { id, error: err?.message || String(err) });
-            });
-
-            // Already complete: queued → downloading → seeding.
-            await this.transitionStatus(id, 'downloading').catch(() => {});
-            await this.transitionStatus(id, 'seeding').catch(() => {});
-            await db.updateDownloadField(id, 'seedingStartedAt', Date.now());
-            managed.download.seedingStartedAt = Date.now();
-            await db.updateDownloadProgress(id, {
-              progress: 1,
-              downloadedBytes: torrent.length || 0,
-              uploadedBytes: 0,
-              downSpeedBps: 0,
-              upSpeedBps: 0,
-              etaSeconds: null,
-              peers: torrent.numPeers || 0,
-              seeds: 0,
-              name: torrent.name,
-              totalSize: torrent.length || 0,
-            });
-
-            this.seedOptionsCache.delete(id);
-            log.info('Seeding created torrent', { id, infoHash, name: torrent.name });
-            resolve();
-          } catch (e) {
-            fail(e);
-          }
-        });
-        this.client.once('error', fail);
-      } catch (e) {
-        fail(e);
+    assertTransfersAllowed();
+    const { metadata, paths } = await prepareSeed(params.torrentFilePath, params.sourcePaths, params.expectedInfoHash);
+    const existingId = this.getDuplicateByInfoHash(metadata.infoHash);
+    if (existingId && params.retryExisting && !this.addingTorrents.has(metadata.infoHash)) {
+      const existing = this.managedTorrents.get(existingId)!;
+      if (sameSeedSources(existing.download.seedPaths, params.sourcePaths)) {
+        await prepareSeed(existing.download.torrentFilePath ?? undefined, existing.download.seedPaths!, metadata.infoHash);
+        if (canResume(existing.download.status)) await this.resumeDownload(existingId);
+        if (existing.download.status === 'error') throw new TorrentError(existing.download.lastError || 'Could not start seeding', 'ADD_FAILED', existingId);
+        return existing.download;
       }
-    });
+    }
+    if (existingId || this.addingTorrents.has(metadata.infoHash)) {
+      throw new TorrentError('This torrent is already added', 'DUPLICATE');
+    }
+    this.addingTorrents.add(metadata.infoHash);
+    let stored: string | undefined, download: Download | undefined, registered = false;
+    try {
+      stored = await persistSeedMetadata(metadata, getHostEnv().userDataDir);
+      download = await db.createDownload({ name: metadata.name, infoHash: metadata.infoHash,
+        sourceType: 'torrent_file', sourceUri: params.sourcePaths[0], torrentFilePath: stored,
+        savePath: path.dirname(params.sourcePaths[0]), status: 'queued', seedPaths: params.sourcePaths });
+      download.totalSize = metadata.length;
+      await db.updateDownloadField(download.id, 'totalSize', metadata.length);
+      const managed: ManagedTorrent = { id: download.id, torrent: null, download,
+        infoHash: metadata.infoHash, seedStorePaths: paths };
+      this.managedTorrents.set(download.id, managed);
+      this.infoHashIndex.set(metadata.infoHash, download.id);
+      registered = true;
+      await this.processQueue();
+      if (managed.download.status === 'error') throw new TorrentError(managed.download.lastError || 'Could not start seeding', 'ADD_FAILED', download.id);
+      return download;
+    } catch (error) {
+      if (!registered) {
+        if (download) await db.deleteDownload(download.id).catch(() => {});
+        if (stored) await fs.promises.unlink(stored).catch(() => {});
+      }
+      throw error;
+    } finally { this.addingTorrents.delete(metadata.infoHash); }
   }
 
   /**
@@ -1180,8 +1158,15 @@ export class TorrentManager {
     source: string,
     savePath: string,
     isNew: boolean,
-    selectedFiles?: number[]
+    selectedFiles?: number[],
+    preservePause = false,
+    storePaths?: string[],
   ): Promise<void> {
+    assertTransfersAllowed();
+    const seedDownload = this.managedTorrents.get(id)?.download;
+    const seed = seedDownload?.seedPaths?.length
+      ? await prepareSeed(seedDownload.torrentFilePath ?? undefined, seedDownload.seedPaths, seedDownload.infoHash) : undefined;
+    if (seed) storePaths = seed.paths;
     return new Promise((resolve, reject) => {
       const managed = this.managedTorrents.get(id);
       if (!managed) {
@@ -1190,8 +1175,8 @@ export class TorrentManager {
       }
       
       // Prepare torrent input
-      let torrentInput: string | Buffer = source;
-      if (source.endsWith('.torrent') && fs.existsSync(source)) {
+      let torrentInput: string | Buffer = seed?.metadata.bytes ?? source;
+      if (!seed && source.endsWith('.torrent') && fs.existsSync(source)) {
         torrentInput = fs.readFileSync(source);
       }
       
@@ -1199,7 +1184,19 @@ export class TorrentManager {
       const addOptions: any = {
         store: this.cachedStore, storeCacheSlots: 0,
         path: savePath,
+        ...(preservePause || seed ? { paused: true, deselect: true } : {}),
       };
+      if (storePaths) {
+        const Base = downloadPieceCache.store(SeedStore);
+        const paths = storePaths;
+        addOptions.store = class {
+          constructor(length: number, options: { files: Array<{ path: string; length: number }> }) {
+            if (options.files.length !== paths.length) throw new Error('Seed file mapping does not match the metadata');
+            return new Base(length, { ...options, path: undefined,
+              files: options.files.map((file, index) => ({ ...file, path: paths[index] })) });
+          }
+        };
+      }
 
       // Merge any user-added trackers into the announce list (webtorrent unions
       // them with the torrent's own trackers). User-removed ones are pruned from
@@ -1241,6 +1238,8 @@ export class TorrentManager {
       }
 
       managed.torrent = torrent;
+      managed.seedStorePaths = storePaths;
+      if (preservePause || seed) managed.resumeDiscovery = deferTorrentDiscovery(torrent as unknown as Parameters<typeof deferTorrentDiscovery>[0]);
       // Snapshot lifetime totals so this session's bytes add onto them rather
       // than overwriting them (see ManagedTorrent.sessionBase* docs).
       managed.sessionBaseDownloaded = managed.download.downloadedBytes || 0;
@@ -1265,23 +1264,37 @@ export class TorrentManager {
       // Guard against magnets that never find peers: without metadata 'ready'
       // never fires and this promise would hang forever (blocking the IPC add
       // call and the queue). Time out, surface a clear error, allow retry.
-      let settled = false;
-      const metadataTimeout = setTimeout(() => {
+      let settled = false, failed = false;
+      const isCurrent = () => this.managedTorrents.get(id) === managed && managed.torrent === torrent
+        && managed.download.status !== 'removed';
+      const metadataTimeout = seed ? undefined : setTimeout(() => {
         if (settled) return;
         settled = true;
+        failed = true;
+        if (!isCurrent()) { reject(new TorrentError('Torrent instance replaced', 'NOT_ACTIVE', id)); return; }
         log.warn('Metadata fetch timed out', { id });
         this.closeStreamServer(managed);
         try { managed.torrent?.destroy({ destroyStore: false } as any); } catch (_) { /* ignore */ }
         managed.torrent = null;
-        this.transitionStatus(id, 'error', 'Timed out fetching torrent metadata (no peers found). Retry later.')
-          .catch(() => { /* may already be in error state */ });
+        if (managed.download.status !== 'paused') {
+          this.transitionStatus(id, 'error', 'Timed out fetching torrent metadata (no peers found). Retry later.')
+            .catch(() => { /* may already be in error state */ });
+        }
         reject(new TorrentError('Timed out fetching torrent metadata', 'METADATA_TIMEOUT', id));
       }, TorrentManager.METADATA_TIMEOUT_MS);
+      // The metadata deadline does not cover disk verification, which may take
+      // longer on a large torrent. A UI wait is never an engine cancellation.
+      if (torrent.metadata) clearTimeout(metadataTimeout);
+      (torrent as unknown as NodeJS.EventEmitter).once('metadata', () => clearTimeout(metadataTimeout));
+      (torrent as unknown as NodeJS.EventEmitter).once('close', () => {
+        clearTimeout(metadataTimeout);
+        if (!settled) { settled = true; reject(new TorrentError('Torrent instance closed', 'NOT_ACTIVE', id)); }
+      });
       
       // Transition to downloading only if not already in a terminal/active state
       // When restoring, we preserve the existing state (e.g., seeding, completed)
       const currentStatus = managed.download.status;
-      if (isNew || currentStatus === 'queued' || currentStatus === 'paused') {
+      if (!preservePause && (isNew || currentStatus === 'queued' || currentStatus === 'paused')) {
         // Only transition for new downloads or resuming from queued/paused
         this.transitionStatus(id, 'downloading').catch((err) => {
           log.error('Failed to transition to downloading', { id, error: err });
@@ -1294,118 +1307,137 @@ export class TorrentManager {
         if (settled) return;
         settled = true;
         clearTimeout(metadataTimeout);
-        // See the ManagedTorrent.everReady doc comment: this is the reliable
-        // "have we actually learned totalSize/name before" signal, independent
-        // of the isNew param (processQueue always passes isNew=true).
-        const firstTimeReady = !managed.everReady;
-        managed.everReady = true;
-        // Drop any trackers the user removed (their announce client is built now).
-        this.pruneRemovedTrackersLive(managed);
-        // Apply file selection after torrent is ready
-        if (selectedFiles && selectedFiles.length > 0) {
-          try {
-            // Deselect all files first
-            torrent.files.forEach((file) => file.deselect());
-            
-            // Select only chosen files
-            selectedFiles.forEach((index) => {
-              if (index < torrent.files.length) {
-                torrent.files[index].select();
-                log.debug('Selected file for download', { 
-                  id, 
-                  index, 
-                  path: torrent.files[index].path 
-                });
-              }
-            });
-            
-            log.info('Applied selective file download', {
-              id,
-              totalFiles: torrent.files.length,
-              selectedFiles: selectedFiles.length,
-            });
-          } catch (err) {
-            log.error('Failed to apply file selection', { id, error: err });
-          }
-        }
-        // Restore the piece-picking strategy from the persisted flag (WebTorrent
-        // defaults new instances to 'sequential', so always set it explicitly).
-        this.applyStrategy(torrent, managed.download.sequentialDownload === true);
-        // If the user paused while metadata was still being fetched, the
-        // selections applied above would start the download despite the
-        // 'paused' status (soft pause keeps wires alive, so 'ready' still
-        // fires). Halt again to honour the paused state.
-        if (managed.download.status === 'paused') {
-          this.haltTorrent(torrent);
-        }
-        // Store infoHash for duplicate detection
-        const infoHash = torrent.infoHash;
-        
-        // Update infoHash if it wasn't available before (shouldn't happen normally)
-        if (!managed.infoHash) {
-          managed.infoHash = infoHash;
-          this.infoHashIndex.set(infoHash, id);
-          log.debug('InfoHash registered from ready event', { id, infoHash });
-        }
-
-        // Check for duplicates (safety check)
-        const duplicateId = this.getDuplicateByInfoHash(infoHash, id);
-        if (duplicateId) {
-          const duplicateDownload = this.managedTorrents.get(duplicateId);
-          const duplicateName = duplicateDownload?.download.name || 'Unknown';
-          log.warn('Duplicate torrent detected', { id, duplicateId, infoHash, duplicateName });
-          
-          // Remove this torrent and keep the existing one
-          try {
-            this.client.remove(torrent);
-            log.debug('Duplicate torrent removed from WebTorrent', { id });
-          } catch (e) {
-            log.error('Failed to remove duplicate torrent', { id, error: e });
-          }
-          managed.torrent = null;
-          managed.infoHash = null;
-          
-          const errorMessage = `This torrent is already added: "${duplicateName}"`;
-          
-        // Completely remove duplicate from system — use hard delete to prevent resurrection
-          await db.deleteDownload(id);
-          this.managedTorrents.delete(id);
-          
-          reject(new TorrentError(errorMessage, 'DUPLICATE', id));
+        if (!isCurrent() || failed || (torrent as unknown as { destroyed?: boolean }).destroyed || managed.download.status === 'error') {
+          reject(new TorrentError('Torrent instance no longer active', 'NOT_ACTIVE', id));
           return;
         }
+        try {
+          if (seed && (torrent.infoHash.toLowerCase() !== seed.metadata.infoHash
+            || torrent.pieces.some((_piece, index) => !(torrent as unknown as { bitfield: { get(i: number): boolean } }).bitfield.get(index)))) {
+            throw new TorrentError('Source files no longer match the saved torrent. Recreate the torrent or restore the original content.', 'INVALID_INPUT', id);
+          }
+          if (seed) managed.recheckReturnStatus = 'seeding';
+          // See the ManagedTorrent.everReady doc comment: this is the reliable
+          // "have we actually learned totalSize/name before" signal, independent
+          // of the isNew param (processQueue always passes isNew=true).
+          const firstTimeReady = !managed.everReady;
+          managed.everReady = true;
+          // Drop any trackers the user removed (their announce client is built now).
+          this.pruneRemovedTrackersLive(managed);
+          // Apply file selection after torrent is ready
+          if (selectedFiles?.length || managed.download.filePriorities?.length) {
+            try {
+              clearSelections((torrent as any)._selections);
+              const selected = new Set(managed.selectedFiles ?? managed.download.selectedFiles ?? []);
+              torrent.files.forEach((file, index) => {
+                const priority = this.filePriority(managed, index, selected);
+                if (priority !== 'skip') file.select(priority === 'high' ? FILE_PRIORITY_HIGH : priority === 'low' ? FILE_PRIORITY_LOW : FILE_PRIORITY_NORMAL);
+              });
 
-        // Update name and totalSize from torrent metadata
-        const name = torrent.name || 'Unknown';
-        const totalSize = torrent.length || 0;
-        managed.download.name = name;
-        managed.download.totalSize = totalSize;
+              log.info('Applied selective file download', {
+                id,
+                totalFiles: torrent.files.length,
+                selectedFiles: torrent.files.filter((_, index) => this.filePriority(managed, index, selected) !== 'skip').length,
+              });
+            } catch (err) {
+              log.error('Failed to apply file selection', { id, error: err });
+            }
+          }
+          // Restore the piece-picking strategy from the persisted flag (WebTorrent
+          // defaults new instances to 'sequential', so always set it explicitly).
+          this.applyStrategy(torrent, managed.download.sequentialDownload === true);
+          // If the user paused while metadata was still being fetched, the
+          // selections applied above would start the download despite the
+          // 'paused' status (soft pause keeps wires alive, so 'ready' still
+          // fires). Halt again to honour the paused state.
+          if (managed.download.status === 'paused') {
+            this.haltTorrent(torrent);
+          }
+          // Store infoHash for duplicate detection
+          const infoHash = torrent.infoHash;
 
-        log.debug('Torrent ready', { id, name, infoHash, totalSize });
+          // Update infoHash if it wasn't available before (shouldn't happen normally)
+          if (!managed.infoHash) {
+            managed.infoHash = infoHash;
+            this.infoHashIndex.set(infoHash, id);
+            log.debug('InfoHash registered from ready event', { id, infoHash });
+          }
 
-        // Update database with torrent metadata — only the first time we ever
-        // learn it for this torrent, so a resume/recheck re-add can't re-stamp
-        // totalSize from a transient mid-reattach reading (isNew is unreliable
-        // here: processQueue always passes true, even for resumes).
-        if (firstTimeReady) {
-          await db.updateDownloadProgress(id, {
-            progress: torrent.progress,
-            downloadedBytes: torrent.downloaded,
-            uploadedBytes: torrent.uploaded,
-            downSpeedBps: torrent.downloadSpeed,
-            upSpeedBps: torrent.uploadSpeed,
-            etaSeconds: torrent.timeRemaining > 0 ? Math.floor(torrent.timeRemaining / 1000) : null,
-            peers: torrent.numPeers,
-            seeds: 0,
-            name,
-            totalSize,
-          });
+          // Check for duplicates (safety check)
+          const duplicateId = this.getDuplicateByInfoHash(infoHash, id);
+          if (duplicateId) {
+            const duplicateDownload = this.managedTorrents.get(duplicateId);
+            const duplicateName = duplicateDownload?.download.name || 'Unknown';
+            log.warn('Duplicate torrent detected', { id, duplicateId, infoHash, duplicateName });
+
+            // Remove this torrent and keep the existing one
+            try {
+              this.client.remove(torrent);
+              log.debug('Duplicate torrent removed from WebTorrent', { id });
+            } catch (e) {
+              log.error('Failed to remove duplicate torrent', { id, error: e });
+            }
+            managed.torrent = null;
+            managed.infoHash = null;
+
+            const errorMessage = `This torrent is already added: "${duplicateName}"`;
+
+          // Completely remove duplicate from system — use hard delete to prevent resurrection
+            await db.deleteDownload(id);
+            this.managedTorrents.delete(id);
+
+            reject(new TorrentError(errorMessage, 'DUPLICATE', id));
+            return;
+          }
+
+          // Update name and totalSize from torrent metadata
+          const name = torrent.name || 'Unknown';
+          const totalSize = torrent.length || 0;
+          managed.download.name = name;
+          managed.download.totalSize = totalSize;
+
+          log.debug('Torrent ready', { id, name, infoHash, totalSize });
+
+          // Update database with torrent metadata — only the first time we ever
+          // learn it for this torrent, so a resume/recheck re-add can't re-stamp
+          // totalSize from a transient mid-reattach reading (isNew is unreliable
+          // here: processQueue always passes true, even for resumes).
+          if (firstTimeReady) {
+            await db.updateDownloadProgress(id, {
+              progress: torrent.progress,
+              downloadedBytes: torrent.downloaded,
+              uploadedBytes: torrent.uploaded,
+              downSpeedBps: torrent.downloadSpeed,
+              upSpeedBps: torrent.uploadSpeed,
+              etaSeconds: torrent.timeRemaining > 0 ? Math.floor(torrent.timeRemaining / 1000) : null,
+              peers: torrent.numPeers,
+              seeds: 0,
+              name,
+              totalSize,
+            });
+          }
+
+          if (seed && !preservePause && isCurrent() && managed.download.status !== 'paused') {
+            this.resumeInPlace(managed);
+            await this.transitionStatus(id, 'seeding');
+            if (!managed.download.seedingStartedAt) {
+              managed.download.seedingStartedAt = Date.now();
+              await db.updateDownloadField(id, 'seedingStartedAt', managed.download.seedingStartedAt);
+            }
+          }
+          resolve();
+        } catch (error) {
+          failed = true;
+          this.haltTorrent(torrent);
+          await new Promise<void>(finish => torrent.destroy({ destroyStore: false } as any, () => finish()));
+          if (managed.torrent === torrent) managed.torrent = null;
+          await this.transitionStatus(id, 'error', error instanceof Error ? error.message : String(error)).catch(() => {});
+          reject(error);
         }
-
-        resolve();
       });
       
       torrent.on('done', async () => {
+        if (!isCurrent() || failed || (torrent as unknown as { destroyed?: boolean }).destroyed) return;
         if (managed.download.status !== 'downloading') return;
 
         // Backstop for the pause race: WebTorrent's _checkDone() fires 'done' when
@@ -1430,6 +1462,7 @@ export class TorrentManager {
         // app quit in that window would otherwise leave the DB at sub-1.0 progress.
         managed.download.progress = 1;
         try { await db.updateDownloadField(id, 'progress', 1); } catch (_) { /* best-effort */ }
+        if (!isCurrent() || failed || managed.download.status !== 'downloading') return;
 
         // Was this 'done' just a force-recheck re-verifying already-complete data?
         // Restore the pre-recheck status silently: no spurious "download complete"
@@ -1453,8 +1486,9 @@ export class TorrentManager {
         }
 
         await this.transitionStatus(id, 'seeding');
+        if (!isCurrent() || failed || (managed.download.status as DownloadStatus) !== 'seeding') return;
         // Record when seeding started for time-limit tracking
-        await db.updateDownloadField(id, 'seedingStartedAt', Date.now());
+        await db.updateDownloadFields(id, { seedingStartedAt: Date.now(), automationCompletedAt: Date.now() });
         managed.download.seedingStartedAt = Date.now();
         // Notify completion listeners (used for OS notifications)
         for (const cb of this.completionCallbacks) {
@@ -1470,26 +1504,27 @@ export class TorrentManager {
       
       // WebTorrent types are incomplete - error event exists but isn't typed correctly
       (torrent as unknown as NodeJS.EventEmitter).on('error', async (err: Error) => {
+        if (!isCurrent()) return;
+        failed = true;
         log.error('Torrent error', {
           id,
           error: err?.message || String(err),
         });
 
         const errorMsg = err?.message || String(err);
+        // Settle before awaiting persistence: ready/done can arrive in the same
+        // event-loop turn as the error, and must not win that race.
+        if (!settled) {
+          settled = true;
+          clearTimeout(metadataTimeout);
+          reject(new TorrentError(errorMsg, 'TORRENT_ERROR', id));
+        }
 
         try {
           await this.transitionStatus(id, 'error', errorMsg);
         } catch (e) {
           // Status transition might fail if already in error state
           log.warn('Could not transition to error state', { id });
-        }
-
-        // If the torrent errored before 'ready', settle the add promise too —
-        // otherwise the caller (IPC add / queue) would wait forever.
-        if (!settled) {
-          settled = true;
-          clearTimeout(metadataTimeout);
-          reject(new TorrentError(errorMsg, 'TORRENT_ERROR', id));
         }
 
         // Process queue to start next download
@@ -1507,6 +1542,7 @@ export class TorrentManager {
    * Process the download queue
    */
   private async processQueue(): Promise<void> {
+    if (transfersBlocked()) return;
     const activeCount = this.getActiveCount();
 
     log.debug('Processing queue', { activeCount, maxActive: this.maxActiveDownloads });
@@ -1524,6 +1560,7 @@ export class TorrentManager {
     log.debug('Queue status', { queuedCount: queued.length, slotsAvailable });
 
     for (let i = 0; i < Math.min(queued.length, slotsAvailable); i++) {
+      if (transfersBlocked()) return;
       const download = queued[i];
       const managed = this.managedTorrents.get(download.id);
       if (!managed) continue;
@@ -1548,14 +1585,12 @@ export class TorrentManager {
       {
         try {
           // "Start seeding" entries seed the original files from disk.
-          if (download.seedPaths && download.seedPaths.length > 0) {
-            log.debug('Starting queued seed', { id: download.id });
-            await this.addSeedInternal(download.id, download.seedPaths, download.savePath);
-            continue;
+          if (download.seedPaths?.length && !download.torrentFilePath) {
+            throw new TorrentError('Original torrent metadata is missing. Recreate the torrent before seeding.', 'FILE_NOT_FOUND', download.id);
           }
 
           let source: string;
-          if (download.sourceType === 'torrent_file' && download.torrentFilePath) {
+          if (download.torrentFilePath) {
             source = download.torrentFilePath;
           } else {
             source = download.sourceUri;
@@ -1567,13 +1602,16 @@ export class TorrentManager {
             source,
             download.savePath,
             true,
-            managed.selectedFiles
+            managed.selectedFiles, false, await removalSeedStorePaths(download)
           );
         } catch (error) {
           log.error('Failed to start queued download', {
             id: download.id,
             error: error instanceof Error ? error.message : String(error),
           });
+          if (this.managedTorrents.get(download.id) === managed && !['paused', 'removed', 'error'].includes(managed.download.status)) {
+            await this.transitionStatus(download.id, 'error', error instanceof Error ? error.message : String(error)).catch(() => {});
+          }
         }
       }
     }
@@ -1814,21 +1852,21 @@ export class TorrentManager {
    * torrent that was re-queued in place because we were at the active limit).
    */
   private resumeInPlace(managed: ManagedTorrent): void {
+    assertTransfersAllowed();
     const torrent = managed.torrent;
     if (!torrent) return;
     try {
       const t = torrent as any;
+      managed.resumeDiscovery?.(); managed.resumeDiscovery = undefined;
       try { t.resume(); } catch { /* ignore */ }
       // Start from a clean slate: selections accumulate (see haltTorrent) and a
       // pile of stale entries is exactly what used to defeat pause.
       clearSelections(t._selections);
-      if (managed.selectedFiles && managed.selectedFiles.length > 0) {
-        managed.selectedFiles.forEach((index) => {
-          if (index < torrent.files.length) torrent.files[index].select();
-        });
-      } else {
-        torrent.files.forEach((file) => file.select());
-      }
+      const selected = new Set(managed.selectedFiles ?? managed.download.selectedFiles ?? []);
+      torrent.files.forEach((file, index) => {
+        const priority = this.filePriority(managed, index, selected);
+        if (priority !== 'skip') file.select(priority === 'high' ? FILE_PRIORITY_HIGH : priority === 'low' ? FILE_PRIORITY_LOW : FILE_PRIORITY_NORMAL);
+      });
       this.applyStrategy(torrent, managed.download.sequentialDownload === true);
     } catch (e) {
       log.warn('Error re-selecting files on resume (non-fatal)', { error: String(e) });
@@ -1840,6 +1878,7 @@ export class TorrentManager {
    */
   async resumeDownload(id: string): Promise<void> {
     await this.whenReady();
+    assertTransfersAllowed();
     log.info('Resuming download', { id });
 
     const managed = this.managedTorrents.get(id);
@@ -1891,7 +1930,72 @@ export class TorrentManager {
   /**
    * Remove a download
    */
-  async removeDownload(id: string, deleteFiles: boolean): Promise<void> {
+  async captureDownloadRemoval(id: string): Promise<DownloadRemovalSnapshot> {
+    await this.whenReady();
+    await this.waitForMove(id);
+    const managed = this.managedTorrents.get(id);
+    if (!managed || managed.download.status === 'removed') throw new DownloadUndoFailure('conflict');
+    const persisted = await db.getDownloadById(id);
+    if (!persisted) throw new DownloadUndoFailure('conflict');
+    managed.download.category = persisted.category; managed.download.priority = persisted.priority;
+    const stats = this.getStats().find(item => item.id === id);
+    const download = { ...managed.download, ...(stats ? { progress: stats.progress, downloadedBytes: stats.downloadedBytes, uploadedBytes: stats.uploadedBytes } : {}),
+      infoHash: managed.infoHash ?? managed.download.infoHash };
+    const metadata = managed.torrent?.torrentFile ? Buffer.from(managed.torrent.torrentFile)
+      : download.torrentFilePath ? await readRemovalMetadata(download.torrentFilePath) : null;
+    return captureRemovalSnapshot(download, metadata, await this.getFiles(id));
+  }
+
+  async restoreRemovedDownload(snapshot: DownloadRemovalSnapshot, recordOnly = false): Promise<{ warnings: DownloadUndoWarning[] }> {
+    await this.whenReady();
+    const id = snapshot.download.id;
+    if (this.managedTorrents.has(id) || (snapshot.download.infoHash && this.getDuplicateByInfoHash(snapshot.download.infoHash, id))) throw new DownloadUndoFailure('conflict');
+    const download = await persistRemovalSnapshot(snapshot, getHostEnv().userDataDir, db.restoreDownload);
+    const managed: ManagedTorrent = { id, download, torrent: null, infoHash: download.infoHash ?? null,
+      selectedFiles: download.selectedFiles, everReady: true };
+    this.managedTorrents.set(id, managed);
+    if (managed.infoHash) this.infoHashIndex.set(managed.infoHash, id);
+    const warnings: DownloadUndoWarning[] = download.category !== snapshot.download.category ? ['category-missing'] : [];
+    if (recordOnly) return { warnings };
+    try {
+      if (snapshot.metadata) {
+        await this.addTorrentInternal(id, download.torrentFilePath!, download.savePath, false, download.selectedFiles, true, await removalSeedStorePaths(download));
+        if (removalDataChanged(snapshot, await this.getFiles(id))) warnings.push('data-changed');
+        download.progress = managed.torrent?.progress ?? download.progress;
+        await db.updateDownloadFields(id, { progress: download.progress });
+      }
+      if (snapshot.download.status === 'completed' && !warnings.includes('data-changed')) {
+        if (managed.torrent) {
+          const torrent = managed.torrent; managed.torrent = null;
+          await new Promise<void>(resolve => torrent.destroy({ destroyStore: false } as any, () => resolve()));
+        }
+        await this.transitionStatus(id, 'completed');
+      } else if (snapshot.download.status === 'error') await this.transitionStatus(id, 'error', snapshot.download.lastError ?? undefined);
+    } catch (error) {
+      warnings.push('engine');
+      if (this.managedTorrents.get(id) === managed && managed.download.status !== 'removed') {
+        if (managed.torrent) this.haltTorrent(managed.torrent);
+        await this.transitionStatus(id, 'error', error instanceof Error ? error.message : 'Restore failed').catch(() => {});
+      }
+    }
+    return { warnings };
+  }
+
+  async activateRestoredDownload(id: string, previous: DownloadStatus): Promise<void> {
+    await this.whenReady();
+    const managed = this.managedTorrents.get(id);
+    if (!managed || managed.download.status !== 'paused') return;
+    if (previous === 'seeding' && managed.torrent?.ready) {
+      await this.transitionStatus(id, 'seeding'); this.resumeInPlace(managed); return;
+    }
+    if (managed.torrent?.ready && this.getActiveCount() < this.maxActiveDownloads) {
+      await this.transitionStatus(id, 'downloading'); this.resumeInPlace(managed); return;
+    }
+    await this.transitionStatus(id, 'queued');
+    void this.processQueue().catch(error => log.warn('Undo queue processing failed', { id, error: String(error) }));
+  }
+
+  async removeDownload(id: string, deleteFiles: boolean, signature?: string, approvedPlan?: DownloadDeletionPlan): Promise<void> {
     await this.whenReady();
     log.info('Removing download', { id, deleteFiles, idType: typeof id, deleteFilesType: typeof deleteFiles });
 
@@ -1905,6 +2009,20 @@ export class TorrentManager {
     // moved copy (and the DB row would point at the new path we never cleaned).
     await this.waitForMove(id);
 
+    if (signature) {
+      const persisted = await db.getDownloadById(id);
+      if (!persisted) throw new DownloadUndoFailure('conflict');
+      managed.download.category = persisted.category; managed.download.priority = persisted.priority;
+      if (signature !== downloadRemovalSignature(managed.download)) throw new DownloadUndoFailure('conflict');
+    }
+
+    const deletion = deleteFiles ? approvedPlan ?? await prepareDownloadDeletion(await this.captureDownloadRemoval(id)) : undefined;
+    if (deletion) {
+      if (deletion.downloadId !== id || deletion.signature !== downloadRemovalSignature(managed.download)) throw new DeletionPreviewError('changed');
+      await checkDownloadDeletion(deletion);
+      await db.updateDownloadFields(id, { status: 'paused' });
+      managed.download.status = 'paused';
+    }
     // Remove from infoHash index
     if (managed.infoHash) {
       this.infoHashIndex.delete(managed.infoHash);
@@ -1919,18 +2037,30 @@ export class TorrentManager {
 
     // Remove from WebTorrent if torrent exists
     if (managed.torrent) {
+      const torrent = managed.torrent;
+      const previous = managed.download.status;
+      managed.torrent = null;
+      managed.download.status = 'removed';
       try {
         // Check if torrent is in client before removing
-        const torrentInClient = this.client.torrents.find(t => t === managed.torrent);
+        const torrentInClient = this.client.torrents.find(t => t === torrent);
         if (torrentInClient) {
-          this.client.remove(managed.torrent);
+          await new Promise<void>((resolve, reject) => {
+            // Recent WebTorrent versions return a promise as well as accepting
+            // the destroy callback. Observe early lookup failures from either.
+            const pending = this.client.remove(torrent, { destroyStore: false }, error => error ? reject(error) : resolve());
+            Promise.resolve(pending).catch(reject);
+          });
           log.debug('Torrent removed from WebTorrent', { id });
         } else {
+          await new Promise<void>(resolve => torrent.destroy({ destroyStore: false } as any, () => resolve()));
           log.debug('Torrent not in WebTorrent client, skipping removal', { id });
         }
       } catch (e) {
         log.error('Failed to remove torrent from WebTorrent', { id, error: e });
-        // Don't throw - continue with cleanup even if WebTorrent removal fails
+        managed.download.status = previous;
+        await this.transitionStatus(id, 'error', 'Could not close the torrent before removal').catch(() => {});
+        throw e;
       }
       // Detach the live instance NOW. The managed entry lingers in the map through
       // the 500ms delete delay below, and the stats broadcast (every 750ms) would
@@ -1946,23 +2076,12 @@ export class TorrentManager {
       // Wait a bit for file handles to be released
       await new Promise(resolve => setTimeout(resolve, 500));
 
-      const seedPaths = managed.download.seedPaths;
-      if (seedPaths && seedPaths.length > 0) {
-        // "Start seeding" entries point at the user's ACTUAL files. Delete those
-        // exact paths — never path.join(savePath, name): a custom torrent name
-        // would miss the real files (silent failure) or, worse, match unrelated
-        // data that happens to share the name in the same folder and destroy it.
-        for (const p of seedPaths) {
-          if (fs.existsSync(p)) await this.deletePathRecursive(p, id);
-        }
-      } else {
-        const downloadPath = managed.download.savePath;
-        if (fs.existsSync(downloadPath)) {
-          const targetPath = path.join(downloadPath, managed.download.name);
-          if (fs.existsSync(targetPath)) {
-            await this.deletePathRecursive(targetPath, id);
-          }
-        }
+      try { await executeDownloadDeletion(deletion!); }
+      catch (error) {
+        managed.download.status = 'paused';
+        if (managed.infoHash) this.infoHashIndex.set(managed.infoHash, id);
+        await this.transitionStatus(id, 'error', 'Some files could not be deleted. Review the remaining files and retry.').catch(() => {});
+        throw error;
       }
     }
     
@@ -1985,10 +2104,6 @@ export class TorrentManager {
     
     // Remove from managed map
     this.managedTorrents.delete(id);
-    // Release any cached seed options (announce list / piece length buffers) —
-    // a "start seeding" entry removed while still queued never hit the success
-    // path in addSeedInternal that would otherwise clear this.
-    this.seedOptionsCache.delete(id);
 
     // Remove from infoHash index to prevent memory leaks
     if (managed.infoHash) {
@@ -2082,7 +2197,15 @@ export class TorrentManager {
    * on add, so valid data is kept and only missing/corrupt pieces re-download.
    * Works from any state that may have data on disk.
    */
-  async recheckDownload(id: string): Promise<void> {
+  recheckDownload(id: string): Promise<void> {
+    const pending = this.recheckRequests.get(id);
+    if (pending) return pending;
+    const work = this.performRecheck(id).finally(() => { if (this.recheckRequests.get(id) === work) this.recheckRequests.delete(id); });
+    this.recheckRequests.set(id, work);
+    return work;
+  }
+
+  private async performRecheck(id: string): Promise<void> {
     await this.whenReady();
     log.info('Rechecking download', { id });
 
@@ -2091,6 +2214,8 @@ export class TorrentManager {
       throw new TorrentError('Download not found', 'NOT_FOUND', id);
     }
 
+    // Repeated actions must not destroy an initial verify and restart its scan.
+    if (managed.torrent && !managed.torrent.ready) return;
     if (!canRecheck(managed.download.status)) {
       throw new TorrentError(
         `Cannot recheck a download in ${managed.download.status} state`,
@@ -2355,12 +2480,14 @@ export class TorrentManager {
     }
 
     if (managed.torrent && managed.torrent.files) {
-      return managed.torrent.files.map(file => ({
+      const torrent = managed.torrent;
+      const selected = new Set(managed.selectedFiles ?? managed.download.selectedFiles ?? []);
+      return torrent.files.map((file, index) => ({
+        index,
         name: file.name,
         path: file.path,
-        length: file.length,
-        downloaded: file.downloaded,
-        progress: file.progress || (file.length > 0 ? file.downloaded / file.length : 0),
+        ...verifiedFileProgress(torrent, file),
+        priority: this.filePriority(managed, index, selected),
       }));
     }
 
@@ -2398,11 +2525,12 @@ export class TorrentManager {
   /** Whether a file is supposed to be downloading per the user's intent (per-file
    *  'skip' priority and any selected-files subset). */
   private fileShouldDownload(managed: ManagedTorrent, fileIndex: number): boolean {
-    if (managed.download.filePriorities?.[fileIndex] === 'skip') return false;
-    if (managed.selectedFiles && managed.selectedFiles.length > 0) {
-      return managed.selectedFiles.includes(fileIndex);
-    }
-    return true;
+    return this.filePriority(managed, fileIndex) !== 'skip';
+  }
+
+  private filePriority(managed: ManagedTorrent, fileIndex: number, selected?: ReadonlySet<number>): FilePriority {
+    return torrentFilePriority({ filePriorities: managed.download.filePriorities,
+      selectedFiles: managed.selectedFiles ?? managed.download.selectedFiles }, fileIndex, selected);
   }
 
   /**
@@ -2435,10 +2563,12 @@ export class TorrentManager {
     log.debug('Stream stopped and reverted', { id, fileIndex });
   }
 
-  getEpisodePrefetchSupport(): { supported: boolean } { return { supported: true }; }
+  getEngineCapabilities() { return engineCapabilities('webtorrent'); }
+  getEpisodePrefetchSupport(): { supported: boolean } { return { supported: this.getEngineCapabilities().features.boundedEpisodePrefetch.supported }; }
   async prefetchEpisode(id: string, request: EpisodePrefetchRequest): Promise<EpisodePrefetchResult> {
     validateEpisodePrefetch(request);
     await this.whenReady();
+    if (this.resourceEconomy) { this.episodePrefetcher.cancel(id); return { state: 'inactive', bytes: 0 }; }
     const managed = this.managedTorrents.get(id);
     const torrent = managed?.torrent;
     if (!managed || !torrent || managed.download.status !== 'downloading' || managed.streamHead?.fileIndex !== request.currentFile) {
@@ -2523,6 +2653,7 @@ export class TorrentManager {
   ): Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }> {
     const startTime = streamStartSeconds(opts?.startTime);
     await this.whenReady();
+    assertTransfersAllowed();
     const managed = this.managedTorrents.get(id);
     if (!managed) {
       throw new TorrentError('Download not found', 'NOT_FOUND', id);
@@ -2657,11 +2788,7 @@ export class TorrentManager {
     const file = managed.torrent.files[fileIndex];
     if (!file) return null;
     const rel = (file as unknown as { path: string }).path || file.name;
-    let diskPath = path.join(managed.download.savePath, rel);
-    // "Start seeding" entries keep content at the original source path.
-    if (!fs.existsSync(diskPath) && managed.download.seedPaths && managed.download.seedPaths.length === 1) {
-      diskPath = managed.download.seedPaths[0];
-    }
+    const diskPath = managed.seedStorePaths?.[fileIndex] ?? path.join(managed.download.savePath, rel);
     const downloaded = (file as unknown as { downloaded: number }).downloaded || 0;
     const complete = file.length > 0 && downloaded >= file.length;
     return {
@@ -2679,8 +2806,8 @@ export class TorrentManager {
   /** List embedded audio tracks (multi-audio MKV) — parity with the native engine. */
   async getAudioTracks(id: string, fileIndex: number): Promise<AudioTrackListItem[]> {
     const info = this.getCastFileInfo(id, fileIndex);
-    if (!info) return [];
-    return audioTrackList(await probeAudioStreams(this.ffmpegPath, info.diskPath));
+    if (!info) throw new TorrentError('Audio source is unavailable', 'NOT_FOUND', id);
+    return audioTrackList(await probeAudioStreams(this.ffmpegPath, info.diskPath, true));
   }
 
   /** List selectable subtitle tracks: embedded text subs + sidecar files. */
@@ -2837,6 +2964,7 @@ export class TorrentManager {
           // WebTorrent doesn't distinguish seeds from peers; show numPeers when seeding
           seeds: download.status === 'seeding' ? torrent.numPeers : 0,
           status: download.status,
+          operation: classicDownloadOperation(download, torrent),
         });
         // Keep the in-memory record in sync with the live torrent. Persisting
         // only updates the store copy; without this, checkSeedingLimits would
@@ -2859,6 +2987,7 @@ export class TorrentManager {
           peers: 0,
           seeds: 0,
           status: download.status,
+          operation: classicDownloadOperation(download),
         });
       }
     }
@@ -3498,9 +3627,11 @@ export class TorrentManager {
 
   async reannounceDownload(id: string): Promise<void> {
     await this.whenReady();
-    const torrent = this.managedTorrents.get(id)?.torrent as { announce?: () => void } | undefined;
+    const torrent = this.managedTorrents.get(id)?.torrent as unknown as { discovery?: { tracker?: { update(): void } } } | undefined;
     if (!torrent) throw new TorrentError('Download not found', 'NOT_FOUND', id);
-    try { torrent.announce?.(); } catch (e) {
+    const tracker = torrent.discovery?.tracker;
+    if (!tracker) throw new TorrentError('Tracker client is not active. Resume the torrent and try again.', 'NOT_ACTIVE', id);
+    try { tracker.update(); } catch (e) {
       throw new TorrentError(e instanceof Error ? e.message : String(e), 'TRACKER_ERROR', id);
     }
   }
@@ -3547,11 +3678,11 @@ export class TorrentManager {
     try { proto = new URL(url).protocol; } catch { return null; }
     try {
       // bittorrent-tracker has no `exports` map, so deep requires resolve fine.
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       if (proto === 'http:' || proto === 'https:') return require('bittorrent-tracker/lib/client/http-tracker.js');
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       if (proto === 'udp:') return require('bittorrent-tracker/lib/client/udp-tracker.js');
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       if (proto === 'ws:' || proto === 'wss:') return require('bittorrent-tracker/lib/client/websocket-tracker.js');
     } catch (_) { return null; }
     return null;
@@ -3664,7 +3795,10 @@ export class TorrentManager {
     for (const managed of this.managedTorrents.values()) {
       if (managed.download.status !== 'seeding') continue;
       // Decision extracted to shared/seeding-limits (pure + unit-tested).
-      const { stop, reason } = shouldStopSeeding(managed.download, defaults, now);
+      const { stop, reason } = shouldStopSeeding(managed.download, {
+        ratioLimit: managed.download.seedRatioLimit ?? defaults.ratioLimit,
+        timeLimitMinutes: managed.download.seedTimeLimitMinutes ?? defaults.timeLimitMinutes,
+      }, now);
       if (!stop) continue;
       log.info('Auto-stopped seeding', { id: managed.id, reason });
       try { await this.stopSeeding(managed.id); } catch (_) { /* already stopped */ }

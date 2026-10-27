@@ -8,13 +8,15 @@ import type { Download, DownloadStats, DownloadStatus, TorrentFile, TorrentInfo,
 import { TrStatus, TrTorrent, TrPeer } from './transmission-rpc';
 import { numToIp } from '../../../shared/ip-range';
 import { TorrentError } from '../errors';
+import { fileProgress } from '../../../shared/file-progress';
+import { downloadOperation } from '../../../shared/download-operation';
 
 /** torrent-get fields the 750ms stats tick requests (request only what you read). */
 export const ENGINE_STAT_FIELDS = [
   'hashString', 'name', 'status', 'percentDone', 'metadataPercentComplete',
   'rateDownload', 'rateUpload', 'peersConnected',
   'totalSize', 'downloadedEver', 'uploadedEver', 'eta', 'isFinished',
-  'error', 'errorString',
+  'error', 'errorString', 'recheckProgress',
 ];
 
 /**
@@ -39,7 +41,7 @@ export function mapStatus(t: TrTorrent, prev: DownloadStatus): DownloadStatus {
       return 'seeding';
     case TrStatus.Checking:
     case TrStatus.CheckWait:
-      return prev === 'seeding' || prev === 'completed' ? prev : 'downloading';
+      return prev;
     default:
       return prev;
   }
@@ -63,13 +65,14 @@ export function mapStats(d: Download, t?: TrTorrent, cachedSeeds = 0): DownloadS
       peers: 0,
       seeds: 0,
       status: d.status,
+      operation: downloadOperation(d),
     };
   }
   return {
     id: d.id,
     progress: t.percentDone,
-    downloadedBytes: t.downloadedEver,
-    uploadedBytes: t.uploadedEver,
+    downloadedBytes: (d.nativeSessionBase?.downloaded ?? 0) + t.downloadedEver,
+    uploadedBytes: (d.nativeSessionBase?.uploaded ?? 0) + t.uploadedEver,
     downSpeedBps: t.rateDownload,
     upSpeedBps: t.rateUpload,
     etaSeconds: t.eta > 0 ? t.eta : null,
@@ -78,6 +81,13 @@ export function mapStats(d: Download, t?: TrTorrent, cachedSeeds = 0): DownloadS
     // peersSendingToUs counts active uploaders, including incomplete peers.
     seeds: t.peers ? t.peers.reduce((count, peer) => count + (peer.progress >= 1 ? 1 : 0), 0) : Math.min(t.peersConnected, cachedSeeds),
     status: mapStatus(t, d.status),
+    operation: downloadOperation({ ...d, status: mapStatus(t, d.status), progress: t.percentDone }, {
+      stage: t.status === TrStatus.Checking || t.status === TrStatus.CheckWait ? 'checking'
+        : t.metadataPercentComplete < 1 ? 'metadata' : 'transfer',
+      fraction: t.status === TrStatus.Checking ? t.recheckProgress
+        : t.metadataPercentComplete < 1 ? t.metadataPercentComplete : undefined,
+      checkQueued: t.status === TrStatus.CheckWait, peers: t.peersConnected, downSpeedBps: t.rateDownload,
+    }),
   };
 }
 
@@ -93,9 +103,7 @@ export function mapFiles(t: TrTorrent): TorrentFile[] {
       index: i,
       name: path.basename(f.name),
       path: f.name, // torrent-relative, includes the root folder — same as webtorrent's file.path
-      length: f.length,
-      downloaded: f.bytesCompleted,
-      progress: f.length > 0 ? f.bytesCompleted / f.length : 1,
+      ...fileProgress(f.length, Number.isFinite(st?.bytesCompleted) ? st.bytesCompleted : f.bytesCompleted),
       priority: st ? (st.wanted ? TR_PRIORITY[st.priority] ?? 'normal' : 'skip') : 'normal',
     };
   });

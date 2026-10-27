@@ -1,0 +1,7 @@
+.created-torrent-seed { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.created-torrent-seed-warning { display: flex; flex-direction: column; gap: 6px; color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.created-torrent-seed-warning strong { color: var(--color-warning); }
+.created-torrent-seed-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.created-torrent-seed-actions .btn { min-width: 0; max-width: 100%; height: auto; min-height: 36px; white-space: normal; text-align: center; }
+.created-torrent-seed-actions .btn-label { min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; }
+.created-torrent-seed-progress { margin: 0; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
