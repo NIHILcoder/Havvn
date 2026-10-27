@@ -44,6 +44,7 @@ async function main() {
     updateDownloadFields: async (id, fields) => Object.assign(records.get(id), fields),
     updateDownloadsProgressBatch: async rows => { for (const row of rows) Object.assign(records.get(row.id), row); },
     deleteDownload: async id => { records.delete(id); },
+    updateSettings: async patch => Object.assign(settings, patch),
   });
   const { NativeTorrentManager } = require('../dist/electron/electron/torrent/native/native-manager.js');
   let manager;
@@ -64,6 +65,10 @@ async function main() {
   };
   const status = (rows, id) => rows.find(row => row.id === id)?.status;
   const active = rows => rows.filter(row => row.status === 'downloading');
+  const tracker = require('node:http').createServer((_request, response) => {
+    response.writeHead(200, { 'Content-Type': 'text/plain' }); response.end('d8:intervali1800e5:peers0:e');
+  });
+  await new Promise(resolve => tracker.listen(0, '127.0.0.1', resolve));
   try {
     await initialize();
     const session = await manager.rpc.sessionGet();
@@ -115,8 +120,64 @@ async function main() {
     await waitFor(rows => status(rows, ids[1]) === 'downloading', 'the paused torrent must resume after restart');
     assert.equal(records.get(ids[1]).totalSize, 64 * 1024, 'resuming cannot change the torrent size');
     console.log('PASS metadata size: preserved through pause/restart/resume, unknown magnet stays unknown');
+    await manager.pauseAllActive();
+    const controlled = ids[0], controlledHash = records.get(controlled).infoHash;
+    await manager.setFilePriority(controlled, 0, 'skip');
+    assert.equal((await manager.getFiles(controlled))[0].priority, 'skip');
+    await manager.setFilePriority(controlled, 0, 'high');
+    assert.equal((await manager.getFiles(controlled))[0].priority, 'high');
+    await manager.setSequentialDownload(controlled, true);
+    await manager.setSeedRatioLimit(controlled, 0);
+    const [unlimited] = await manager.rpc.torrentGet(['seedRatioMode'], controlledHash);
+    assert.equal(unlimited.seedRatioMode, 2, 'explicit zero disables the ratio ceiling');
+    await manager.setSeedRatioLimit(controlled, 1.5); await manager.setSeedTimeLimit(controlled, 15);
+    const [knobs] = await manager.rpc.torrentGet(['sequential_download', 'seedRatioLimit', 'seedRatioMode'], controlledHash);
+    assert.equal(knobs.sequential_download, true); assert.equal(knobs.seedRatioLimit, 1.5); assert.equal(knobs.seedRatioMode, 1);
+    await manager.setAltSpeed(true); assert.equal(manager.isAltSpeedEnabled(), true);
+    await manager.setAltSpeed(false); assert.equal(manager.isAltSpeedEnabled(), false);
+    const trackerUrl = `http://127.0.0.1:${tracker.address().port}/announce`;
+    await manager.addTracker(controlled, trackerUrl);
+    assert((await manager.getTrackers(controlled)).some(value => value.url === trackerUrl));
+    await manager.resumeDownload(controlled);
+    await waitFor(rows => status(rows, controlled) === 'downloading', 'controlled torrent must be active for announce');
+    await manager.reannounceDownload(controlled);
+    await manager.removeTracker(controlled, trackerUrl);
+    assert(!(await manager.getTrackers(controlled)).some(value => value.url === trackerUrl));
+    await manager.pauseAllActive();
+    console.log('PASS controls: skip/high, sequential, ratio/time, alternative speed, tracker add/reannounce/remove');
+
+    const completeSource = path.join(root, 'complete-source'), movedDirectory = path.join(root, 'moved-data');
+    fs.mkdirSync(completeSource);
+    const payload = Buffer.alloc(64 * 1024, 7), payloadFile = path.join(completeSource, 'owned-complete.bin');
+    fs.writeFileSync(payloadFile, payload);
+    const completeMetadata = await new Promise((resolve, reject) => createTorrent(payloadFile, { announceList: [], pieceLength: 16 * 1024 }, (error, bytes) => error ? reject(error) : resolve(bytes)));
+    const completeTorrent = path.join(root, 'owned-complete.torrent'); fs.writeFileSync(completeTorrent, completeMetadata);
+    const complete = await manager.addDownload({ sourceType: 'torrent_file', sourceUri: completeTorrent, savePath: completeSource, paused: true });
+    await waitFor(rows => rows.find(value => value.id === complete.id)?.progress === 1, 'existing owned payload must verify');
+    fs.writeFileSync(payloadFile, Buffer.alloc(payload.length, 9));
+    await manager.recheckDownload(complete.id);
+    await waitFor(rows => rows.find(value => value.id === complete.id)?.progress === 0, 'manual recheck must detect corrupted owned data');
+    fs.writeFileSync(payloadFile, payload);
+    await manager.recheckDownload(complete.id);
+    await waitFor(rows => rows.find(value => value.id === complete.id)?.progress === 1, 'manual recheck must accept restored owned data');
+    await manager.resumeDownload(complete.id);
+    await waitFor(rows => status(rows, complete.id) === 'seeding', 'completed torrent must resume seeding');
+    await manager.stopSeeding(complete.id);
+    assert.equal(records.get(complete.id).status, 'completed');
+    console.log('PASS recheck and stop-seeding: corruption detected, original data restored and sharing stopped');
+    await manager.setDownloadLocation(complete.id, movedDirectory, true);
+    assert.deepEqual(fs.readFileSync(path.join(movedDirectory, 'owned-complete.bin')), payload);
+    assert(!fs.existsSync(payloadFile));
+    console.log('PASS move: verified owned payload reaches the new directory without byte changes');
+
+    await manager.destroy(); manager = null; await initialize(); await manager.tick();
+    assert.equal((await manager.getFiles(controlled))[0].priority, 'high');
+    assert.equal(records.get(controlled).sequentialDownload, true); assert.equal(records.get(controlled).seedRatioLimit, 1.5);
+    assert.equal(records.get(controlled).seedTimeLimitMinutes, 15); assert.equal(records.get(complete.id).savePath, movedDirectory);
+    console.log('PASS control persistence: priority, sequential, seed limits and moved path survive restart');
   } finally {
     if (manager) await manager.destroy();
+    tracker.closeAllConnections(); await new Promise(resolve => tracker.close(resolve));
     assert.equal(path.dirname(fs.realpathSync(root)), fs.realpathSync(os.tmpdir()));
     assert(path.basename(root).startsWith('havvn-native-queue-'));
     fs.rmSync(root, { recursive: true, force: true });

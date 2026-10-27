@@ -291,6 +291,7 @@ class PortForwardingService {
       if (!this.pmpClient) {
         this.pmpClient = natPmp.connect(gateway);
         this.pmpClient.on('error', error => log.warn('NAT-PMP socket error', { error: String(error) }));
+
       }
 
       const client = this.pmpClient;

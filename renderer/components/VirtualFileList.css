@@ -1,0 +1,8 @@
+.vfl-space { position: relative; width: 100%; flex: none; }
+.vfl-row { display: flow-root; min-width: 0; }
+.vfl--windowed { overflow-anchor: none; }
+.fp-list.vfl--windowed { height: min(55vh, 520px); flex: 0 0 auto; }
+.file-list.vfl--windowed { height: min(40vh, 400px); min-height: 180px; flex: 0 0 auto; }
+.tcm-files-list.vfl--windowed { height: min(52vh, 500px); overflow-y: auto; }
+.tcm-files-list .vfl-row:not(:last-child) .tcm-file-row,
+.tcm-files-list.vfl--windowed .tcm-file-row { border-bottom: 1px solid var(--color-border); }
