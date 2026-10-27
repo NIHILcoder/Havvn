@@ -1,0 +1,517 @@
+{
+  "stage": "DP-04",
+  "recordedAt": "2026-10-26T19:35:12.145Z",
+  "localImplementationComplete": true,
+  "releaseReady": false,
+  "environment": {
+    "platform": "win32",
+    "release": "10.0.26300",
+    "node": "24.18.1",
+    "electron": "44.4.2"
+  },
+  "defaults": {
+    "enabled": false,
+    "experimental": true,
+    "maximumPairedDevices": 2,
+    "transport": "TLS1.3/privateIPv4"
+  },
+  "verification": {
+    "targeted": {
+      "passed": 95,
+      "files": 6
+    },
+    "native": {
+      "passed": 16,
+      "checks": [
+        "ordinary startup leaves feature off without a vault",
+        "another sandbox renderer cannot read device state through production IPC",
+        "invalid IPC request is rejected before enabling or creating a key",
+        "production consent modal shows distinct complete peer fingerprints",
+        "pairing alone does not approve or apply the first exchange",
+        "incoming changes wait for approval on the receiving device",
+        "real sandbox preload applies preferences live and ACK follows local materialization",
+        "authenticated heartbeats keep an idle connection alive past the wire timeout",
+        "ordinary local preference events publish bidirectionally",
+        "offline concurrent edits remain a conflict until a reviewed UI choice resolves them causally",
+        "fresh main process restores identity, consent and saved listener route",
+        "offline revoke commits through production UI and clears old outbox",
+        "stale peer cannot reconnect after offline revocation",
+        "Russian controls and fingerprints fit the actual rendered page",
+        "narrow layout wraps long fingerprints without horizontal overflow",
+        "explicit RESET archives encrypted state, keeps preferences and requires a fresh identity"
+      ]
+    },
+    "nodeScripts": {
+      "passed": 30
+    },
+    "types": "passed (electron, renderer, guest)",
+    "lint": "new code passed; no warnings",
+    "build": "passed",
+    "packaged": {
+      "native": {
+        "status": "off",
+        "self": null,
+        "approved": false,
+        "sectionLoaded": true,
+        "initialized": true,
+        "liveControls": true
+      },
+      "webtorrent": {
+        "status": "off",
+        "self": null,
+        "approved": false,
+        "sectionLoaded": true,
+        "initialized": true,
+        "liveControls": true
+      },
+      "compiledFilesMatched": 617,
+      "unchangedDuringSmoke": true,
+      "installerInstalled": false,
+      "published": false,
+      "signature": "NotSigned"
+    },
+    "globalRegression": {
+      "fullyGreen": false,
+      "tests": 4310,
+      "passed": 4302,
+      "failedByTimeout": 8,
+      "filesPassed": 329,
+      "filesFailed": 2,
+      "failedFiles": [
+        "electron/sharing/room-sync-backups.test.ts",
+        "electron/sharing/room-sync-trash-retention.test.ts"
+      ],
+      "isolatedRecheck": {
+        "passed": 37,
+        "files": 2,
+        "originalTimeoutsUnchanged": true
+      },
+      "earlierRun": {
+        "passed": 4308,
+        "failed": 2,
+        "tests": 4310,
+        "notes": [
+          "New consent test expectation corrected; inactive pairs reject consent getter",
+          "Room history recheck: 18/18 passed"
+        ]
+      },
+      "timingCauseProven": false,
+      "note": "Global run preceded final narrow VLC, inherited-journal and open-interface followups; latest code has targeted and packaged verification."
+    }
+  },
+  "physicalAcceptance": {
+    "stage": "DP-05",
+    "status": "not-run",
+    "target": "Windows ↔ Linux",
+    "pending": [
+      "Laptop access",
+      "Real LAN and other networks",
+      "Actual old application build",
+      "Real Linux keyring and graphical session"
+    ]
+  },
+  "limitations": [
+    "No DNS/IPv6/discovery/relay/cloud/automatic firewall changes",
+    "One peer; existing DP-03 quotas and 64KiB snapshot limit",
+    "Unknown system/local-VLC player lifetime blocks incoming positions until restart",
+    "50-download/500-file media index; 64 tracked unknown player lifetimes before conservative global playback blocking",
+    "No power-cut or first OS-key initialization crash guarantee",
+    "Global full suite is not wholly green"
+  ],
+  "package": [
+    {
+      "path": "release/dp04-acceptance/win-unpacked/resources/app.asar",
+      "bytes": 154511395,
+      "sha256": "8f4b5d6fa998651c815e70b275824cdcfe65a36296018ff6f04e6e9f73a49dfc"
+    },
+    {
+      "path": "release/dp04-acceptance/win-unpacked/Havvn.exe",
+      "bytes": 246174720,
+      "sha256": "0e34e735a208c88a21b3c5570b9027a56d6a1ea6228018fd5ffdf94bd762f31b"
+    },
+    {
+      "path": "release/dp04-acceptance/Havvn-Setup-3.2.0.exe",
+      "bytes": 174708296,
+      "sha256": "a064e56761eb5cdf6c8406138988412e989f4ca3ee6e8943d21e4f895caa4632"
+    }
+  ],
+  "sources": [
+    {
+      "path": "electron/ipc/devices.ts",
+      "bytes": 9509,
+      "sha256": "1eecd7f90a39f241799165a86fa35d3ed316222cdbb1f48fd0ed1cee9e599667"
+    },
+    {
+      "path": "electron/ipc/handlers.ts",
+      "bytes": 131554,
+      "sha256": "e38fc797f2892317dd118afbbdc8c0d9758c8546fd414349ad265578485a663a"
+    },
+    {
+      "path": "electron/preload.ts",
+      "bytes": 73206,
+      "sha256": "74287c0023cf34a1dc30d8c364f30758233727c27590e218d2e337059c4ce8c9"
+    },
+    {
+      "path": "electron/main.ts",
+      "bytes": 70506,
+      "sha256": "2e5dab084a6dcd28b24ab47c2cd3204864cef3ac03dfbc14797a66db88b8d4bf"
+    },
+    {
+      "path": "electron/device-data-client.ts",
+      "bytes": 3235,
+      "sha256": "739ebddf3b304b80a3af5a263d8fadf2f487d19d312523c092e71f6b238b219f"
+    },
+    {
+      "path": "electron/devices/ui-service.ts",
+      "bytes": 30817,
+      "sha256": "3b2f45cb5fe78f33aa610d052f84eb7d16712be180b73e9aa07ad3699812b7b8"
+    },
+    {
+      "path": "electron/devices/ui-config.ts",
+      "bytes": 3178,
+      "sha256": "1dc6972245de048169b20a5e69eabf525c7b7bc8383e0007dc13b4893ebddf9a"
+    },
+    {
+      "path": "electron/devices/network.ts",
+      "bytes": 709,
+      "sha256": "3eaee87f58bd79dc66e4b9a10b2b1149a776537a46898fef24ce93c92a967f79"
+    },
+    {
+      "path": "electron/devices/vault.ts",
+      "bytes": 41858,
+      "sha256": "e6eeec1c37c61eefbceba40cd3317783014c21d0496171d45869a7c949c8442a"
+    },
+    {
+      "path": "electron/devices/replicator.ts",
+      "bytes": 10529,
+      "sha256": "232c35a2320250d08410a270d8b312ddd5b88ca46c46de49b1e3022ba182530b"
+    },
+    {
+      "path": "electron/devices/renderer-target.ts",
+      "bytes": 5721,
+      "sha256": "d450c64b7d6103a28c1c0261604d668974cae161006f8535cc5b024363e5c805"
+    },
+    {
+      "path": "electron/devices/session.ts",
+      "bytes": 7688,
+      "sha256": "dfd134e883feee4cec846ca5cf00ade56870abb9a5cd2bc7f8acac6ba26f46b5"
+    },
+    {
+      "path": "electron/devices/bootstrap.ts",
+      "bytes": 7267,
+      "sha256": "68376f887c302a283f0ab8ebc7866aa5ebb63f8ada44dd9c96d0a7b1ab13702c"
+    },
+    {
+      "path": "electron/devices/transport.ts",
+      "bytes": 5117,
+      "sha256": "0d94b40c8a009cfa3e07ce00279a9017cbeee0dce0f6b46401989d479c141dd1"
+    },
+    {
+      "path": "electron/devices/wire.ts",
+      "bytes": 4659,
+      "sha256": "cd49ef2dc19810d8f6ff0ca3b7f765dc9d7c970136c721f6dca9cd195309e8d2"
+    },
+    {
+      "path": "electron/services/history-playback.ts",
+      "bytes": 11462,
+      "sha256": "95d5d9272b5030b33bf99eb02f15f0f84db543186d2d7e4f58205765a96aa97d"
+    },
+    {
+      "path": "electron/services/external-player.ts",
+      "bytes": 11652,
+      "sha256": "13c375ab94d6a73fb73feb91a98e2b7052543500b9eb96884c7c7fcdca09fed2"
+    },
+    {
+      "path": "shared/device-ui.ts",
+      "bytes": 3579,
+      "sha256": "7f88d3367aa6f0a7e137b20d37823d8202aeacfb24e208233805940db775c62b"
+    },
+    {
+      "path": "shared/device-capture.ts",
+      "bytes": 6513,
+      "sha256": "3e8f92bb4ec4d6f1fbe3dd8f1cdd9606749f6a248a37fd61edd8e4c7f4777f3a"
+    },
+    {
+      "path": "shared/device-data-target.ts",
+      "bytes": 16569,
+      "sha256": "e9b0fa69244e38e891b1f38ccde4f757db6acc309fe952ae13c8ee4ab43fdf37"
+    },
+    {
+      "path": "shared/types.ts",
+      "bytes": 96851,
+      "sha256": "c8c514d15c4ee62c88e19d4e7e8c6f84e54286beb324ee0f339d7b47bd29bd71"
+    },
+    {
+      "path": "renderer/index.tsx",
+      "bytes": 1825,
+      "sha256": "4f7dba42a7e2005931d8fbdb3e0511675b9ba75f87984917fd4e5b404a75403d"
+    },
+    {
+      "path": "renderer/App.tsx",
+      "bytes": 30634,
+      "sha256": "dd345e64e58b4d55d54423ea4bd5200c1256830c2773df33931b072c5fd8ebaf"
+    },
+    {
+      "path": "renderer/utils/devices.ts",
+      "bytes": 2086,
+      "sha256": "fa3b662e93a171c2e6beab6f074b0154d5d1d854045e1f96782d230459af9d16"
+    },
+    {
+      "path": "renderer/components/DeviceConsentHost.tsx",
+      "bytes": 3376,
+      "sha256": "e644afe951031bc8ce1e0129a9306ac94db81999967c660c3817cf3cee06f964"
+    },
+    {
+      "path": "renderer/components/StreamPlayerModal.tsx",
+      "bytes": 52593,
+      "sha256": "0b25e667f6d80f832f4af2e79c96ac907ec2a308539a0ebd4b40c03e799a70e7"
+    },
+    {
+      "path": "renderer/pages/SettingsPage.tsx",
+      "bytes": 6300,
+      "sha256": "25d367d893590048eb7c2e63aa492cd0ba3635d1e156aa012f8297cf72a1da71"
+    },
+    {
+      "path": "renderer/pages/settings/nav.ts",
+      "bytes": 3501,
+      "sha256": "d44a41b69b0a7a5d03258aa91bd8935ce969447dfa2cc405a068bace234b0de7"
+    },
+    {
+      "path": "renderer/pages/settings/sections/DevicesSection.tsx",
+      "bytes": 38239,
+      "sha256": "330c7cd0078f45d296c2dbd24311f2918d3ecd90fe0f4b48aee59c588c5b76e4"
+    },
+    {
+      "path": "renderer/pages/settings/sections/DevicesSection.css",
+      "bytes": 2198,
+      "sha256": "7354732a6ded6121b2728f1c2f9f06ebd5a73dcf07cad13e81925921e42795e8"
+    },
+    {
+      "path": "renderer/pages/settings/sections/InterfaceSection.tsx",
+      "bytes": 11241,
+      "sha256": "65e3d4a5b4fbf9ba310c15f683ed240b76384a44e62e199f6cf4df85b0d882c7"
+    },
+    {
+      "path": "renderer/state/download-views-state.ts",
+      "bytes": 5048,
+      "sha256": "364def6fca28333713722cebfafe7cfc398c66c87cae9cef4b1abae0f96b02ef"
+    },
+    {
+      "path": "renderer/utils/playerPreferences.ts",
+      "bytes": 2019,
+      "sha256": "233adca5be64d9b6ea7e6db7b616213393087eb94f49bb6c8a0df56584424f8b"
+    },
+    {
+      "path": "renderer/utils/format-helpers.ts",
+      "bytes": 3652,
+      "sha256": "8d2d6c370515e84c1b8c92b849f1329f460fe7f1992e42992daa7637ccf69369"
+    },
+    {
+      "path": "renderer/utils/i18nContext.tsx",
+      "bytes": 4073,
+      "sha256": "ae0359fc9ee507184037ead4543261a5fcb6365c04d1e3f1e60bffc0301135e9"
+    },
+    {
+      "path": "renderer/i18n/ru.json",
+      "bytes": 395129,
+      "sha256": "d0dd5487b16fa3df09ea92850a71b4f524beb077cfd0748bb33d126357272a32"
+    },
+    {
+      "path": "renderer/i18n/en.json",
+      "bytes": 263344,
+      "sha256": "7483083573dc2ca17fd22afe2af21ae97394bc488e7b0322491fa83d51a1f587"
+    },
+    {
+      "path": "electron/devices/ui-service.test.ts",
+      "bytes": 5970,
+      "sha256": "2e0d54a7d16a06dd0063581d1787e26f6e3a00a55e636a604f41b995233229ae"
+    },
+    {
+      "path": "shared/device-capture.test.ts",
+      "bytes": 2602,
+      "sha256": "f8b1cb98c60aed132ee0b817f6aea1fd4fdce414994c3b163267889bce777a61"
+    },
+    {
+      "path": "electron/devices/vault.test.ts",
+      "bytes": 13259,
+      "sha256": "41d476ae21541f040ac6febf2a038ff378dc6995f3a2ef21ee097b7b2dc061f1"
+    },
+    {
+      "path": "electron/devices/replicator.test.ts",
+      "bytes": 27113,
+      "sha256": "3ddbe70f826ffca31e53285cd3a6611d6ee56ea5ea071059448d1c3bdc61d7e8"
+    },
+    {
+      "path": "electron/devices/transport.test.ts",
+      "bytes": 21737,
+      "sha256": "838e42f7a5df425c6b315d69f2c1aa9f991cdd603ef5afa0a0e9709c115ad87c"
+    },
+    {
+      "path": "electron/services/history-playback.test.ts",
+      "bytes": 7685,
+      "sha256": "c470da1bf94b01e83cfb6d89c9fd54a40c1902e5d3b197c99667ae20bb492824"
+    },
+    {
+      "path": "electron/services/external-player.test.ts",
+      "bytes": 15955,
+      "sha256": "e6d3384c0829b1bd2d147d2ff309ed7727e12a67786b3b6ed60213f8f580a364"
+    },
+    {
+      "path": "scripts/smoke-device-ui.cjs",
+      "bytes": 16251,
+      "sha256": "5ac0beb4c979ab1118476cfe10c0c7f2f8a733a3827938e481a6327ad9a3f6b3"
+    },
+    {
+      "path": "scripts/device-ui.webpack.cjs",
+      "bytes": 276,
+      "sha256": "d82d57eddd8deece99f7fc0baba8b870d5978e3c66f2533d61b0597b2df0ea42"
+    },
+    {
+      "path": "scripts/fixtures/device-ui.tsx",
+      "bytes": 741,
+      "sha256": "8ab55e64e7e136ecf071fe37a8737dc56406fce5a98050c10f5b12feb42fb58a"
+    },
+    {
+      "path": "scripts/smoke-packaged.cjs",
+      "bytes": 21032,
+      "sha256": "a2bf93cd07bf5f42931bebd77c2701cbd63a561e8ceead8472db32a75f84b483"
+    },
+    {
+      "path": "package.json",
+      "bytes": 24192,
+      "sha256": "b517161218c5fa1e35a9bc1a4288a557d30918e3b78d4f24c1c4de9bcfb5e8d7"
+    },
+    {
+      "path": "docs/device-pairing-ui.md",
+      "bytes": 14847,
+      "sha256": "384c95759cf1c65ccf2cef3f4c6734523505ce5a19caf8b53a1e804d2a42baf7"
+    },
+    {
+      "path": "docs/device-pairing-plan.md",
+      "bytes": 14494,
+      "sha256": "bcfb381ed11fabf507b3f62543267d7d662b916ae35f98801f876b43d62235a5"
+    },
+    {
+      "path": "docs/havvn-implementation-plan.md",
+      "bytes": 91008,
+      "sha256": "3f13fd720edbf55b267eba5aebbb19b8d58ff2bd159746f1e6e657213d6aaeb3"
+    },
+    {
+      "path": "artifacts/dp04/collect-receipt.cjs",
+      "bytes": 6836,
+      "sha256": "6d90663d83655bcbd839959a09558452ce57b08aac963c4bde16888a6539e684"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "artifacts/dp04/ui/report.json",
+      "bytes": 1315,
+      "sha256": "5e71d108022d0386c9247e9b6ce7cd48aa17866fec67b5742db105e7d8544b45"
+    },
+    {
+      "path": "artifacts/dp04/packaged-smoke.json",
+      "bytes": 3130,
+      "sha256": "5488e8a25343cda4086a862f384c101a2b12bfc2347351c6017f4bd49d3872cf"
+    },
+    {
+      "path": "artifacts/dp04-focused-final.log",
+      "bytes": 595,
+      "sha256": "b3fc76d4919e5a08e4d32098e77ace04e3bf38abc7b3fb024086a52fe4ee6684"
+    },
+    {
+      "path": "artifacts/dp04-native-ui-final.log",
+      "bytes": 1967,
+      "sha256": "970fe37e57af9dc1c6791b1ea449f3900ac2a124beec28ef93800d8209eac806"
+    },
+    {
+      "path": "artifacts/dp04-packaged-final.log",
+      "bytes": 56,
+      "sha256": "0f53b664d9fd2ded4b7b65335c252fe23d70a7f99c4e6798fc6d90009997031c"
+    },
+    {
+      "path": "artifacts/dp04-typecheck-final.log",
+      "bytes": 350,
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/dp04-build-electron-final.log",
+      "bytes": 104,
+      "sha256": "e181b3a975e767a984fa780f6e343261a200d0a7c78a4293809f467d4b4a335f"
+    },
+    {
+      "path": "artifacts/dp04-build-renderer-final.log",
+      "bytes": 4014,
+      "sha256": "11df5836412b42e8a1fe79d2d23c719ce018cc45275f95a9a38127976045365f"
+    },
+    {
+      "path": "artifacts/dp04-build-final.log",
+      "bytes": 4614,
+      "sha256": "0a0aafb01add10f0cb96aeaa64872ae16acb50d8e9dd250a9c4d6b7251ec2240"
+    },
+    {
+      "path": "artifacts/dp04-lint-final.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/dp04-lint-review.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/dp04-node-tests.log",
+      "bytes": 2932,
+      "sha256": "e9362f8699574a551641df1e8bffd57433baf6a98673e95d73c5d5ac9cd02bf9"
+    },
+    {
+      "path": "artifacts/dp04-package-final.log",
+      "bytes": 9707,
+      "sha256": "8dc16d3e8a4421d87e075c7b9b6518d9d531f9236345f49f2bf26c93b42b0ea4"
+    },
+    {
+      "path": "artifacts/dp04-vitest-full.log",
+      "bytes": 2645,
+      "sha256": "d8a47aaa5d3f1be4b51c8b802f984a0f5c745e9a2620b0f2d7eabe131bb057fe"
+    },
+    {
+      "path": "artifacts/dp04-vitest-final.log",
+      "bytes": 6397,
+      "sha256": "3410c37adbef1ff541e2c2295b2bdfb0db2252a1c93896f2667499d827468393"
+    },
+    {
+      "path": "artifacts/dp04-room-revive-recheck.log",
+      "bytes": 595,
+      "sha256": "d491743083d822668f5ff24f5b5813fa8a55a04243ebc12526c8f4774599289c"
+    },
+    {
+      "path": "artifacts/dp04-room-storage-recheck.log",
+      "bytes": 595,
+      "sha256": "30eab73191dbbcc0cf8132c34ff14c21749546f2ee9b0a8208f479977030b7da"
+    },
+    {
+      "path": "artifacts/dp04/ui/conflict-preview-ru.png",
+      "bytes": 92257,
+      "sha256": "1e4a7487dc98257a3bf3932fb087a697b587964f3c6d9c1f479400fdb8ecb641"
+    },
+    {
+      "path": "artifacts/dp04/ui/devices-narrow-ru.png",
+      "bytes": 56372,
+      "sha256": "5518196267b9541521d497eae25f1374ef08aba41ecc418a230baf311f45fd7d"
+    },
+    {
+      "path": "artifacts/dp04/ui/devices-ru.png",
+      "bytes": 71228,
+      "sha256": "3118df75a15f1bd1d5adde86cb9c082949c80072f05dacc121588491b0dd17f0"
+    },
+    {
+      "path": "artifacts/dp04/ui/fingerprints-en.png",
+      "bytes": 61593,
+      "sha256": "c89b915c4f7df63320bab4ad871052023aa822504f7e4ae56ee31c203aecce8c"
+    },
+    {
+      "path": "artifacts/dp04/ui/revoked-ru.png",
+      "bytes": 66415,
+      "sha256": "e9d14c99e3eecfb2a290665cf31555ab91157a93c4e367a80a45277190073c54"
+    }
+  ]
+}
