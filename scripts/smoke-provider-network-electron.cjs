@@ -22,6 +22,7 @@ if (!process.versions.electron) {
       hits.push(req.url);
       if (req.url === '/login') { res.setHeader('Set-Cookie', ['session=test; Path=/; HttpOnly', 'strict=test; Path=/; HttpOnly; SameSite=Strict', 'lax=test; Path=/; HttpOnly; SameSite=Lax']); res.end('ok'); }
       else if (req.url === '/cookies') { res.end(req.headers.cookie || ''); }
+      else if (req.url === '/release') { res.setHeader('Content-Type','text/html; charset=utf-8'); res.end('<h1 id="topic-title">Описание раздачи</h1><div class="post_body"><p>Тестовое описание</p><var class="postImg postImgAligned" title="https://images.example/poster.jpg"></var><script>window.privateMarker=1</script></div><div class="post_body">Reply excluded</div>'); }
       else if (req.url === '/browser-only') {
         if (req.headers['sec-fetch-mode'] !== 'navigate') { res.writeHead(403, { 'cf-mitigated': 'challenge' }); res.end('challenge'); }
         else if (!req.headers.cookie?.includes('session=test')) { res.writeHead(401); res.end('login required'); }
@@ -56,6 +57,10 @@ if (!process.versions.electron) {
       await assert.rejects(providerNetwork.request('browser-test', direct, base + '/browser-only', opts), e => e.code === 'captcha');
       const browserResult = await readProviderPage('browser-test', direct, base + '/browser-only', [base], browserSignal.signal);
       assert.ok(browserResult.body.toString('utf8').includes('\u041f\u0440\u0438\u0432\u0435\u0442'), 'Browser HTML preserves Cyrillic');
+      const release = await readProviderPage('browser-test', direct, base + '/release', [base], browserSignal.signal, 4096, true);
+      assert.equal(release.details.title, 'Описание раздачи');
+      assert.equal(release.details.images[0].url, 'https://images.example/poster.jpg');
+      assert.equal(release.details.blocks.map(b=>b.text).join('\n'), 'Тестовое описание');
       await assert.rejects(readProviderPage('browser-test', direct, base + '/challenge-page', [base], browserSignal.signal), e => e.code === 'captcha');
       await assert.rejects(readProviderPage('browser-test', direct, base + '/external', [base], browserSignal.signal), e => e.code === 'redirect');
       await assert.rejects(readProviderPage('browser-test', direct, base + '/browser-only', [base], browserSignal.signal, 8), e => e.code === 'too-large');
@@ -73,6 +78,7 @@ if (!process.versions.electron) {
         const cookies = (await fetch('window-login', direct, '/cookies')).text();
         assert.ok(cookies.includes('strict=test'), 'Strict cookies must reach authenticated search');
         assert.ok(cookies.includes('lax=test'), 'Lax cookies must reach authenticated search');
+        assert.equal((await fetch('window-login', direct, '/cookies', { omitCookies: true })).text(), '', 'External preview images must omit session cookies');
         const browserUA = await loginWindow.webContents.executeJavaScript('navigator.userAgent');
         const networkUA = await fetch('window-login', direct, '/ua', { headers: { 'user-agent': 'Legacy Python UA' } });
         assert.equal(networkUA.text(), browserUA, 'Search must use the same User-Agent as sign-in');
@@ -139,8 +145,8 @@ if (!process.versions.electron) {
         assert.equal(socksHost, 'havvn-network-test.invalid');
       } finally { socks.close(); }
       console.log('PASS: SOCKS5 and remote DNS');
-      const certificate = await require('selfsigned').generate([{ name: 'commonName', value: 'localhost' }], { keySize: 2048, days: 1 });
-      const tlsServer = require('node:https').createServer({ key: certificate.private, cert: certificate.cert }, (_req, res) => res.end('untrusted'));
+      const certificate = await require('../dist/electron/electron/devices/identity').createDeviceIdentity();
+      const tlsServer = require('node:https').createServer({ key: certificate.tlsPrivateKey, cert: certificate.public.certificate }, (_req, res) => res.end('untrusted'));
       const tlsPort = await listen(tlsServer);
       try {
         const target = 'https://127.0.0.1:' + tlsPort;

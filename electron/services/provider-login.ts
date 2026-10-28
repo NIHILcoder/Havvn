@@ -3,6 +3,7 @@ import { providerNetwork } from './provider-network';
 import { getProviderRoute } from './provider-network-store';
 import { providerUrl } from '../../shared/provider-network';
 import type { SearchProvider } from '../../shared/types';
+import { rutrackerBase } from '../../shared/rutracker';
 
 const windows = new Map<string, Promise<void>>();
 
@@ -17,7 +18,8 @@ export function openProviderLogin(provider: SearchProvider, parent: BrowserWindo
 async function open(provider: SearchProvider, parent: BrowserWindow): Promise<void> {
   const route = getProviderRoute(provider.id);
   if (!route) throw new Error('Save a connection before signing in');
-  const target = route.lastWorkingMirror || (provider.type === 'script' ? route.mirrors[0] || route.origins[0] : new URL(provider.url).origin);
+  const base = route.lastWorkingMirror || (provider.type === 'script' ? route.mirrors[0] || route.origins[0] : provider.type === 'rutracker' ? provider.url : new URL(provider.url).origin);
+  const target = provider.type === 'rutracker' ? rutrackerBase(base) + '/login.php' : base;
   if (!target) throw new Error('Configure a source mirror before signing in');
   const origins = [...route.origins];
   if (provider.type !== 'script') origins.push(new URL(provider.url).origin);

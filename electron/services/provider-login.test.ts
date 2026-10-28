@@ -51,6 +51,15 @@ it('reuses an open login task and closes on route reset', async () => {
   expect(state.windows).toHaveLength(1);
   expect(state.windows[0].isDestroyed()).toBe(true);
 });
+it('opens the built-in RuTracker login on the selected mirror in the same source session', async () => {
+  state.route.lastWorkingMirror = 'https://source.test/forum';
+  const done = openProviderLogin({ ...provider, type: 'rutracker', url: 'https://main.test/forum' }, parent);
+  await Promise.resolve();
+  const win = state.windows[0];
+  expect(win.loadURL).toHaveBeenCalledWith('https://source.test/forum/login.php');
+  expect(win.options.webPreferences.session).toBe(state.lease.session);
+  win.destroy(); await done;
+});
 it('opens the last working HTTP mirror for sign-in', async () => {
   state.route.mirrors.push('https://mirror.test/service'); state.route.origins.push('https://mirror.test'); state.route.lastWorkingMirror = 'https://mirror.test/service';
   const done = openProviderLogin({ ...provider, type: 'custom', url: 'https://source.test/search?q={query}' }, parent);

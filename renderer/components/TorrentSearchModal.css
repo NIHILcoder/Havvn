@@ -21,7 +21,7 @@
 
 .tsm-input-wrap:focus-within { border-color: var(--color-border-focus); }
 .tsm-input-wrap > svg { flex: none; }
-.tsm-input:focus-visible { box-shadow: none; }
+.tsm-input:focus-visible { outline: none; box-shadow: none; }
 
 .tsm-input {
   flex: 1;
@@ -128,3 +128,6 @@
   display: inline-flex;
   color: var(--color-success);
 }
+/* A release title opens the shared details card without changing row geometry. */
+.tsm-title-button { width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; text-align: left; font-family: inherit; cursor: pointer; }
+.tsm-title-button:hover { text-decoration: underline; text-decoration-color: var(--color-accent-primary); }

@@ -13,7 +13,7 @@ type Response = Awaited<ReturnType<typeof providerNetwork.request>>;
 export async function readHttpMirrors<T>(provider: SearchProvider, target: string,
   read: (response: Response, base: string | null) => T, options: Omit<ProviderRequest, 'allowedOrigins' | 'method' | 'body'> = {}, sourceBase?: string): Promise<T> {
   const route = getProviderRoute(provider.id);
-  if (!route || !['custom', 'jackett', 'torznab'].includes(provider.type)) throw new ProviderNetworkError('invalid-url');
+  if (!route || !['custom', 'jackett', 'torznab', 'rutracker'].includes(provider.type)) throw new ProviderNetworkError('invalid-url');
   if (options.signal?.aborted) throw new ProviderNetworkError('cancelled');
   const candidates = httpMirrorTargets(provider as HttpProviderAddress, target, route, sourceBase).slice(0, HTTP_MIRROR_ATTEMPTS);
   const deadline = Date.now() + Math.min(options.timeoutMs ?? HTTP_MIRROR_BUDGET_MS, HTTP_MIRROR_BUDGET_MS);
