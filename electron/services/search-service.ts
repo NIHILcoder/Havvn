@@ -27,6 +27,9 @@ import { parsePluginManifest, PluginManifest, MANIFEST_SCAN_BYTES } from '../../
 import { detectPython } from './python-detector';
 import { searchSourceHistoryKeys } from './search-source-history';
 import { sanitizeReleaseMedia } from '../../shared/release-languages';
+import { searchRuTracker, resolveRuTracker } from './rutracker-source';
+import { checkRuTrackerPage } from '../../shared/rutracker';
+import { SearchReleasePreview } from './search-release-preview';
 
 const log = logger.child('SearchService');
 
@@ -82,6 +85,9 @@ interface SearchRun {
 export type SearchProgressSink = (progress: SearchProgress) => void;
 
 export class SearchService {
+  private previews = new SearchReleasePreview();
+  private pages = new Map<string, { providerId: string; query: string; category?: string; offset: number; at: number }>();
+  private nextOffsets = new WeakMap<SearchResult[], number>();
   private sources = new Map<string, { provider: SearchProvider; result: SearchResult; mirrorBase?: string }>();
   private resultBases = new WeakMap<SearchResult, string>();
   private runs = new Map<string, SearchRun>();
@@ -101,8 +107,9 @@ export class SearchService {
     query: string,
     category: string | undefined,
     emit: SearchProgressSink,
-    options: { refresh?: boolean; providerId?: string } = {}
-  ): Promise<{ searchId: string; providers: string[]; cached?: boolean }> {
+    options: { refresh?: boolean; providerId?: string; offset?: number } = {}
+  ): Promise<{ searchId: string; providers: string[]; providerIds?: string[]; cached?: boolean }> {
+    if (typeof query !== 'string' || !query.trim() || query.length > 300) throw new Error(t('search.invalidQuery'));
     const providers = await db.getSearchProviders();
     const enabled = providers.filter(p => p.enabled && (!options.providerId || p.id === options.providerId));
     const searchId = randomUUID();
@@ -127,24 +134,31 @@ export class SearchService {
               searchId,
               done: false,
               stat,
-              results: hit.results.filter(r => r.provider === stat.name),
+              results: hit.results.filter(r => stat.providerId ? r.sourceRefs?.some(ref => this.sources.get(ref)?.provider.id === stat.providerId) : r.provider === stat.name),
             });
           }
           emit({ searchId, done: true });
         });
-        return { searchId, providers: enabled.map(p => p.name), cached: true };
+        return { searchId, providers: enabled.map(p => p.name), providerIds: enabled.map(p => p.id), cached: true };
       }
     }
 
     log.info('Searching', { query, category, providers: enabled.length, searchId });
 
     const controller = new AbortController();
-    const finished = this.runProviders(searchId, enabled, query, category, controller, emit, cacheKey);
+    const finished = this.runProviders(searchId, enabled, query, category, controller, emit, cacheKey, options.offset ?? 0);
     this.runs.set(searchId, { controller, finished });
 
     finished.finally(() => this.runs.delete(searchId));
 
-    return { searchId, providers: enabled.map(p => p.name) };
+    return { searchId, providers: enabled.map(p => p.name), providerIds: enabled.map(p => p.id) };
+  }
+
+  async more(token: string, emit: SearchProgressSink) {
+    const page = typeof token === 'string' ? this.pages.get(token) : undefined;
+    if (!page || Date.now() - page.at >= RESULT_TTL_MS) throw new Error(t('search.pageExpired'));
+    if (!(await db.getSearchProviders()).some(p => p.id === page.providerId && p.type === 'rutracker' && p.enabled)) throw new Error(t('search.pageExpired'));
+    return this.start(page.query, page.category, emit, { refresh: true, providerId: page.providerId, offset: page.offset });
   }
 
   /**
@@ -168,8 +182,11 @@ export class SearchService {
 
   /** Drop cached results — called when the provider set changes under us. */
   clearResultCache(): void {
+    this.previews.clear();
     this.resultCache.clear();
     this.capsCache.clear();
+    this.pages.clear();
+    this.sources.clear();
     for (const run of this.runs.values()) run.controller.abort();
   }
 
@@ -189,7 +206,8 @@ export class SearchService {
     category: string | undefined,
     controller: AbortController,
     emit: SearchProgressSink,
-    cacheKey: string
+    cacheKey: string,
+    offset = 0
   ): Promise<void> {
     const queue = [...providers];
     const collectedStats: ProviderStat[] = [];
@@ -202,7 +220,7 @@ export class SearchService {
 
         const startedAt = Date.now();
         try {
-          const results = await this.searchProvider(provider, query, category, controller.signal);
+          const results = await this.searchProvider(provider, query, category, controller.signal, offset);
           const checkedAt = Date.now();
           for (const result of results) {
             result.checkedAt = checkedAt;
@@ -226,6 +244,13 @@ export class SearchService {
             ms: Date.now() - startedAt,
             state: 'ok',
           };
+          const next = this.nextOffsets.get(results);
+          if (next !== undefined) {
+            const token = randomUUID();
+            this.pages.set(token, { providerId: provider.id, query, category, offset: next, at: Date.now() });
+            while (this.pages.size > 1000) this.pages.delete(this.pages.keys().next().value!);
+            stat.nextPage = token;
+          }
           collectedStats.push(stat);
           collectedResults.push(...results);
           emit({ searchId, done: false, stat, results });
@@ -242,6 +267,7 @@ export class SearchService {
             ms: Date.now() - startedAt,
             error: message,
             state: 'failed',
+            errorCode: err instanceof ProviderNetworkError ? err.code : undefined,
           };
           collectedStats.push(stat);
           emit({ searchId, done: false, stat, results: [] });
@@ -257,7 +283,7 @@ export class SearchService {
 
     // Only a run that finished is worth replaying; a cancelled one is partial by
     // definition and would masquerade as a complete answer.
-    if (!controller.signal.aborted) {
+    if (!controller.signal.aborted && offset === 0) {
       this.remember(cacheKey, collectedStats, collectedResults);
     }
 
@@ -362,9 +388,16 @@ export class SearchService {
     provider: SearchProvider,
     query: string,
     category?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    offset = 0
   ): Promise<SearchResult[]> {
     switch (provider.type) {
+      case 'rutracker': {
+        const page = await searchRuTracker(provider, query, offset, signal);
+        if (page.nextOffset !== undefined) this.nextOffsets.set(page.results, page.nextOffset);
+        for (const result of page.results) this.resultBases.set(result, page.base);
+        return page.results;
+      }
       case 'jackett':
         return this.searchJackett(provider, query, category, signal);
       case 'torznab':
@@ -699,6 +732,20 @@ export class SearchService {
   }
 
   /** Resolve a result using its registered source, never a renderer-supplied URL. */
+  async releaseDetails(refs: string[], requestId: string, selected?: string, refresh = false, signal?: AbortSignal) {
+    if (!Array.isArray(refs) || !refs.length || refs.length > 20 || refs.some(ref => typeof ref !== 'string' || ref.length > 128)
+      || selected !== undefined && (typeof selected !== 'string' || !refs.includes(selected))) throw new Error('Invalid search source');
+    const providers = await db.getSearchProviders();
+    if (signal?.aborted) throw new ProviderNetworkError('cancelled');
+    const candidates = [...new Set(refs)].flatMap(ref => {
+      const item = this.sources.get(ref), provider = item && providers.find(candidate => candidate.id === item.provider.id && candidate.enabled);
+      return item && provider ? [{ ref, provider, result: item.result }] : [];
+    });
+    return this.previews.details(candidates, requestId, selected, refresh);
+  }
+  releaseImage(assetId: string, requestId: string) { return this.previews.image(assetId, requestId); }
+  cancelPreview(requestId: string): void { this.previews.cancel(requestId); }
+
   async resolveSource(refs: string[]): Promise<{ sourceType: 'magnet' | 'torrent_file'; sourceUri: string }> {
     if (!Array.isArray(refs) || !refs.length || refs.length > 20 || refs.some(r => typeof r !== 'string')) throw new Error('Invalid search source');
     const providers = await db.getSearchProviders();
@@ -710,6 +757,14 @@ export class SearchService {
       if (!item) continue;
       const provider = providers.find(p => p.id === item.provider.id);
       if (!provider) continue;
+      if (provider.type === 'rutracker' && item.result.deferredSource && !item.result.magnetUri && !item.result.torrentUrl) {
+        try {
+          const resolved = await resolveRuTracker(provider, item.result.detailsUrl!, AbortSignal.timeout(Math.max(1, deadline - Date.now())));
+          item.result.magnetUri = resolved.magnetUri;
+          item.result.torrentUrl = resolved.torrentUrl;
+          item.mirrorBase = resolved.base;
+        } catch (error) { lastError = error; continue; }
+      }
       if (item.result.magnetUri?.startsWith('magnet:')) return { sourceType: 'magnet', sourceUri: item.result.magnetUri };
       const url = item.result.torrentUrl;
       if (!url) continue;
@@ -717,6 +772,7 @@ export class SearchService {
         const route = getProviderRoute(provider.id);
         const parseTorrent = createRequire(__filename)('parse-torrent') as (buffer: Buffer) => { infoHash?: string };
         const validate = (bytes: Buffer) => {
+          if (provider.type === 'rutracker' && /^\s*</.test(bytes.toString('utf8', 0, 512))) checkRuTrackerPage(bytes.toString('utf8'));
           try {
             const hash = parseTorrent(bytes).infoHash;
             if (!hash || (item.result.infoHash && /^[a-f\d]{40}$/i.test(item.result.infoHash) && hash.toLowerCase() !== item.result.infoHash.toLowerCase())) throw new Error();

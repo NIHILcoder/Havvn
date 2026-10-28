@@ -1,5 +1,7 @@
 # Havvn search plugins
 
+RuTracker now also has a built-in source: **Search → Providers → RuTracker → Connect and sign in**. That path does not require Python or a script file. `rutracker.py` remains available for compatibility; existing script providers are not automatically replaced. See [built-in RuTracker](../rutracker-built-in.md).
+
 A **script provider** lets Havvn search any source by running a small local
 program you point it at. No script provider is enabled by default — you choose
 and add a script, including the examples in this directory. This lets you add indexers

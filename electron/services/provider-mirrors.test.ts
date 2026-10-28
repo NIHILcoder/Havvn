@@ -67,6 +67,7 @@ describe('bounded mirror reads', () => {
     expect(state.request.mock.calls.map(c => c[3].timeoutMs)).toEqual([1500, 400]);
   });
   it('retains a full request timeout when there are no aliases', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(0);
     state.route.mirrors = []; state.request.mockResolvedValue({ text: () => 'ok' });
     await read(); expect(state.request.mock.calls[0][3].timeoutMs).toBe(20000);
   });
