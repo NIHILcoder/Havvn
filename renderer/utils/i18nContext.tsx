@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { registerErrorTranslations } from './error-messages';
 
 type Language = 'en' | 'ru';
 type Dict = Record<string, string>;
@@ -11,8 +12,8 @@ type TranslationKey = keyof typeof import('../i18n/en.json');
 // Dynamic imports make webpack split each language into its own async chunk, so
 // the ~600-string dictionaries stay OUT of the main bundle and load on demand.
 const loaders: Record<Language, () => Promise<Dict>> = {
-  en: () => import('../i18n/en.json').then(m => (m.default ?? m) as Dict),
-  ru: () => import('../i18n/ru.json').then(m => (m.default ?? m) as Dict),
+  en: () => import('../i18n/en.json').then(m => { const dict = (m.default ?? m) as Dict; registerErrorTranslations('en', dict); return dict; }),
+  ru: () => import('../i18n/ru.json').then(m => { const dict = (m.default ?? m) as Dict; registerErrorTranslations('ru', dict); return dict; }),
 };
 
 interface I18nContextType {
@@ -63,7 +64,12 @@ export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const setLanguage = (lang: Language) => {
     setLanguageState(lang);
     localStorage.setItem('language', lang);
+    window.dispatchEvent(new Event('havvn:device-local'));
   };
+  useEffect(() => {
+    const sync = (e: StorageEvent) => { if (e.key === 'language' || e.key === null) { const value = localStorage.getItem('language'); setLanguageState(value === 'ru' ? 'ru' : 'en'); } };
+    window.addEventListener('storage', sync); return () => window.removeEventListener('storage', sync);
+  }, []);
 
   const t = (key: TranslationKey): string => {
     const k = key as string;

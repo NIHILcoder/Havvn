@@ -26,6 +26,7 @@ export interface DropdownMenuItem {
   icon?: React.ReactNode;
   /** Destructive action — appends the shared `.danger` item skin. */
   danger?: boolean;
+  disabled?: boolean;
   onSelect: () => void;
 }
 
@@ -86,6 +87,15 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
   useAnchoredOverlayDismiss(wrapperRef.current, menuRef, open, close);
 
   const toggle = useCallback(() => setOpen((o) => !o), []);
+  const positioned = !portal || pos !== null;
+  useEffect(() => {
+    if (!open || !positioned) return;
+    const doc = resolveHostWindow(wrapperRef.current, host).document;
+    const previous = doc.activeElement as HTMLElement | null;
+    const menu = menuRef.current;
+    menu?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    return () => { if (previous?.isConnected && (!doc.activeElement || doc.activeElement === doc.body || menu?.contains(doc.activeElement))) previous.focus({ preventScroll: true }); };
+  }, [open, positioned, host]);
 
   // Position the portaled menu below-right-aligned to the trigger, clamped to
   // the viewport so it never spills off an edge (the clip #3 was fixing).
@@ -133,6 +143,15 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
       ref={menuRef}
       className={menuClassName}
       role="menu"
+      data-dialog-owner={wrapperRef.current?.closest<HTMLElement>('[data-modal-focus-owner]')?.dataset.modalFocusOwner}
+      onKeyDown={event => {
+        if (event.key === 'Tab') { event.preventDefault(); setOpen(false); wrapperRef.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true }); return; }
+        const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+        if (!buttons.length) return;
+        const index = buttons.indexOf(event.target as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : event.key === 'ArrowDown' ? (index + 1) % buttons.length : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : -1;
+        if (next >= 0) { event.preventDefault(); buttons[next]?.focus(); }
+      }}
       style={portal ? { position: 'fixed', left: pos?.x ?? -9999, top: pos?.y ?? -9999, right: 'auto', marginTop: 0, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100dvh - 16px)', overflowY: 'auto', boxSizing: 'border-box', visibility: pos ? 'visible' : 'hidden', zIndex: 1000 } : undefined}
     >
       {items.map((item) => (
@@ -141,6 +160,7 @@ export const DropdownMenu: React.FC<DropdownMenuProps> = ({
           type="button"
           className={`${itemClassName}${item.danger ? ' danger' : ''}`.trim() || undefined}
           role="menuitem"
+          disabled={item.disabled}
           onClick={() => {
             setOpen(false);
             item.onSelect();

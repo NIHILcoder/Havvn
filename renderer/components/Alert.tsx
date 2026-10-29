@@ -4,6 +4,7 @@
 
 import React from 'react';
 import Icon, { IconName } from './Icon';
+import { ErrorMessage } from './ErrorMessage';
 
 type AlertVariant = 'success' | 'warning' | 'error' | 'info';
 
@@ -30,7 +31,7 @@ export const Alert: React.FC<AlertProps> = ({
   return (
     <div className={`alert alert-${variant} ${className}`}>
       <Icon name={iconMap[variant]} size={18} />
-      <div style={{ flex: 1 }}>{children}</div>
+      <div style={{ flex: 1 }}>{variant === 'error' && typeof children === 'string' ? <ErrorMessage error={children} details /> : children}</div>
       {onClose && (
         <button
           onClick={onClose}

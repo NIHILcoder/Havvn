@@ -179,6 +179,7 @@ export function handleError(
     rethrow?: boolean;
   }
 ): AppError {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Load Electron logging only when an error is handled.
   const logger = require('./logger').logger;
 
   // Convert to AppError if it isn't one
@@ -307,6 +308,7 @@ export async function withRetry<T>(
       // Calculate delay (with backoff if enabled)
       const delay = backoff ? delayMs * Math.pow(2, attempt - 1) : delayMs;
 
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep pure error helpers usable without loading Electron.
       const logger = require('./logger').logger;
       logger.warn(
         context,
@@ -393,6 +395,7 @@ export class CircuitBreaker {
       // Open circuit if threshold exceeded
       if (this.failures >= this.threshold) {
         this.state = 'open';
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- Keep pure error helpers usable without loading Electron.
         const logger = require('./logger').logger;
         logger.error(
           'CircuitBreaker',
@@ -435,6 +438,7 @@ export function parseIpcError(error: any): Error {
  * Should be set up early in the application
  */
 export function setupGlobalErrorHandlers() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Logging is initialized by the Electron startup path.
   const logger = require('./logger').logger;
 
   process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {

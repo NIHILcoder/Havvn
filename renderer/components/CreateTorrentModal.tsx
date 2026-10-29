@@ -1,25 +1,22 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * Create Torrent Modal
  * 
  * Modal dialog for creating .torrent files from local files/folders.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Icon, Input, ProgressBar } from '../components';
 import { Modal } from './Modal';
 import { Select } from './Select';
+import { Toggle } from './Toggle';
+import { parseTorrentUrls, isTorrentCreationCancelled } from '../../shared/torrent-creation';
+import { TORRENT_PIECE_SIZES, formatTorrentBytes } from '../../shared/create-torrent-labels';
 import { useTranslation } from '../utils/i18nContext';
 import { CreateTorrentOptions, CreateTorrentProgress, CreateTorrentResult } from '../../shared/types';
 import './CreateTorrentModal.css';
-
-// Utility function
-const formatBytes = (bytes: number): string => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
+import { CreatedTorrentSeed } from './CreatedTorrentSeed';
+import { useClipboardCopy } from '../utils/useClipboardCopy';
 
 interface CreateTorrentModalProps {
   isOpen: boolean;
@@ -30,28 +27,13 @@ interface CreateTorrentModalProps {
 type SourceMode = 'files' | 'folder';
 type CreateStage = 'setup' | 'creating' | 'success';
 
-// Piece size options in bytes
-const PIECE_SIZE_OPTIONS = [
-  { label: 'Auto', value: 0 },
-  { label: '16 KB', value: 16 * 1024 },
-  { label: '32 KB', value: 32 * 1024 },
-  { label: '64 KB', value: 64 * 1024 },
-  { label: '128 KB', value: 128 * 1024 },
-  { label: '256 KB', value: 256 * 1024 },
-  { label: '512 KB', value: 512 * 1024 },
-  { label: '1 MB', value: 1024 * 1024 },
-  { label: '2 MB', value: 2 * 1024 * 1024 },
-  { label: '4 MB', value: 4 * 1024 * 1024 },
-  { label: '8 MB', value: 8 * 1024 * 1024 },
-  { label: '16 MB', value: 16 * 1024 * 1024 },
-];
-
 export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
 }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
+  const formatBytes = (bytes: number) => formatTorrentBytes(bytes, language);
   // Source selection
   const [sourceMode, setSourceMode] = useState<SourceMode>('folder');
   const [sourcePaths, setSourcePaths] = useState<string[]>([]);
@@ -71,7 +53,11 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
   const [result, setResult] = useState<CreateTorrentResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [copiedMagnet, setCopiedMagnet] = useState(false);
+  const [clipboardError, setClipboardError] = useState(false);
+  const [seedRetrying, setSeedRetrying] = useState(false);
+  const retryPending = useRef(false);
+  const requestId = useRef<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   // Load default trackers on mount
   useEffect(() => {
@@ -88,7 +74,7 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
     if (!isOpen) return;
 
     const unsubscribe = window.api.onCreateTorrentProgress((progressUpdate) => {
-      setProgress(progressUpdate);
+      if (progressUpdate.requestId === requestId.current) setProgress(progressUpdate);
     });
 
     return () => unsubscribe();
@@ -109,7 +95,7 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       setResult(null);
       setError(null);
       setShowAdvanced(false);
-      setCopiedMagnet(false);
+      setClipboardError(false);
     }
   }, [isOpen]);
 
@@ -120,7 +106,7 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       // Auto-set name from first file if not set
       if (!name) {
         const fileName = paths[0].split(/[/\\]/).pop() || '';
-        setName(fileName.replace(/\.[^/.]+$/, '')); // Remove extension
+        setName(fileName);
       }
     }
   }, [name]);
@@ -148,26 +134,18 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
     if (!outputPath) return;
 
     setStage('creating');
+    requestId.current = crypto.randomUUID();
+    setCancelling(false);
     setError(null);
     setProgress({ stage: 'hashing', progress: 0, message: t('create.starting') });
 
     try {
-      // Parse trackers (one per line, groups separated by empty line)
-      const announceList: string[][] = [];
-      const trackerLines = trackers.split('\n').map(l => l.trim()).filter(l => l);
-      
-      // Group trackers - each non-empty line is a group
-      for (const line of trackerLines) {
-        if (line.startsWith('udp://') || line.startsWith('http://') || line.startsWith('https://')) {
-          announceList.push([line]);
-        }
-      }
-
-      // Parse web seeds
-      const urlList = webSeeds
-        .split('\n')
-        .map(l => l.trim())
-        .filter(l => l.startsWith('http://') || l.startsWith('https://'));
+      const trackerUrls = parseTorrentUrls(trackers, 'tracker');
+      const webSeedUrls = parseTorrentUrls(webSeeds, 'webSeed');
+      if (trackerUrls.invalidLines.length) throw new Error(t('create.invalidTrackerLines').replace('{lines}', trackerUrls.invalidLines.join(', ')));
+      if (webSeedUrls.invalidLines.length) throw new Error(t('create.invalidWebSeedLines').replace('{lines}', webSeedUrls.invalidLines.join(', ')));
+      const announceList = trackerUrls.groups;
+      const urlList = webSeedUrls.urls;
 
       const options: CreateTorrentOptions = {
         name: name || undefined,
@@ -179,6 +157,7 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       };
 
       const createResult = await window.api.createTorrent({
+        requestId: requestId.current,
         sourcePaths,
         outputPath,
         options,
@@ -189,18 +168,24 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       setStage('success');
       onSuccess?.(createResult);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('create.errorFailed'));
+      setError(isTorrentCreationCancelled(err) ? null : err instanceof Error ? err.message : t('create.errorFailed'));
       setStage('setup');
-    }
+    } finally { requestId.current = null; setCancelling(false); }
   }, [sourcePaths, name, comment, trackers, webSeeds, isPrivate, pieceLength, startSeeding, onSuccess]);
 
-  const handleCopyMagnet = useCallback(() => {
-    if (result?.magnetUri) {
-      navigator.clipboard.writeText(result.magnetUri);
-      setCopiedMagnet(true);
-      setTimeout(() => setCopiedMagnet(false), 2000);
-    }
-  }, [result]);
+  const { copy: handleCopyMagnet, copied: copiedMagnet, copying: copyingMagnet } = useClipboardCopy(result?.magnetUri ?? '', {
+    onSuccess: () => setClipboardError(false), onError: () => setClipboardError(true),
+  });
+  const handleRetrySeed = async () => {
+    if (!result?.seedRetryId || retryPending.current) return;
+    retryPending.current = true; setSeedRetrying(true);
+    try {
+      const updated = await window.api.retryCreatedTorrentSeed(result.seedRetryId);
+      setResult(updated); onSuccess?.(updated);
+    } catch (cause) {
+      setResult({ ...result, seedingStatus: 'failed', seedingError: cause instanceof Error ? cause.message : String(cause) });
+    } finally { retryPending.current = false; setSeedRetrying(false); }
+  };
 
   const handleShowInFolder = useCallback(() => {
     if (result?.torrentFilePath) {
@@ -229,13 +214,19 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       )}
 
       {stage === 'creating' && (
-        <Button variant="ghost" onClick={onClose} disabled>
-          {t('create.pleaseWait')}
+        <Button variant="secondary" disabled={cancelling || progress?.stage !== 'hashing'} onClick={async () => {
+          const id = requestId.current;
+          if (!id) return;
+          setCancelling(true);
+          try { if (!await window.api.cancelCreateTorrent(id)) setCancelling(false); }
+          catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setCancelling(false); }
+        }}>
+          {t(progress?.stage !== 'hashing' ? 'create.pleaseWait' : cancelling ? 'create.cancelling' : 'create.cancelCreation')}
         </Button>
       )}
 
       {stage === 'success' && (
-        <Button variant="primary" onClick={onClose}>
+        <Button variant="primary" onClick={onClose} disabled={seedRetrying}>
           {t('common.done')}
         </Button>
       )}
@@ -248,6 +239,8 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
       title={t('nav.create')}
       icon="file-plus"
       size="lg"
+      className="torrent-create-dialog"
+      busy={stage === 'creating' || seedRetrying}
       footer={footer}
     >
       {stage === 'setup' && (
@@ -347,22 +340,15 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
                 {showAdvanced && (
                   <div className="advanced-options">
                     <div className="form-row">
-                      <label className="checkbox-label">
-                        <input
-                          type="checkbox"
-                          checked={isPrivate}
-                          onChange={(e) => setIsPrivate(e.target.checked)}
-                        />
-                        <span>{t('create.privateTorrent')}</span>
-                      </label>
+                      <Toggle checked={isPrivate} onChange={setIsPrivate} label={t('create.privateTorrent')} size="small" />
                       <span className="help-text inline">{t('create.privateHelp')}</span>
                     </div>
 
                     <div className="form-group">
                       <label className="label">{t('create.pieceSize')}</label>
                       <Select value={String(pieceLength)} onChange={value => setPieceLength(Number(value))}
-                        ariaLabel={t('create.pieceSize')} options={PIECE_SIZE_OPTIONS.map(opt => ({
-                          value: String(opt.value), label: opt.value === 0 ? t('create.pieceAuto') : opt.label,
+                        ariaLabel={t('create.pieceSize')} options={TORRENT_PIECE_SIZES.map(value => ({
+                          value: String(value), label: value === 0 ? t('create.pieceAuto') : formatBytes(value),
                         }))} />
                       <span className="help-text">{t('create.pieceHelp')}</span>
                     </div>
@@ -383,20 +369,13 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
 
               {/* Start Seeding Option */}
               <div className="form-section">
-                <label className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={startSeeding}
-                    onChange={(e) => setStartSeeding(e.target.checked)}
-                  />
-                  <span>{t('create.startSeedingAfter')}</span>
-                </label>
+                <Toggle checked={startSeeding} onChange={setStartSeeding} label={t('create.startSeedingAfter')} size="small" />
               </div>
 
               {error && (
                 <div className="error-message">
                   <Icon name="alert-circle" size={16} />
-                  {error}
+                  <ErrorMessage error={error} />
                 </div>
               )}
             </>
@@ -408,18 +387,19 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
                 <Icon name="loader" size={48} className="spin" />
               </div>
               <h3>{t('create.creating')}</h3>
-              <p className="creating-message">{progress.stage === 'hashing' ? t('create.hashing') : progress.stage === 'writing' ? t('create.stageWriting') : t('create.stageComplete')}</p>
-              <ProgressBar value={progress.progress} className="creating-progress" />
-              <span className="progress-percent">{Math.round(progress.progress * 100)}%</span>
+              <p className="creating-message">{progress.stage === 'verifying' ? t('create.verifyingSeed') : progress.stage === 'hashing' ? t('create.hashing') : progress.stage === 'writing' ? t('create.stageWriting') : t('create.stageComplete')}</p>
+              <ProgressBar value={progress.stage === 'verifying' ? null : progress.progress} className="creating-progress" />
+              {progress.stage !== 'verifying' && <span className="progress-percent">{Math.round(progress.progress * 100)}%</span>}
             </div>
           )}
 
           {stage === 'success' && result && (
             <div className="success-stage">
               <div className="success-icon">
-                <Icon name="check-circle" size={48} />
+                <Icon name="file" size={32} />
               </div>
               <h3>{t('create.created')}</h3>
+              <CreatedTorrentSeed result={result} busy={seedRetrying} onRetry={() => void handleRetrySeed()} />
 
               <div className="result-details">
                 <div className="result-row">
@@ -455,11 +435,13 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
                     variant={copiedMagnet ? 'primary' : 'secondary'}
                     size="sm"
                     onClick={handleCopyMagnet}
+                    disabled={copyingMagnet}
                   >
-                    <Icon name={copiedMagnet ? 'check' : 'copy'} size={14} />
+                    <Icon name="copy" size={14} />
                     {copiedMagnet ? t('create.copied') : t('share.copy')}
                   </Button>
                 </div>
+                {clipboardError && <p className="help-text" role="alert">{t('create.copyFailed')}</p>}
               </div>
 
               <div className="success-actions">
@@ -467,10 +449,10 @@ export const CreateTorrentModal: React.FC<CreateTorrentModalProps> = ({
                   <Icon name="folder" size={16} />
                   {t('create.showInFolder')}
                 </Button>
-                {startSeeding && (
+                {result.seedingStatus === 'queued' && (
                   <span className="seeding-status">
                     <Icon name="upload" size={14} />
-                    {t('create.seedingStarted')}
+                    {t('create.seedQueued')}
                   </span>
                 )}
               </div>

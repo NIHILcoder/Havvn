@@ -10,20 +10,31 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  padding: 8px 16px;
+  padding: 9px 18px;
+  min-height: 36px;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
   font-family: var(--font-family);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
-  line-height: 1;
+  line-height: 1.35;
   border: 1px solid transparent;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-primary);
+  border-color: var(--color-border-default);
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all var(--transition-fast);
-  white-space: nowrap;
+  white-space: normal;
+  text-align: center;
   user-select: none;
   position: relative;
   overflow: hidden;
 }
+.btn-label { display: inline-flex; align-items: center; justify-content: center; gap: inherit; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.btn > svg, .btn > .spinner, .btn-label > svg { flex: none; }
 
 .btn:active {
   transform: scale(0.97);
@@ -35,16 +46,14 @@
   transform: none;
 }
 
-/* Primary Button — flat Ember: solid accent fill, dark ink, no ring/glow.
-   (The dark theme puts near-black text on ember; the light theme overrides
-   .btn-primary color to white in variables.css against the deeper ember.) */
+/* Primary buttons share an editable label colour with room join actions. */
 .btn-primary {
   /* The brand's signal gradient (hover→base). Guarded: if a custom theme leaves
      --color-accent-primary-hover unset, both stops collapse to the base accent
      (flat, no two-hue clash). Per-theme hovers keep the label contrast AA either
      way — brighter-on-dark with dark text, darker-on-light with light text. */
   background: linear-gradient(180deg, var(--color-accent-primary-hover, var(--color-accent-primary)), var(--color-accent-primary));
-  color: var(--color-bg-primary);
+  color: var(--color-text-on-accent);
   border: none;
   font-family: var(--font-display);
   letter-spacing: 0.03em;
@@ -114,13 +123,15 @@
 
 /* Button Sizes */
 .btn-sm {
-  padding: 5px 10px;
+  padding: 6px 12px;
+  min-height: 30px;
   font-size: var(--font-size-xs);
   border-radius: var(--radius-sm);
 }
 
 .btn-lg {
   padding: 12px 24px;
+  min-height: 44px;
   font-size: var(--font-size-md);
   border-radius: var(--radius-lg);
 }
@@ -128,12 +139,17 @@
 /* Icon-only Button */
 .btn-icon-only {
   padding: 6px;
+  width: 32px;
+  height: 32px;
   min-width: 30px;
   min-height: 30px;
 }
 
 .btn-sm.btn-icon-only {
   padding: 4px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
   min-width: 26px;
   min-height: 26px;
 }
@@ -170,6 +186,25 @@
 }
 
 /* === Inputs === */
+.input-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.input-field > .label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.input-field > .input { min-width: 0; }
+.input-field > .help-text {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+}
 .input {
   width: 100%;
   padding: 8px 12px;
@@ -189,7 +224,8 @@
 
 .input:focus {
   border-color: var(--color-accent-primary);
-  box-shadow: var(--shadow-focus);
+  outline: none;
+  box-shadow: none;
   background: var(--color-bg-secondary);
 }
 
@@ -212,13 +248,19 @@
 
 .input-compact:focus {
   border-color: var(--color-accent-primary);
-  box-shadow: var(--shadow-focus);
+  outline: none;
+  box-shadow: none;
 }
 
 .input-mono {
   font-family: var(--font-family-mono);
   font-size: var(--font-size-xs);
 }
+
+/* Number controls use NumberInput; never expose Chromium's unthemed arrows. */
+input[type="number"] { appearance: textfield; }
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button { appearance: none; margin: 0; }
 
 /* === Native controls — checkbox / radio / range ===
    Forced into the strict-square HUD language app-wide so no OS-default control
@@ -233,6 +275,10 @@ input[type="radio"] {
   margin: 0;
   flex-shrink: 0;
   position: relative;
+  display: inline-grid;
+  place-content: center;
+  vertical-align: middle;
+  box-sizing: border-box;
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);               /* square checkbox */
@@ -253,29 +299,24 @@ input[type="radio"]:checked {
   border-color: var(--color-accent-primary);
 }
 
-/* Checkmark (composited pseudo — no reflow). */
+/* A centered inset marker; its position stays correct at every control size. */
 input[type="checkbox"]:checked::after {
   content: "";
-  position: absolute;
-  left: 4px; top: 1px;
-  width: 4px; height: 8px;
-  border: solid var(--color-bg-primary);
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
+  width: 6px; height: 6px;
+  border-radius: 2px;
+  background: var(--color-bg-primary);
 }
 /* Indeterminate → a centred dash. */
 input[type="checkbox"]:indeterminate::after {
   content: "";
-  position: absolute;
-  left: 3px; top: 6px;
   width: 8px; height: 2px;
+  border-radius: 1px;
   background: var(--color-bg-primary);
 }
 /* Radio inner dot. */
 input[type="radio"]:checked::after {
   content: "";
-  position: absolute;
-  inset: 3px;
+  width: 6px; height: 6px;
   border-radius: var(--radius-full);
   background: var(--color-bg-primary);
 }
@@ -363,6 +404,16 @@ input[type="range"]::-moz-range-thumb {
 .progress-bar-fill.error {
   background: var(--gradient-danger);
 }
+
+.progress-bar-indeterminate .progress-bar-fill {
+  opacity: .4;
+  background: repeating-linear-gradient(110deg, var(--color-accent-primary) 0 8px, transparent 8px 16px);
+}
+.operation-status { display: grid; gap: 8px; min-width: 0; padding: 12px 0; }
+.operation-status-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; font-size: var(--font-size-sm); }
+.operation-status-heading > :first-child { font-weight: 600; }
+.operation-status-heading > :last-child, .operation-status-reason, .operation-status-result { color: var(--color-text-secondary); }
+.operation-status-reason, .operation-status-result { margin: 0; font-size: var(--font-size-xs); line-height: 1.5; overflow-wrap: anywhere; }
 
 /* Active download animation */
 .progress-bar-fill.active::before {
