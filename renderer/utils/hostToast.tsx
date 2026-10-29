@@ -73,12 +73,15 @@ import React, { createContext, useContext, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Toaster,
+  ToastBar,
+  resolveValue,
   toast as globalToast,
   type DefaultToastOptions,
   type ToastOptions,
   type ToastPosition,
 } from 'react-hot-toast';
 import { usePortalTarget } from './hostWindow';
+import { ErrorMessage } from '../components/ErrorMessage';
 
 /** The exact shape of react-hot-toast's default export — what a realm binds to. */
 export type ToastApi = typeof globalToast;
@@ -98,6 +101,7 @@ export const TOAST_OPTIONS: DefaultToastOptions = {
     overflowWrap: 'anywhere',
     whiteSpace: 'pre-wrap',
     lineHeight: '1.4',
+    padding: '12px 16px',
     background: 'var(--color-bg-secondary)',
     color: 'var(--color-text-primary)',
     border: '1px solid var(--color-border)',
@@ -189,7 +193,14 @@ export interface HostToasterProps {
 
 /** One window's toast surface, styled identically everywhere. */
 export const HostToaster: React.FC<HostToasterProps> = ({ toasterId, target }) => {
-  const node = <Toaster position={TOAST_POSITION} toasterId={toasterId} toastOptions={TOAST_OPTIONS} />;
+  const node = <Toaster position={TOAST_POSITION} toasterId={toasterId} toastOptions={TOAST_OPTIONS}>
+    {item => {
+      if (item.type !== 'error') return <ToastBar toast={item} />;
+      const message = resolveValue(item.message, item);
+      return <ToastBar toast={{ ...item, message: typeof message === 'string'
+        ? <ErrorMessage error={message} details /> : message }} />;
+    }}
+  </Toaster>;
   return target ? createPortal(node, target) : node;
 };
 

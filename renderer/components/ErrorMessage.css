@@ -1,0 +1,4 @@
+.user-error-message { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.user-error-details { margin-top: 6px; font-size: 12px; line-height: 1.45; }
+.user-error-details summary { cursor: pointer; color: var(--color-text-secondary); }
+.user-error-details pre { margin: 6px 0 0; padding: 8px; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--font-mono, monospace); color: var(--color-text-secondary); background: var(--color-bg-tertiary); border-radius: var(--radius-sm); }

@@ -107,4 +107,10 @@ describe('Modal markup', () => {
   it('disables the close button while busy', () => {
     expect(render({ busy: true })).toMatch(/class="um-x"[^>]*disabled/);
   });
+  it('names a rich title by its visible heading, preserving explicit label overrides', () => {
+    const html = render({ title: <span>Rich title</span> });
+    const id = html.match(/aria-labelledby="([^"]+)"/)?.[1];
+    expect(id).toBeTruthy(); expect(html).toContain(`id="${id}" class="um-title"`);
+    expect(render({ title: <span>Rich title</span>, ariaLabel: 'Accessible title' })).toContain('aria-label="Accessible title"');
+  });
 });

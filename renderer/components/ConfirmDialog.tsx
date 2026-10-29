@@ -69,6 +69,7 @@ import { Modal } from './Modal';
 import { Button } from './Button';
 import { IconName } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
+import { localizeKnownText } from '../utils/error-messages';
 import { HostWindowProvider, REAL_HOST, useHostWindow, type HostWindow } from '../utils/hostWindow';
 
 export interface ConfirmOptions {
@@ -204,7 +205,7 @@ type Req =
   | ({ kind: 'alert' } & AlertOptions & { host: HostWindow; resolve: () => void });
 
 export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   // The realm this provider itself renders in — the yardstick for "same window".
   const providerHost = useHostWindow();
   // A QUEUE, not a single slot: a confirm()/alert() raised while another is open
@@ -270,7 +271,7 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
     <Modal
       size="sm"
       icon={req.icon || (req.kind === 'confirm' && req.danger ? 'alert-triangle' : undefined)}
-      title={req.title || (req.kind === 'confirm' ? t('common.confirm') : t('common.notice'))}
+      title={req.title ? localizeKnownText(req.title, language) : (req.kind === 'confirm' ? t('common.confirm') : t('common.notice'))}
       onClose={() => close(false)}
       // A confirm is asked ABOUT whatever is already open, so it must never
       // land underneath it. Without this it does: Modal renders in place, and
@@ -287,14 +288,14 @@ export const ConfirmProvider: React.FC<{ children: React.ReactNode }> = ({ child
       bodyClassName="um-body-plain"
       footer={req.kind === 'confirm' ? (
         <>
-          <Button variant="ghost" onClick={() => close(false)}>{req.cancelLabel || t('common.cancel')}</Button>
-          <Button variant={req.danger ? 'danger' : 'primary'} onClick={() => close(true)}>{req.confirmLabel || t('common.confirm')}</Button>
+          <Button variant="ghost" onClick={() => close(false)}>{req.cancelLabel ? localizeKnownText(req.cancelLabel, language) : t('common.cancel')}</Button>
+          <Button variant={req.danger ? 'danger' : 'primary'} onClick={() => close(true)}>{req.confirmLabel ? localizeKnownText(req.confirmLabel, language) : t('common.confirm')}</Button>
         </>
       ) : (
-        <Button variant="primary" onClick={() => close(false)}>{req.okLabel || t('common.ok')}</Button>
+        <Button variant="primary" onClick={() => close(false)}>{req.okLabel ? localizeKnownText(req.okLabel, language) : t('common.ok')}</Button>
       )}
     >
-      <p>{req.message}</p>
+      {typeof req.message === 'string' ? <p>{localizeKnownText(req.message, language)}</p> : req.message}
     </Modal>
   );
 

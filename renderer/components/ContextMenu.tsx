@@ -37,6 +37,8 @@ interface ContextMenuProps {
   y: number;
   items: ContextMenuItem[];
   onClose: () => void;
+  portalTarget?: HTMLElement | null;
+  autoFocus?: boolean;
 }
 
 const PAD = 8;
@@ -62,10 +64,19 @@ export function clampContextMenuPos(
   return { x: nx, y: ny, maxHeight };
 }
 
-export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
+export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose, portalTarget, autoFocus = false }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const host = useHostWindow();
   const [pos, setPos] = useState<{ x: number; y: number; maxHeight: number } | null>(null);
+  const positioned = pos !== null;
+
+  useEffect(() => {
+    if (!autoFocus || !positioned) return;
+    const doc = menuRef.current?.ownerDocument ?? host.document;
+    const previous = doc?.activeElement as HTMLElement | null;
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true });
+    return () => { if (previous?.isConnected) previous.focus({ preventScroll: true }); };
+  }, [autoFocus, host, positioned]);
 
   useEffect(() => {
     const doc = menuRef.current?.ownerDocument ?? host.document;
@@ -78,6 +89,7 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
 
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        event.stopPropagation();
         onClose();
       }
     };
@@ -111,6 +123,15 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
       <div
         ref={menuRef}
         className="context-menu"
+        role="menu"
+        onKeyDown={event => {
+          const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+          const index = buttons.indexOf(event.target as HTMLButtonElement);
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+            : event.key === 'ArrowDown' ? (index + 1) % buttons.length
+              : event.key === 'ArrowUp' ? (index - 1 + buttons.length) % buttons.length : -1;
+          if (next >= 0) { event.preventDefault(); buttons[next]?.focus(); }
+        }}
         style={{
           left: pos?.x ?? -9999,
           top: pos?.y ?? -9999,
@@ -123,7 +144,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
             <div key={index} className="context-menu-divider" />
           ) : (
             <button
+              type="button"
               key={index}
+              role="menuitem"
               className={`context-menu-item ${item.disabled ? 'context-menu-item-disabled' : ''} ${item.danger ? 'context-menu-item-danger' : ''}`}
               onClick={() => {
                 if (!item.disabled) {
@@ -142,6 +165,6 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }
     </>
   );
 
-  const body = host.document?.body;
+  const body = portalTarget ?? host.document?.body;
   return body ? createPortal(node, body) : node;
 };

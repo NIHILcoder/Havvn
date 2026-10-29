@@ -1,14 +1,16 @@
 // Actual renderer components, isolated profile and fixture IPC; no user data.
 if (!process.versions.electron) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
-  const child = require('node:child_process').spawn(require('electron'), [__filename], { env, windowsHide: true, stdio: 'inherit' });
+  const child = require('node:child_process').spawn(require('electron'), [__filename, ...process.argv.slice(2)], { env, windowsHide: true, stdio: 'inherit' });
   child.on('error', error => { console.error(error); process.exitCode = 1; });
   child.on('exit', code => { process.exitCode = code ?? 1; });
 } else {
   const { app, BrowserWindow } = require('electron');
   const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
-  const root = path.resolve(__dirname, '..'), out = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'havvn-ui-polish-'));
-  app.setPath('userData', path.join(out, 'profile')); app.disableHardwareAcceleration();
+  const root = path.resolve(__dirname, '..'), review = process.argv.includes('--design-review');
+  const out = process.env.HAVVN_UI_POLISH_ARTIFACTS ? path.resolve(root, process.env.HAVVN_UI_POLISH_ARTIFACTS) : review ? path.join(root, 'artifacts/design-review-20261029') : fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'havvn-ui-polish-'));
+  fs.mkdirSync(out, { recursive: true });
+  app.setPath('userData', fs.mkdtempSync(path.join(out, 'profile-'))); app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('in-process-gpu'); app.commandLine.appendSwitch('disable-features', 'AudioServiceOutOfProcess');
   app.on('window-all-closed', () => {});
   const deadline = setTimeout(() => { console.error('Themed controls deadline:', out); app.exit(1); }, 90000);
@@ -18,7 +20,7 @@ if (!process.versions.electron) {
     const sheets = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css',
       'renderer/components/Select.css', 'renderer/components/NumberInput.css', 'renderer/components/Modal.css', 'renderer/components/Toggle.css',
       'renderer/components/PlayerPreferencesPanel.css', 'renderer/components/EpisodePrefetchControl.css',
-      'renderer/components/ProviderConnectionSettings.css', 'renderer/components/SearchQueryInput.css',
+      'renderer/components/ProviderConnectionSettings.css', 'renderer/components/SearchQueryInput.css', 'renderer/components/DownloadDefaultsPreview.css',
       'renderer/components/CreateTorrentModal.css','renderer/components/ExternalPlayer.css','renderer/components/TorrentSearchModal.css','renderer/components/TorrentFileSelector.css','renderer/components/FileTreeSelector.css','renderer/components/SelectionCheckbox.css','renderer/pages/settings/shell.css','renderer/pages/settings/controls.css','renderer/pages/settings/SettingsNav.css','renderer/styles/layout.css','renderer/styles/appearance.css'];
     const css = require('./smoke-ui-fonts.cjs')(root) + sheets.map(p => fs.readFileSync(path.join(root, p), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const html = path.join(out, 'controls.html');
@@ -33,7 +35,8 @@ if (!process.versions.electron) {
       var dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/ru.json'),'utf8')), t=k=>dict[k]||k, cache={}, calls=[];
       var network={profiles:[{id:'office',name:'Основной прокси для поиска и подключения к провайдерам'}],access:{}}, busySave=false, finishSave;
       window.api={search:{getNetworkSettings:async()=>structuredClone(network),setNetworkAccess:async(id,access)=>{calls.push({kind:'access',id,access});if(busySave)await new Promise(r=>finishSave=r);network.access[id]=access;},saveNetworkProfile:async input=>{calls.push({kind:'proxy',...input});if(busySave)await new Promise(r=>finishSave=r);var p={id:'saved',...input};network.profiles.push(p);return p;},testProvider:async()=>({success:true}),getProviders:async()=>[],getDownloadHistory:async()=>[],start:async()=>({searchId:'fixture-search',providers:['Демо']}),onProgress:handler=>{window.searchProgress=handler;return()=>{};},checkPython:async()=>({found:false}),addProvider:async data=>calls.push({kind:'provider',...data})},
-        getEpisodePrefetchSupport:async()=>({supported:true}),stopEpisodePrefetch:async()=>{},getDefaultTrackers:async()=>[],onCreateTorrentProgress:()=>()=>{},getCategories:async()=>[],rss:{getFeeds:async()=>[],getItems:async()=>[],getRules:async()=>[],previewRule:async()=>[],addRule:async data=>calls.push({kind:'rule',...data}),addFeed:async data=>calls.push({kind:'feed',...data})}};
+        getSettings:async()=>({defaultDownloadDir:'D:/Downloads',defaultSeedRatioLimit:0,defaultSeedTimeLimitMinutes:0}),
+        getEpisodePrefetchSupport:async()=>({supported:true}),getEngineCapabilities:async()=>require(path.join(root,"dist/electron/shared/engine-capabilities.js")).engineCapabilities("webtorrent"),stopEpisodePrefetch:async()=>{},getDefaultTrackers:async()=>[],onCreateTorrentProgress:()=>()=>{},getCategories:async()=>[],rss:{getFeeds:async()=>[],getItems:async()=>[],getRules:async()=>[],previewRule:async()=>[],forecastRule:async rule=>load(path.join(root,'shared/rss-forecast.ts')).forecastRssRule(rule,[],[]),addRule:async data=>calls.push({kind:'rule',...data}),addFeed:async data=>calls.push({kind:'feed',...data})}};
       var downloads={downloads:[],byId:{}};
       function load(p){if(cache[p])return cache[p].exports;var m={exports:{}};cache[p]=m;
         var source=fs.readFileSync(p,'utf8');if(p===path.join(root,'renderer/pages/SettingsPage.tsx')){var ast=ts.createSourceFile(p,source,ts.ScriptTarget.ES2022,true,ts.ScriptKind.TSX);source=ast.statements.filter(n=>ts.isImportDeclaration(n)||ts.isVariableStatement(n)&&n.declarationList.declarations.some(d=>['SECTIONS','SettingsShell'].includes(d.name.getText(ast)))).map(n=>n.getText(ast)).join(String.fromCharCode(10));source+=';module.exports.__Shell=SettingsShell;';}var js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
@@ -50,7 +53,8 @@ if (!process.versions.electron) {
       function TreeFixture(){var [excluded,setExcluded]=React.useState(new Set());var children=['Карта.zip','Моды.zip','Инструкция.txt'].map(name=>({name,path:'Сборка/'+name,isDirectory:false,size:100000000}));return React.createElement(Tree,{files:[{name:'Сборка',path:'Сборка',isDirectory:true,size:300000000,children}],excludedPaths:excluded,onToggle:(target,dir)=>setExcluded(prev=>{var next=new Set(prev),paths=dir?['Сборка',...children.map(f=>f.path)]:[target],remove=next.has(target);for(var p of paths)remove?next.delete(p):next.add(p);return next;}),onToggleAll:included=>setExcluded(new Set(included?[]:['Сборка',...children.map(f=>f.path)]))});}
       var Button=load(path.join(root,'renderer/components/Button.tsx')).Button,Icon=load(path.join(root,'renderer/components/Icon.tsx')).Icon,Avatar=load(path.join(root,'renderer/components/Avatar.tsx')).Avatar;
       var roomsSource=fs.readFileSync(path.join(root,'renderer/pages/RoomsPage.tsx'),'utf8'),roomsAst=ts.createSourceFile('RoomsPage.tsx',roomsSource,ts.ScriptTarget.ES2022,true,ts.ScriptKind.TSX),headerNode;function headerVisit(n){if(ts.isJsxElement(n)&&n.openingElement.attributes.properties.some(a=>ts.isJsxAttribute(a)&&a.name.getText(roomsAst)==='className'&&a.initializer?.text==='rooms-header'))headerNode=n;ts.forEachChild(n,headerVisit);}headerVisit(roomsAst);var hm={exports:{}};new Function('module','exports',ts.transpileModule('const RoomHeader=()=>('+headerNode.getText(roomsAst)+');module.exports.RoomHeader=RoomHeader;',{compilerOptions:{jsx:ts.JsxEmit.React,module:ts.ModuleKind.CommonJS}}).outputText)(hm,hm.exports);var RoomHeader=hm.exports.RoomHeader;
-      var profile={name:'papoooooo',avatarSeed:'rings:peer'},localServers=[],openProfile=()=>{},setLocalServersOpen=()=>{},setDialog=()=>{},setCreateName=()=>{};
+      var publicRoomName=load(path.join(root,'shared/profile.ts')).publicRoomName;
+      var profile={name:'papoooooo',memberId:'fixture-profile',avatarSeed:'rings:peer'},localServers=[],openProfile=()=>{},setLocalServersOpen=()=>{},setDialog=()=>{},setCreateName=()=>{};
       var SearchPrefs=load(path.join(root,'renderer/components/SearchPreferencesPanel.tsx')).SearchPreferencesPanel;
       var PlayerPrefs=load(path.join(root,'renderer/components/PlayerPreferencesPanel.tsx')).PlayerPreferencesPanel;
       var Provider=load(path.join(root,'renderer/components/ProviderConnectionSettings.tsx')).ProviderConnectionSettings;
@@ -70,7 +74,7 @@ if (!process.versions.electron) {
         if(kind==='prefetch')props={media:null,downloadId:'fixture',currentFile:0,nextFile:1,nextName:'Следующая серия'};
         if(kind==='torrentSearch')props={onClose:()=>{},onAdd:async()=>{}};if(kind==='files')props={torrentPath:'fixture.torrent',onConfirm:ids=>calls.push({kind:'confirmFiles',ids}),onCancel:()=>{}};
         if(kind==='modal')props={isOpen:true,onClose:()=>{}};
-        dom.flushSync(()=>mounted.render(React.createElement(component,props)));};
+        dom.flushSync(()=>mounted.render(React.createElement(load(path.join(root,'renderer/components/ConfirmDialog.tsx')).ConfirmProvider,null,React.createElement(component,props))));};
       window.clickText=key=>{var label=t(key),b=[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===label);if(!b)throw Error('Missing button '+key);dom.flushSync(()=>b.click());};
       window.inputValue=(node,value)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(node,value);dom.flushSync(()=>node.dispatchEvent(new Event('input',{bubbles:true})));};
       window.trigger=key=>document.querySelector('button[aria-label="'+t(key)+'"]');
@@ -116,9 +120,9 @@ if (!process.versions.electron) {
     await run(`trigger('search.media.resolution').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));clickText('search.providers')`); await pause(120);
     await run(`choose('search.provider.type','search.type.script')`); await pause(120);
     assert.equal(await run('!!document.querySelector(".python-status")'), true); await run(`openSelect('search.provider.type')`); await capture('provider-type-menu');
-    await mount('create'); await run(`clickText('create.tabAdvanced');choose('create.pieceSize','1 MB')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('1 MB')`), true);
+    await mount('create'); await run(`clickText('create.tabAdvanced');choose('create.pieceSize','1 МиБ')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('1 МиБ')`), true);
     await run(`openSelect('create.pieceSize')`); await capture('create-piece-menu');
-    await mount('modal'); await run(`clickText('create.advancedOptions');choose('create.pieceSize','2 MB')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('2 MB')`), true);
+    await mount('modal'); await run(`clickText('create.advancedOptions');choose('create.pieceSize','2 МиБ')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('2 МиБ')`), true);
     await run(`openSelect('create.pieceSize')`); await capture('create-modal-piece-menu');
     await mount('rss'); await run(`clickText('rss.addFeed')`); await pause(150);
     await run(`inputValue(document.querySelector('.rss-feed-modal input[type=number]'),'10');document.querySelector('.rss-feed-modal .number-input-controls button').click()`); await pause(80);
@@ -139,7 +143,7 @@ if (!process.versions.electron) {
     await run('dom.flushSync(()=>[...document.querySelectorAll(".stg-nav-result")].find(node=>node.firstElementChild.textContent===t("settings.upSpeed")).click())');await pause(350);assert.equal(await run('document.querySelector("[data-settings-search-target]").dataset.settingLabel===t("settings.upSpeed")&&document.activeElement===document.querySelector("[data-settings-search-target]")'),true);await capture('settings-search-target');
     await run('inputValue(document.querySelector(".stg-nav-search input"),t("settings.autoLaunch"));dom.flushSync(()=>document.querySelector(".stg-nav-search input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true})))');await pause(250);assert.equal(await run('document.querySelector("[data-settings-search-target]").dataset.settingLabel===t("settings.autoLaunch")'),true);
     await run('inputValue(document.querySelector(".stg-nav-search input"),"VLC");dom.flushSync(()=>[...document.querySelectorAll(".stg-nav-result")].find(node=>node.firstElementChild.textContent===t("external.choose")).click())');await pause(100);assert.equal(await run('document.querySelector("[data-settings-search-target]").dataset.settingLabel===t("external.choose")&&document.querySelector("[data-settings-search-target]").tagName==="BUTTON"'),true);await capture('settings-search-player-control');
-    await run('settingsMessage={type:"error",text:t("settings.msg.devOnly2")};dom.flushSync(()=>mounted.render(React.createElement(SettingsFixture)))');await pause(100);assert.equal(await run('document.querySelector(".settings-alert").getBoundingClientRect().top===40'),true);await capture('settings-alert-lower');
+    await run('settingsMessage={type:"error",text:t("settings.msg.devOnly2")};dom.flushSync(()=>mounted.render(React.createElement(load(path.join(root,"renderer/components/ConfirmDialog.tsx")).ConfirmProvider,null,React.createElement(SettingsFixture))))');await pause(100);assert.equal(await run('document.querySelector(".settings-alert").getBoundingClientRect().top===40'),true);await capture('settings-alert-lower');
     assert.equal(await run('parseFloat(getComputedStyle(document.querySelector(".external-player-preferences")).borderRadius)>0'),true);await capture('external-player-rounded');
     await mount('roomhead');await run('document.documentElement.dataset.radiusOverrides="buttons inputs";document.documentElement.style.setProperty("--ap-radius-buttons","18px");document.documentElement.style.setProperty("--ap-radius-inputs","10px")');await pause(80);assert.equal(await run('getComputedStyle(document.querySelector(".rooms-profile-chip")).borderRadius===getComputedStyle(document.querySelector(".rooms-header-actions > .btn")).borderRadius'),true);assert.equal(await run('[...document.querySelectorAll(".rooms-header-actions button")].find(node=>node.textContent.trim()===t("rooms.join")).classList.contains("btn-secondary")'),true);await capture('rooms-header-unified');
     await mount('search');await run('inputValue(document.querySelector(".search-input"),"Movie");document.querySelector(".search-form").dispatchEvent(new Event("submit",{bubbles:true,cancelable:true}))');await pause(80);await run('searchProgress({searchId:"fixture-search",results:[{title:"Movie.2160p.HEVC",size:20000000000,seeds:100,leechers:10,provider:"Демо",magnetUri:"magnet:?xt=urn:btih:0123456789012345678901234567890123456789"}],done:true})');await pause(80);await run('document.querySelector(".refine-input").focus()');assert.equal(await run('getComputedStyle(document.querySelector(".refine-input")).boxShadow==="none"'),true);assert.equal(await run('[...document.querySelectorAll(".results-filters > .filter-toggle,.refine-wrap,.min-seeds")].every(node=>getComputedStyle(node).borderRadius==="18px")'),true);await capture('search-controls-unified');
@@ -149,6 +153,56 @@ if (!process.versions.electron) {
     await run('dom.flushSync(()=>document.querySelector(".file-item").click())');assert.equal(await run('document.querySelectorAll(".file-item input:checked").length'),2);await run('dom.flushSync(()=>[...document.querySelectorAll("button")].find(node=>node.textContent.trim().startsWith(t("filePicker.downloadSelected"))).click())');assert.deepEqual(await run('calls.find(call=>call.kind==="confirmFiles").ids'),[1,2]);
     await mount('tree');await run('dom.flushSync(()=>document.querySelectorAll(".tree-content input")[1].click())');assert.equal(await run('document.querySelector(".tree-header input").indeterminate'),true);await capture('torrent-tree-round-markers');await run('dom.flushSync(()=>document.querySelector(".tree-header input").click())');assert.equal(await run('[...document.querySelectorAll(".tree-node input")].every(node=>node.checked)'),true);
 
+    if (review) {
+      const phase = process.argv.includes('--before') ? 'before' : 'after', geometry = [];
+      const measure = () => run(`(()=>{
+        var controls=[...document.querySelectorAll('.btn,.um-x,.custom-select-trigger,.rooms-profile-chip')].filter(el=>el.getBoundingClientRect().width>0);
+        return {viewport:{width:innerWidth,height:innerHeight},horizontalOverflow:document.documentElement.scrollWidth>innerWidth,
+          clipped:controls.filter(el=>{var r=el.getBoundingClientRect();return r.left<-.5||r.right>innerWidth+.5}).map(el=>el.textContent.trim()),
+          footerClipped:[...document.querySelectorAll('.um-foot .btn')].some(el=>{var r=el.getBoundingClientRect(),p=el.closest('.um-foot').getBoundingClientRect();return r.left<p.left||r.right>p.right}),
+          footerOutsideViewport:[...document.querySelectorAll('.um-foot')].some(el=>{var r=el.getBoundingClientRect();return r.top<-.5||r.bottom>innerHeight+.5}),
+          closeOutsideViewport:[...document.querySelectorAll('.um-x')].some(el=>{var r=el.getBoundingClientRect();return r.top<-.5||r.bottom>innerHeight+.5}),
+          inputGap:[...document.querySelectorAll('.torrent-create-dialog .form-group')].map(el=>{var label=el.querySelector('label'),field=el.querySelector('input,textarea');return label&&field?field.getBoundingClientRect().top-label.getBoundingClientRect().bottom:null}).filter(n=>n!==null)};
+      })()`);
+      await run(`var ReviewModal=load(path.join(root,'renderer/components/Modal.tsx')).Modal,ReviewInput=load(path.join(root,'renderer/components/Input.tsx')).Input;
+        function ReviewDialog(){return React.createElement(ReviewModal,{title:'Параметры сохранённого представления загрузок',onClose:()=>{},footer:React.createElement(React.Fragment,null,...['Сохранить текущий вид','Использовать общие настройки','Отмена'].map(label=>React.createElement(Button,{key:label},label)))},React.createElement(ReviewInput,{label:'Название представления',value:'Видео и музыка для совместного просмотра',readOnly:true}));}
+      `);
+      for (const theme of ['dark', 'light', 'aero']) {
+        await run(`document.documentElement.style.cssText='';document.documentElement.className=${JSON.stringify(theme==='light'?'light':'dark')};document.documentElement.dataset.theme=${JSON.stringify(theme==='light'?'light':'dark')};delete document.documentElement.dataset.radiusOverrides;`);
+        if (theme === 'aero') await run(`var tokens=JSON.parse(fs.readFileSync(path.join(root,'themes/nihil-aero-midnight.havvn-theme.json'),'utf8')).dark;for(var [key,value]of Object.entries(tokens))document.documentElement.style.setProperty(key,value);`);
+        for (const width of (process.argv.includes('--zoom-only') ? [] : [1120, 760, 440, 320])) {
+          win.setContentSize(width, 820);
+          for (const kind of ['preferences', 'create', 'modal', 'rss', 'roomhead', 'dialog']) {
+            if (kind === 'dialog') {
+              await run(`if(mounted)dom.flushSync(()=>mounted.unmount());document.querySelector('#page-style').textContent='';mounted=createRoot(document.querySelector('#root'));dom.flushSync(()=>mounted.render(React.createElement(ReviewDialog)));`);
+            } else await mount(kind);
+            if (kind === 'preferences') await run(`choose('search.preferences.profile','2160p · ≤ 40 GiB');document.querySelector('details').open=true;`);
+            if (kind === 'rss') { await run(`dom.flushSync(()=>document.querySelectorAll('.rss-tab')[2].click());clickText('rss.rule.add');`); await pause(100); }
+            if (kind === 'roomhead') await run(`profile.name='Очень длинное имя участника комнаты для проверки переноса';dom.flushSync(()=>mounted.render(React.createElement(RoomHeader)));`);
+            await capture(phase + '-' + theme + '-' + width + '-' + kind);
+            const measurement = await measure();
+            geometry.push({ theme, width, kind, ...measurement });
+          }
+        }
+        for (const zoom of [1.25, 1.5]) {
+          win.setContentSize(760,620);win.webContents.setZoomFactor(zoom);await pause(100);
+          for (const kind of ['modal','roomhead','dialog']) {
+            if (kind === 'dialog') {
+              await run(`if(mounted)dom.flushSync(()=>mounted.unmount());document.querySelector('#page-style').textContent='';mounted=createRoot(document.querySelector('#root'));dom.flushSync(()=>mounted.render(React.createElement(ReviewDialog)));`);
+            } else await mount(kind);
+            if(kind==='roomhead')await run(`profile.name='Очень длинное имя участника комнаты для проверки переноса';dom.flushSync(()=>mounted.render(React.createElement(RoomHeader)));`);
+            await capture(phase+'-'+theme+'-zoom-'+zoom+'-'+kind);
+            geometry.push({theme,width:760,height:620,zoom,kind,...await measure()});
+          }
+        }
+        win.webContents.setZoomFactor(1);
+      }
+      fs.writeFileSync(path.join(out, phase + '-geometry.json'), JSON.stringify(geometry, null, 2));
+      if (phase === 'after') {
+        assert.deepEqual(geometry.filter(row=>row.horizontalOverflow||row.clipped.length||row.footerClipped||row.footerOutsideViewport||row.closeOutsideViewport), [], 'controls must stay inside their viewport and dialog');
+        assert.ok(geometry.filter(row=>row.kind==='modal').every(row=>row.inputGap.every(gap=>gap>=6)), 'input labels need visible spacing');
+      }
+    }
     assert.equal(await run('document.querySelectorAll("select").length'), 0); assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ calls: await run('calls'), errors, passed: true }, null, 2));
     console.log('UI polish passed:', out); clearTimeout(deadline); win.destroy(); app.exit(0);

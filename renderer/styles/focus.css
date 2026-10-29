@@ -1,0 +1,35 @@
+/* Composite fields own their frame. Keyboard focus is visible on one surface. */
+html .search-query-input {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  min-width: 0;
+}
+html .search-query-input > .search-input { border: 0; clip-path: none; background: transparent; min-height: 36px; }
+html :is(.search-box,.modern-search-box,.search-query-input,.refine-wrap,.min-seeds,.stg-num,.hd-search,.server-console-input):has(input:focus-visible) {
+  border-color: var(--color-border-focus);
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+html :is(.input,.input-compact,.stg-text,.form-input,.field-input,.search-input,.modern-search-input,.number-input > input):focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+html :is(.search-box,.modern-search-box,.search-query-input,.refine-wrap,.min-seeds,.stg-num,.hd-search,.server-console-input) input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+html .custom-select-trigger:focus-visible { outline: none; border-color: var(--color-border-focus); box-shadow: inset 0 0 0 1px var(--color-border-focus); }
+html .custom-select-trigger.open:not(:focus-visible) { box-shadow: none; }
+html .btn:focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: -2px; box-shadow: none; }
+html .btn-primary:focus-visible:not(:disabled) { outline-color: var(--color-bg-primary); outline-offset: -4px; box-shadow: none; }
+html .stg-text, html .stg-path, html .input-field { min-width: 0; }
+html .stg-path { flex-wrap: wrap; }
+html .stg-path > .stg-text { flex: 1 1 160px; }
+html .stg-row-ctl > * { max-width: 100%; }
+html .query-history-toggle { min-height: 30px; }
+@media (forced-colors: active) {
+  html .custom-select-trigger:focus-visible { outline: 2px solid Highlight; outline-offset: -3px; }
+}

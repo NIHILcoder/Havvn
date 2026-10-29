@@ -80,6 +80,7 @@
   font-weight: var(--font-weight-bold);
   text-transform: uppercase;
   letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
   color: var(--color-text-primary);
 }
 .um-title svg { color: var(--color-accent-primary); flex-shrink: 0; }
@@ -120,12 +121,20 @@
 /* Footer — action row, right-aligned by default */
 .um-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
   padding: var(--space-4) var(--space-5);
   border-top: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
+}
+.um-foot > .btn { flex: 0 1 auto; }
+@media (max-width: 480px), (max-height: 480px) {
+  .um-backdrop { padding: 8px; }
+  .um-card { max-height: calc(100dvh - 16px); }
+  .um-head, .um-body, .um-foot { padding: 12px; }
+  .um-title { font-size: max(13px, var(--font-size-base)); }
 }
 
 /* A tighter body for text-only dialogs (confirm/alert) */
