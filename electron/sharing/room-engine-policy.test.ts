@@ -19,10 +19,11 @@ function fixture() {
   const contents = Object.assign(new EventEmitter(), { id: 9, session, getURL: () => page, setWindowOpenHandler: (cb: typeof open) => { open = cb; } });
   let destroyed = false;
   const win = Object.assign(new EventEmitter(), { webContents: contents, isDestroyed: () => destroyed });
-  let capture = { audio: false, video: false };
+  let capture: { audio: boolean; video: boolean; speaker?: boolean } = { audio: false, video: false };
   installRoomEnginePolicy(win as unknown as BrowserWindow, page, () => capture);
   return {
     win, contents, session, setCapture: (audio: boolean, video: boolean) => { capture = { audio, video }; },
+    setSpeaker: (speaker: boolean) => { capture = { ...capture, speaker }; },
     destroy: () => { destroyed = true; win.emit('closed'); },
     check: (permission: string, changes = {}) => check!(contents as unknown as WebContents, permission, 'file://', { isMainFrame: true, requestingUrl: page, mediaType: 'audio', ...changes }),
     request: (permission: string, changes = {}) => {
@@ -40,6 +41,13 @@ function fixture() {
 }
 
 describe('room engine boundary', () => {
+  it('permits an explicit output test without microphone or display permission', () => {
+    const f = fixture(); expect(f.check('speaker-selection')).toBe(false);
+    f.setSpeaker(true); expect(f.check('speaker-selection')).toBe(true); expect(f.request('speaker-selection')).toBe(true);
+    expect(f.check('media')).toBe(false); expect(f.request('media')).toBe(false); expect(f.request('display-capture')).toBe(false);
+    expect(f.request('speaker-selection', { isMainFrame: false })).toBe(false);
+    f.setSpeaker(false); expect(f.check('speaker-selection')).toBe(false);
+  });
   it('ships the same CSP in the immutable host and the session policy', () => {
     const html = readFileSync(new URL('./room-engine.html', import.meta.url), 'utf8');
     expect(html.match(/Content-Security-Policy" content="([^"]+)"/)?.[1]).toBe(ROOM_ENGINE_CSP);
@@ -65,6 +73,53 @@ describe('room engine boundary', () => {
     f.destroy(); expect(f.check('media')).toBe(false); expect(f.session.listenerCount('will-download')).toBe(0);
   });
 
+  it('allows legacy untyped desktop requests only during an explicit screen operation', () => {
+    const f = fixture();
+    const legacy = { mediaTypes: [] };
+    expect(f.request('media', legacy)).toBe(false);
+    f.setCapture(true, false);
+    expect(f.request('media', legacy)).toBe(false);
+    f.setCapture(false, true);
+    expect(f.request('media', legacy)).toBe(true);
+    expect(f.request('media', { mediaTypes: undefined })).toBe(false);
+    expect(f.request('media', { mediaTypes: ['unknown'] })).toBe(false);
+    for (const change of [{ requestingUrl: 'https://example.com/' }, { isMainFrame: false }]) {
+      expect(f.request('media', { ...legacy, ...change })).toBe(false);
+    }
+    f.setCapture(true, false);
+    expect(f.request('media', legacy)).toBe(false);
+    expect(f.request('media')).toBe(true);
+  });
+
+  it('handles distinct display permissions without authorizing idle or microphone-only capture', () => {
+    const f = fixture();
+    const video = { mediaType: 'video', mediaTypes: ['video'] };
+    expect(f.check('display-capture', video)).toBe(false);
+    expect(f.request('display-capture', video)).toBe(false);
+    f.setCapture(true, false);
+    expect(f.request('display-capture', video)).toBe(false);
+    f.setCapture(false, true);
+    expect(f.check('display-capture', video)).toBe(true);
+    expect(f.check('display-capture', { mediaType: undefined })).toBe(true);
+    expect(f.request('display-capture', video)).toBe(true);
+    expect(f.request('display-capture', { mediaTypes: [] })).toBe(true);
+    expect(f.check('display-capture', { mediaType: 'audio' })).toBe(false);
+    expect(f.check('display-capture', { mediaType: 'unknown' })).toBe(false);
+    expect(f.request('display-capture', { mediaTypes: ['video', 'audio'] })).toBe(false);
+    expect(f.request('display-capture', { mediaTypes: ['unknown'] })).toBe(false);
+    f.setCapture(true, true);
+    expect(f.request('display-capture', { mediaTypes: ['video', 'audio'] })).toBe(true);
+    for (const change of [{ requestingUrl: 'https://example.com/' }, { isMainFrame: false }]) {
+      expect(f.request('display-capture', { ...video, ...change })).toBe(false);
+      expect(f.check('display-capture', { ...video, ...change })).toBe(false);
+    }
+    f.setCapture(true, false);
+    expect(f.request('display-capture', video)).toBe(false);
+    f.setCapture(true, true); f.destroy();
+    expect(f.request('display-capture', video)).toBe(false);
+    expect(f.request('media', { mediaTypes: [] })).toBe(false);
+  });
+
   it('allows the packaged host, networking and blob worklets; blocks other documents and scripts', () => {
     const f = fixture();
     expect(f.resource(page, 'mainFrame')).toBe(false);
@@ -85,7 +140,8 @@ describe('room engine boundary', () => {
     const f = fixture();
     installUiPermissionPolicy(f.session as unknown as Session, (wc, url) => wc === f.contents as unknown && url === page);
     expect(f.check('fullscreen')).toBe(true); expect(f.request('speaker-selection')).toBe(true);
-    for (const permission of ['media', 'geolocation', 'notifications', 'midiSysex']) expect(f.check(permission)).toBe(false);
+    for (const permission of ['media', 'display-capture', 'geolocation', 'notifications', 'midiSysex']) expect(f.check(permission)).toBe(false);
+    expect(f.request('display-capture', { mediaTypes: ['video'] })).toBe(false);
     expect(f.request('fullscreen', { requestingUrl: 'https://example.com/' })).toBe(false);
     expect(f.check('fullscreen', { isMainFrame: false })).toBe(false);
   });

@@ -1,5 +1,18 @@
 import type { ServerCommandRequest, ServerCommandResult } from '../../shared/server-command';
 import { RoomStateEncoder, RoomStateDecoder, type RoomStatePacket } from '../../shared/room-state-ipc';
+import { RoomFileSync, type SyncSeed } from './room-file-sync';
+import { RoomDocuments } from './room-documents';
+import { openDocumentsPersistence, rememberDocumentContext, documentContextScope, type DocumentContext } from '../db/room-documents-store';
+import { DOCUMENT_CAPABILITY, DOCUMENT_ACCESS_CAPABILITY, validDocumentWireBody, type DocumentWireBody, type DocumentsView } from '../../shared/room-documents';
+import { FILE_SYNC_CAPABILITIES, validSyncWireBody, type SyncWireBody, type SyncWireVersion } from '../../shared/room-file-sync-protocol';
+import { DESKTOP_ROOM_CAPABILITIES } from '../../shared/room-capabilities';
+import { checkRoomAction, type RoomAction, type RoomActionCheck, type RoomActionContext } from '../../shared/room-preflight';
+import { topicHash } from './room-crypto';
+import { contentKeyEpoch } from './room-keyring';
+import { RoomSyncCatalog } from '../db/room-sync-catalog';
+import { openRoomSyncStore } from '../db/room-sync-store';
+import type { SyncRoomView, SyncFolderChoice, SyncFolderPreview, SyncLocalAction, SyncFilesPage } from '../../shared/room-file-sync-ui';
+import { assertSyncPlainPath } from './room-sync-snapshot';
 /**
  * RoomManager — main-process proxy for friend swarms (Phase 3).
  *
@@ -21,9 +34,13 @@ import { v4 as uuidv4 } from 'uuid';
 import { logger } from '../utils';
 import { t } from '../i18n';
 import * as db from '../db/store';
-import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo, RoomEngineStatus, RoomChatMessage, RoomChatAck, RoomChatDraft, RoomPreferenceResult } from '../../shared/types';
+import { RoomState, RoomSummary, RoomProfile, VoiceSettings, VoiceDeviceInfo, RoomEngineStatus, RoomChatMessage, RoomChatAck, RoomChatDraft, RoomPreferenceResult, ScreenSourceInfo } from '../../shared/types';
 import { readRoomResources, validateRoomResources, type RoomResourcePolicy, type RoomResourceResult } from '../../shared/room-resources';
+import { validateScreenShareSettings, type ScreenShareSettings } from '../../shared/screen-share';
 import { buildRoomDiagnosticReport, type RoomConnectionDiagnostics, type RoomDiagnosticReport } from '../../shared/room-diagnostics';
+import type { RoomNetworkProbe } from '../../shared/room-connection-help';
+import { probeRoomEndpoint } from './room-network-probe';
+import { parseTrackers } from '../../shared/trackers';
 import { normalizeRoomRate } from '../../shared/room-chat-delivery';
 import { hasRoomMention, parseFileRequest, roomNotifyMode, type RoomNotifyMode } from '../../shared/room-chat-tools';
 import { validChatPins, type RoomChatPins } from '../../shared/room-chat-pins';
@@ -42,8 +59,10 @@ import {
   reusableSessionId, sessionFloor, withSession, noteSessionFloor, rotateSession,
 } from '../../shared/lan-prefs';
 import type { LanRoomPrefs } from '../../shared/lan-prefs';
+import { LAN_START_TIMEOUT_MS } from '../../shared/lan-startup';
 import { installRoomEnginePolicy, ROOM_ENGINE_PARTITION } from './room-engine-policy';
 import { assertCompatibleOwnerPin } from '../../shared/room-owner-pin';
+import { assertAppUiSender } from '../utils/app-ui-security';
 
 const log = logger.child('RoomManager');
 
@@ -72,6 +91,8 @@ function offlineRoom(state: RoomState): RoomState {
 }
 
 export class RoomManager {
+  private fileSyncServices = new Map<string, { stamp: string; service: RoomFileSync }>();
+  private documentServices = new Map<string, { stamp: string; service: RoomDocuments }>();
   private win: BrowserWindow | null = null;
   private mainWindow: BrowserWindow | null = null;
   private ready = false;
@@ -89,6 +110,10 @@ export class RoomManager {
   private voiceIntentSeq = 0;
   private voiceIntents = new Map<string, number>();
   private micTestIntent = 0;
+  private speakerTestIntent = 0;
+  private speakerTestAllowedUntil = 0;
+  private networkProbe: Promise<RoomNetworkProbe> | null = null;
+  private networkProbeAbort: AbortController | null = null;
   private micTestAllowedUntil = 0;
   private screenIntentSeq = 0;
   private screenIntents = new Map<string, number>();
@@ -143,7 +168,12 @@ export class RoomManager {
   private roomUpdateHooks = new Set<(state: RoomState, prev: RoomState | undefined) => void>();
 
   private historyTimer: ReturnType<typeof setInterval>;
-  constructor() {
+  private readonly fileSyncEnabled: boolean;
+  constructor(features: { fileSyncEnabled?: boolean } = {}) {
+    // Shared folders and room editors ship in the regular application. Keep an
+    // explicit opt-out for diagnostics and isolated tests, rather than requiring
+    // a separate launch mode to expose the room's normal tools.
+    this.fileSyncEnabled = features.fileSyncEnabled ?? process.env.HAVVN_FILE_SYNC !== '0';
     const pruneHistory = () => {
       try {
         for (const roomId of db.pruneRoomLocalHistory()) if (this.cache.has(roomId)) {
@@ -184,11 +214,15 @@ export class RoomManager {
     // Renderer-facing liveness channels live HERE (not ipc/handlers.ts): they
     // are room-stack plumbing end to end, and the singleton constructor makes
     // the ipcMain.handle registration run exactly once.
-    ipcMain.handle('rooms:typing', async (_e, roomId: string) => { this.typing(String(roomId || '')); return { ok: true }; });
-    ipcMain.handle('rooms:reactFile', async (_e, roomId: string, fileId: string, emoji: string) =>
-      this.reactFile(String(roomId || ''), String(fileId || ''), String(emoji || '')));
-    ipcMain.handle('rooms:reactChat', async (_e, roomId: string, msgId: string, emoji: string) =>
-      this.reactChat(String(roomId || ''), String(msgId || ''), String(emoji || '')));
+    ipcMain.handle('rooms:typing', async (event, roomId: string) => {
+      assertAppUiSender(event, this.mainWindow); this.typing(String(roomId || '')); return { ok: true };
+    });
+    ipcMain.handle('rooms:reactFile', async (event, roomId: string, fileId: string, emoji: string) => {
+      assertAppUiSender(event, this.mainWindow); return this.reactFile(String(roomId || ''), String(fileId || ''), String(emoji || ''));
+    });
+    ipcMain.handle('rooms:reactChat', async (event, roomId: string, msgId: string, emoji: string) => {
+      assertAppUiSender(event, this.mainWindow); return this.reactChat(String(roomId || ''), String(msgId || ''), String(emoji || ''));
+    });
     // Wire the main-process LAN helper lifecycle to this manager. `isNetSuspended`
     // is re-read AFTER the UAC await (plan §7); teardown is cooperative — main
     // cannot force-kill the elevated helper (medium→high IL = Access Denied), it
@@ -277,6 +311,22 @@ export class RoomManager {
       this.publishRoomState(state);
     });
     this.onEngine('room-log', (_e, m: any) => log.info('Engine', { msg: String(m) }));
+    this.onEngine('room-file-sync-peer', (_e, payload: { roomId: string; topic: string; ownerId: string; e2e: boolean; memberId: string }) => {
+      try { void this.fileSync(payload.roomId, payload).peer(payload.memberId).catch(error => log.warn('File sync peer failed', { error: String(error) })); }
+      catch (error) { log.warn('File sync peer unavailable', { error: String(error) }); }
+    });
+    this.onEngine('room-file-sync-frame', (_e, payload: { roomId: string; topic: string; ownerId: string; e2e: boolean; memberId: string; body: SyncWireBody; version?: SyncWireVersion }) => {
+      try {
+        if (!validSyncWireBody(payload.body)) return;
+        void this.fileSync(payload.roomId, payload).receive(payload.memberId, payload.body, payload.version).catch(error => log.warn('File sync frame rejected', { error: String(error) }));
+      } catch (error) { log.warn('File sync frame unavailable', { error: String(error) }); }
+    });
+    this.onEngine('room-documents-frame', (_e, payload: { roomId: string; topic: string; ownerId: string; e2e: boolean; memberId: string; body: DocumentWireBody }) => {
+      try {
+        if (!validDocumentWireBody(payload.body)) return;
+        void this.documents(payload.roomId, payload).receive(payload.memberId, payload.body).catch(error => log.warn('Document frame rejected', { error: String(error) }));
+      } catch (error) { log.warn('Documents unavailable', { error: String(error) }); }
+    });
     // Watch-together: forward a peer's playback control to the renderer player.
     this.onEngine('room-sync', (_e, payload: any) => {
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
@@ -487,6 +537,13 @@ export class RoomManager {
       }
     });
 
+    this.onEngine('room-key-rotation', (_e, payload: { roomId: string; state?: import('../../shared/room-key-rotation').RoomKeyRotationState }) => {
+      const r = this.roomRecord(payload.roomId);
+      if (r) {
+        try { this.saveRoomRecord({ ...r, keyRotation: payload.state }); }
+        catch (error) { log.warn('Room rotation schedule could not be saved', { roomId: payload.roomId, err: String(error) }); }
+      }
+    });
     this.onEngine('room-rekey', (_e, payload: { roomId: string; code: string; banId?: string }) => {
       try {
         if (!payload?.roomId || !payload?.code) return;
@@ -495,6 +552,7 @@ export class RoomManager {
         const banId = String(payload.banId || '');
         const bans = banId && !(r.bans || []).includes(banId) ? [...(r.bans || []), banId] : r.bans;
         if (r.code !== payload.code || bans !== r.bans) {
+          this.stopFileSync(payload.roomId);
           this.saveRoomRecord({ ...r, code: payload.code, ...(bans ? { bans } : {}) });
           log.info('Room rekeyed', { roomId: payload.roomId, banned: !!banId });
         }
@@ -511,6 +569,7 @@ export class RoomManager {
         const prev = Array.isArray(payload.prevSecrets) ? payload.prevSecrets : [];
         if (r && (r.e2e !== payload.e2e || r.secret !== payload.secret || r.e2eCfg?.sig !== cfg?.sig
           || JSON.stringify(r.prevSecrets || []) !== JSON.stringify(prev) || JSON.stringify(r.keyPages || []) !== JSON.stringify(payload.keyPages || []))) {
+          this.stopFileSync(payload.roomId);
           this.saveRoomRecord({ ...r, e2e: payload.e2e, secret: payload.secret, prevSecrets: prev, e2eCfg: cfg, keyPages: payload.keyPages || [] });
           log.info('Room E2E config learned from peer', { roomId: payload.roomId, e2e: payload.e2e, signed: !!cfg, keyring: prev.length });
         }
@@ -555,6 +614,8 @@ export class RoomManager {
   }
 
   private async roomUnavailable(roomId: string, reason: string): Promise<void> {
+    this.stopFileSync(roomId);
+    if (reason === 'removed' || reason === 'left' || reason === 'left-local') this.stopDocuments(roomId);
     await Promise.all([...this.unavailableHooks].map(hook => hook(roomId, reason)));
   }
 
@@ -567,7 +628,22 @@ export class RoomManager {
     state = this.withChatReceipts(state);
     if (state.connection) this.connectionHistory.set(state.roomId, state.connection);
     const prev = this.cache.get(state.roomId);
+    if (prev && (prev.ownerId !== state.ownerId || prev.e2e !== state.e2e)) this.stopFileSync(state.roomId);
     this.cache.set(state.roomId, state);
+    if (this.fileSyncEnabled && state.ownerId && !state.kicked && !this.leaving.has(state.roomId)) {
+      try { this.documents(state.roomId); } catch (error) { log.warn('Documents startup failed', { error: String(error) }); }
+    }
+    // The first HELLO can arrive before the owner/state baseline is cached.
+    // Start from the accepted baseline too, so restored bindings do not depend
+    // on opening a panel or receiving another HELLO after a restart.
+    if (this.fileSyncEnabled && state.ownerId && this.isRoomAvailable(state.roomId) && !this.fileSyncServices.has(state.roomId)) {
+      try {
+        const service = this.fileSync(state.roomId);
+        for (const member of state.members) if (!member.isSelf && !member.guest && member.capabilities?.includes('file-sync-v1')) {
+          void service.peer(member.memberId).catch(error => log.warn('File sync startup exchange failed', { error: String(error) }));
+        }
+      } catch (error) { log.warn('File sync startup failed', { error: String(error) }); }
+    }
     if (state.kicked && !prev?.kicked) {
       void this.roomUnavailable(state.roomId, 'removed').catch(error => log.warn('Room server stop failed', { error: String(error) }));
       void getLanManager().stopRoom(state.roomId).catch(error => log.warn('Room LAN stop failed', { error: String(error) }));
@@ -628,6 +704,7 @@ export class RoomManager {
   }
 
   private async stopEngineRoom(roomId: string): Promise<void> {
+    this.stopFileSync(roomId);
     const win = this.win;
     if (!win || win.isDestroyed() || this.destroyed) return;
     try { await this.call('leave', { roomId }, 8000); }
@@ -818,7 +895,7 @@ export class RoomManager {
     win.webContents.send('room-cmd', { type, reqId: ++this.reqSeq, ...(roomId ? { roomId } : {}) });
   }
 
-  private captureAccess(): { audio: boolean; video: boolean } {
+  private captureAccess(): { audio: boolean; video: boolean; speaker?: boolean } {
     let audio = Date.now() < this.micTestAllowedUntil, video = false;
     if (this.destroyed) return { audio: false, video: false };
     if (!this.networkSuspended) {
@@ -830,7 +907,7 @@ export class RoomManager {
         }
       }
     }
-    return { audio, video };
+    return { audio, video, ...(Date.now() < this.speakerTestAllowedUntil ? { speaker: true } : {}) };
   }
 
   private async roomsBase(): Promise<string> {
@@ -843,6 +920,189 @@ export class RoomManager {
   /** Where a room's ciphertext copies live in E2E mode (outside the room folder). */
   private encCacheDir(roomId: string): string {
     return path.join(app.getPath('userData'), 'room-enc', roomId);
+  }
+
+  private fileSyncDirectory(roomId: string): string {
+    return path.join(app.getPath('userData'), 'room-file-sync', crypto.createHash('sha256').update(roomId).digest('hex').slice(0, 32));
+  }
+  private stopFileSync(roomId: string): void {
+    const entry = this.fileSyncServices?.get(roomId); if (!entry) return;
+    entry.service.close(); this.fileSyncServices.delete(roomId);
+    if (this.win && !this.win.isDestroyed()) this.win.webContents.send('room-cmd', { type: 'fileSyncStop', roomId, reqId: ++this.reqSeq });
+  }
+  private stopDocuments(roomId: string): void { this.documentServices.get(roomId)?.service.close(); this.documentServices.delete(roomId); }
+  documents(roomId: string, expected?: { topic: string; ownerId: string; e2e: boolean }): RoomDocuments {
+    if (!this.fileSyncEnabled || this.destroyed || this.leaving.has(roomId)) throw new Error('Documents unavailable');
+    const record = this.roomRecord(roomId), state = this.cache.get(roomId);
+    const ownerId = state?.ownerId || record?.ownerId;
+    if (!record?.code || !ownerId || state?.kicked) throw new Error('Documents room unavailable');
+    const e2e = state?.e2e ?? record.e2e ?? codeIsE2E(record.code);
+    const context: DocumentContext = { scope: topicHash(record.code), ownerId, e2e, protocol: 2,
+      ...(record.transferChain?.length ? { authority: crypto.createHash('sha256').update(JSON.stringify(record.transferChain)).digest('hex') } : {}),
+      ...(e2e && record.secret ? { secret: crypto.createHash('sha256').update(record.secret).digest('hex') } : {}) }, stamp = JSON.stringify(context);
+    if (expected && (expected.topic !== context.scope || expected.ownerId !== context.ownerId || expected.e2e !== context.e2e)) throw new Error('Documents context changed');
+    const previous = this.documentServices.get(roomId); if (previous?.stamp === stamp && previous.service.current()) return previous.service;
+    // Save the previous context pointer before closing its tokens. A failed index write leaves it intact.
+    const { directory, sources } = rememberDocumentContext(app.getPath('userData'), roomId, context);
+    const sessions = previous?.service.sessions(); this.stopDocuments(roomId);
+    let lastMembers = state?.members ?? [];
+    const authority = JSON.stringify(record.transferChain ?? []), secret = context.e2e ? record.secret : undefined;
+    const service: RoomDocuments = new RoomDocuments({ scope: documentContextScope(context), ownerId: context.ownerId, identity: db.getRoomIdentity(), persistence: openDocumentsPersistence(directory), recoverySources: sources, sessions,
+      banned: () => this.roomRecord(roomId)?.bans ?? [],
+      current: () => {
+        const live = this.roomRecord(roomId), cached = this.cache.get(roomId);
+        return !this.destroyed && !this.leaving.has(roomId) && this.documentServices.get(roomId)?.service === service && !cached?.kicked
+          && live?.code === record.code && (cached?.ownerId || live?.ownerId) === context.ownerId
+          && (cached?.e2e ?? live?.e2e ?? codeIsE2E(record.code)) === context.e2e
+          && JSON.stringify(live?.transferChain ?? []) === authority && (!context.e2e || live?.secret === secret);
+      },
+      members: () => {
+        const cached = this.cache.get(roomId); if (cached) lastMembers = cached.members;
+        return lastMembers.filter(m => !m.guest).map(m => ({ memberId: m.memberId, name: m.name,
+          online: !this.networkSuspended && !!cached && m.online, capable: !!m.isSelf || !!m.capabilities?.includes(DOCUMENT_CAPABILITY), accessCapable: !!m.isSelf || !!m.capabilities?.includes(DOCUMENT_ACCESS_CAPABILITY) }));
+      },
+      send: async (to, body) => { if (!this.isRoomAvailable(roomId)) throw new Error('Documents offline'); await this.call('documentsSend', { roomId, to, body }); },
+      warn: error => log.warn('Document operation deferred', { roomId, error: String(error) }),
+    });
+    this.documentServices.set(roomId, { stamp, service }); return service;
+  }
+  async documentsView(roomId: string): Promise<DocumentsView> {
+    if (!this.fileSyncEnabled) return { enabled: false, selfId: '', ownerId: '', canCreate: false, ownerOnline: false, members: [], items: [] };
+    // Owner/secret discovery can replace the session while its protected store
+    // is opening. Retry only a read of an obsolete context, never a mutation.
+    for (let attempt = 0; ; attempt++) {
+      const service = this.documents(roomId);
+      try { return await service.view(); }
+      catch (error) { if (service.current() || attempt >= 2) throw error; }
+    }
+  }
+  private fileSync(roomId: string, expected?: { topic: string; ownerId: string; e2e: boolean }): RoomFileSync {
+    if (!this.fileSyncEnabled) throw new Error('File sync preview is disabled');
+    if (!this.isRoomAvailable(roomId)) throw new Error('Room unavailable for file sync');
+    this.assertAction(roomId, 'file-sync');
+    const record = this.roomRecord(roomId), state = this.cache.get(roomId);
+    if (!record?.code || !state?.ownerId) throw new Error('Room ownership is not established');
+    const context = { scope: topicHash(record.code), ownerId: state.ownerId, e2e: state.e2e };
+    if (expected && (expected.topic !== context.scope || expected.ownerId !== context.ownerId || expected.e2e !== context.e2e)) throw new Error('File sync context changed');
+    const stamp = JSON.stringify(context), previous = this.fileSyncServices.get(roomId);
+    if (previous?.stamp === stamp && previous.service.current()) return previous.service;
+    this.stopFileSync(roomId);
+    const win = this.win, directory = this.fileSyncDirectory(roomId);
+    const current = () => this.win === win && this.fileSyncServices.get(roomId)?.service === service && this.isRoomAvailable(roomId);
+    const service = new RoomFileSync({ roomId, context, directory, identity: db.getRoomIdentity(), current,
+      forbidden: [app.getPath('userData'), record.folder],
+      otherBindings: rootId => this.otherSyncBindings(roomId, rootId),
+      historyPeers: () => (this.cache.get(roomId)?.members ?? []).filter(m => !m.guest && !m.isSelf && m.capabilities?.includes('file-sync-history-v1')).map(m => m.memberId),
+      writerCandidates: () => (this.cache.get(roomId)?.members ?? []).filter(m => !m.guest).map(m => ({ memberId: m.memberId, name: m.name, capable: !!m.isSelf || !!m.capabilities?.includes('file-sync-v2'), moves: !!m.isSelf || !!m.capabilities?.includes('file-sync-v3'), checkpoints: !!m.isSelf || !!m.capabilities?.includes('file-sync-v4'), multipart: !!m.isSelf || !!m.capabilities?.includes('file-sync-v5'), deletes: !!m.isSelf || !!m.capabilities?.includes('file-sync-v6') })),
+      release: async hash => { if (!current()) throw new Error('File sync stopped'); return this.call<boolean>('fileSyncRelease', { roomId, hash }); },
+      send: async (to, body, version) => { if (!current()) throw new Error('File sync stopped'); await this.call('fileSyncSend', { roomId, to, body, version }); },
+      seed: async (_rootId: string, source: SyncSeed) => {
+        if (!current()) throw new Error('File sync stopped');
+        await this.call('fileSyncSeed', { roomId, file: source.file, sourcePath: source.sourcePath, metadata: source.metadata.toString('base64') }, 135_000);
+      },
+      fetch: async (_rootId, _revisionId, file, metadata) => {
+        if (!current()) throw new Error('File sync stopped');
+        const result = await this.call<{ sourcePath: string; metadata: string }>('fileSyncFetch', { roomId, file, metadata: metadata.toString('base64') }, 135_000);
+        if (!current() || typeof result.sourcePath !== 'string' || typeof result.metadata !== 'string' || result.metadata.length > 192 * 1024) throw new Error('Invalid sync blob result');
+        return { sourcePath: result.sourcePath, metadata: Buffer.from(result.metadata, 'base64') };
+      },
+      contentSecret: () => this.roomRecord(roomId)?.secret ?? '',
+      resolveSecret: epoch => {
+        const live = this.roomRecord(roomId);
+        return [live?.secret, ...(live?.prevSecrets ?? [])].find((secret): secret is string => !!secret && contentKeyEpoch(secret) === epoch);
+      },
+      warn: error => log.warn('File sync operation deferred', { roomId, error: String(error) }),
+    });
+    this.fileSyncServices.set(roomId, { stamp, service });
+    void service.restore().catch(error => log.warn('File sync restore failed', { roomId, error: String(error) }));
+    return service;
+  }
+  listFileSyncRoots(roomId: string): ReturnType<RoomFileSync['list']> { return this.fileSync(roomId).list(); }
+  async createFileSyncRoot(roomId: string, name: string, folder: string): Promise<string> { return this.fileSync(roomId).create(name, folder); }
+  async bindFileSyncRoot(roomId: string, rootId: string, folder: string, autoApply = false): Promise<void> { await this.fileSync(roomId).bind(rootId, folder, autoApply); }
+  async publishFileSyncFile(roomId: string, rootId: string, relativePath: string): Promise<string> { return this.fileSync(roomId).publish(rootId, relativePath); }
+  private otherSyncBindings(roomId: string, rootId?: string): string[] {
+    const result: string[] = [];
+    for (const room of db.getPersistedRooms()) {
+      if (room.roomId !== roomId) result.push(room.folder);
+      const service = this.fileSyncServices.get(room.roomId)?.service;
+      if (service) {
+        result.push(...service.localBindings().filter(b => room.roomId !== roomId || b.rootId !== rootId).map(b => b.path));
+      } else {
+        const directory = this.fileSyncDirectory(room.roomId);
+        for (const context of new RoomSyncCatalog(directory, room.roomId).roots()) {
+          if (room.roomId === roomId && context.rootId === rootId) continue;
+          const binding = openRoomSyncStore(directory, room.roomId, context).binding();
+          if (binding) result.push(binding.path);
+        }
+      }
+    }
+    return result;
+  }
+  fileSyncView(roomId: string): SyncRoomView {
+    if (!this.fileSyncEnabled) return { enabled: false, canCreate: false, roots: [] };
+    const service = this.fileSync(roomId);
+    return { enabled: true, canCreate: this.cache.get(roomId)?.ownerId === db.getRoomProfile().memberId, roots: service.view() };
+  }
+  fileSyncFiles(roomId: string, rootId: string, offset = 0, trash = false): SyncFilesPage { return this.fileSync(roomId).files(rootId, offset, trash); }
+  fileSyncHistory(roomId: string, rootId: string, entryId: string, offset = 0) { return this.fileSync(roomId).history(rootId, entryId, offset); }
+  fetchFileSyncHistory(roomId: string, rootId: string, entryId: string) { return this.fileSync(roomId).fetchHistory(rootId, entryId); }
+  prepareFileSyncConflict(roomId: string, rootId: string, entryId: string) { return this.fileSync(roomId).prepareConflict(rootId, entryId); }
+  resolveFileSyncConflict(roomId: string, previewId: string, choice: import('../../shared/room-file-sync-ui').SyncConflictChoice) { return this.fileSync(roomId).resolveConflict(previewId, choice); }
+  deferFileSyncConflict(roomId: string, rootId: string, entryId: string) { this.fileSync(roomId).deferFile(rootId, entryId); }
+  prepareFileSyncRestore(roomId: string, rootId: string, revisionId: string) { return this.fileSync(roomId).prepareRestore(rootId, revisionId); }
+  async confirmFileSyncRestore(roomId: string, previewId: string) { await this.fileSync(roomId).confirmRestore(previewId); }
+  fileSyncCache(roomId: string, rootId: string, limitBytes?: number) { return this.fileSync(roomId).cache(rootId, limitBytes); }
+  fileSyncRights(roomId: string, rootId: string, writers?: string[], moves?: boolean, deletes?: boolean) { return this.fileSync(roomId).rights(rootId, writers, moves, deletes); }
+  prepareFileSyncDelete(roomId: string, rootId: string, entryId: string, resolve = false) { return this.fileSync(roomId).prepareDelete(rootId, entryId, resolve); }
+  fileSyncMissing(roomId: string, rootId: string) { return this.fileSync(roomId).missing(rootId); }
+  prepareFileSyncMissingDelete(roomId: string, rootId: string, entryId: string, stamp: string, acknowledgeMass: boolean) { return this.fileSync(roomId).prepareMissingDelete(rootId, entryId, stamp, acknowledgeMass); }
+  confirmFileSyncDelete(roomId: string, previewId: string, keepBoth = false) { return this.fileSync(roomId).confirmDelete(previewId, keepBoth); }
+  prepareFileSyncMove(roomId: string, rootId: string, entryId: string, toPath: string) { return this.fileSync(roomId).prepareMove(rootId, entryId, toPath); }
+  confirmFileSyncMove(roomId: string, previewId: string) { return this.fileSync(roomId).confirmMove(previewId); }
+  fileSyncPathConflict(roomId: string, rootId: string, entryId: string) { return this.fileSync(roomId).pathConflict(rootId, entryId); }
+  prepareFileSyncPathResolution(roomId: string, rootId: string, entryId: string, revisionId: string, toPath: string) { return this.fileSync(roomId).preparePathResolution(rootId, entryId, revisionId, toPath); }
+  confirmFileSyncPathResolution(roomId: string, previewId: string) { return this.fileSync(roomId).confirmPathResolution(previewId); }
+  fileSyncMetadata(roomId: string, rootId: string, keep?: number) { return this.fileSync(roomId).previewMetadata(rootId, keep); }
+  exportFileSyncMetadata(roomId: string, rootId: string, password: string, target: string) { return this.fileSync(roomId).exportMetadata(rootId, password, target); }
+  importFileSyncMetadata(roomId: string, rootId: string, password: string, source: string) { return this.fileSync(roomId).importMetadata(rootId, password, source); }
+  confirmFileSyncMetadata(roomId: string, previewId: string) { return this.fileSync(roomId).confirmMetadata(previewId); }
+  previewFileSyncLog(roomId: string, rootId: string) { return this.fileSync(roomId).previewLog(rootId); }
+  confirmFileSyncLog(roomId: string, previewId: string) { return this.fileSync(roomId).confirmLog(previewId); }
+  previewFileSyncCheckpoint(roomId: string, rootId: string) { return this.fileSync(roomId).previewCheckpoint(rootId); }
+  confirmFileSyncCheckpoint(roomId: string, previewId: string) { return this.fileSync(roomId).confirmCheckpoint(previewId); }
+  openFileSyncEditor(roomId: string, rootId: string, entryId: string) { return this.fileSync(roomId).openEditor(rootId, entryId); }
+  saveFileSyncEditor(roomId: string, token: string, text: string) { return this.fileSync(roomId).saveEditor(token, text); }
+  closeFileSyncEditor(roomId: string, token: string) { return this.fileSync(roomId).closeEditor(token); }
+  confirmFileSyncRights(roomId: string, previewId: string) { return this.fileSync(roomId).confirmRights(previewId); }
+  previewFileSyncFilters(roomId: string, rootId: string, rules?: string[]) { return this.fileSync(roomId).previewFilters(rootId, rules); }
+  fileSyncFilterPage(roomId: string, previewId: string, offset = 0) { return this.fileSync(roomId).filterPage(previewId, offset); }
+  confirmFileSyncFilters(roomId: string, previewId: string) { return this.fileSync(roomId).confirmFilters(previewId); }
+  previewFileSyncBackups(roomId: string, rootId: string, policy?: import('../../shared/room-file-sync-backups').SyncBackupPolicy) { return this.fileSync(roomId).previewBackups(rootId, policy); }
+  fileSyncBackupPage(roomId: string, previewId: string, offset = 0) { return this.fileSync(roomId).backupPage(previewId, offset); }
+  confirmFileSyncBackups(roomId: string, previewId: string) { return this.fileSync(roomId).confirmBackups(previewId); }
+  previewFileSyncTrash(roomId: string, rootId: string, selected?: string[]) { return this.fileSync(roomId).previewTrash(rootId, selected); }
+  fileSyncTrashPage(roomId: string, previewId: string, offset = 0) { return this.fileSync(roomId).trashPage(previewId, offset); }
+  confirmFileSyncTrash(roomId: string, previewId: string) { return this.fileSync(roomId).confirmTrash(previewId); }
+  exportFileSyncTrash(roomId: string, previewId: string, operationId: string, pick: (name: string) => Promise<string | null>) {
+    return this.fileSync(roomId).exportTrash(previewId, operationId, pick, app.getPath('userData'));
+  }
+  async chooseFileSyncFolder(roomId: string, choice: SyncFolderChoice, pick: () => Promise<string | null>): Promise<SyncFolderPreview | null> {
+    const service = this.fileSync(roomId); service.validateChoice(choice);
+    const folder = await pick();
+    return folder ? service.preview(folder, choice) : null;
+  }
+  async confirmFileSyncFolder(roomId: string, previewId: string): Promise<SyncRoomView> {
+    await this.fileSync(roomId).confirm(previewId); return this.fileSyncView(roomId);
+  }
+  async fileSyncAction(roomId: string, rootId: string, action: SyncLocalAction, enabled?: boolean): Promise<SyncRoomView> {
+    if (action === 'open-folder') {
+      const folder = this.fileSync(roomId).localBindings().find(binding => binding.rootId === rootId)?.path;
+      if (!folder) throw new Error('A local sync folder is required');
+      assertSyncPlainPath(folder); const error = await shell.openPath(folder); if (error) throw new Error(error);
+      return this.fileSyncView(roomId);
+    }
+    await this.fileSync(roomId).action(rootId, action, enabled); return this.fileSyncView(roomId);
   }
 
   private async joinPayload(roomId: string, name: string, code: string, folder: string, ownerId?: string, e2e?: boolean, secret?: string, e2eCfg?: db.PersistedRoom['e2eCfg'], ownerPin?: string) {
@@ -864,7 +1124,8 @@ export class RoomManager {
     return db.withRoomRead(() => ({
       type: 'join',
       payload: {
-        roomId, name, code, folder, stateIpc: 1, resources: this.resourcePolicy ?? readRoomResources(),
+        roomId, name, code, folder, stateIpc: 1, fileSyncEnabled: this.fileSyncEnabled === true,
+        fileSyncDirectory: this.fileSyncEnabled ? path.join(this.fileSyncDirectory(roomId), 'transfers') : undefined, resources: this.resourcePolicy ?? readRoomResources(),
         self: { memberId: profile.memberId, name: profile.name, avatarSeed: profile.avatarSeed, color: profile.color ?? '', status: profile.status ?? '', avatarImg: profile.avatarImg ?? '', pub: identity.pub, priv: identity.priv },
         useTurn,
         turnServers,
@@ -903,6 +1164,7 @@ export class RoomManager {
         secret: secret ?? '',
         prevSecrets: persisted?.prevSecrets ?? [],
         keyPages: persisted?.keyPages ?? [],
+        keyRotation: persisted?.keyRotation,
         bans: persisted?.bans ?? [],
         banState: persisted?.banState,
         e2eCfg: e2eCfg ?? null,
@@ -1121,6 +1383,7 @@ export class RoomManager {
         unread,
         notifyMuted: r.notifyMuted === true,
         notifyMode: roomNotifyMode(r),
+        notificationRule: r.notificationRule,
       };
     }));
   }
@@ -1172,10 +1435,40 @@ export class RoomManager {
   }
 
   /** Read-only: diagnostics must never create an engine, join a room or open capture. */
+  preflight(roomId: string, action: RoomAction, context: Pick<RoomActionContext, 'targetId' | 'lanJoin'> = {}): RoomActionCheck {
+    const state = !this.destroyed && !this.leaving.has(roomId) && this.roomRecord(roomId) ? this.cache.get(roomId) : undefined;
+    return checkRoomAction(state, action, { ...context, engineReady: this.isRoomAvailable(roomId), suspended: this.networkSuspended,
+      localCapabilities: [...DESKTOP_ROOM_CAPABILITIES, ...(this.fileSyncEnabled ? [...FILE_SYNC_CAPABILITIES, DOCUMENT_CAPABILITY] as const : [])] });
+  }
+
+  private assertAction(roomId: string, action: RoomAction, context: Pick<RoomActionContext, 'targetId' | 'lanJoin'> = {}): void {
+    const check = this.preflight(roomId, action, context);
+    if (!check.canAttempt) throw new Error(`${t('rooms.preflight.reason.' + check.reason)} ${t('rooms.preflight.next.' + check.next)}`);
+  }
+
   diagnoseRoom(roomId: string): RoomDiagnosticReport {
     if (this.leaving.has(roomId) || !this.roomRecord(roomId)) throw new Error('Room not available');
     return buildRoomDiagnosticReport(this.cache.get(roomId), this.engineStatus, this.networkSuspended,
       app.getVersion?.() ?? 'unknown', this.connectionHistory.get(roomId));
+  }
+  async probeConnection(roomId: string): Promise<RoomNetworkProbe> {
+    this.diagnoseRoom(roomId); // Validate the room; never accept renderer-supplied URLs.
+    this.assertNotSuspended();
+    if (this.networkProbe) return this.networkProbe;
+    const controller = new AbortController(); this.networkProbeAbort = controller;
+    const task = (async () => {
+      const settings = await db.getSettings(); this.assertNotSuspended();
+      if (this.destroyed || controller.signal.aborted) throw new Error('Connection check was cancelled');
+      const urls = resolveTrackers(settings.customTrackers).slice(0, 10);
+      const endpoints = await Promise.all(urls.map((url, index) => probeRoomEndpoint(url, index, controller.signal)));
+      this.assertNotSuspended();
+      if (this.destroyed || controller.signal.aborted) throw new Error('Connection check was cancelled');
+      return { checkedAt: Date.now(), endpoints, turnEnabled: settings.shareUseTurn !== false,
+        turnConfigured: !!customTurnToIce(settings.customTurnUrl, settings.customTurnUsername, settings.customTurnCredential).length,
+        customDiscovery: !!process.env.HAVVN_ROOM_TRACKERS?.trim() || parseTrackers(settings.customTrackers).length > 0 };
+    })();
+    this.networkProbe = task;
+    try { return await task; } finally { if (this.networkProbe === task) { this.networkProbe = null; this.networkProbeAbort = null; } }
   }
 
   retryConnection(roomId: string): Promise<RoomDiagnosticReport> {
@@ -1270,12 +1563,13 @@ export class RoomManager {
     const file = state?.files.find((f) => f.fileId === fileId);
     const tr = state?.transfers?.[fileId];
     if (file && !tr?.haveLocally) {
+      this.assertAction(roomId, 'watch');
       // Not on disk yet → watch while it downloads. Constrained to what actually
       // works without the full file: plaintext (non-E2E) and a browser-native
       // container (no live transcode). Anything else stays gated until complete.
       if (state?.e2e) throw new Error('Encrypted room files can only be watched once fully downloaded.');
       if (!isDirectlyPlayable(file.name)) throw new Error('This format can only be watched once it has finished downloading.');
-      const { port, index } = await this.call<{ port: number; index: number }>('watchStream', { roomId, fileId }, 30000);
+      const { port, index } = await this.call<{ port: number; index: number }>('watchStream', { roomId, fileId }, 30000, { guard: () => this.assertAction(roomId, 'watch') });
       return { directUrl: `http://127.0.0.1:${port}/${index}`, hlsUrl: '', playerUrl: '', direct: true, kind: classifyMediaKind(file.name), name: file.name, streaming: true };
     }
     const abs = await this.resolveLocalPath(roomId, fileId);
@@ -1499,23 +1793,32 @@ export class RoomManager {
     this.micTestIntent++; this.micTestAllowedUntil = 0;
     return this.callIfRunning('voiceMicTestStop');
   }
+  async voiceSpeakerTestStart(settings: VoiceSettings): Promise<{ ok: boolean }> {
+    const intent = ++this.speakerTestIntent;
+    try { return await this.call('voiceSpeakerTestStart', { settings }, 15000, {
+      guard: () => { if (intent !== this.speakerTestIntent || this.destroyed) throw new Error('Speaker test was cancelled'); this.speakerTestAllowedUntil = Date.now() + 15000; },
+      cancel: win => { if (intent === this.speakerTestIntent) { this.speakerTestIntent++; this.speakerTestAllowedUntil = 0; this.sendCaptureStop(win, 'voiceSpeakerTestStop'); } },
+    }); } finally { if (intent === this.speakerTestIntent) this.speakerTestAllowedUntil = 0; }
+  }
+  voiceSpeakerTestStop(): Promise<{ ok: boolean }> { this.speakerTestIntent++; this.speakerTestAllowedUntil = 0; return this.callIfRunning('voiceSpeakerTestStop'); }
 
   // ── Screenshare ───────────────────────────────────────────────────────────
   /** Shareable screens/windows with picker thumbnails (data URLs). */
-  async screenSources(): Promise<Array<{ id: string; name: string; thumbnail: string; display: boolean }>> {
+  async screenSources(): Promise<ScreenSourceInfo[]> {
     const { desktopCapturer } = await import('electron');
     const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 180 } });
-    return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL(), display: s.id.startsWith('screen:') }));
+    return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL(), display: s.id.startsWith('screen:'), systemAudioSupported: process.platform === 'win32' }));
   }
 
-  async screenShareStart(roomId: string, sourceId: string, withAudio = false): Promise<{ ok: boolean }> {
+  async screenShareStart(roomId: string, sourceId: string, withAudio = false, requested?: ScreenShareSettings): Promise<{ ok: boolean }> {
+    const settings = validateScreenShareSettings(requested);
     this.assertNotSuspended(); // a share leg leaks the real IP just like voice
     const intent = ++this.screenIntentSeq;
     this.screenIntents.set(roomId, intent);
     await this.ensureScreenAccess();
     if (this.screenIntents.get(roomId) !== intent || this.destroyed) return { ok: true };
     this.assertNotSuspended();
-    try { return await this.call<{ ok: boolean }>('screenShareStart', { roomId, sourceId, withAudio }, 15000, {
+    try { return await this.call<{ ok: boolean }>('screenShareStart', { roomId, sourceId, withAudio, settings }, 15000, {
       guard: () => {
         this.assertNotSuspended();
         if (this.screenIntents.get(roomId) !== intent || this.leaving.has(roomId)) throw new Error('Screen sharing was cancelled');
@@ -1532,6 +1835,15 @@ export class RoomManager {
     return this.callIfRunning('screenShareStop', { roomId });
   }
   screenWatchStart(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.call<{ ok: boolean }>('screenWatchStart', { roomId, memberId }, 8000); }
+  screenConfigure(roomId: string, requested: ScreenShareSettings): Promise<{ ok: boolean }> {
+    const settings = validateScreenShareSettings(requested);
+    this.assertNotSuspended();
+    return this.call<{ ok: boolean }>('screenConfigure', { roomId, settings }, 10000);
+  }
+  screenPlayback(roomId: string, memberId: string, volume: number, muted: boolean): Promise<{ ok: boolean }> {
+    if (typeof volume !== 'number' || !Number.isFinite(volume) || volume < 0 || volume > 1 || typeof muted !== 'boolean') throw new Error('Invalid screen playback settings');
+    return this.call<{ ok: boolean }>('screenPlayback', { roomId, memberId, volume, muted });
+  }
   screenWatchStop(roomId: string, memberId: string): Promise<{ ok: boolean }> { return this.callIfRunning('screenWatchStop', { roomId, memberId }); }
   /** The renderer's loopback answer/ICE back to the engine forwarder. */
   screenSignal(roomId: string, memberId: string, kind: string, data: unknown): Promise<{ ok: boolean }> {
@@ -1550,6 +1862,11 @@ export class RoomManager {
     const persisted = db.getPersistedRoom(roomId);
     if (!persisted || this.leaving.has(roomId)) throw new Error('Room not available');
     if (!this.cache.has(roomId)) await this.reactivate(persisted);
+    const validate = () => {
+      this.assertRoomOperation(roomId, epoch); this.assertAction(roomId, 'lan');
+      for (const targetId of memberIds) this.assertAction(roomId, 'lan', { targetId });
+    };
+    validate();
     const selfMemberId = db.getRoomProfile().memberId;
     const prefs = db.getRoomLanPrefs(roomId);
     // RE-ENTER the room's own session when we have one, so the subnet and every
@@ -1566,14 +1883,15 @@ export class RoomManager {
     const floor = sessionFloor(prefs, sessionId);
     const admit = Array.isArray(memberIds) ? memberIds.map(String) : [];
     const relayEnabled = await this.lanRelayPref();
+    validate();
     const handle = await getLanManager().start({ roomId, sessionId, hostId: selfMemberId, selfMemberId });
     try {
-      this.assertRoomOperation(roomId, epoch);
+      validate();
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit, isHost: true,
         relayEnabled, floor,
-      }, 30000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      }, LAN_START_TIMEOUT_MS, { guard: validate });
       this.assertRoomOperation(roomId, epoch);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
@@ -1610,7 +1928,12 @@ export class RoomManager {
    *  a non-host) — remembering it anyway is harmless, since a pick only ever
    *  pre-ticks THIS install's own picker. */
   async lanInvite(roomId: string, memberId: string): Promise<{ ok: boolean }> {
-    const res = await this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'invite', memberId });
+    const validate = () => {
+      this.assertAction(roomId, 'lan', { targetId: memberId });
+      if (!this.cache.get(roomId)?.lan.isHost) throw new Error(t('rooms.preflight.reason.owner-required'));
+    };
+    validate();
+    const res = await this.call<{ ok: boolean }>('lanSignal', { roomId, kind: 'invite', memberId }, COMMAND_TIMEOUT_MS, { guard: validate });
     const selfMemberId = db.getRoomProfile().memberId;
     this.updateLanPrefs(roomId, (p) => addPick(p, memberId, selfMemberId));
     return res;
@@ -1801,21 +2124,28 @@ export class RoomManager {
     const lan = this.cache.get(roomId)?.lan;
     if (!lan?.sessionId || !lan.hostId) throw new Error('No LAN session to join yet.');
     if (!lan.selfAdmitted) throw new Error('The host has not invited you to this LAN session yet.');
+    const validate = () => {
+      this.assertRoomOperation(roomId, epoch);
+      this.assertAction(roomId, 'lan', { lanJoin: true, targetId: lan.hostId });
+      if (this.cache.get(roomId)?.lan.sessionId !== lan.sessionId || this.cache.get(roomId)?.lan.hostId !== lan.hostId) throw new Error('LAN session changed');
+    };
+    validate();
     const selfMemberId = db.getRoomProfile().memberId;
     const relayEnabled = await this.lanRelayPref();
+    validate();
     // A joiner keeps its own watermark for the host's session: the grants it must
     // refuse a second time are the same ones, and its core is just as fresh.
     const floor = sessionFloor(db.getRoomLanPrefs(roomId), lan.sessionId);
     const handle = await getLanManager().start({ roomId, sessionId: lan.sessionId, hostId: lan.hostId, selfMemberId });
     try {
-      this.assertRoomOperation(roomId, epoch);
+      validate();
       await this.call('lanStart', {
         roomId, sessionId: handle.sessionId, pipeName: handle.pipeName, token: handle.token,
         subnet: handle.subnet, admit: [], isHost: false,
         relayEnabled, floor,
-      }, 30000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      }, LAN_START_TIMEOUT_MS, { guard: validate });
       this.assertRoomOperation(roomId, epoch);
-      await this.call('lanSignal', { roomId, kind: 'accept' }, 8000, { guard: () => this.assertRoomOperation(roomId, epoch) });
+      await this.call('lanSignal', { roomId, kind: 'accept' }, 8000, { guard: validate });
       this.assertRoomOperation(roomId, epoch);
     } catch (e) {
       try { await getLanManager().stop(handle.sessionId); } catch { /* ignore */ }
@@ -1928,12 +2258,10 @@ export class RoomManager {
       const cooldown = urgent ? 2000 : 8000;
       const now = Date.now();
       if (now - (this.lastNotify.get(roomId) ?? 0) < cooldown) return;
-      const settings = await db.getSettings();
-      if (settings.enableNotifications === false) return;
       this.lastNotify.set(roomId, now);
       const roomName = rec?.name || t('notify.room.fallbackName');
       const preview = body.length > 140 ? body.slice(0, 140) + '…' : body;
-      showOsNotification(`${who} · ${roomName}`, preview, { onClick: () => this.focusAndOpenRoom(roomId) });
+      showOsNotification(`${who} · ${roomName}`, preview, { onClick: () => this.focusAndOpenRoom(roomId), context: { kind: 'room-message', roomId, urgent } });
     } catch { /* best-effort */ }
   }
 
@@ -1953,9 +2281,21 @@ export class RoomManager {
     return this.call<{ ok: boolean }>('kick', { roomId, memberId }, 8000);
   }
 
+  async rotateKey(roomId: string): Promise<RoomState> {
+    return this.call<RoomState>('rotateKey', { roomId }, 8000);
+  }
+
+  async setKeyRotation(roomId: string, plan: import('../../shared/room-key-rotation').RoomKeyRotationPlan | null): Promise<RoomState> {
+    return this.call<RoomState>('setKeyRotation', { roomId, plan }, 8000);
+  }
+
   /** Owner-only: hand the room to another member (engine signs + gossips it). */
   async transferOwner(roomId: string, memberId: string): Promise<RoomState> {
-    return this.call<RoomState>('transferOwner', { roomId, memberId }, 8000);
+    const service = this.fileSyncEnabled ? this.documents(roomId) : undefined;
+    // The authority change is sent only after the successor confirms protected storage.
+    const release = service ? await service.prepareHandoff(memberId) : undefined;
+    try { if (service && !service.current()) throw new Error('Document context changed'); return await this.call<RoomState>('transferOwner', { roomId, memberId }, 8000); }
+    finally { release?.(); }
   }
 
   /** Locally hide/ignore a member on this install (reversible, never broadcast). */
@@ -1976,6 +2316,10 @@ export class RoomManager {
   }
   async setNotifyMode(roomId: string, mode: RoomNotifyMode): Promise<{ ok: boolean }> {
     db.setRoomNotifyMode(roomId, mode);
+    return { ok: true };
+  }
+  async setNotificationRule(roomId: string, rule: import('../../shared/notification-policy').NotificationRule, mode?: RoomNotifyMode): Promise<{ ok: boolean }> {
+    db.setRoomNotificationRule(roomId, rule, mode);
     return { ok: true };
   }
   async pinChat(roomId: string, messageId: string, on: boolean): Promise<{ ok: boolean }> {
@@ -2046,14 +2390,26 @@ export class RoomManager {
   }
 
   /** Watch-together: broadcast a local playback action to the room's peers. */
-  broadcastSync(roomId: string, payload: import('../../shared/room-watch-sync').WatchInput): void {
+  broadcastSync(roomId: string, payload: import('../../shared/room-watch-sync').WatchInput): void | Promise<{ ok: boolean }> {
+    if (payload.together && payload.action !== 'leave') {
+      const state = this.cache.get(roomId), hostId = state?.watchPolicy?.hostId;
+      this.assertAction(roomId, 'watch', { targetId: hostId && !state?.members.some(m => m.isSelf && m.memberId === hostId) ? hostId : undefined });
+    }
+    if (payload.action === 'request') {
+      // A request is an explicit user action. Wait for the engine to validate
+      // and send it, so IPC cannot report success after a dropped fire-and-forget.
+      return this.call<{ ok: boolean }>('sync', { roomId, payload }, COMMAND_TIMEOUT_MS,
+        { guard: () => this.assertAction(roomId, 'watch', { targetId: this.cache.get(roomId)?.watchPolicy?.hostId || undefined }) });
+    }
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'sync', reqId: ++this.reqSeq, roomId, payload });
     }
   }
 
-  setWatchHost(roomId: string, hostId: string): Promise<RoomState> {
-    return this.call<RoomState>('watchPolicy', { roomId, hostId });
+  async setWatchHost(roomId: string, hostId: string): Promise<RoomState> {
+    this.assertAction(roomId, 'watch-host', { targetId: hostId || undefined });
+    return this.call<RoomState>('watchPolicy', { roomId, hostId }, COMMAND_TIMEOUT_MS,
+      { guard: () => this.assertAction(roomId, 'watch-host', { targetId: hostId || undefined }) });
   }
 
   /** Host: gossip game-server mirror state to peers. */
@@ -2063,6 +2419,10 @@ export class RoomManager {
     if (this.win && !this.win.isDestroyed() && this.ready) {
       this.win.webContents.send('room-cmd', { type: 'srvMirror', reqId: ++this.reqSeq, roomId, at: payload.at, body });
     }
+  }
+  async publishServerPreparation(roomId: string, input: import('../../shared/server-readiness').ServerPreparationInput, ownMirror?: import('../../shared/gameserver-types').ServerMirrorState): Promise<{ ok: boolean }> {
+    if (!this.isRoomAvailable(roomId)) throw new Error('Room unavailable for server preparation');
+    return this.call('serverPreparation', { roomId, input, ownMirror: ownMirror ? serializeMirrorBody(ownMirror) : undefined });
   }
 
   /** Operator: relay a console command to the host over gossip. */
@@ -2145,6 +2505,8 @@ export class RoomManager {
     const first = !this.networkSuspended;
     this.networkPauses.set(reason, ++this.networkPauseSeq);
     this.networkSuspended = true; // synchronous gate, before sleep / a queued IPC
+    this.networkProbeAbort?.abort();
+    for (const entry of this.fileSyncServices?.values() ?? []) entry.service.close(); this.fileSyncServices?.clear();
     this.voiceIntents.clear(); this.screenIntents.clear();
     if (this.recoveryTimer) { clearTimeout(this.recoveryTimer); this.recoveryTimer = null; }
     if (!first) return this.networkQueue;
@@ -2218,7 +2580,10 @@ export class RoomManager {
   }
 
   destroy(): void {
+    for (const entry of this.documentServices.values()) entry.service.close(); this.documentServices.clear();
+    for (const entry of this.fileSyncServices?.values() ?? []) entry.service.close(); this.fileSyncServices?.clear();
     this.destroyed = true;
+    this.networkProbeAbort?.abort(); this.speakerTestIntent++;
     clearInterval(this.historyTimer);
     this.voiceIntents.clear();
     this.screenIntents.clear(); this.micTestIntent++; this.micTestAllowedUntil = 0;

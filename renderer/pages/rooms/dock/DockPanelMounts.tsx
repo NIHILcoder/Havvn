@@ -46,6 +46,7 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { HostWindowRealm } from '../../../utils/hostWindow';
+import { VisibleWorkProvider } from '../../../utils/visible-work';
 import { ToastRealmProvider } from '../../../utils/hostToast';
 import type { DockLiveMount } from './dockMounts';
 import type { DockMountRegistry } from './dockMountRegistry';
@@ -73,6 +74,7 @@ export interface DockPanelMountsProps<P extends string = string> {
   realmOf: (zoneId: string) => Window | null;
   /** The toaster id for a zone (a dock window's frame name), or undefined. */
   toasterIdOf: (zoneId: string) => string | undefined;
+  activeOf?: (panel: P, zoneId: string) => boolean;
 }
 
 export function DockPanelMounts<P extends string = string>({
@@ -81,6 +83,7 @@ export function DockPanelMounts<P extends string = string>({
   renderPanel,
   realmOf,
   toasterIdOf,
+  activeOf,
 }: DockPanelMountsProps<P>): React.ReactElement | null {
   // Release the containers of panels that left the live set. Diffed against the
   // previous pass rather than recomputed from the registry, so a container cached
@@ -102,14 +105,16 @@ export function DockPanelMounts<P extends string = string>({
 
   return (
     <>
-      {live.map(({ panel, zoneId }) => createPortal(
+      {live.map(({ panel, zoneId, parked }) => createPortal(
         // Unconditional wrappers — see the header. `HostWindowRealm` takes null and
         // provides REAL_HOST for it, so the docked case is value-identical to having
         // no provider at all and the subtree's SHAPE never changes.
         <HostWindowRealm window={realmOf(zoneId)}>
-          <ToastRealmProvider toasterId={toasterIdOf(zoneId)}>
-            {renderPanel(panel)}
-          </ToastRealmProvider>
+          <VisibleWorkProvider active={!parked && (activeOf?.(panel, zoneId) ?? true)}>
+            <ToastRealmProvider toasterId={toasterIdOf(zoneId)}>
+              {renderPanel(panel)}
+            </ToastRealmProvider>
+          </VisibleWorkProvider>
         </HostWindowRealm>,
         registry.container(panel) as unknown as Element,
         // The portal KEY is the panel id, never the zone: a move must not change

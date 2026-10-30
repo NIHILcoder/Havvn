@@ -1,4 +1,6 @@
 import { roomPieceCache } from '../torrent/piece-cache';
+import { RoomBlobTransport } from './room-blob-transport';
+import { validSyncWireBody, validSyncWireVersion, syncHistoryBody, syncWireCanonical, syncFrameVersion, FILE_SYNC_CAPABILITIES, type SyncWireMessage } from '../../shared/room-file-sync-protocol';
 import { IdleClientReaper } from './idle-client';
 import { RoomStateEncoder } from '../../shared/room-state-ipc';
 import { PendingServerCommands, validCommandRequest, commandCanonical, commandReplyCanonical, type ServerCommandRequest, type ServerCommandReply } from '../../shared/server-command';
@@ -37,10 +39,12 @@ import { useChromiumWebRTC as configureChromiumWebRTC } from './chromium-webrtc'
 import { ipcRenderer } from 'electron';
 import { ROOM_BAN_LIMIT, validBanSnapshot, banSnapshotCanonical, banSnapshotAdvances, copyBanSnapshot, type RoomBanSnapshot } from '../../shared/room-bans';
 import { ROOM_KEY_LIMIT, type RoomE2ECfg, type RoomKeyPage } from '../../shared/room-keyring';
+import { ROOM_KEY_ROTATION_CAPABILITY, createKeyRotationSchedule, restoreKeyRotationSchedule, advanceKeyRotationSchedule, type RoomKeyRotationPlan, type RoomKeyRotationState } from '../../shared/room-key-rotation';
 import { contentKeyEpoch, mergeContentKeys, mintKeyPages, verifyKeyMetadata, verifyKeyPage, completeKeyPages, completeContentKeys } from './room-keyring';
 import { assertCompatibleOwnerPin } from '../../shared/room-owner-pin';
 import { RoomTrafficBudget } from './room-traffic-budget';
 import { type RoomResourcePolicy } from '../../shared/room-resources';
+import { screenCaptureVideo, validateScreenShareSettings, type ScreenShareSettings } from '../../shared/screen-share';
 import { RoomConnectionMonitor, selectedRoomChannelPath, type RoomConnectionEvent, type RoomChannelPath } from '../../shared/room-diagnostics';
 import { normalizeRoomRate } from '../../shared/room-chat-delivery';
 import { roomFileName, orderedTransferPrefix, ownerChainAnchored, ownerChainsCompatible, canDeleteRoomFile, canReviveRoomFile, currentRoomDeletion, transferCanonical as sharedTransferCanonical } from '../../shared/room-authority';
@@ -54,6 +58,8 @@ import { createTorrentStreamServer } from '../torrent/stream-server';
 let WebTorrent: typeof WebTorrentType;
 import { deriveKey, topicHash, rendezvousId, randomPeerId, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId, buildInvite } from './room-crypto';
 import { encryptFile, decryptFile, generateRoomSecret } from './room-e2e';
+import { DOCUMENT_CAPABILITY, validDocumentWireBody, documentWireCanonical, type DocumentWireMessage } from '../../shared/room-documents';
+import { SERVER_PREPARATION_CAPABILITY, ServerPreparationBook, validServerPreparationInput, serverPreparationBasis, serverPreparationCanonical, type ServerPreparationWire } from '../../shared/server-readiness';
 import { validateGossip, RoomIngressBudget, ROOM_MEMBER_LIMIT, ROOM_IDENTITY_LIMIT, ROOM_RELAY_TYPES, ROOM_WIRE_LIMIT } from '../../shared/room-protocol';
 import { gossipProofs, currentHelloProofs } from '../../shared/room-message-auth';
 import { WatchSender, WatchReceiver, watchCanonical, watchHostCanonical, type WatchMessage } from '../../shared/room-watch-sync';
@@ -62,7 +68,7 @@ import { RoomDiskBudget } from './room-disk-budget';
 import { roomDiskName, newRoomFilePath, isManagedRoomPath, roomTorrentMetadata, verifyRoomFile, migrateRoomFile, roomFileStamp, matchingRoomPlaintext } from './room-file-storage';
 import { RoomFile, RoomFileError, RoomFolder, RoomMember, RoomState, RoomTransfer, PersistedRoomFile, RoomEvent, RoomChatMessage, RoomChatAck, VoiceSettings, VoiceDeviceInfo } from '../../shared/types';
 import { mergeFolderUpsert, applyFolderDelete, applyAssignment, sanitizeFolderIcon, wantAutoFetch } from '../../shared/room-folders';
-import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
+import { PROFILE_STATUS_MAX, PROFILE_COLOR_RE, PROFILE_IMG_MAX_CHARS, sanitizeProfileStatus, sanitizeProfileImg, publicRoomName } from '../../shared/profile';
 import { safeDirSegment } from '../../shared/path-safety';
 import { CHAT_REACT_EMOJIS } from '../../shared/reactions';
 import crypto from 'crypto';
@@ -105,6 +111,7 @@ function findTorrent(client: any, hash: string): any {
 
 import { STUN_SERVERS, RENDEZVOUS_TRACKERS } from './ice-servers';
 import { VoiceSession, VoiceAdapter, SignalKind, LoopbackKind, MicTester, defaultVoiceSettings, sanitizeVoiceSettings } from './room-voice';
+import { SpeakerTester } from './speaker-test';
 // ── Virtual-LAN (Havvn LAN) — transport + signed gossip. The LanSession routing
 //    brain lives in room-lan.ts; canonical builders are pure (shared/lan-protocol);
 //    the pipe client bridges the elevated Wintun helper. RTCPeerConnection is only
@@ -115,6 +122,7 @@ import { verifyVipClaim } from '../../shared/lan-ip';
 import type { LanStateClaim } from '../../shared/lan-session-core';
 import { sessionHostPrefix } from '../../shared/lan-session-core';
 import type { LanGenesisMsg, LanStateMsg, LanSignalMsg, LanAdmitMsg, LanEvictMsg, LanReachMsg, LanControlMsg, LanHelperFacts } from '../../shared/lan-types';
+import { LAN_HELPER_SETUP_TIMEOUT_MS } from '../../shared/lan-startup';
 import type { LanDiagInput } from '../../shared/lan-quality';
 import { LanPipeClient, validateGameExePath } from '../lan/pipe-bridge';
 
@@ -187,6 +195,9 @@ type TransferLink = { newOwnerId: string; at: number; by: string; pub: string; s
 
 // ── Gossip message shapes (post-decrypt) ───────────────────────────────────
 type Msg =
+  | SyncWireMessage
+  | DocumentWireMessage
+  | ServerPreparationWire
   // `tombs` lists deleted fileIds (legacy shape, kept so older peers converge);
   // `tombsAt` adds each deletion's timestamp so a LATER explicit re-share wins
   // (revive) while anything older stays dead. `tombSigs` upgrades those to
@@ -337,6 +348,9 @@ interface Room {
   folder: string;
   key: Buffer;
   topic: string;                         // internal signature domain separator (never announced)
+  fileSyncEnabled?: boolean;
+  fileSyncDirectory?: string;
+  fileSyncBlobs?: RoomBlobTransport;
   rendezvous: string;                    // public tracker rendezvous id (slow-derived from key)
   peerId: string;
   iceServers: any[];
@@ -346,6 +360,8 @@ interface Room {
   self: { memberId: string; name: string; avatarSeed: string; color: string; status: string; avatarImg: string; pub: string; priv: string };
   ownerId: string;                       // memberId of the owner ('' until learned)
   ownerPin: string;                      // owner memberId pinned from the invite ('' = TOFU); only this identity may be adopted as owner
+  keyRotation?: RoomKeyRotationState;
+  keyRotationTimer?: ReturnType<typeof setTimeout>;
   transferChain: TransferLink[];         // applied ownership transfers, in order — each verified when it applied; re-served in full HELLOs + persisted
   transferAt: number;                    // `at` of the last applied transfer (the chain's LWW clock)
   e2e: boolean;                          // end-to-end encryption (ciphertext on the wire)
@@ -508,6 +524,7 @@ let voiceSettings: VoiceSettings = defaultVoiceSettings();
 let lanRelayEnabled = true;
 // Mic level meter for the settings UI (independent of any call).
 const micTester = new MicTester();
+const speakerTester = new SpeakerTester();
 // Tell the UI to refresh its device lists when hardware comes/goes.
 try {
   navigator.mediaDevices?.addEventListener?.('devicechange', () => {
@@ -552,7 +569,8 @@ function ensureClient(room: Room): any {
       natUpnp: false, natPmp: false,
       utp: false,
       dht: false,
-      enableWebSeeds: false,
+      lsd: false,
+      webSeeds: false,
       uploadLimit: 0,
       downloadLimit: 0,
       tracker: { wrtc: nativeWrtc, rtcConfig: { iceServers: room.iceServers } },
@@ -565,6 +583,27 @@ function ensureClient(room: Room): any {
     log('WebTorrent client ready (Chromium WebRTC) for room ' + room.roomId);
   }
   return c;
+}
+
+function syncBlobs(room: Room): RoomBlobTransport {
+  if (!room.fileSyncEnabled || !room.fileSyncDirectory) throw new Error('File sync unavailable');
+  if (room.fileSyncBlobs?.current()) return room.fileSyncBlobs;
+  void room.fileSyncBlobs?.close();
+  const key = room.key, owner = room.ownerId, mode = room.e2e, secret = room.secret;
+  const current = () => rooms.get(room.roomId) === room && !netSuspended && !room.kicked
+    && room.key === key && room.ownerId === owner && room.e2e === mode && room.secret === secret;
+  room.fileSyncBlobs = new RoomBlobTransport({
+    directory: room.fileSyncDirectory, current,
+    find: hash => { const c = clients.get(room.roomId); return c && findTorrent(c, hash); },
+    add: (metadata, directory, hash) => { const c = ensureClient(room); return addKnownTorrent(c, hash, metadata,
+      { path: directory, announce: room.trackers, store: RoomChunkStore, storeCacheSlots: 0 }, undefined); },
+    remove: async torrent => { const c = clients.get(room.roomId); if (c && !room.files.has(torrent.infoHash)
+      && findTorrent(c, torrent.infoHash) === torrent) await c.remove(torrent); },
+    acquire: (holder, id) => receiveQueue.acquire(holder, 'file-sync:' + id), cancel: holder => receiveQueue.cancel(holder),
+    hold: () => clientReaper.hold(ensureClient(room)),
+    reserve: bytes => diskBudget.reserve([{ root: room.fileSyncDirectory!, bytes }]),
+  });
+  return room.fileSyncBlobs;
 }
 
 // ── Liveness: typing / file reactions / coarse progress ─────────────────────
@@ -831,7 +870,7 @@ function buildState(room: Room): RoomState {
     (room.ownerId && memberId === room.ownerId) ? 'owner' : 'member';
   const self: RoomMember = {
     memberId: room.self.memberId,
-    name: room.self.name || 'You',
+    name: publicRoomName(room.self.name, room.self.memberId),
     avatarSeed: room.self.avatarSeed,
     online: true,
     isSelf: true,
@@ -840,7 +879,7 @@ function buildState(room: Room): RoomState {
       .filter((f) => room.transfers.get(f.fileId)?.haveLocally)
       .map((f) => f.fileId),
     role: roleOf(room.self.memberId),
-    protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: true,
+    protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES, ...(room.fileSyncEnabled ? [...FILE_SYNC_CAPABILITIES, DOCUMENT_CAPABILITY] as const : [])], watchSync: true,
     ...(room.self.color ? { color: room.self.color } : {}),
     ...(room.self.status ? { status: room.self.status } : {}),
     ...(room.self.avatarImg ? { avatarImg: room.self.avatarImg } : {}),
@@ -919,6 +958,7 @@ function buildState(room: Room): RoomState {
     ownerId: room.ownerId,
     watchPolicy: watchState(room).host.current(room.ownerId, room.transferAt),
     canManage: !!room.ownerId && room.ownerId === room.self.memberId,
+    keyRotation: room.ownerId === room.self.memberId ? room.keyRotation : undefined,
     e2e: room.e2e,
     members,
     manifestLimited: room.manifestLimited,
@@ -952,6 +992,7 @@ function buildState(room: Room): RoomState {
     voice: room.voice.getState(),
     lan: room.lan ? room.lan.getState() : idleLanState(),
     ...(srvMirrors.length ? { srvMirrors } : {}),
+    serverPreparation: preparationBook(room).list(now).filter(report => !room.bans.has(report.memberId) && (report.memberId === room.self.memberId || room.members.has(report.memberId) && now - room.members.get(report.memberId)!.lastSeen < OFFLINE_AFTER)),
   };
 }
 
@@ -1057,7 +1098,9 @@ function forwardRelay(room: Room, msg: any, fromWireId: number): void {
   const fwd = { ...msg, _t: msg._t - 1 };
   for (const wire of room.wires.values()) {
     if (wire.id === fromWireId) continue;
-    if (!wire.memberId || room.bans.has(wire.memberId)) continue; // same gate as broadcast
+    if (!wire.memberId || room.bans.has(wire.memberId)) continue;
+    if (msg.t === SERVER_PREPARATION_CAPABILITY && !room.members.get(wire.memberId)?.capabilities?.includes(SERVER_PREPARATION_CAPABILITY)) continue; // same gate as broadcast
+    if (msg.t === DOCUMENT_CAPABILITY && (room.members.get(wire.memberId)?.guest || !room.members.get(wire.memberId)?.capabilities?.includes(DOCUMENT_CAPABILITY) || !roomChannelHasCapacity(wire.peer))) continue;
     sendTo(room, wire, fwd as Msg);
   }
 }
@@ -1075,6 +1118,7 @@ function broadcast(room: Room, msg: Msg): void {
     // Nothing beyond the slim greet flows to a wire that hasn't identified
     // itself, or that identified as a banned member.
     if (!wire.memberId || room.bans.has(wire.memberId)) continue;
+    if (msg.t === SERVER_PREPARATION_CAPABILITY && !room.members.get(wire.memberId)?.capabilities?.includes(SERVER_PREPARATION_CAPABILITY)) continue;
     sendTo(room, wire, msg);
   }
 }
@@ -1122,7 +1166,7 @@ function helloMsg(room: Room, full = true): Msg {
   const m: any = {
     t: 'hello', manifestFull: full,
     memberId: room.self.memberId,
-    name: room.self.name || 'You',
+    name: publicRoomName(room.self.name, room.self.memberId),
     avatarSeed: room.self.avatarSeed,
     pub: room.self.pub, // our identity key — TOFU-bound by peers so they can verify our signed commands
 
@@ -1148,7 +1192,7 @@ function helloMsg(room: Room, full = true): Msg {
     ...(room.folders.size ? { folders: Array.from(room.folders.values()) } : {}), // section overlay
     ...(room.folderTombstones.size ? { folderTombs: Object.fromEntries(room.folderTombstones) } : {}), // deleted sections
     // Legacy clock retained only for older clients; v2 reconciles by ID.
-    chatSync: 2, watchSync: 2, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES],
+    chatSync: 2, watchSync: 2, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES, ...(room.fileSyncEnabled ? [...FILE_SYNC_CAPABILITIES, DOCUMENT_CAPABILITY] : [])],
     chatIds: room.chat.filter(m => m.chatV === 2).map(m => m.id),
     ...(room.chat.length ? { chatAt: room.chat[room.chat.length - 1].at } : {}),
   };
@@ -1905,6 +1949,13 @@ function profileCanonical(topic: string, m: { memberId: string; at: number; name
 function srvMirrorCanonical(topic: string, m: { hostId: string; at: number; body: string }): Buffer {
   return Buffer.from(JSON.stringify(['srv-mirror', topic, m.hostId, m.at, m.body]), 'utf8');
 }
+const preparationBooks = new WeakMap<Room, ServerPreparationBook>();
+const preparationOwnServers = new WeakMap<Room, Map<string, import('../../shared/gameserver-types').MirroredServerInstance>>();
+function preparationBook(room: Room): ServerPreparationBook { let book = preparationBooks.get(room); if (!book) { book = new ServerPreparationBook(); preparationBooks.set(room, book); } return book; }
+function preparationBasisFor(room: Room, hostId: string, instanceId: string): string | null {
+  const instance = hostId === room.self.memberId ? preparationOwnServers.get(room)?.get(instanceId) : room.srvMirrors.get(hostId)?.instances.find(value => value.instanceId === instanceId);
+  return instance ? crypto.createHash('sha256').update(serverPreparationBasis(hostId, instance, room.files.values())).digest('hex') : null;
+}
 
 
 /** Our signed rich-profile announcement. An EMPTY profile still announces —
@@ -1920,7 +1971,7 @@ function selfProfileMsg(room: Room): Msg | null {
   // a longer value would be truncated there and the signature would die.
   // img is always '' — custom avatar images were removed; only the identicon
   // seed / color / status ride the profile now.
-  const body = { memberId: s.memberId, at, name: (s.name || 'You').slice(0, 1024), avatarSeed: s.avatarSeed.slice(0, 1024), color: s.color, status: s.status, img: '' };
+  const body = { memberId: s.memberId, at, name: (publicRoomName(s.name, s.memberId)).slice(0, 1024), avatarSeed: s.avatarSeed.slice(0, 1024), color: s.color, status: s.status, img: '' };
   const sig = signBytes(room, profileCanonical(room.topic, body));
   if (!sig) return null;
   return { t: 'profile', ...body, pub: s.pub, sig };
@@ -2134,9 +2185,17 @@ function lanHelperReady(room: Room, timeoutMs: number): Promise<boolean> {
   if (!room.lanPipe) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
     let done = false;
-    const settle = (ok: boolean) => { if (!done) { done = true; resolve(ok); } };
+    const settle = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const waiters = room.lanReadyWaiters;
+      const index = waiters?.indexOf(settle) ?? -1;
+      if (index >= 0) waiters!.splice(index, 1);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => settle(false), timeoutMs);
     (room.lanReadyWaiters ??= []).push(settle);
-    setTimeout(() => settle(false), timeoutMs);
   });
 }
 
@@ -2262,8 +2321,8 @@ async function lanAllowApp(roomId: string, exePath: string): Promise<{ ok: boole
 
 /** Handle a 'lanStart' room-cmd: build the LanSession, dial the helper pipe, then
  *  (host) pin genesis + admit picks or (joiner) begin participating. Re-checks the
- *  VPN kill-switch after the connect await — the UAC prompt is an unbounded window
- *  (mirrors voiceJoin's re-check-and-undo). */
+ *  VPN kill-switch after connecting and after adapter setup, since either wait
+ *  can outlive the room/network state (voiceJoin's re-check-and-undo pattern). */
 async function lanStart(roomId: string, opts: { sessionId: string; pipeName: string; token: string; subnet?: string; admit?: string[]; isHost?: boolean; relayEnabled?: boolean; floor?: number }): Promise<{ ok: boolean; sessionId: string }> {
   const room = rooms.get(roomId);
   if (!room) throw new Error('Room not active');
@@ -2304,19 +2363,40 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
     token: String(opts.token || ''),
     onData: (frame) => { if (rooms.get(roomId) !== room || room.lanPipe !== client) return; try { room.lanEgress?.(frame); } catch (e) { log('lan egress error: ' + String(e)); } },
     onControl: (m) => { if (rooms.get(roomId) === room && room.lanPipe === client) onLanControl(room, m); },
-    onClose: () => { if (rooms.get(roomId) !== room || room.lanPipe !== client) return; try { room.lan?.suspend(); } catch { /* ignore */ } },
+    onClose: () => {
+      if (rooms.get(roomId) !== room || room.lanPipe !== client) return;
+      room.lanPipe = undefined;
+      room.lanReady = false;
+      settleLanReady(room, false);
+      try { room.lan?.suspend(); } catch { /* ignore */ }
+    },
   });
   room.lanPipe = client;
   try {
     await client.connect();
   } catch (e) {
-    teardownLan(room);
+    if (room.lanPipe === client) teardownLan(room);
     throw new Error('LAN helper connection failed: ' + String(e));
   }
-  if (netSuspended || rooms.get(roomId) !== room || room.lanPipe !== client) {
-    client.close();
-    if (room.lanPipe === client) teardownLan(room);
-    throw new Error('LAN start was cancelled by a room or network change');
+  const ensureCurrent = () => {
+    if (netSuspended || rooms.get(roomId) !== room || room.lanPipe !== client) {
+      client.close();
+      if (room.lanPipe === client) teardownLan(room);
+      throw new Error('LAN start was cancelled by a room or network change');
+    }
+  };
+  ensureCurrent();
+  // A connected pipe only means hello was accepted. Windows may still be
+  // creating the adapter, address and firewall rules for tens of seconds.
+  const helperReady = await lanHelperReady(room, LAN_HELPER_SETUP_TIMEOUT_MS);
+  ensureCurrent();
+  if (!helperReady) {
+    teardownLan(room);
+    throw new Error('LAN helper setup timed out');
+  }
+  if (!isHost && !session.buildState().selfAdmitted) {
+    teardownLan(room);
+    throw new Error('The host has not invited you to this LAN session yet.');
   }
   // Apply BEFORE start(): the first advert we emit must already carry the honest
   // willingness bit, or peers would briefly hold us as a candidate we then refuse.
@@ -2329,21 +2409,14 @@ async function lanStart(roomId: string, opts: { sessionId: string; pipeName: str
 
 /** Capture a screen/window in THIS (hidden, secure-context) window via the legacy
  *  chromeMediaSource path — unlike getDisplayMedia it needs NO user gesture, so it
- *  works from the engine window; the permission handlers already allow 'media'.
+ *  works from the engine window. The permission policy recognizes both legacy
+ *  untyped `media` and newer `display-capture` requests during a screen intent.
  *  `sourceId` comes from desktopCapturer.getSources in the main process. */
-async function captureScreen(sourceId: string, withAudio = false): Promise<MediaStream> {
+async function captureScreen(sourceId: string, withAudio = false, settings: ScreenShareSettings = validateScreenShareSettings()): Promise<MediaStream> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('Screen capture unavailable (the room engine is not a secure context).');
   }
-  const video = {
-    mandatory: {
-      chromeMediaSource: 'desktop',
-      chromeMediaSourceId: String(sourceId),
-      maxWidth: 1920,
-      maxHeight: 1080,
-      maxFrameRate: 15,
-    },
-  };
+  const video = screenCaptureVideo(String(sourceId), settings);
   // M20: system audio is OPT-IN (the picker's "share audio" checkbox). When off,
   // share video only — the safe default, since a system-audio loopback carries
   // everything playing and the call echo canceller is best-effort. When on, grab
@@ -2492,13 +2565,14 @@ function adoptChain(room: Room, links: unknown, quiet = false): boolean {
   const changedOwner = room.ownerId !== finalOwner;
   const oldOwnerId = room.ownerId || chain[chain.length - 1].by;
   room.ownerId = finalOwner;
+  if (room.keyRotation && room.keyRotation.ownerId !== finalOwner) saveKeyRotationSchedule(room, undefined);
   room.transferAt = finalAt;
   room.transferChain = chain;
   if (quiet) return true;
   try { ipcRenderer.send('room-owner', { roomId: room.roomId, ownerId: finalOwner }); } catch { /* ignore */ }
   try { ipcRenderer.send('room-transfer', { roomId: room.roomId, chain: room.transferChain }); } catch { /* ignore */ }
   if (changedOwner) {
-    const nameOf = (id: string) => id === room.self.memberId ? (room.self.name || 'You') : (room.members.get(id)?.name || '?');
+    const nameOf = (id: string) => id === room.self.memberId ? (publicRoomName(room.self.name, room.self.memberId)) : (room.members.get(id)?.name || '?');
     // Stamp the event with the transfer's OWN clock (finalAt), not now — a fresh
     // joiner catching the chain days later must not show it as "just happened".
     logEvent(room, { type: 'ownership-transferred', actorId: oldOwnerId, actorName: nameOf(oldOwnerId), targetName: nameOf(finalOwner), at: Math.min(finalAt, Date.now()) });
@@ -2909,6 +2983,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
   if ((msg.t === 'hello' || msg.t === 'ping') && !room.members.has(msg.memberId) && room.members.size >= ROOM_MEMBER_LIMIT) return;
   if (msg.t === 'e2e-keys' && (!room.e2eCfg || !verifyKeyPage(room.topic, room.e2eCfg, msg))) return;
   if (['have', 'bye', 'typing', 'react-file', 'react-chat', 'prog', 'e2e-key-request'].includes(msg.t) && !room.members.has(meta.memberId)) return;
+  if (msg.t === DOCUMENT_CAPABILITY && (!room.fileSyncEnabled || !room.members.has(msg.memberId) || room.members.get(msg.memberId)?.guest || !room.members.get(msg.memberId)?.capabilities?.includes(DOCUMENT_CAPABILITY))) return;
+  if ((msg.t === 'file-sync-v1' || msg.t === 'file-sync-v2' || msg.t === 'file-sync-v3' || msg.t === 'file-sync-v4' || msg.t === 'file-sync-v5' || msg.t === 'file-sync-v6' || msg.t === 'file-sync-history-v1') && (!room.fileSyncEnabled || !room.members.has(msg.memberId)
+    || room.members.get(msg.memberId)?.guest || !room.members.get(msg.memberId)?.capabilities?.includes(msg.t))) return;
   if (msg.t === 'transfer' && !room.ownerId) maybeAdoptOwner(room, msg.by);
   if (msg.t === 'transfer' && room.ownerId && msg.by !== room.ownerId) return;
   if (msg.t === 'transfer' && msg.banState && (msg.banState.ownerId !== msg.by || msg.banState.bans.includes(msg.newOwnerId) || !adoptBanState(room, msg.banState))) return;
@@ -2944,6 +3021,27 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
 
   clampGossip(msg);
   switch (msg.t) {
+    case SERVER_PREPARATION_CAPABILITY: {
+      const member = room.members.get(msg.memberId);
+      if (netSuspended || room.kicked || !member || member.guest || room.bans.has(msg.memberId) || !member.capabilities?.includes(SERVER_PREPARATION_CAPABILITY)) break;
+      if (!verifySignedBy(room, msg.memberId, msg.pub, msg.sig, Buffer.from(serverPreparationCanonical(room.topic, msg)))) break;
+      const basis = preparationBasisFor(room, msg.hostId, msg.instanceId);
+      if (basis && preparationBook(room).accept(msg, basis)) pushState(room);
+      break;
+    }
+    case DOCUMENT_CAPABILITY:
+      if ((msg.to === '' || msg.to === room.self.memberId) && verifySignedBy(room, msg.memberId, msg.pub, msg.sig, Buffer.from(documentWireCanonical(room.topic, msg.memberId, msg.to, msg.body)))) {
+        ipcRenderer.send('room-documents-frame', { roomId: room.roomId, topic: room.topic, ownerId: room.ownerId, e2e: room.e2e, memberId: msg.memberId, body: msg.body });
+      }
+      break;
+    case 'file-sync-v1':
+    case 'file-sync-v2': case 'file-sync-v3': case 'file-sync-v4': case 'file-sync-v5': case 'file-sync-v6': case 'file-sync-history-v1':
+      if ((msg.to === '' || msg.to === room.self.memberId)
+        && verifySignedBy(room, msg.memberId, msg.pub, msg.sig, Buffer.from(syncWireCanonical(room.topic, msg.memberId, msg.to, msg.body, syncFrameVersion(msg.t))))) {
+        ipcRenderer.send('room-file-sync-frame', { roomId: room.roomId, topic: room.topic, ownerId: room.ownerId, e2e: room.e2e,
+          memberId: msg.memberId, body: msg.body, version: syncFrameVersion(msg.t) });
+      }
+      break;
     case 'hello': {
       const sync = helloAssembly(direct ? wire : room, direct ? 1 : 256).accept(msg);
       if (!sync.accepted) break;
@@ -3066,6 +3164,9 @@ function onMessage(room: Room, wire: Wire, raw: any): void {
       // so `wire` really is that peer (relayed hellos don't identify the wire).
       m.have = Array.from(new Set((sync.have ?? msg.have ?? []).map(id => room.files.get(id)?.fileId).filter((id): id is string => !!id)));
       if (direct && (!msg.manifestPart || sync.complete)) { sendChatBackfill(room, wire, msg); if (sync.complete) connectionMonitor(room).synced(); }
+      if (room.fileSyncEnabled && !msg.guest && msg.capabilities?.includes('file-sync-v1') && (!msg.manifestPart || sync.complete)) {
+        ipcRenderer.send('room-file-sync-peer', { roomId: room.roomId, topic: room.topic, ownerId: room.ownerId, e2e: room.e2e, memberId: msg.memberId });
+      }
       pushState(room);
       break;
     }
@@ -3845,7 +3946,7 @@ function seedLocal(room: Room, filePath: string): Promise<RoomFile> {
             infoHash: torrent.infoHash,
             magnetURI: torrent.magnetURI,
             addedBy: room.self.memberId,
-            addedByName: room.self.name || 'You',
+            addedByName: publicRoomName(room.self.name, room.self.memberId),
             addedAt: Date.now(),
             ...(room.e2e ? { enc: true, keyEpoch: seedEpoch } : {}),
           };
@@ -4297,9 +4398,9 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
   }
   restartTracker(room);
   const ownerName = room.ownerId === room.self.memberId
-    ? (room.self.name || 'You')
+    ? (publicRoomName(room.self.name, room.self.memberId))
     : (room.members.get(room.ownerId)?.name || '?');
-  logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: ownerName, targetName: kickedName });
+  logEvent(room, { type: kickedId ? 'kicked' : 'rekeyed', actorId: room.ownerId, actorName: ownerName, ...(kickedId ? { targetName: kickedName } : {}) });
   // Re-greet remaining peers under the NEW key so presence reconverges.
   broadcast(room, helloMsg(room));
   pushState(room, true);
@@ -4316,6 +4417,7 @@ function applyLocalRekey(room: Room, newCode: string, kickedId: string, kickedNa
 function suspendAllNetworking(): void {
   let n = 0;
   for (const room of Array.from(rooms.values())) {
+    void room.fileSyncBlobs?.close();
     room.pendingServerCommands.cancel();
     try { room.voice.suspend(); } catch { /* ignore */ } // voice leaks the real IP too — tear it down
     teardownLan(room); // the LAN adapter holds a real interface too — revert it with the rest
@@ -4332,6 +4434,7 @@ function suspendAllNetworking(): void {
     room.started = false;
     if (room.snapshotTimer) clearTimeout(room.snapshotTimer);
     if (room.heartbeatTimer) clearInterval(room.heartbeatTimer);
+    clearKeyRotationTimer(room);
     if (room.profileAnnounce) clearTimeout(room.profileAnnounce);
     room.snapshotTimer = null; room.heartbeatTimer = null; room.profileAnnounce = null;
     rooms.delete(room.roomId);
@@ -4343,10 +4446,11 @@ function suspendAllNetworking(): void {
 /** We were removed by the owner: surface it in the UI, stop announcing, and drop
  *  every wire so we don't linger in the swarm the room just rotated away from. */
 function markKicked(room: Room, byName: string): void {
+  clearKeyRotationTimer(room);
   if (room.kicked) return;
   room.kicked = true; cancelReceives(room);
   room.kickedBy = byName;
-  logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: byName, targetName: room.self.name || 'You' });
+  logEvent(room, { type: 'kicked', actorId: room.ownerId, actorName: byName, targetName: publicRoomName(room.self.name, room.self.memberId) });
   try { room.voice.suspend(); } catch { /* ignore */ }
   teardownLan(room); // being kicked also tears down our LAN adapter for this room
   try { room.tracker?.stop(); room.tracker?.destroy(); } catch { /* ignore */ }
@@ -4362,6 +4466,74 @@ function markKicked(room: Room, byName: string): void {
 }
 
 const pendingRoomRekeys = new WeakSet<Room>();
+
+function assertKeyRotation(room: Room): void {
+  if (netSuspended || room.kicked || rooms.get(room.roomId) !== room) throw new Error('Room not active');
+  if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can rotate keys');
+  if (pendingRoomRekeys.has(room)) throw new Error('A room key rotation is already in progress');
+  if (room.e2e && !completeContentKeys(room.e2eCfg, room.secret, room.prevSecrets)) throw new Error('Wait for room key history to finish syncing before rotating keys');
+  if (room.e2e && new Set([room.secret, ...room.prevSecrets].filter(Boolean)).size >= ROOM_KEY_LIMIT) throw new Error('Room key history is full; create a new room and share the active files there');
+  const cutoff = Date.now() - OFFLINE_AFTER;
+  if ([...room.members.values()].some(m => m.memberId !== room.self.memberId && m.lastSeen >= cutoff && !m.capabilities?.includes(ROOM_KEY_ROTATION_CAPABILITY))) {
+    throw new Error('Update all connected participants before rotating keys');
+  }
+  if ([...room.wires.values()].some(w => w.peer?.connected && !w.memberId)) throw new Error('Wait for participants to finish connecting before rotating keys');
+}
+
+/** A signed, victim-free rekey. Existing media sessions keep their own DTLS keys. */
+function rotateRoomKey(room: Room): RoomState {
+  assertKeyRotation(room);
+  const newCode = generateRoomCode(room.e2e), by = room.self.memberId;
+  const rekey: Msg = { t: 'rekey', newCode, kickedId: '', kickedName: '', by, pub: room.self.pub,
+    sig: signBytes(room, rekeyCanonical(room.topic, { newCode, kickedId: '', by })) };
+  pendingRoomRekeys.add(room);
+  try {
+    sendRekey(room, room.key, rekey, '');
+    applyLocalRekey(room, newCode, '', '');
+    return buildState(room);
+  } finally { pendingRoomRekeys.delete(room); }
+}
+
+function saveKeyRotationSchedule(room: Room, state: RoomKeyRotationState | undefined): void {
+  room.keyRotation = state;
+  ipcRenderer.send('room-key-rotation', { roomId: room.roomId, state });
+  armKeyRotationTimer(room);
+  pushState(room, true);
+}
+
+function clearKeyRotationTimer(room: Room): void {
+  if (room.keyRotationTimer) clearTimeout(room.keyRotationTimer);
+  room.keyRotationTimer = undefined;
+}
+
+function armKeyRotationTimer(room: Room, retryDelay?: number): void {
+  clearKeyRotationTimer(room);
+  const s = room.keyRotation;
+  if (!s || s.error || s.ownerId !== room.self.memberId || room.ownerId !== room.self.memberId || netSuspended || room.kicked) return;
+  room.keyRotationTimer = setTimeout(() => { room.keyRotationTimer = undefined; tickKeyRotation(room); }, retryDelay ?? Math.max(0, s.nextAt - Date.now()));
+}
+
+function setKeyRotationSchedule(room: Room, plan: RoomKeyRotationPlan | null): RoomState {
+  if (room.ownerId !== room.self.memberId) throw new Error('Only the room owner can schedule key rotations');
+  if (plan !== null) assertKeyRotation(room);
+  saveKeyRotationSchedule(room, plan === null ? undefined : createKeyRotationSchedule(room.self.memberId, plan));
+  return buildState(room);
+}
+
+function tickKeyRotation(room: Room): void {
+  const schedule = room.keyRotation;
+  if (!schedule || schedule.error || netSuspended || room.kicked || rooms.get(room.roomId) !== room) return;
+  if (schedule.nextAt > Date.now()) { armKeyRotationTimer(room); return; }
+  if (room.ownerId !== room.self.memberId || schedule.ownerId !== room.ownerId) { saveKeyRotationSchedule(room, undefined); return; }
+  // A kick owns the rekey slot until its deferred delivery completes.
+  if (pendingRoomRekeys.has(room)) { armKeyRotationTimer(room, 1000); return; }
+  try {
+    rotateRoomKey(room);
+    saveKeyRotationSchedule(room, advanceKeyRotationSchedule(schedule));
+  } catch (error) {
+    saveKeyRotationSchedule(room, { ...schedule, nextAt: 0, error: String(error instanceof Error ? error.message : error).slice(0, 500) });
+  }
+}
 
 /** Owner-only: remove a member by rotating the room code away from them. */
 function kickMember(room: Room, memberId: string): void {
@@ -4380,7 +4552,7 @@ function kickMember(room: Room, memberId: string): void {
   //    with our (the owner's) key so it can't be spoofed. Both signatures bind
   //    the CURRENT topic (the room hasn't rotated yet).
   const notice: Msg = {
-    t: 'kicked', targetId: memberId, by, byName: room.self.name || 'You',
+    t: 'kicked', targetId: memberId, by, byName: publicRoomName(room.self.name, room.self.memberId),
     pub: room.self.pub, sig: signBytes(room, kickedCanonical(room.topic, { targetId: memberId, by })),
   };
   for (const wire of room.wires.values()) {
@@ -4435,7 +4607,7 @@ function transferOwnership(roomId: string, memberId: string): RoomState {
 }
 
 // ── Room lifecycle ───────────────────────────────────────────────────────────
-function startRoom(p: { roomId: string; name: string; code: string; folder: string; stateIpc?: number;
+function startRoom(p: { roomId: string; name: string; code: string; folder: string; stateIpc?: number; fileSyncEnabled?: boolean; fileSyncDirectory?: string; keyRotation?: RoomKeyRotationState;
   self: { memberId: string; name: string; avatarSeed: string; color?: string; status?: string; avatarImg?: string; pub: string; priv: string }; useTurn: boolean; turnServers?: any[]; trackers?: string[]; tombstones?: Record<string, number>; tombSigs?: Record<string, { by: string; pub: string; sig: string }>; revives?: Record<string, number>; manifest?: PersistedRoomFile[]; folders?: RoomFolder[]; folderTombs?: Record<string, number>; ownerId?: string; ownerPin?: string; transferChain?: TransferLink[]; nameAt?: number; topicText?: string; topicAt?: number; topicMsg?: { text: string; at: number; by: string; pub: string; sig: string } | null; mutes?: string[]; history?: RoomEvent[]; chat?: RoomChatMessage[]; reacts?: Record<string, Record<string, string[]>>; chatReacts?: Record<string, Record<string, string[]>>; chatEdits?: Record<string, { text: string; at: number; by: string; pub: string; sig: string }>; chatPins?: RoomChatPins; identities?: Record<string, string>; e2e?: boolean; secret?: string; prevSecrets?: string[]; bans?: string[]; banState?: RoomBanSnapshot; e2eCfg?: E2ECfg | null; keyPages?: RoomKeyPage[]; cacheDir?: string; autoFetch?: boolean; folderFetch?: Record<string, boolean>; upKbps?: number; downKbps?: number; lanSession?: string; lanFloor?: number; resources?: RoomResourcePolicy }): RoomState {
   // Authoritative kill-switch gate: refuse to bring up ANY room networking while
   // the VPN is down, no matter how this join raced past the manager's flag. The
@@ -4475,7 +4647,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     trackers: Array.isArray(p.trackers) && p.trackers.length ? p.trackers : RENDEZVOUS_TRACKERS,
     tracker: null,
     started: false,
-    self: { ...p.self, color: p.self.color || '', status: p.self.status || '', avatarImg: p.self.avatarImg || '' },
+    self: { ...p.self, name: publicRoomName(p.self.name, p.self.memberId), color: p.self.color || '', status: p.self.status || '', avatarImg: p.self.avatarImg || '' },
     // Honor the invite's owner pin: never trust a persisted ownerId that doesn't
     // match it (it'd be a pre-pin or tampered value) — re-learn under the pin.
     ownerId: (p.ownerPin && p.ownerId && p.ownerId !== p.ownerPin) ? '' : (p.ownerId || ''),
@@ -4493,6 +4665,8 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     e2eCfg: null,
     e2eSigned: false,
     cacheDir: p.cacheDir || '',
+    fileSyncEnabled: p.fileSyncEnabled === true,
+    fileSyncDirectory: p.fileSyncDirectory,
     wires: new Map(),
     members: new Map(),
     files: new Map(),
@@ -4585,7 +4759,7 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
 
     // The owner logs the room's creation once (its history starts empty).
     if (room.ownerId && room.ownerId === room.self.memberId && room.history.length === 0) {
-      logEvent(room, { type: 'created', actorId: room.self.memberId, actorName: room.self.name || 'You' });
+      logEvent(room, { type: 'created', actorId: room.self.memberId, actorName: publicRoomName(room.self.name, room.self.memberId) });
     }
 
     // Resume the persisted manifest first so the room shows — and re-seeds — its
@@ -4621,11 +4795,13 @@ function startRoom(p: { roomId: string; name: string; code: string; folder: stri
     // Rendezvous tracker (announces the current topicHash; recreated on rekey).
     attachTracker(room, true);
 
+    room.keyRotation = room.ownerId === room.self.memberId ? restoreKeyRotationSchedule(p.keyRotation, room.self.memberId) : undefined;
+    armKeyRotationTimer(room);
     // Heartbeat.
     const beat = setInterval(() => {
       const r = rooms.get(p.roomId);
       if (r !== room) { clearInterval(beat); return; }
-      broadcast(r, { t: 'ping', memberId: r.self.memberId, name: r.self.name || 'You', avatarSeed: r.self.avatarSeed, have: Array.from(r.files.keys()).filter(id => r.transfers.get(id)?.haveLocally), roomName: r.name, ownerId: r.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
+      broadcast(r, { t: 'ping', memberId: r.self.memberId, name: publicRoomName(r.self.name, r.self.memberId), avatarSeed: r.self.avatarSeed, have: Array.from(r.files.keys()).filter(id => r.transfers.get(id)?.haveLocally), roomName: r.name, ownerId: r.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES, ...(r.fileSyncEnabled ? [...FILE_SYNC_CAPABILITIES, DOCUMENT_CAPABILITY] : [])], watchSync: 2 });
       // Voice-roster liveness: a member who dropped offline (crash/sleep — no 'bye',
       // no voice-state) would otherwise linger in the voice panel with a stale mute
       // badge, and their MediaPeer would never be reclaimed. onMemberGone is a cheap
@@ -4666,7 +4842,7 @@ function mergeFileLocal(room: Room, file: RoomFile, localPath?: string): void {
     setTransfer(room, file.fileId, { progress: 1, status: 'seeding', haveLocally: true, ...(localPath ? { localPath } : {}) });
     const cipherPath = room.transfers.get(file.fileId)?.cipherPath; // set by seedLocal in E2E rooms
     persistManifest(room, file, localPath, cipherPath);
-    logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: file.addedByName || 'You', fileName: file.name });
+    logEvent(room, { type: 'file-added', actorId: file.addedBy, actorName: publicRoomName(file.addedByName, file.addedBy), fileName: file.name });
     broadcast(room, { t: 'add', file });
     pushState(room, true);
   }
@@ -4918,6 +5094,7 @@ async function disposeRoom(room: Room, graceful: boolean): Promise<void> {
   if (room.profileAnnounce) clearTimeout(room.profileAnnounce);
   if (room.snapshotTimer) clearTimeout(room.snapshotTimer);
   if (room.heartbeatTimer) clearInterval(room.heartbeatTimer);
+  clearKeyRotationTimer(room);
   room.profileAnnounce = null; room.snapshotTimer = null; room.heartbeatTimer = null;
   if (graceful) { try { broadcast(room, { t: 'bye', memberId: room.self.memberId }); } catch { /* peer already gone */ } }
   if (rooms.get(roomId) === room) rooms.delete(roomId);
@@ -4940,6 +5117,7 @@ async function disposeRoom(room: Room, graceful: boolean): Promise<void> {
 }
 
 async function closeRoom(room: Room, graceful: boolean): Promise<void> {
+  void room.fileSyncBlobs?.close();
   room.pendingServerCommands.cancel();
   const roomId = room.roomId;
   const closing = closingRooms.get(roomId);
@@ -5160,7 +5338,7 @@ function sendChat(roomId: string, rawText: string, replyToId?: string, messageId
     id: messageId,
     at: Date.now(),
     memberId: room.self.memberId,
-    name: room.self.name || 'You',
+    name: publicRoomName(room.self.name, room.self.memberId),
     avatarSeed: room.self.avatarSeed,
     text,
   };
@@ -5229,7 +5407,7 @@ function broadcastDelete(r: Room, fileId: string, at: number): void {
   const file = r.files.get(fileId);
   const authorized = (!!r.ownerId && r.self.memberId === r.ownerId) || (!!file && file.addedBy === r.self.memberId);
   const sig = signBytes(r, delCanonical(r.topic, { fileId, memberId: r.self.memberId, at }));
-  applyTombstone(r, fileId, at, { id: r.self.memberId, name: r.self.name || 'You' });
+  applyTombstone(r, fileId, at, { id: r.self.memberId, name: publicRoomName(r.self.name, r.self.memberId) });
   if (authorized && r.tombstones.get(fileId) === at) {
     r.tombSigs.set(fileId, { by: r.self.memberId, pub: r.self.pub, sig });
     try { ipcRenderer.send('room-tomb', { roomId: r.roomId, fileId, at, by: r.self.memberId, pub: r.self.pub, sig }); } catch { /* ignore */ }
@@ -5280,12 +5458,12 @@ function setRoomTopic(roomId: string, rawText: string): RoomState {
  *  and the signed 'profile' broadcast carries the rich fields. */
 function updateProfile(p: { name?: string; avatarSeed?: string; color?: string; status?: string; avatarImg?: string }): void {
   for (const room of rooms.values()) {
-    if (typeof p.name === 'string') room.self.name = p.name;
+    if (typeof p.name === 'string') room.self.name = publicRoomName(p.name, room.self.memberId);
     if (typeof p.avatarSeed === 'string' && p.avatarSeed) room.self.avatarSeed = p.avatarSeed;
     if (typeof p.color === 'string') room.self.color = p.color;
     if (typeof p.status === 'string') room.self.status = p.status;
     if (typeof p.avatarImg === 'string') room.self.avatarImg = p.avatarImg;
-    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: room.self.name || 'You', avatarSeed: room.self.avatarSeed, have: Array.from(room.files.keys()).filter(id => room.transfers.get(id)?.haveLocally), roomName: room.name, ownerId: room.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES], watchSync: 2 });
+    broadcast(room, { t: 'ping', memberId: room.self.memberId, name: publicRoomName(room.self.name, room.self.memberId), avatarSeed: room.self.avatarSeed, have: Array.from(room.files.keys()).filter(id => room.transfers.get(id)?.haveLocally), roomName: room.name, ownerId: room.ownerId, protocolVersion: ROOM_PROTOCOL_VERSION, capabilities: [...DESKTOP_ROOM_CAPABILITIES, ...(room.fileSyncEnabled ? [...FILE_SYNC_CAPABILITIES, DOCUMENT_CAPABILITY] : [])], watchSync: 2 });
     const pm = selfProfileMsg(room);
     if (pm) broadcast(room, pm);
     pushState(room, true);
@@ -5322,6 +5500,76 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
     else if (type === 'pinOwner') { const r = rooms.get(msg.roomId); if (!r) throw new Error('Room not active'); pinRoomOwner(r, String(msg.ownerPin || '')); data = { ok: true }; }
     else if (type === 'netSuspend') { joinNetworkEpoch++; netSuspended = true; suspendAllNetworking(); data = { ok: true }; }
     else if (type === 'netResume') { netSuspended = false; data = { ok: true }; }
+    else if (type === 'serverPreparation') {
+      const r = rooms.get(msg.roomId), input = msg.input;
+      if (!r || netSuspended || r.kicked || !validServerPreparationInput(input)) throw new Error('Server preparation unavailable');
+      if (typeof msg.ownMirror === 'string' && msg.ownMirror.length <= 200_000) {
+        const own = parseMirrorBody(msg.ownMirror);
+        if (own?.hostId === r.self.memberId) preparationOwnServers.set(r, new Map(own.instances.map(value => [value.instanceId, value])));
+      }
+      if (input.hostId !== r.self.memberId && (!r.members.get(input.hostId)?.capabilities?.includes(SERVER_PREPARATION_CAPABILITY) || r.members.get(input.hostId)?.guest || r.bans.has(input.hostId))) throw new Error('Server preparation needs a compatible host');
+      const basis = preparationBasisFor(r, input.hostId, input.instanceId);
+      if (!basis || basis !== input.basis) throw new Error('Server preparation changed; review again');
+      const previous = preparationBook(r).list().find(value => value.memberId === r.self.memberId && value.hostId === input.hostId && value.instanceId === input.instanceId);
+      const frame: ServerPreparationWire = { ...input, t: SERVER_PREPARATION_CAPABILITY, memberId: r.self.memberId, at: Math.max(Date.now(), (previous?.at ?? 0) + 1), pub: r.self.pub, sig: '' };
+      frame.sig = signBytes(r, Buffer.from(serverPreparationCanonical(r.topic, frame)));
+      if (!preparationBook(r).accept(frame, basis)) throw new Error('Server preparation rate limited');
+      broadcast(r, frame); pushState(r); data = { ok: true };
+    }
+    else if (type === 'documentsSend') {
+      const r = rooms.get(msg.roomId);
+      if (!r?.fileSyncEnabled || netSuspended || r.kicked || !validDocumentWireBody(msg.body) || typeof msg.to !== 'string' || msg.to !== '' && !r.members.has(msg.to)) throw new Error('Documents room unavailable');
+      const frame: DocumentWireMessage & { _g: string; _t: number } = { t: DOCUMENT_CAPABILITY, memberId: r.self.memberId, to: msg.to, body: msg.body, pub: r.self.pub, sig: '', _g: crypto.randomBytes(6).toString('hex'), _t: RELAY_TTL };
+      frame.sig = crypto.sign(null, documentWireCanonical(r.topic, frame.memberId, frame.to, frame.body), r.self.priv).toString('base64');
+      markSeen(r, frame._g);
+      const wires = [...r.wires.values()].filter(w => w.memberId && !r.bans.has(w.memberId) && w.peer.connected && !w.peer.destroyed && !r.members.get(w.memberId)?.guest && r.members.get(w.memberId)?.capabilities?.includes(DOCUMENT_CAPABILITY));
+      const destinations = msg.to ? wires.filter(w => w.memberId === msg.to).reverse() : [];
+      const direct = destinations.find(w => roomChannelHasCapacity(w.peer));
+      if (direct) sendTo(r, direct, frame);
+      else if (destinations.length) throw new Error('Documents channel busy');
+      else for (const wire of wires) { if (!roomChannelHasCapacity(wire.peer)) throw new Error('Documents relay busy'); sendTo(r, wire, frame); }
+      data = { ok: true };
+    }
+    else if (type === 'fileSyncSend') {
+      const r = rooms.get(msg.roomId);
+      if (!r?.fileSyncEnabled || netSuspended || r.kicked || !validSyncWireBody(msg.body)
+        || msg.version !== undefined && msg.version !== 1 && msg.version !== 2 && msg.version !== 3 && msg.version !== 4 && msg.version !== 5 && msg.version !== 6
+        || typeof msg.to !== 'string' || msg.to !== '' && !r.members.has(msg.to)) throw new Error('File sync room unavailable');
+      const version = msg.version === 6 ? 6 : msg.version === 5 ? 5 : msg.version === 4 ? 4 : msg.version === 3 ? 3 : msg.version === 2 ? 2 : 1, capability = syncHistoryBody(msg.body) ? 'file-sync-history-v1' : version === 6 ? 'file-sync-v6' : version === 5 ? 'file-sync-v5' : version === 4 ? 'file-sync-v4' : version === 3 ? 'file-sync-v3' : version === 2 ? 'file-sync-v2' : 'file-sync-v1';
+      if (!validSyncWireVersion(msg.body, version)) throw new Error('File sync protocol mismatch');
+      const frame: SyncWireMessage = { t: capability, memberId: r.self.memberId, to: msg.to, body: msg.body, pub: r.self.pub, sig: '' };
+      frame.sig = crypto.sign(null, syncWireCanonical(r.topic, frame.memberId, frame.to, frame.body, version), r.self.priv).toString('base64');
+      // A restarted member can still have a stale identified wire awaiting close.
+      // Route replies only over a live channel, considering alternate tracker wires.
+      const wires = [...r.wires.values()].filter(w => w.memberId && !r.bans.has(w.memberId) && w.peer.connected && !w.peer.destroyed
+        && !r.members.get(w.memberId)?.guest && r.members.get(w.memberId)?.capabilities?.includes(capability));
+      // Prefer the newest connection: an old data channel can
+      // report connected until its timeout even after the remote process exited.
+      const destinations = msg.to ? wires.filter(w => w.memberId === msg.to).reverse() : [];
+      const direct = destinations.find(w => roomChannelHasCapacity(w.peer));
+      if (direct) { if (!roomChannelHasCapacity(direct.peer)) throw new Error('File sync channel busy'); sendTo(r, direct, frame); }
+      else if (destinations.length) throw new Error('File sync channel busy');
+      else if (wires.length) { if (wires.some(w => !roomChannelHasCapacity(w.peer))) throw new Error('File sync relay busy'); for (const wire of wires) sendTo(r, wire, frame); }
+      data = { ok: true };
+    }
+    else if (type === 'fileSyncStop') {
+      const r = rooms.get(msg.roomId), blobs = r?.fileSyncBlobs;
+      if (r) r.fileSyncBlobs = undefined;
+      await blobs?.close(); data = { ok: true };
+    }
+    else if (type === 'fileSyncRelease') {
+      const r = rooms.get(msg.roomId);
+      if (!r?.fileSyncEnabled || typeof msg.hash !== 'string' || !/^[a-f0-9]{40}$/.test(msg.hash)) throw new Error('Invalid sync cache release');
+      data = r.fileSyncBlobs ? await r.fileSyncBlobs.release(msg.hash) : true;
+    }
+    else if (type === 'fileSyncSeed' || type === 'fileSyncFetch') {
+      const r = rooms.get(msg.roomId), file = clampFile(msg.file);
+      if (!r?.fileSyncEnabled || netSuspended || r.kicked || !file || !!file.enc !== r.e2e || file.size > 256 * 1024 * 1024
+        || typeof msg.metadata !== 'string' || msg.metadata.length > 192 * 1024) throw new Error('Invalid file sync content');
+      const metadata = Buffer.from(msg.metadata, 'base64');
+      const result = type === 'fileSyncSeed' ? await syncBlobs(r).seed(file, msg.sourcePath, metadata) : await syncBlobs(r).fetch(file, metadata);
+      data = { sourcePath: result.sourcePath, metadata: result.metadata.toString('base64') };
+    }
     else if (type === 'profile') { updateProfile(msg.payload || {}); data = { ok: true }; }
     else if (type === 'historyTrim') {
       const room = rooms.get(msg.roomId); if (!room) throw new Error('Room not active');
@@ -5360,6 +5608,11 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       kickMember(r, String(msg.memberId || ''));
       data = { ok: true };
     }
+    else if (type === 'rotateKey' || type === 'setKeyRotation') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      data = type === 'rotateKey' ? rotateRoomKey(r) : setKeyRotationSchedule(r, msg.plan);
+    }
     else if (type === 'transferOwner') data = transferOwnership(msg.roomId, String(msg.memberId || ''));
     else if (type === 'mute') {
       // Locally hide a member on THIS install (never broadcast, fully reversible).
@@ -5395,6 +5648,7 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       const r = rooms.get(msg.roomId);
       const p = msg.payload || {};
       if (!r) throw new Error('Room is not connected');
+      if (p.action === 'request' && (netSuspended || r.kicked)) throw new Error('Room networking is unavailable');
       if (!r.files.has(p.fileId)) throw new Error('Unknown watch file');
       const state = watchState(r);
       const body = state.sender.next({ ...p, ...state.host.stamp(r.ownerId, r.transferAt) }, r.self.memberId, () => crypto.randomBytes(16).toString('hex'), Date.now(), 3);
@@ -5404,7 +5658,18 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       const hostSig = signBytes(r, Buffer.from(watchHostCanonical(r.topic, body)));
       const frame: WatchMessage = { ...body, pub: r.self.pub, sig, hostSig };
       if (!hostSig || !state.host.allows(frame, r.ownerId, r.transferAt)) throw new Error('Only the watch host controls shared playback');
-      broadcast(r, frame);
+      if (p.action === 'request') {
+        const hostId = state.host.current(r.ownerId, r.transferAt)?.hostId;
+        if (!hostId || !r.members.get(hostId)?.online) throw new Error('Watch host is offline');
+        const outgoing = { ...frame, _g: crypto.randomBytes(6).toString('hex'), _t: RELAY_TTL };
+        markSeen(r, outgoing._g);
+        let sent = false;
+        for (const wire of r.wires.values()) {
+          if (!wire.memberId || r.bans.has(wire.memberId) || !wire.peer?.connected) continue;
+          try { wire.peer.send(encrypt(r.key, outgoing)); sent = true; } catch { /* Try another established relay. */ }
+        }
+        if (!sent) throw new Error('No connected peers could receive the watch request');
+      } else broadcast(r, frame);
       data = { ok: true };
     }
     else if (type === 'srvMirror') {
@@ -5412,6 +5677,8 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       if (r) {
         const at = Number(msg.at) || Date.now();
         const body = String(msg.body || '').slice(0, 200_000);
+        const local = parseMirrorBody(body);
+        if (local?.hostId === r.self.memberId) preparationOwnServers.set(r, new Map(local.instances.map(value => [value.instanceId, value])));
         const sig = signBytes(r, srvMirrorCanonical(r.topic, { hostId: r.self.memberId, at, body }));
         broadcast(r, { t: 'srv-mirror', hostId: r.self.memberId, at, body, pub: r.self.pub, sig });
         // We do NOT store our own mirror: buildState omits it anyway (a member's
@@ -5545,14 +5812,17 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       data = { ok: true };
     }
     else if (type === 'voiceMicTestStop') { micTester.stop(); data = { ok: true }; }
+    else if (type === 'voiceSpeakerTestStart') { const s = sanitizeVoiceSettings(msg.settings); data = await speakerTester.play(s.outputDeviceId, s.masterVolume); }
+    else if (type === 'voiceSpeakerTestStop') { speakerTester.stop(); data = { ok: true }; }
     else if (type === 'screenShareStart') {
+      const settings = validateScreenShareSettings(msg.settings);
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');
       if (netSuspended) throw new Error('Rooms are paused: the VPN is down (kill-switch)');
       if (!r.voice.isActive()) throw new Error('Join the voice channel before sharing your screen.');
       cancelScreenCapture(msg.roomId);
       const epoch = pendingScreenEpochs.get(msg.roomId), networkEpoch = joinNetworkEpoch;
-      const stream = await captureScreen(String(msg.sourceId || ''), !!msg.withAudio);
+      const stream = await captureScreen(String(msg.sourceId || ''), !!msg.withAudio, settings);
       if (epoch !== pendingScreenEpochs.get(msg.roomId) || networkEpoch !== joinNetworkEpoch) {
         stream.getTracks().forEach((t) => t.stop()); throw new Error('Screen sharing was cancelled');
       }
@@ -5560,14 +5830,26 @@ ipcRenderer.on('room-cmd', async (_e, msg: any) => {
       // re-check-and-undo pattern as voiceJoin, or the capture would leak.
       if (netSuspended) { stream.getTracks().forEach((t) => t.stop()); throw new Error('Rooms are paused: the VPN is down (kill-switch)'); }
       if (rooms.get(msg.roomId) !== r || !r.voice.isActive()) { stream.getTracks().forEach((t) => t.stop()); throw new Error('The voice session ended.'); }
-      r.voice.startShare(stream);
+      r.voice.startShare(stream, settings);
       data = { ok: true };
     }
     else if (type === 'screenShareStop') { cancelScreenCapture(msg.roomId); rooms.get(msg.roomId)?.voice.stopShare(); data = { ok: true }; }
+    else if (type === 'screenConfigure') {
+      const r = rooms.get(msg.roomId);
+      if (!r || netSuspended) throw new Error('Screen sharing is not active');
+      await r.voice.configureShare(validateScreenShareSettings(msg.settings));
+      data = { ok: true };
+    }
     else if (type === 'screenWatchStart') {
       const r = rooms.get(msg.roomId);
       if (!r) throw new Error('Room not active');
       r.voice.watchStart(String(msg.memberId || ''));
+      data = { ok: true };
+    }
+    else if (type === 'screenPlayback') {
+      const r = rooms.get(msg.roomId);
+      if (!r) throw new Error('Room not active');
+      r.voice.setScreenPlayback(String(msg.memberId || ''), msg.volume, msg.muted);
       data = { ok: true };
     }
     else if (type === 'screenWatchStop') { rooms.get(msg.roomId)?.voice.watchStop(String(msg.memberId || '')); data = { ok: true }; }

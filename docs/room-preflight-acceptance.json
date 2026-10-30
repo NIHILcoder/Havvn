@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "task": "FUN-05",
+  "recordedAt": "2026-10-26T08:53:03.456Z",
+  "passed": true,
+  "scope": {
+    "physicalMachines": 1,
+    "os": "Windows",
+    "uiRoster": "synthetic",
+    "nativeSync": "isolated profiles over loopback",
+    "realLanHelperStarted": false,
+    "realNatOrTurnMeasured": false,
+    "packagedInstallerRetestedForThisCandidate": false
+  },
+  "sourceSha256": "0c87f9831f164b50e4dd5aadfbd7c1b6899f98a44004941bbb2403e7bcdf3834",
+  "source": {
+    "productSha256": "bceebca5174223614f2133a33f854676bed0c3ff75dc1ec148d9bd6079f01eb8",
+    "guestFiles": {
+      "guest/i18n.ts": "4ae4700c43a52ba3e8619c172726a68b132be9c1a5238c39a00759cf68d5f0ac",
+      "guest/identicon.ts": "85135a319bd7e1b4327acd919735b685915ed9a702ef0a763691bc911abfa2f9",
+      "guest/index.ts": "d14080857c4cc8ff4294daca676801e1da744da49d78b75b107ce6cf1315d728",
+      "guest/mesh.ts": "78e35b01b0a995c251b1043c73f4e572f6c9bc948e5645540f5f99b61ecb4327",
+      "guest/tracker.ts": "f9eb47714cdd36863adea1724a2a42b00bc793a64f815a8e9d31ca572cc04bf9",
+      "guest/ui.ts": "31dc3437f2b3e4d3931d69771a74c200f4cf9822079fea7162b8c6357ebcf135",
+      "guest/voice.ts": "925d5d65c0f4b250863cda7543b3242256e90555b94c884a8d925b317cbad3db",
+      "guest/watch.ts": "9bc1aa101afb49a90043a3ae94a6ab4d701883b6ba1c4093dfe2e3f6ae7c202f"
+    }
+  },
+  "results": {
+    "unitFiles": 7,
+    "unitTests": 224,
+    "uiChecks": [
+      {
+        "id": "localized-action-statuses",
+        "passed": true
+      },
+      {
+        "id": "no-success-banner-or-checkmark",
+        "passed": true
+      },
+      {
+        "id": "unknown-client-disabled-before-elevation",
+        "passed": true
+      },
+      {
+        "id": "centered-css-selection-without-glyph",
+        "passed": true
+      },
+      {
+        "id": "roster-changed-during-confirmation-does-not-start-lan",
+        "passed": true
+      },
+      {
+        "id": "desktop-controls-fit-1100-700-400",
+        "passed": true
+      },
+      {
+        "id": "guest-entry-ready-runtime-rechecked-no-auto-join",
+        "passed": true
+      },
+      {
+        "id": "guest-entry-no-webrtc-runtime-rechecked-no-auto-join",
+        "passed": true
+      },
+      {
+        "id": "guest-entry-no-crypto-runtime-rechecked-no-auto-join",
+        "passed": true
+      }
+    ],
+    "nativeWriters": "passed",
+    "typecheck": "passed",
+    "productionMainRendererGuest": "passed",
+    "lintErrors": 0,
+    "broadLintWarnings": 45,
+    "focusedNewFilesLintErrors": 0
+  },
+  "builtFiles": [
+    {
+      "path": "dist/renderer/bundle.js",
+      "sha256": "de850d9b37ef76906e856c2668c82bb815777acefa39ae009b79d4298a5dd2b1"
+    },
+    {
+      "path": "dist/electron/electron/sharing/room-manager.js",
+      "sha256": "6d09fc06dc64a3d667f76a81e680728a6c87a49b25cc65bf940dbeaa739b6329"
+    },
+    {
+      "path": "docs/room/guest.js",
+      "sha256": "5affbe5ab32d5a248fdb3eb3500892a52f4b6f0c3f99180806c0786e1da40ef3"
+    }
+  ],
+  "reports": [
+    {
+      "path": "artifacts/fun05-tests.log",
+      "sha256": "df4fd73068ed68b890f69d8b62ec018d2b82be209015d3359e27bccd70556075"
+    },
+    {
+      "path": "artifacts/fun05-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/fun05-build.log",
+      "sha256": "d596b77ce30964bb2ebae3c4a586c01116d148d810eb9b513348fee62be78251"
+    },
+    {
+      "path": "artifacts/fun05-renderer-final.log",
+      "sha256": "2ef4dd722bf1116f4db34db35be189205de8735a53b78b7377fe3b1b112f434e"
+    },
+    {
+      "path": "artifacts/fun05-lint.log",
+      "sha256": "577f65400be7a3cae083ea3b194493a3575bfb2c8eb09909ed593eeace69ee06"
+    },
+    {
+      "path": "artifacts/fun05-native-final.log",
+      "sha256": "2a701c52f6c0fdb3f297da91655b286080880cb083925c9cd275ce5b9358370d"
+    },
+    {
+      "path": "artifacts/fun05-ui-final.log",
+      "sha256": "3796e7e3d6a4d3e70c9a0decaa49e49e4bb5a7ca1cd2b9a99a4fcb62a7cd52ac"
+    },
+    {
+      "path": "artifacts/fun05/ui/acceptance.json",
+      "sha256": "54c7134da4ea43f3d468c4741b210c4eca940e7ec8d95c97833fe203a7d1d01f"
+    },
+    {
+      "path": "artifacts/fun05-release-gate.log",
+      "sha256": "78cd9c8f1607a265b4aa19cee5aff6f4cf01731a28679ec62cffe67fa44913cf"
+    }
+  ],
+  "release": {
+    "experimentalFlag": "HAVVN_FILE_SYNC",
+    "removed": false,
+    "FUN01Ready": false,
+    "priorCandidatePhases": "stale",
+    "pending": [
+      "two physical PCs",
+      "real LAN/different networks/strict NAT/user TURN",
+      "real older released build",
+      "release acceptance for the changed candidate"
+    ]
+  }
+}

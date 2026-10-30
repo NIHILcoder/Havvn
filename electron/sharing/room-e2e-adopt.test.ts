@@ -31,7 +31,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { deriveKey, topicHash, encrypt, decrypt, generateRoomCode, codeIsE2E, deriveMemberId } from './room-crypto';
-import { generateRoomSecret, decryptFile } from './room-e2e';
+import { generateRoomSecret, decryptFile, encryptFile } from './room-e2e';
 import { banSnapshotCanonical, ROOM_BAN_LIMIT, type RoomBanSnapshot } from '../../shared/room-bans';
 import { mintKeyPages, contentKeyEpoch, verifyKeyMetadata, verifyKeyPage } from './room-keyring';
 
@@ -249,6 +249,94 @@ beforeAll(() => {
   fs.writeFileSync(sourceFile, 'e2e adopt test content -> deterministic fileId');
 });
 afterAll(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+describe('manual and scheduled owner key rotation', () => {
+  it('moves connected peers to the new invite without banning them and retains old file keys', async () => {
+    const ownerKeys = makeKeys(), memberKeys = makeKeys(), owner = deriveMemberId(ownerKeys.pub), member = deriveMemberId(memberKeys.pub);
+    const code = generateRoomCode(true), secret = generateRoomSecret(), roomId = 'manual-key-rotation';
+    const a = await makeEngine();
+    await cmd(a, joinPayload({ roomId, code, secret, e2e: true, memberId: owner, ownerId: owner, keys: ownerKeys, folder: newFolder() })); a.tracker = H.trackers.at(-1);
+    const b = await makeEngine();
+    await cmd(b, joinPayload({ roomId, code, e2e: true, memberId: member, ownerPin: owner, keys: memberKeys, folder: newFolder() })); b.tracker = H.trackers.at(-1);
+    try {
+      connect(a, b); await flush();
+      await expect(cmd(b, { type: 'rotateKey', roomId })).rejects.toThrow('Only the room owner');
+      await expect(cmd(b, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 1 } })).rejects.toThrow('Only the room owner');
+      const state = await cmd(a, { type: 'rotateKey', roomId }); await flush();
+      expect(state.code).not.toBe(code); expect(codeIsE2E(state.code)).toBe(true);
+      expect((await cmd(b, { type: 'snapshot', roomId })).code).toBe(state.code);
+      expect(state.history.at(-1).type).toBe('rekeyed');
+      expect(e2ePersists(a).at(-1).secret).not.toBe(secret);
+      expect(e2ePersists(b).at(-1).secret).toBe(e2ePersists(a).at(-1).secret);
+      expect(e2ePersists(b).at(-1).prevSecrets).toContain(secret);
+      const cipher = path.join(dir, 'manual-before-rotation.enc'), plain = path.join(dir, 'manual-after-rotation.bin');
+      await encryptFile(sourceFile, cipher, secret);
+      await decryptFile(cipher, plain, e2ePersists(b).at(-1).prevSecrets.find((s: string) => s === secret));
+      expect(fs.readFileSync(plain)).toEqual(fs.readFileSync(sourceFile));
+      for (const engine of [a, b]) expect(engine.sent.filter(e => e.channel === 'room-bans').at(-1)?.payload.bans ?? []).not.toContain('');
+      expect(state.members.some((m: any) => m.memberId === member)).toBe(true);
+      const shared = await cmd(a, { type: 'addFiles', roomId, paths: [sourceFile] });
+      expect(shared.files[0].keyEpoch).toBe(contentKeyEpoch(e2ePersists(a).at(-1).secret));
+      await cmd(a, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 2 } });
+      await cmd(a, { type: 'transferOwner', roomId, memberId: member }); await flush();
+      expect((await cmd(a, { type: 'snapshot', roomId })).keyRotation).toBeUndefined();
+      expect((await cmd(b, { type: 'snapshot', roomId })).keyRotation).toBeUndefined();
+      expect(a.sent.filter(e => e.channel === 'room-key-rotation').at(-1)?.payload.state).toBeUndefined();
+    } finally { await cmd(a, { type: 'leave', roomId }); await cmd(b, { type: 'leave', roomId }); }
+  }, 15_000);
+
+  it('runs exactly the requested number of rotations and stops when cancelled', async () => {
+    vi.useFakeTimers();
+    const roomId = 'scheduled-key-rotation', keys = makeKeys(), owner = deriveMemberId(keys.pub), code = generateRoomCode();
+    const engine = await makeEngine();
+    try {
+      await cmd(engine, joinPayload({ roomId, code, memberId: owner, ownerId: owner, keys, folder: newFolder() }));
+      const started = await cmd(engine, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 2 } });
+      expect(started.keyRotation.remaining).toBe(2);
+      await vi.advanceTimersByTimeAsync(61_000);
+      const once = await cmd(engine, { type: 'snapshot', roomId });
+      expect(once.code).not.toBe(code); expect(once.keyRotation.remaining).toBe(1);
+      await vi.advanceTimersByTimeAsync(61_000);
+      const twice = await cmd(engine, { type: 'snapshot', roomId });
+      expect(twice.code).not.toBe(once.code); expect(twice.keyRotation).toBeUndefined();
+      await cmd(engine, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 0 } });
+      await cmd(engine, { type: 'setKeyRotation', roomId, plan: null });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect((await cmd(engine, { type: 'snapshot', roomId })).code).toBe(twice.code);
+      expect(engine.sent.filter(e => e.channel === 'room-rekey')).toHaveLength(2);
+      const saved = (await cmd(engine, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 1 } })).keyRotation;
+      await cmd(engine, { type: 'leave', roomId });
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(engine.sent.filter(e => e.channel === 'room-rekey')).toHaveLength(2);
+      const join = joinPayload({ roomId, code: twice.code, memberId: owner, ownerId: owner, keys, folder: newFolder() });
+      Object.assign(join.payload, { keyRotation: saved });
+      const restored = await cmd(engine, join);
+      expect(restored.keyRotation.remaining).toBe(1); expect(restored.keyRotation.nextAt).toBeGreaterThan(Date.now());
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect((await cmd(engine, { type: 'snapshot', roomId })).keyRotation).toBeUndefined();
+      expect(engine.sent.filter(e => e.channel === 'room-rekey')).toHaveLength(3);
+    } finally { await cmd(engine, { type: 'leave', roomId }); vi.useRealTimers(); }
+  }, 15_000);
+
+  it('refuses legacy connected clients and pauses a failed scheduled rotation without consuming it', async () => {
+    vi.useFakeTimers();
+    const roomId = 'rotation-compatibility', keys = makeKeys(), owner = deriveMemberId(keys.pub), code = generateRoomCode();
+    const engine = await makeEngine();
+    try {
+      await cmd(engine, joinPayload({ roomId, code, memberId: owner, ownerId: owner, keys, folder: newFolder() })); engine.tracker = H.trackers.at(-1);
+      await cmd(engine, { type: 'setKeyRotation', roomId, plan: { intervalMinutes: 1, repetitions: 1 } });
+      const peer = hostilePeer(engine), peerKeys = makeKeys();
+      const greet = () => peer.send(helloFrame(code, { memberId: deriveMemberId(peerKeys.pub), pub: peerKeys.pub }));
+      greet(); await vi.advanceTimersByTimeAsync(10);
+      await expect(cmd(engine, { type: 'rotateKey', roomId })).rejects.toThrow('Update all connected participants');
+      await vi.advanceTimersByTimeAsync(40_000); greet();
+      await vi.advanceTimersByTimeAsync(21_000);
+      const state = await cmd(engine, { type: 'snapshot', roomId });
+      expect(state.code).toBe(code);
+      expect(state.keyRotation).toMatchObject({ remaining: 1, nextAt: 0, error: expect.stringContaining('Update all connected participants') });
+    } finally { await cmd(engine, { type: 'leave', roomId }); vi.useRealTimers(); }
+  }, 15_000);
+});
 
 describe('invite code E2E marker', () => {
   it('generateRoomCode marks E2E rooms and codeIsE2E parses it', () => {

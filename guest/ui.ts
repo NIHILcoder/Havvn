@@ -1,4 +1,5 @@
 import { watchReadiness, type WatchReadiness } from '../shared/room-watch-host';
+import { copyGuestText } from './clipboard';
 /**
  * Guest page UI — Blaze HUD, three regions (People+Voice | Stage | Chat).
  * The room shell is mounted once; subsequent gossip only patches dirty panes
@@ -17,6 +18,8 @@ import { CHAT_REACT_EMOJIS } from '../shared/reactions';
 import { roomChatPage } from '../shared/room-chat-history';
 import { parseFileRequest } from '../shared/room-chat-tools';
 import { playMagnet, webtorrentOk, type WatchHandle } from './watch';
+import { checkGuestEntry } from '../shared/room-preflight';
+import { publicRoomName } from '../shared/profile';
 
 const ID_KEY = 'havvn.guest.identity.v1';
 const NAME_KEY = 'havvn.guest.name';
@@ -175,6 +178,7 @@ export class GuestApp {
   private gate(): void {
     this.view = 'gate';
     const loc = this.loc();
+    const check = checkGuestEntry({ crypto: !!globalThis.crypto?.subtle, webrtc: !!window.RTCPeerConnection });
     let name = '';
     try { name = localStorage.getItem(NAME_KEY) || ''; } catch { /* ignore */ }
     this.root.innerHTML = `
@@ -187,12 +191,14 @@ export class GuestApp {
         <div class="card">
           <p class="tag">${this.L('tagline')}</p>
           <label class="lbl">${this.L('name')}<input id="name" maxlength="64" placeholder="${esc(this.L('namePh'))}" value="${esc(name)}" autocomplete="nickname"/></label>
+          <p class="hint">${esc(this.L('nameHint'))}</p>
           <label class="lbl">${this.L('invite')}<input id="invite" placeholder="${esc(this.L('invitePh'))}" value="${esc(loc.invite)}" autocomplete="off" spellcheck="false"/></label>
-          <button type="button" class="btn" data-act="join">${this.L('join')}</button>
+          <button type="button" class="btn" data-act="join" ${check.canAttempt ? '' : 'disabled'}>${this.L('join')}</button>
+          <p class="hint" data-entry-status="${check.status}" role="status">${this.L(check.canAttempt ? 'entryNetworkUnmeasured' : check.reason === 'browser-crypto' ? 'cryptoFail' : 'webrtcFail')}</p>
           <p class="hint">${this.L('browserCapabilities')}</p>
           <p class="hint">${this.L('inviteTrust')}</p>
           <p class="hint">${this.L('inviteAccess')}</p>
-          <p class="hint" id="hint">${this.L('needHost')}</p>
+          <p class="hint" id="hint">${check.canAttempt ? this.L('needHost') : ''}</p>
         </div>
       </div>`;
   }
@@ -213,17 +219,23 @@ export class GuestApp {
     const nameEl = $('#name', this.root) as HTMLInputElement | null;
     const invEl = $('#invite', this.root) as HTMLInputElement | null;
     const hint = $('#hint', this.root);
-    const name = (nameEl?.value || '').trim() || this.L('guest');
+    const name = (nameEl?.value || '').trim();
     const invite = (invEl?.value || '').trim();
     if (invite.length < 8) { if (hint) hint.textContent = this.L('badInvite'); return; }
-    if (!globalThis.crypto?.subtle) { if (hint) hint.textContent = this.L('cryptoFail'); return; }
-    if (!window.RTCPeerConnection) { if (hint) hint.textContent = this.L('webrtcFail'); return; }
-    try { localStorage.setItem(NAME_KEY, name); } catch { /* ignore */ }
+    const check = checkGuestEntry({ crypto: !!globalThis.crypto?.subtle, webrtc: !!window.RTCPeerConnection });
+    if (!check.canAttempt) {
+      const entry = this.root.querySelector<HTMLElement>('[data-entry-status]');
+      if (entry) { entry.dataset.entryStatus = check.status; entry.textContent = this.L(check.reason === 'browser-crypto' ? 'cryptoFail' : 'webrtcFail'); }
+      const button = this.root.querySelector<HTMLButtonElement>('[data-act="join"]'); if (button) button.disabled = true;
+      if (hint) hint.textContent = ''; return;
+    }
     if (hint) hint.textContent = this.L('joining');
     const joinBtn = this.root.querySelector('[data-act="join"]') as HTMLButtonElement | null;
     if (joinBtn) { joinBtn.disabled = true; joinBtn.textContent = this.L('joining'); }
     try {
       const identity = await loadIdentity();
+      const chosenName = publicRoomName(name, identity.memberId);
+      try { localStorage.setItem(NAME_KEY, chosenName); } catch { /* ignore */ }
       let seed = '';
       try { seed = localStorage.getItem(SEED_KEY) || ''; } catch { /* ignore */ }
       if (!seed) {
@@ -232,7 +244,7 @@ export class GuestApp {
       }
       const loc = this.loc();
       const room = new GuestRoom({
-        identity, name, avatarSeed: seed,
+        identity, name: chosenName, avatarSeed: seed,
         iceServers: [...PUBLIC_STUN_SERVERS],
         trackers: loc.trackers,
         onChange: () => this.queuePaint(),
@@ -645,10 +657,7 @@ export class GuestApp {
     if (t.dataset.reply) { this.replyTo = t.dataset.reply; if (this.room) this.patchReply(this.room.snapshot()); return; }
     if (t.dataset.react && t.dataset.emoji) { void this.room?.toggleReact(t.dataset.react, t.dataset.emoji); return; }
     if (t.dataset.copy) {
-      void navigator.clipboard.writeText(t.dataset.copy).then(() => {
-        t.textContent = this.L('copied');
-        setTimeout(() => { t.textContent = this.L('copy'); }, 1200);
-      }).catch(() => { /* ignore */ });
+      void copyGuestText(t, t.dataset.copy, { copied: this.L('copied'), failed: this.L('copyFailed') });
     }
   }
 

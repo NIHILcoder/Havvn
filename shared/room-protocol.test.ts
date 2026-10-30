@@ -5,10 +5,42 @@ import { gossipProofs, currentHelloProofs } from './room-message-auth';
 import { WatchSender, WatchReceiver, watchCanonical } from './room-watch-sync';
 import { generateIdentityWeb, verifyWeb, signWeb } from './room-web-crypto';
 import { lanGenesisCanonical, lanStateCanonical, lanSignalCanonical, lanAdmitCanonical, lanEvictCanonical, lanReachCanonical } from './lan-protocol';
+import { DOCUMENT_CAPABILITY, documentWireCanonical, type DocumentWireBody } from './room-documents';
 
 const id = 'a'.repeat(32), session = 'b'.repeat(32), now = 1_000_000;
 const watch = () => new WatchSender().next({ fileId: 'movie', action: 'join', position: 0 }, id, () => session, now)!;
 describe('room protocol boundary', () => {
+  it('accepts victim-free rekeys while keeping the signed code and empty target authenticated', () => {
+    const keys = crypto.generateKeyPairSync('ed25519');
+    const pub = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const by = crypto.createHash('sha256').update(pub).digest('hex').slice(0, 32);
+    const canonical = Buffer.from(JSON.stringify(['rekey', 'room', 'new-code', '', by]));
+    const frame = { t: 'rekey', by, pub, sig: crypto.sign(null, canonical, keys.privateKey).toString('base64'), newCode: 'new-code', kickedId: '', kickedName: '' };
+    expect(validateGossip(frame)).not.toBeNull();
+    const proof = gossipProofs(frame, 'room', by)[0];
+    expect(crypto.verify(null, proof.bytes, pub, Buffer.from(proof.sig, 'base64'))).toBe(true);
+    for (const change of [{ kickedId: 'victim' }, { newCode: 'other-code' }]) {
+      const altered = gossipProofs({ ...frame, ...change }, 'room', by)[0];
+      expect(crypto.verify(null, altered.bytes, pub, Buffer.from(altered.sig, 'base64'))).toBe(false);
+    }
+    expect(validateGossip({ ...frame, kickedId: undefined })).toBeNull();
+    expect(validateGossip({ t: 'kicked', by, pub, sig: frame.sig, targetId: '' })).toBeNull();
+  });
+  it('authenticates v2 document handoff frames and rejects legacy or malformed handoffs', async () => {
+    const identity = await generateIdentityWeb();
+    const body: DocumentWireBody = { kind: 'prepare-handoff', nonce: crypto.randomUUID(), items: [] };
+    const bytes = documentWireCanonical('room-A', identity.memberId, id, body);
+    const frame = { t: DOCUMENT_CAPABILITY, memberId: identity.memberId, to: id, body, pub: identity.pub, sig: crypto.sign(null, bytes, identity.priv).toString('base64') };
+    expect(validateGossip(frame)).not.toBeNull();
+    const proofs = gossipProofs(frame, 'room-A', id); expect(proofs).toHaveLength(1);
+    expect(crypto.verify(null, proofs[0].bytes, identity.pub, Buffer.from(proofs[0].sig, 'base64'))).toBe(true);
+    const altered = gossipProofs({ ...frame, body: { kind: 'handoff-ready', nonce: body.nonce } }, 'room-A', id);
+    expect(crypto.verify(null, altered[0].bytes, identity.pub, Buffer.from(altered[0].sig, 'base64'))).toBe(false);
+    expect(validateGossip({ ...frame, t: 'room-documents-v1' })).toBeNull();
+    expect(validateGossip({ ...frame, body: { ...body, nonce: '../nonce' } })).toBeNull();
+    const item = { documentId: crypto.randomUUID(), seq: 0, head: 'c'.repeat(64), policyId: 'd'.repeat(64) };
+    expect(validateGossip({ ...frame, body: { ...body, items: [item, item] } })).toBeNull();
+  });
   it('accepts optional manifest markers from updated peers and retains older hellos', () => {
     for (const value of [undefined, false, true]) {
       expect(validateGossip({ t: 'hello', memberId: id, ...(value === undefined ? {} : { manifestFull: value }) })).not.toBeNull();

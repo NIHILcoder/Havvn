@@ -7,6 +7,7 @@ import { VOICE_CONNECT_TIMEOUT_MS, VOICE_RETRY_DELAYS_MS } from '../../shared/ro
 class Track {
   kind = 'audio'; enabled = true; readyState = 'live'; onended: (() => void) | null = null;
   stop = vi.fn(() => { this.readyState = 'ended'; });
+  applyConstraints = vi.fn(async (_constraints: MediaTrackConstraints) => {});
   clone() { const t = new Track(); t.enabled = this.enabled; return t; }
 }
 class Stream {
@@ -69,9 +70,9 @@ beforeEach(() => {
   vi.stubGlobal('RTCPeerConnection', Peer); vi.stubGlobal('Audio', AudioElement);
 });
 afterEach(() => { sessions.splice(0).forEach(s => s.leave()); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.clearAllTimers(); vi.useRealTimers(); });
-function setup(kind: 'desktop' | 'guest') {
+function setup(kind: 'desktop' | 'guest', settings: Partial<ReturnType<typeof defaultVoiceSettings>> = {}) {
   const hooks = { selfId: 'A', iceServers: [], sendSignal: vi.fn(), announce: vi.fn(), announceShare: vi.fn(), sendLoopback: vi.fn(), onChange: vi.fn(), warn: vi.fn(), log: vi.fn() };
-  const s = kind === 'desktop' ? new VoiceSession(hooks, () => Date.now(), () => ({ ...defaultVoiceSettings(), noiseSuppressionMode: 'off' })) : new GuestVoice(hooks);
+  const s = kind === 'desktop' ? new VoiceSession(hooks, () => Date.now(), () => ({ ...defaultVoiceSettings(), noiseSuppressionMode: 'off', ...settings })) : new GuestVoice(hooks);
   sessions.push(s);
   const participants = () => s instanceof VoiceSession ? s.getState().participants : s.participants();
   return { s, hooks, participants };
@@ -215,13 +216,156 @@ it('applies screen bitrate to current and mid-share peers without recapturing me
   desktop.setScreenBitrate(1000); await desktop.join(); desktop.onPeerState('B', true, false, 1);
   const video = new Track(); video.kind = 'video'; desktop.startShare(media(new Stream([video]))); await flush();
   const first = Peer.all[0].senders.find(sender => sender.track.kind === 'video')!;
-  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1000000, maxFramerate: 15 }] }));
+  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1000000, maxFramerate: 30 }] }));
   desktop.setScreenBitrate(1750); await flush();
-  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1750000, maxFramerate: 15 }] }));
+  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1750000, maxFramerate: 30 }] }));
   desktop.onPeerState('C', true, false, 2); await flush();
   const next = Peer.all[1].senders.find(sender => sender.track.kind === 'video')!;
-  expect(next.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1750000, maxFramerate: 15 }] }));
+  expect(next.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1750000, maxFramerate: 30 }] }));
   expect(capture).toHaveBeenCalledTimes(1);
   expect(() => desktop.setScreenBitrate(NaN)).toThrow('Invalid');
   expect(() => desktop.setScreenBitrate(249)).toThrow('Invalid');
+});
+
+it('applies a 60 FPS selection to existing, reconnecting and mid-share peers within the room bitrate cap', async () => {
+  const { s } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); desktop.onPeerState('B', true, false, 1);
+  const track = new Track(); track.kind = 'video';
+  desktop.startShare(media(new Stream([track])), { height: 1440, fps: 60, bitrateKbps: 8000 }); await flush();
+  const first = Peer.all[0].senders.find(sender => sender.track.kind === 'video')!;
+  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 2500000, maxFramerate: 60 }] }));
+  desktop.setScreenBitrate(12000); Peer.all[0].state('connected'); await flush();
+  expect(first.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 8000000, maxFramerate: 60 }] }));
+  desktop.onPeerState('C', true, false, 2); await flush();
+  const next = Peer.all[1].senders.find(sender => sender.track.kind === 'video')!;
+  expect(next.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 8000000, maxFramerate: 60 }] }));
+  desktop.setScreenBitrate(1000); await flush();
+  expect(next.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1000000, maxFramerate: 60 }] }));
+  expect(capture).toHaveBeenCalledTimes(1);
+});
+
+it('lets a viewer forward 60 FPS instead of imposing the former 15 FPS cap', async () => {
+  const { s } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); const track = new Track(); track.kind = 'video';
+  desktop.startShare(media(new Stream([track])), { height: 1080, fps: 60, bitrateKbps: 0 });
+  desktop.watchStart('A'); await flush();
+  expect(Peer.all[0].senders[0].setParameters).toHaveBeenCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 10000000, maxFramerate: 60 }] }));
+});
+
+it('changes live capture quality without restarting voice, sharing or the viewer', async () => {
+  const { s, hooks } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); desktop.onPeerState('B', true, false, 1);
+  const track = new Track(); track.kind = 'video';
+  desktop.startShare(media(new Stream([track]))); desktop.watchStart('A'); await flush();
+  const originalPeers = [...Peer.all], announcements = hooks.announceShare.mock.calls.length;
+  desktop.setMuted(true);
+  await desktop.configureShare({ height: 720, fps: 60, bitrateKbps: 1000 }); await flush();
+  expect(track.applyConstraints).toHaveBeenCalledWith({ width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 60 } });
+  expect(desktop.getState()).toMatchObject({ inVoice: true, muted: true, sharing: true, shareSettings: { height: 720, fps: 60, bitrateKbps: 1000 } });
+  expect(Peer.all).toEqual(originalPeers);
+  for (const peer of Peer.all) expect(peer.close).not.toHaveBeenCalled();
+  expect(track.stop).not.toHaveBeenCalled(); expect(capture).toHaveBeenCalledTimes(1);
+  expect(hooks.announceShare).toHaveBeenCalledTimes(announcements);
+  expect(Peer.all[0].senders.find(sender => sender.track.kind === 'video')!.setParameters)
+    .toHaveBeenLastCalledWith(expect.objectContaining({ encodings: [{ maxBitrate: 1000000, maxFramerate: 60 }] }));
+});
+
+it('keeps the previous share and quality when constraints fail, and accepts a retry', async () => {
+  const { s } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); const track = new Track(); track.kind = 'video';
+  desktop.startShare(media(new Stream([track])));
+  track.applyConstraints.mockRejectedValueOnce(new Error('unsupported capture constraints'));
+  await expect(desktop.configureShare({ height: 2160, fps: 60, bitrateKbps: 0 })).rejects.toThrow('unsupported');
+  expect(desktop.getState()).toMatchObject({ sharing: true, shareSettings: { height: 1080, fps: 30 } });
+  expect(track.stop).not.toHaveBeenCalled();
+  await desktop.configureShare({ height: 480, fps: 15, bitrateKbps: 0 });
+  expect(desktop.getState().shareSettings?.height).toBe(480);
+});
+
+it('does not apply a late quality result to a stopped or replacement share', async () => {
+  const { s } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); const previous = new Track(); previous.kind = 'video';
+  desktop.startShare(media(new Stream([previous])));
+  let finish!: () => void;
+  previous.applyConstraints.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  const changing = desktop.configureShare({ height: 480, fps: 15, bitrateKbps: 500 });
+  await expect(desktop.configureShare({ height: 720, fps: 30, bitrateKbps: 0 })).rejects.toThrow('already');
+  desktop.stopShare(); const next = new Track(); next.kind = 'video';
+  desktop.startShare(media(new Stream([next])), { height: 1440, fps: 60, bitrateKbps: 2500 });
+  finish(); await expect(changing).rejects.toThrow('not active');
+  expect(desktop.getState()).toMatchObject({ sharing: true, shareSettings: { height: 1440, fps: 60 } });
+  expect(next.stop).not.toHaveBeenCalled();
+});
+
+it('changes screen audio separately from the microphone and honours deafen', async () => {
+  const { s } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join(); desktop.onPeerState('B', true, false, 1);
+  const peer = (desktop as any).peers.get('B');
+  const mic = new AudioElement(), screen = new AudioElement();
+  (mic as any).volume = .8; (screen as any).volume = 1;
+  peer.audioEl = mic; peer.shareAudioEl = screen;
+  desktop.setScreenPlayback('B', .25, true);
+  expect(screen).toMatchObject({ volume: .25, muted: true });
+  expect(mic).toMatchObject({ volume: .8, muted: false });
+  desktop.setDeafened(true); desktop.setScreenPlayback('B', .5, false);
+  expect(screen.muted).toBe(true);
+  desktop.setDeafened(false);
+  expect(screen).toMatchObject({ volume: .5, muted: false });
+  expect(() => desktop.setScreenPlayback('B', NaN, false)).toThrow('Invalid');
+  expect(capture).toHaveBeenCalledTimes(1);
+});
+
+it('applies the global volume and output device to current screen audio while keeping its own level', async () => {
+  const settings = { masterVolume: .5, outputDeviceId: 'first' };
+  const { s } = setup('desktop', settings), desktop = s as VoiceSession;
+  await desktop.join(); desktop.onPeerState('B', true, false, 1);
+  const peer = (desktop as any).peers.get('B');
+  const screen = Object.assign(new AudioElement(), { volume: 1, setSinkId: vi.fn(async (_id: string) => {}) });
+  peer.shareAudioEl = screen;
+  desktop.setScreenPlayback('B', .4, false); desktop.applySettings();
+  expect(screen.volume).toBeCloseTo(.2);
+  settings.masterVolume = 0; settings.outputDeviceId = 'headphones'; desktop.applySettings();
+  expect(screen.volume).toBe(0);
+  expect(screen.setSinkId).toHaveBeenLastCalledWith('headphones');
+  settings.masterVolume = .75; desktop.applySettings();
+  expect(screen.volume).toBeCloseTo(.3);
+});
+
+async function selfScreen() {
+  const { s, hooks } = setup('desktop'), desktop = s as VoiceSession;
+  await desktop.join();
+  const track = new Track(); track.kind = 'video';
+  desktop.startShare(media(new Stream([track]))); desktop.watchStart('A');
+  return { desktop, hooks, pc: Peer.all[0] };
+}
+
+it('retains loopback ICE until a renderer answer has finished applying', async () => {
+  const { desktop, pc } = await selfScreen();
+  let complete!: () => void;
+  pc.setRemoteDescription.mockImplementationOnce(value => new Promise<void>(resolve => {
+    complete = () => { pc.remoteDescription = value; resolve(); };
+  }));
+  pc.addIceCandidate.mockImplementation(async () => { if (!pc.remoteDescription) throw Error('No remote description'); });
+  desktop.onLoopbackSignal('A', 'ice', { candidate: 'early' });
+  desktop.onLoopbackSignal('A', 'answer', { type: 'answer', sdp: 'renderer' });
+  await flush(); expect(pc.addIceCandidate).not.toHaveBeenCalled();
+  complete(); await flush();
+  expect(pc.addIceCandidate).toHaveBeenCalledExactlyOnceWith({ candidate: 'early' });
+});
+
+it('does not offer or signal an error after a loopback is closed mid-negotiation', async () => {
+  const { desktop, pc, hooks } = await selfScreen();
+  let complete!: () => void;
+  pc.setLocalDescription.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+  const negotiation = pc.onnegotiationneeded!(); desktop.watchStop('A'); complete(); await negotiation;
+  expect(hooks.sendLoopback).not.toHaveBeenCalled(); expect(hooks.log).not.toHaveBeenCalled();
+});
+
+it('a late closed event from a replaced loopback cannot remove the new watch', async () => {
+  const { desktop, pc: previous } = await selfScreen();
+  desktop.watchStart('A'); const current = Peer.all[1];
+  previous.state('closed');
+  desktop.onLoopbackSignal('A', 'answer', { type: 'answer', sdp: 'current' }); await flush();
+  expect(current.setRemoteDescription).toHaveBeenCalledExactlyOnceWith({ type: 'answer', sdp: 'current' });
+  expect(current.close).not.toHaveBeenCalled();
 });
