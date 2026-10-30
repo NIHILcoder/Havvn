@@ -154,15 +154,16 @@ async function doStop(downloadId: string): Promise<void> {
   if (shareJobs.has(downloadId)) shareEpochs.set(downloadId, (shareEpochs.get(downloadId) ?? 0) + 1);
   const entry = shares.get(downloadId), c = client;
   if (!entry || !c) { releaseEmptyClient(); return; }
-  shares.delete(downloadId);
   try {
     // Different download entries can refer to the same swarm.
-    if (![...shares.values()].some(other => other.infoHash === entry.infoHash)) {
+    if (![...shares.entries()].some(([id, other]) => id !== downloadId && other.infoHash === entry.infoHash)) {
       const torrent = c.torrents.find((t: any) => t.infoHash === entry.infoHash);
       if (torrent) await new Promise<void>((resolve, reject) => {
         void Promise.resolve(c.remove(torrent, (error?: Error) => error ? reject(error) : resolve())).catch(reject);
       });
     }
+    // A failed removal must keep its entry so a subsequent Stop can retry it.
+    if (shares.get(downloadId) === entry) shares.delete(downloadId);
   } finally { releaseEmptyClient(); }
 }
 

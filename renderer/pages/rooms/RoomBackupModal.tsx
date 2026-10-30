@@ -1,3 +1,4 @@
+import { ErrorMessage } from '../../components/ErrorMessage';
 import { createPortal } from 'react-dom';
 import { useHostWindow } from '../../utils/hostWindow';
 import React, { useRef, useState } from 'react';
@@ -36,7 +37,7 @@ export function RoomBackupModal({ mode, roomId, onClose, onDone }: { roomId?: st
         {!importing && <label>{t('rooms.data.repeatPassword')}<input type="password" autoComplete="off" value={repeat} maxLength={1024} disabled={busy} onChange={event => setRepeat(event.target.value)} aria-invalid={!!repeat && repeat !== password} /></label>}
         <label className="room-data-toggle"><Toggle checked={approved} disabled={busy} onChange={setApproved} ariaLabel={t(importing ? 'rooms.data.restoreConsent' : 'rooms.data.backupConsent')} /><span>{t(importing ? 'rooms.data.restoreConsent' : 'rooms.data.backupConsent')}</span></label>
       </>}
-      {error && <div role="alert" className="room-data-error">{error}</div>}
+      {error && <div role="alert" className="room-data-error"><ErrorMessage error={error} /></div>}
     </div>
   </Modal>, host.document.body);
 }

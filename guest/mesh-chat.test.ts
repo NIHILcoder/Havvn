@@ -2,16 +2,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { GuestRoom } from './mesh';
+import { defaultRoomName } from '../shared/profile';
 import { deriveKey, topicHash, encrypt, decrypt, deriveMemberId } from '../electron/sharing/room-crypto';
 import { generateIdentityWeb } from '../shared/room-web-crypto';
-import { chatCanonical, chatContextCanonical, editCanonical } from '../shared/room-canonicals';
+import { chatCanonical, chatContextCanonical, editCanonical, rekeyCanonical } from '../shared/room-canonicals';
 import { RoomIngressBudget } from '../shared/room-protocol';
 import { WatchSender, watchCanonical } from '../shared/room-watch-sync';
 import { chatBackfillPages } from '../shared/room-chat-history';
 import { chatPinsCanonical } from '../shared/room-chat-pins';
 
 vi.mock('./tracker', () => ({ startRendezvous: vi.fn() }));
-vi.mock('./voice', () => ({ GuestVoice: class { participants() { return []; } reannounce() {} } }));
+vi.mock('./voice', () => ({ GuestVoice: class { participants() { return []; } reannounce() {} onMemberGone() {} } }));
 const CODE = 'swift-amber-otter-comet-4821';
 const topic = topicHash(CODE), key = deriveKey(CODE);
 const pair = crypto.generateKeyPairSync('ed25519');
@@ -33,6 +34,28 @@ async function fixture() {
 }
 
 describe('browser guest retained chat protocol', () => {
+  it('verifies and forwards a victim-free owner rekey before changing its key', async () => {
+    const f = await fixture(); f.internals.ownerId = memberId; f.internals.code = CODE;
+    const nextCode = 'calm-clever-cosmic-otter-comet-58219', forwarded: string[] = [];
+    f.internals.wires.set(2, { id: 2, memberId: 'other', wire: { connected: true, send: (token: string) => forwarded.push(token), destroy: vi.fn() } });
+    const msg = { t: 'rekey', by: memberId, newCode: nextCode, kickedId: '', kickedName: '', pub, sig: '' };
+    msg.sig = sign(rekeyCanonical(topic, msg));
+    await f.frame({ ...msg, newCode: 'tampered' });
+    expect(f.internals.code).toBe(CODE); expect(forwarded).toEqual([]);
+    await f.frame(msg);
+    expect(f.internals.code).toBe(nextCode);
+    expect(f.internals.bans.has('')).toBe(false);
+    expect(decrypt(key, forwarded[0])).toMatchObject(msg);
+    expect(Buffer.from(f.internals.key)).toEqual(deriveKey(nextCode));
+  });
+  it('announces a stable public alias when no nickname is supplied', async () => {
+    const identity = await generateIdentityWeb();
+    const make = (name: string) => new GuestRoom({ identity, name, avatarSeed: 'a', trackers: [], onChange: vi.fn() });
+    const first = make(' '), second = make('');
+    expect((first as any).helloMsg(false).name).toBe(defaultRoomName(identity.memberId));
+    expect((second as any).helloMsg(false).name).toBe((first as any).helloMsg(false).name);
+    expect((make('Алиса') as any).helloMsg(false).name).toBe('Алиса');
+  });
   it('displays and re-serves authenticated pins even when their messages leave chat; rejects tampering and stale owner data', async () => {
     const f = await fixture(); f.internals.ownerId = memberId;
     const pins = { t: 'chat-pins-v1' as const, by: memberId, ownerAt: 0, at: Date.now(), pub, sig: '', items: [{ message: message(1), topic }] };

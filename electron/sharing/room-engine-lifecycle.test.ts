@@ -13,6 +13,9 @@ import { ROOM_BAN_LIMIT } from '../../shared/room-bans';
 import { mergeContentKeys, completeContentKeys } from './room-keyring';
 import { retainRoomChat } from '../../shared/room-chat-history';
 import { RoomConnectionMonitor } from '../../shared/room-diagnostics';
+import { restoreKeyRotationSchedule } from '../../shared/room-key-rotation';
+import { publicRoomName } from '../../shared/profile';
+import { validateScreenShareSettings } from '../../shared/screen-share';
 
 // Exercise the real preload functions without importing its hardware/network bootstrap.
 const source = readFileSync(new URL('./room-engine.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
@@ -59,9 +62,10 @@ function fixture() {
     buildState: (r: any) => ({ roomId: r.roomId, members: [{ have: [] }] }), pushState: statePush,
     connectionMonitor, observeConnection: (r: any, event: any) => connectionMonitor(r).observe(event), sampleChannelPath: vi.fn(),
     removeFileClient: vi.fn(), refreshFileBudget: vi.fn(), pushResourceStates: vi.fn(), applyResourcePolicy: vi.fn(), receiveQueue: { cancelWaiting: vi.fn() }, cancelReceives: vi.fn(), teardownLan: vi.fn(), closeStreamServers: vi.fn(), broadcast: vi.fn(), attachWire: vi.fn(), log: vi.fn(),
-    assertCompatibleOwnerPin, retainRoomChat, ROOM_PROTOCOL_VERSION, DESKTOP_ROOM_CAPABILITIES,
+    assertCompatibleOwnerPin, retainRoomChat, ROOM_PROTOCOL_VERSION, DESKTOP_ROOM_CAPABILITIES, restoreKeyRotationSchedule, armKeyRotationTimer: vi.fn(), clearKeyRotationTimer: vi.fn(), publicRoomName,
     cancelScreenCapture: (id: string) => pendingScreenEpochs.set(id, (pendingScreenEpochs.get(id) ?? 0) + 1),
-    captureScreen: () => new Promise(resolve => { resolveCapture = resolve; }),
+    validateScreenShareSettings,
+    captureScreen: vi.fn(() => new Promise(resolve => { resolveCapture = resolve; })),
     navigator: { mediaDevices: { enumerateDevices: vi.fn(async () => [{ deviceId: 'one', kind: 'audioinput', label: '' }]), getUserMedia: vi.fn() } },
   };
   const js = ts.transpileModule(`${tracker}\n${restart}\n${close}\n${start}\n${devices}\nasync function screenStart(msg) {let data; ${screen}\nreturn data;}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
@@ -131,6 +135,23 @@ describe('room engine setup and teardown', () => {
 });
 
 describe('late screen capture', () => {
+  it('carries selected quality through capture and into the voice session', async () => {
+    const f = fixture(); f.start();
+    const settings = { height: 720, fps: 60, bitrateKbps: 1000 };
+    const pending = f.context.screenStart({ roomId: 'room', sourceId: 'window:12:0', withAudio: true, settings });
+    expect(f.context.captureScreen).toHaveBeenCalledWith('window:12:0', true, settings);
+    const stream = { getTracks: () => [] }; f.resolveCapture(stream); await pending;
+    expect(f.share).toHaveBeenCalledWith(stream, settings);
+    const left = f.context.leaveRoom('room'); await vi.advanceTimersByTimeAsync(200); await left;
+  });
+
+  it('rejects invalid quality before acquiring a capture', async () => {
+    const f = fixture(); f.start();
+    await expect(f.context.screenStart({ roomId: 'room', settings: { fps: 1000 } })).rejects.toThrow('Invalid');
+    expect(f.context.captureScreen).not.toHaveBeenCalled();
+    const left = f.context.leaveRoom('room'); await vi.advanceTimersByTimeAsync(200); await left;
+  });
+
   it.each(['stop', 'leave and reopen', 'suspend and resume'])('stops the returned stream after %s', async (action) => {
     const f = fixture(); f.start();
     const pending = f.context.screenStart({ roomId: 'room', sourceId: 'fake' }).catch((e: Error) => e);

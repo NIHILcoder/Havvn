@@ -14,22 +14,37 @@ function samePage(url: string | undefined, page: string): boolean {
 }
 
 /** The preload keeps Node access; the document is an immutable, inert packaged host. */
-export function installRoomEnginePolicy(win: BrowserWindow, page: string, access: () => { audio: boolean; video: boolean }): void {
+export function installRoomEnginePolicy(win: BrowserWindow, page: string, access: () => { audio: boolean; video: boolean; speaker?: boolean }): void {
   const contents = win.webContents, ses = contents.session;
   const trusted = (wc: WebContents | null, url?: string, mainFrame?: boolean) =>
     wc === contents && !win.isDestroyed() && mainFrame === true && samePage(url, page) && samePage(contents.getURL(), page);
   ses.setPermissionCheckHandler((wc, permission, _origin, details) => {
     if (!trusted(wc, details.requestingUrl, details.isMainFrame)) return false;
     const grant = access();
-    if (permission === 'speaker-selection') return grant.audio;
+    if (permission === 'speaker-selection') return grant.audio || grant.speaker === true;
+    if (permission === 'display-capture') {
+      return grant.video && (details.mediaType === undefined || details.mediaType === 'video'
+        || details.mediaType === 'audio' && grant.audio);
+    }
     if (permission !== 'media') return false;
     return details.mediaType === 'audio' ? grant.audio : details.mediaType === 'video' ? grant.video : false;
   });
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     if (!trusted(wc, details.requestingUrl, details.isMainFrame)) { callback(false); return; }
     const grant = access();
-    if (permission === 'speaker-selection') { callback(grant.audio); return; }
+    if (permission === 'speaker-selection') { callback(grant.audio || grant.speaker === true); return; }
     const types = 'mediaTypes' in details ? details.mediaTypes : undefined;
+    if (permission === 'display-capture') {
+      callback(grant.video && (!types?.length || types.every((type) => type === 'audio' ? grant.audio : type === 'video')));
+      return;
+    }
+    // Electron 44 reports legacy chromeMediaSource desktop capture as `media`
+    // with an empty mediaTypes array. Only a live, explicit screen intent may
+    // grant that ambiguous request; joining voice must never grant it.
+    if (permission === 'media' && Array.isArray(types) && types.length === 0) {
+      callback(grant.video);
+      return;
+    }
     callback(permission === 'media' && !!types?.length && types.every((type) => type === 'audio' ? grant.audio : type === 'video' && grant.video));
   });
   contents.setWindowOpenHandler(() => ({ action: 'deny' }));

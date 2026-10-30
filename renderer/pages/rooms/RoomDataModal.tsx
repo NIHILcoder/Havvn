@@ -1,3 +1,4 @@
+import { ErrorMessage } from '../../components/ErrorMessage';
 import { createPortal } from 'react-dom';
 import { useHostWindow } from '../../utils/hostWindow';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -56,7 +57,7 @@ export function RoomDataModal({ roomId, onClose }: { roomId: string; onClose: ()
     <Modal title={t('rooms.data.title')} icon="folder" size="xl" onClose={onClose} busy={busy}
       footer={<><Button variant="secondary" disabled={busy} onClick={() => setBackup(true)}>{t('rooms.data.backup')}</Button><Button variant="secondary" disabled={busy} onClick={onClose}>{t('common.close')}</Button></>}>
       <div className="room-data-panel" aria-busy={busy}>
-        {error && <div role="alert" className="room-data-error">{error}</div>}
+        {error && <div role="alert" className="room-data-error"><ErrorMessage error={error} /></div>}
         {notice && <p role="status">{notice}</p>}
         <div className="room-data-heading"><strong>{t('rooms.data.disk')}</strong><Button variant="secondary" loading={busy} disabled={operation.current} onClick={load}>{t('rooms.data.refresh')}</Button></div>
         {usage && <>

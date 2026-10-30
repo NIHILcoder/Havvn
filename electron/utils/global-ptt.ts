@@ -38,7 +38,7 @@ function getModule(): UiohookModule | null {
     (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY || !process.env.DISPLAY)) return null;
   if (mod === undefined) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       mod = require('uiohook-napi') as UiohookModule;
     } catch (e) {
       mod = null;

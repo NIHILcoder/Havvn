@@ -38,6 +38,21 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
   const [prefs, setPrefs] = useState<VoicePrefs>(loadVoicePrefs);
   const [devices, setDevices] = useState<VoiceDeviceInfo[]>([]);
   const [testing, setTesting] = useState(false);
+  const [speaker, setSpeaker] = useState<'idle' | 'playing' | 'answer' | 'heard' | 'silent' | 'error'>('idle');
+  const speakerEpoch = useRef(0);
+  const [help, setHelp] = useState<'input' | 'output'>('output');
+  useEffect(() => {
+    const generation = speakerEpoch;
+    generation.current++; setSpeaker('idle');
+    void window.api.rooms.voice.speakerTestStop().catch(() => {});
+    return () => { generation.current++; void window.api.rooms.voice.speakerTestStop().catch(() => {}); };
+  }, [prefs.outputDeviceId, prefs.masterVolume]);
+  const testSpeaker = async () => {
+    if (speaker === 'playing') { speakerEpoch.current++; setSpeaker('idle'); await window.api.rooms.voice.speakerTestStop().catch(() => {}); return; }
+    const epoch = ++speakerEpoch.current; setSpeaker('playing');
+    try { const result = await window.api.rooms.voice.speakerTestStart(toVoiceSettings(prefs)); if (speakerEpoch.current === epoch) setSpeaker(result.ok ? 'answer' : 'idle'); }
+    catch { if (speakerEpoch.current === epoch) setSpeaker('error'); }
+  };
   const [level, setLevel] = useState(0);       // raw (pre-gain) 0-255 from the engine
   const [capturing, setCapturing] = useState(false); // PTT key rebind in progress
   const [monitor, setMonitor] = useState(false);      // "hear yourself" playback during the mic test
@@ -209,6 +224,17 @@ export const VoiceSettingsModal: React.FC<{ onClose: () => void }> = ({ onClose 
           </div>
         </div>
         {monitor && testing && <div className="vsm-hint">{t('rooms.voice.micMonitorWarn')}</div>}
+        <div className="vsm-speaker-test" data-speaker-test>
+          <Button size="sm" variant="secondary" icon={<Icon name={speaker === 'playing' ? 'pause' : 'volume-2'} size={14} />} disabled={prefs.masterVolume === 0} onClick={() => { void testSpeaker(); }}>{t(speaker === 'playing' ? 'rooms.voice.speakerStop' : 'rooms.voice.speakerTest')}</Button>
+          <p>{t('rooms.voice.speakerPrivate')}</p>
+          {prefs.masterVolume === 0 && <p role="status">{t('rooms.voice.speakerZero')}</p>}
+          {speaker !== 'idle' && <p role="status">{t(`rooms.voice.speaker.${speaker}`)}</p>}
+          {speaker === 'answer' && <div className="vsm-speaker-answers"><Button size="sm" variant="secondary" onClick={() => setSpeaker('heard')}>{t('rooms.voice.speakerHeard')}</Button><Button size="sm" variant="ghost" onClick={() => { setSpeaker('silent'); setHelp('output'); }}>{t('rooms.voice.speakerSilent')}</Button></div>}
+        </div>
+        <details className="vsm-help" open={speaker === 'silent' || undefined}><summary>{t('rooms.voice.help')}</summary>
+          <div className="vsm-speaker-answers"><Button size="sm" variant="ghost" aria-pressed={help === 'output'} onClick={() => setHelp('output')}>{t('rooms.voice.helpOutput')}</Button><Button size="sm" variant="ghost" aria-pressed={help === 'input'} onClick={() => setHelp('input')}>{t('rooms.voice.helpInput')}</Button></div>
+          <ol>{(help === 'output' ? ['outputDevice', 'outputVolume', 'outputTone', 'outputSystem'] as const : ['inputDevice', 'inputMeter', 'inputMode', 'inputRemote'] as const).map(step => <li key={step}>{t(`rooms.voice.help.${step}`)}</li>)}</ol>
+        </details>
       </div>
 
       {/* Volumes */}

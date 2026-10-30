@@ -1,6 +1,7 @@
 export type GuestLang = 'en' | 'ru';
 
 const en = {
+  entryNetworkUnmeasured: 'Network: not measured yet. Joining will try to connect; WebRTC support does not guarantee a working route.',
   chatPins: 'Pinned messages', fileRequest: 'File request', requestopen: 'Open', requestfulfilled: 'Fulfilled', requestcancelled: 'Cancelled',
   watchShared: "Shared control",
   watchHost: "Host",
@@ -25,7 +26,7 @@ const en = {
   voiceWaitingForSlot: 'Waiting for a voice slot (9 participants). Your microphone is not transmitted while waiting.',
   title: 'Havvn // Room',
   tagline: 'Peer-to-peer in your browser. No install, no cloud.',
-  browserCapabilities: 'Browser: chat, microphone and playback of unencrypted supported media. Encrypted files, publishing files, room management, LAN and servers require Havvn.',
+  browserCapabilities: 'Browser: chat, microphone and playback of unencrypted supported media. Encrypted files, publishing files, shared document editing, folder sync, room management, LAN and servers require a Havvn build with the corresponding feature.',
   inviteAccess: 'Anyone with the current invite can join. Removal blocks a profile, not a person; a new identity with the new invite can join. Received files and keys cannot be revoked.',
   inviteTrust: 'A full invite pins the owner identity. A short code trusts the first owner learned from peers.',
   protocolVersion: 'Room protocol {n}',
@@ -33,6 +34,8 @@ const en = {
   voiceLegacy: 'Older clients do not authenticate deafened status. Microphone mute remains available.',
   name: 'Your name',
   namePh: 'How they will see you',
+  nameHint: 'Other members see this nickname. Leave it blank to use a stable Havvn alias.',
+  copyFailed: 'Could not copy. Try again or select the text manually.',
   invite: 'Invite',
   invitePh: 'swift-amber-calm-otter-comet-48219',
   join: 'Join room',
@@ -98,6 +101,7 @@ const en = {
 };
 
 const ru: typeof en = {
+  entryNetworkUnmeasured: 'Сеть: ещё не измерена. При входе начнётся попытка соединения; поддержка WebRTC не гарантирует рабочий маршрут.',
   chatPins: 'Закреплённые сообщения', fileRequest: 'Запрос файла', requestopen: 'Открыт', requestfulfilled: 'Выполнен', requestcancelled: 'Отменён',
   watchShared: "Совместное управление",
   watchHost: "Ведущий",
@@ -120,7 +124,7 @@ const ru: typeof en = {
   watchSeeking: 'Перемотка…',
   watchMediaError: 'Браузер не смог воспроизвести этот файл.',
   voiceWaitingForSlot: 'Ожидание места в голосе (до 9 участников). Во время ожидания микрофон не передаётся.',
-  browserCapabilities: 'В браузере: чат, микрофон и просмотр незашифрованных файлов поддерживаемых форматов. Зашифрованные файлы, публикация, управление комнатой, LAN и серверы требуют Havvn.',
+  browserCapabilities: 'В браузере: чат, микрофон и просмотр незашифрованных файлов поддерживаемых форматов. Зашифрованные файлы, публикация, совместное редактирование документов, синхронизация папок, управление комнатой, LAN и серверы требуют сборку Havvn с нужной возможностью.',
   inviteAccess: 'Войти может любой с действующим приглашением. Исключение блокирует профиль, а не человека: с новой идентичностью и новым приглашением можно войти снова. Полученные файлы и ключи отозвать нельзя.',
   inviteTrust: 'Полное приглашение закрепляет идентичность владельца. Короткий код доверяет первому владельцу, полученному от участников.',
   protocolVersion: 'Протокол комнаты {n}',
@@ -130,6 +134,8 @@ const ru: typeof en = {
   tagline: 'Пирингом в браузере. Без установки и без облака.',
   name: 'Ваше имя',
   namePh: 'Как вас увидят',
+  nameHint: 'Другие участники видят этот ник. Если оставить поле пустым, Havvn назначит постоянный псевдоним.',
+  copyFailed: 'Не удалось скопировать. Попробуйте ещё раз или выделите текст вручную.',
   invite: 'Приглашение',
   invitePh: 'swift-amber-calm-otter-comet-48219',
   join: 'Войти в комнату',

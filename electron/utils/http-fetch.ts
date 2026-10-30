@@ -66,13 +66,16 @@ export interface HttpFetchResult {
  * common enough that a failure here falls back to the raw bytes rather than
  * failing the whole fetch.
  */
-export function decompress(body: Buffer, contentEncoding: string): Buffer {
+export function decompress(body: Buffer, contentEncoding: string, maxBytes = MAX_BYTES): Buffer {
   const encoding = contentEncoding.toLowerCase();
   try {
-    if (encoding.includes('gzip')) return zlib.gunzipSync(body);
-    if (encoding.includes('deflate')) return zlib.inflateSync(body);
-    if (encoding.includes('br')) return zlib.brotliDecompressSync(body);
-  } catch {
+    // Bound allocation inside zlib, before it can materialize a compression bomb.
+    const options = { maxOutputLength: maxBytes };
+    if (encoding.includes('gzip')) return zlib.gunzipSync(body, options);
+    if (encoding.includes('deflate')) return zlib.inflateSync(body, options);
+    if (encoding.includes('br')) return zlib.brotliDecompressSync(body, options);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') throw new Error('Response too large after decompression');
     // Not actually compressed — use what arrived.
   }
   return body;
@@ -168,13 +171,15 @@ export function httpFetch(url: string, options: HttpFetchOptions = {}): Promise<
           chunks.push(chunk);
         });
         res.on('end', () => {
-          const raw = Buffer.concat(chunks);
-          resolve({
-            body: decompress(raw, String(res.headers['content-encoding'] || '')),
-            status,
-            headers: res.headers,
-            url: current,
-          });
+          try {
+            const raw = Buffer.concat(chunks);
+            resolve({
+              body: decompress(raw, String(res.headers['content-encoding'] || ''), maxBytes),
+              status,
+              headers: res.headers,
+              url: current,
+            });
+          } catch (error) { reject(error); }
         });
         res.on('error', reject);
       });

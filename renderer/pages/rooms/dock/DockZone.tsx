@@ -102,6 +102,7 @@
  * own mount policy — not the stage — keeps deciding what stays mounted.
  */
 import React, { useEffect, useRef } from 'react';
+import { VisibleWorkProvider } from '../../../utils/visible-work';
 import { DockTabStrip, dockTabDomId, dockPanelDomId, dockCycleIndex, useDockMove } from './DockTabStrip';
 import type { DockStripInteractions } from './DockTabStrip';
 import {
@@ -462,7 +463,7 @@ export function DockZone<P extends string = string>({
           // from the slot list.
           hidden={id !== active}
         >
-          {mounts ? null : renderPanel?.(id)}
+          {mounts ? null : <VisibleWorkProvider active={id === active && !hidden}>{renderPanel?.(id)}</VisibleWorkProvider>}
         </div>
       ))}
     </div>
