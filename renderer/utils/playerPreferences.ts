@@ -6,7 +6,7 @@ export function loadPlayerPreferences(): PlayerPreferences {
   catch { return normalizePlayerPreferences(null); }
 }
 export function savePlayerPreferences(prefs: PlayerPreferences): void {
-  try { localStorage.setItem(PLAYER_PREFS_KEY, JSON.stringify(normalizePlayerPreferences(prefs))); } catch { /* optional storage */ }
+  try { localStorage.setItem(PLAYER_PREFS_KEY, JSON.stringify(normalizePlayerPreferences(prefs))); window.dispatchEvent(new Event('havvn:device-local')); } catch { /* optional storage */ }
 }
 function choices(): Record<string, FileTrackChoice> {
   try {

@@ -243,6 +243,8 @@ export class CastServer {
     try {
       const url = new URL(req.url || '', 'http://cast');
       if (url.searchParams.get('k') !== this.token) { res.writeHead(403); res.end('forbidden'); return; }
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
       // Token-valid callers may read these bytes from any origin: the in-app
       // player taps audio through WebAudio (a crossOrigin media load) and
       // hls.js XHRs segments from the file:// renderer — both are CORS-blocked
@@ -402,7 +404,10 @@ export class CastServer {
   private serveImage(res: http.ServerResponse, info: FileInfo): void {
     let size: number;
     try { size = fs.statSync(info.diskPath).size; } catch { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { 'Content-Type': imageContentType(info.name), 'Content-Length': size, 'Cache-Control': 'max-age=86400' });
+    // A peer's SVG remains an image even if opened as a document. It must not
+    // run script or read other published files using this server's bearer token.
+    res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'");
+    res.writeHead(200, { 'Content-Type': imageContentType(info.name), 'Content-Length': size, 'Cache-Control': 'no-store' });
     const stream = fs.createReadStream(info.diskPath);
     stream.on('error', () => { try { res.destroy(); } catch { /* ignore */ } });
     stream.pipe(res);

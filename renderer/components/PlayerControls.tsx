@@ -29,8 +29,12 @@ interface PlayerControlsProps {
   media: HTMLVideoElement | HTMLAudioElement | null;
   /** Wrapper to fullscreen; omit to hide the button (audio players). */
   fullscreenTarget?: React.RefObject<HTMLElement | null>;
-  /** Live transcodes aren't Range-seekable — the scrubber turns display-only. */
+  /** Whether the element itself supports seeking. */
   seekable?: boolean;
+  /** Full source duration, including the part before a restarted transcode. */
+  sourceDuration?: number | null;
+  /** Restart a non-Range stream at an absolute source timestamp. */
+  onSeek?: (time: number) => void;
   /** Original timeline offset when a transcode restarts partway through a file. */
   timeOffset?: number;
   /** Extra buttons rendered between volume and fullscreen (subtitles, …). */
@@ -46,6 +50,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   media,
   fullscreenTarget,
   seekable = true,
+  sourceDuration,
+  onSeek,
   timeOffset = 0,
   children,
 }) => {
@@ -66,6 +72,8 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   const [hasVideo, setHasVideo] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+  const dragTarget = useRef<number | null>(null);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
   // The rate the USER chose in this player instance — re-applied on element
   // remount (rooms' remote rate-sync still reflects into `rate` via ratechange).
   const rateRef = useRef(1);
@@ -126,26 +134,43 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
     else media.pause();
   }, [media]);
 
-  // HLS/direct expose a finite duration; a live ffmpeg pipe doesn't.
-  const canSeek = seekable && Number.isFinite(duration) && duration > 0;
+  const totalDuration = sourceDuration && Number.isFinite(sourceDuration) && sourceDuration > 0
+    ? sourceDuration : Number.isFinite(duration) && duration > 0 ? duration + timeOffset : NaN;
+  const canSeek = (seekable || !!onSeek) && Number.isFinite(totalDuration) && totalDuration > 0;
+  const absoluteTime = Math.max(0, time + timeOffset);
+  const displayTime = scrubTime ?? absoluteTime;
+
+  const seek = useCallback((target: number) => {
+    if (!media || !canSeek) return;
+    const next = Math.max(0, Math.min(totalDuration, target));
+    if (onSeek) onSeek(next);
+    else { media.currentTime = Math.max(0, next - timeOffset); setTime(media.currentTime); }
+  }, [media, canSeek, totalDuration, timeOffset, onSeek]);
 
   const seekTo = useCallback((clientX: number) => {
     const bar = barRef.current;
     if (!bar || !media || !canSeek) return;
     const r = bar.getBoundingClientRect();
     const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
-    media.currentTime = frac * duration;
-    setTime(media.currentTime);
-  }, [media, canSeek, duration]);
+    const target = frac * totalDuration;
+    if (onSeek) { dragTarget.current = target; setScrubTime(target); }
+    else seek(target);
+  }, [media, canSeek, totalDuration, onSeek, seek]);
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!canSeek) return;
     dragging.current = true;
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch { /* Synthetic events have no active pointer. */ }
     seekTo(e.clientX);
   };
   const onPointerMove = (e: React.PointerEvent) => { if (dragging.current) seekTo(e.clientX); };
-  const onPointerUp = () => { dragging.current = false; };
+  const cancelDrag = () => { dragging.current = false; dragTarget.current = null; setScrubTime(null); };
+  const onPointerUp = () => {
+    const target = dragTarget.current;
+    cancelDrag();
+    // Restart FFmpeg once after dragging, rather than for every pointer move.
+    if (onSeek && target !== null) seek(target);
+  };
 
   const toggleMute = useCallback(() => { if (media) media.muted = !media.muted; }, [media]);
   const setVol = (v: number) => {
@@ -180,12 +205,13 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
   // Keyboard: Space / ←→ / M / F / P — never while typing (chat, inputs).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const tgt = e.target as HTMLElement;
-      if (tgt instanceof HTMLInputElement || tgt instanceof HTMLTextAreaElement || tgt.isContentEditable) return;
+      const tgt = e.target as HTMLElement | null;
+      // Window is also a valid event target; elements may belong to a popout realm.
+      if (e.defaultPrevented || (typeof tgt?.closest === 'function' && (tgt.matches('input,textarea') || tgt.isContentEditable || tgt.closest('button,[role="slider"],[role="combobox"]')))) return;
       if (!media) return;
       if (e.code === 'Space') { e.preventDefault(); toggle(); }
-      else if (e.code === 'ArrowLeft' && canSeek) { e.preventDefault(); media.currentTime = Math.max(0, media.currentTime - 5); }
-      else if (e.code === 'ArrowRight' && canSeek) { e.preventDefault(); media.currentTime = Math.min(duration, media.currentTime + 5); }
+      else if (e.code === 'ArrowLeft' && canSeek) { e.preventDefault(); seek(absoluteTime - 5); }
+      else if (e.code === 'ArrowRight' && canSeek) { e.preventDefault(); seek(absoluteTime + 5); }
       else if (e.code === 'KeyM') { toggleMute(); }
       else if (e.code === 'KeyF' && fullscreenTarget) { toggleFullscreen(); }
       // Plain P only: Ctrl+P toggles the downloads view mode and Ctrl+Shift+P
@@ -194,36 +220,46 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [media, toggle, toggleMute, toggleFullscreen, canSeek, duration, fullscreenTarget, canPip, togglePip]);
+  }, [media, toggle, toggleMute, toggleFullscreen, canSeek, absoluteTime, seek, fullscreenTarget, canPip, togglePip]);
 
-  const pct = canSeek ? Math.min(100, (time / duration) * 100) : 100;
+  const pct = Number.isFinite(totalDuration) ? Math.min(100, displayTime / totalDuration * 100) : 100;
 
   return (
     <div className="pc">
       <button className="pc-btn pc-play" onClick={toggle} title={playing ? t('player.pause') : t('player.play')}>
         <Icon name={playing ? 'pause' : 'play'} size={15} />
       </button>
-      <span className="pc-time">{fmtTime(time + timeOffset)}</span>
+      <span className="pc-time">{fmtTime(displayTime)}</span>
       <div
         ref={barRef}
         className={`pc-bar ${canSeek ? '' : 'pc-bar-static'}`}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={cancelDrag}
+        onLostPointerCapture={cancelDrag}
         role={canSeek ? 'slider' : undefined}
+        tabIndex={canSeek ? 0 : undefined}
+        onKeyDown={event => {
+          if (!canSeek) return;
+          const target = event.key === 'ArrowLeft' ? absoluteTime - 5 : event.key === 'ArrowRight' ? absoluteTime + 5
+            : event.key === 'Home' ? 0 : event.key === 'End' ? totalDuration : null;
+          if (target !== null) { event.preventDefault(); event.stopPropagation(); seek(target); }
+        }}
         aria-label={canSeek ? t('player.seek') : undefined}
         aria-valuemin={0}
-        aria-valuemax={Number.isFinite(duration) ? Math.floor(duration) : 0}
-        aria-valuenow={Math.floor(time)}
+        aria-valuemax={Number.isFinite(totalDuration) ? totalDuration : 0}
+        aria-valuenow={Math.min(totalDuration || 0, displayTime)}
+        aria-valuetext={canSeek ? `${fmtTime(displayTime)} / ${fmtTime(totalDuration)}` : undefined}
       >
         {canSeek && buffered.map((range, index) => {
-          const start = Math.min(100, Math.max(0, range.start / duration * 100));
-          const end = Math.min(100, range.end / duration * 100);
+          const start = Math.min(100, Math.max(0, (range.start + timeOffset) / totalDuration * 100));
+          const end = Math.min(100, (range.end + timeOffset) / totalDuration * 100);
           return <span key={index} className="pc-buffer" style={{ left: `${start}%`, width: `${Math.max(0, end - start)}%` }} />;
         })}
         <span className="pc-fill" style={{ width: `${pct}%` }} />
       </div>
-      <span className="pc-time pc-duration">{canSeek ? fmtTime(duration) : '· · ·'}</span>
+      <span className="pc-time pc-duration">{Number.isFinite(totalDuration) ? fmtTime(totalDuration) : '· · ·'}</span>
       <button className="pc-btn" onClick={toggleMute} title={muted || volume === 0 ? t('player.unmute') : t('player.mute')}>
         <Icon name={muted || volume === 0 ? 'volume-x' : 'volume-2'} size={15} />
       </button>

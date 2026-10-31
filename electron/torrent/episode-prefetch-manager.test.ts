@@ -5,6 +5,11 @@ import { EpisodePrefetcher } from './episode-prefetch';
 vi.mock('../utils', () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 vi.mock('./host/env', () => ({ getHostEnv: () => ({ isPackaged: false }) }));
 import { TorrentManager } from './manager';
+it('keeps Classic legacy prefetch support consistent with the explicit feature contract', () => {
+  const manager = new TorrentManager();
+  expect(manager.getEngineCapabilities().engine).toBe('webtorrent');
+  expect(manager.getEpisodePrefetchSupport().supported).toBe(manager.getEngineCapabilities().features.boundedEpisodePrefetch.supported);
+});
 
 function fixture() {
   const manager = new TorrentManager();

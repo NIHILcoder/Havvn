@@ -24,7 +24,7 @@ export class ChromecastManager {
   private ensureClient(): void {
     if (this.client) return;
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const ChromecastAPI = require('chromecast-api');
       this.client = new ChromecastAPI();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * StreamPlayerModal
  *
@@ -9,6 +10,9 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import toast from 'react-hot-toast';
+import { firstSteps } from '../utils/first-steps';
+import { retainDevicePlayer } from '../utils/devices';
+import { downloadsModel } from '../state/downloads';
 import { Icon } from './Icon';
 import { QRCode } from './QRCode';
 import { PlayerControls } from './PlayerControls';
@@ -28,6 +32,10 @@ import { useDockWindowMaximized, minimizeDockWindow, toggleMaximizeDockWindow } 
 import { beginWatch, beginPlaybackWatch, getWatchEntry, saveWatch, migrateWatchHistory } from '../utils/watchHistory';
 import { resumablePosition, type WatchEntry } from '../../shared/watch-history';
 import './StreamPlayerModal.css';
+import { useTrackCatalog } from '../utils/useTrackCatalog';
+import { PlayerTrackCatalogState } from './PlayerTrackCatalogState';
+import { useClipboardCopy } from '../utils/useClipboardCopy';
+import { writeClipboardText } from '../utils/clipboard';
 
 interface StreamFile {
   index: number;
@@ -35,14 +43,16 @@ interface StreamFile {
   path: string; // torrent-relative — basenames repeat across season folders
   length: number;
   kind: MediaKind;
+  availability?: 'local' | 'stream' | 'missing' | 'paused';
 }
 
-interface StreamPlayerModalProps {
+export interface StreamPlayerModalProps {
   downloadId: string;
   downloadName: string;
   onClose: () => void;
   initialFilePath?: string;
   historyPlayback?: boolean;
+  historyIdentity?: string;
 }
 
 const formatBytes = (bytes: number): string => {
@@ -56,7 +66,7 @@ const formatBytes = (bytes: number): string => {
 const PLAY_POS_FINISHED_FRAC = 0.95;
 const PLAY_POS_SAVE_INTERVAL_MS = 5000;
 
-export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId, downloadName, onClose, initialFilePath, historyPlayback = false }) => {
+export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId, downloadName, onClose, initialFilePath, historyPlayback = false, historyIdentity }) => {
   const { t } = useTranslation();
   const [files, setFiles] = useState<StreamFile[]>([]);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -74,7 +84,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [castOpen, setCastOpen] = useState(false);
   const [castBusy, setCastBusy] = useState(false);
   const [castError, setCastError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [castCopyFailed, setCastCopyFailed] = useState(false);
   const [castMode, setCastMode] = useState<'lan' | 'tv' | 'remote'>('lan');
   const [remoteInfo, setRemoteInfo] = useState<{ url: string; sessionId: string } | null>(null);
   const [remoteBusy, setRemoteBusy] = useState(false);
@@ -85,14 +95,11 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [tvPlaying, setTvPlaying] = useState<{ host: string; name: string } | null>(null);
   const [tvPaused, setTvPaused] = useState(false);
   // Subtitles
-  const [subTracks, setSubTracks] = useState<SubtitleTrack[]>([]);
   const [subOpen, setSubOpen] = useState(false);
   const [subActiveKey, setSubActiveKey] = useState<string | null>(null);
   const [subUrl, setSubUrl] = useState<string | null>(null);
   // Audio tracks (multi-audio MKV): null = ffmpeg's default; picking a track
   // forces transcode (browsers can't switch embedded tracks on a plain <video>).
-  const [audioTracks, setAudioTracks] = useState<AudioTrack[]>([]);
-  const [catalogFile, setCatalogFile] = useState<number | null>(null);
   const [audioOpen, setAudioOpen] = useState(false);
   const [audioTrackIndex, setAudioTrackIndex] = useState<number | null>(null);
   // Serial mode: playlist panel + auto-advance to the next episode on 'ended'.
@@ -101,6 +108,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     try { return localStorage.getItem('playerAutoNext') !== '0'; } catch { return true; }
   });
   const advancedRef = useRef(false); // once-per-mounted-element auto-advance guard
+  const [nextCountdown, setNextCountdown] = useState<{ from: number; to: number; label: string; deadline: number } | null>(null);
+  const [nextSeconds, setNextSeconds] = useState(8);
+  const cancelledNext = useRef<number | null>(null);
+  useEffect(() => { setNextCountdown(null); cancelledNext.current = null; }, [activeIndex]);
   // Custom Ember controls: the media element remounts per stream URL, so it is
   // captured via a callback ref; the stage wrapper is the fullscreen target.
   const [mediaEl, setMediaEl] = useState<HTMLVideoElement | HTMLAudioElement | null>(null);
@@ -108,6 +119,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const [preferences, setPreferences] = useState(loadPlayerPreferences);
   const [choiceRevision, setChoiceRevision] = useState(0);
   const [streamStart, setStreamStart] = useState(0);
+  const [seekRevision, setSeekRevision] = useState(0);
   const [streamOffset, setStreamOffset] = useState(0);
   const timelineOffsetRef = useRef(0);
   const resumeRef = useRef<{ time: number; paused: boolean; muted: boolean; volume: number; rate: number; file: number | null } | null>(null);
@@ -130,6 +142,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const watchSessions = useRef(new Map<string, ReturnType<typeof beginWatch>>());
   const mediaPositions = useRef(new WeakMap<HTMLMediaElement, { index: number; offset: number }>());
   const durations = useRef(new Map<number, number>());
+  const [sourceDuration, setSourceDuration] = useState<{ index: number | null; seconds: number | null }>({ index: null, seconds: null });
   const openPosition = (base: string, file: StreamFile, knownFiles = files) => {
     const key = playerFileKey(base, file.path), existing = getWatchEntry(base, file.path), time = resumablePosition(existing);
     if (existing?.tracks && !loadFileTrackChoice(key)) {
@@ -148,10 +161,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     let cancelled = false;
     (async () => {
       try {
-        const [downloads, all] = await Promise.all([window.api.getDownloads(), historyPlayback ? window.api.historyPlayback.files(downloadId) : window.api.getTorrentFiles(downloadId)]);
-        const base = downloads.find(d => d.id === downloadId)?.infoHash || downloadId;
+        const [downloads, all] = await Promise.all([window.api.getDownloads().catch(error => { if (historyPlayback) return []; throw error; }), historyPlayback ? window.api.historyPlayback.files(downloadId) : window.api.getTorrentFiles(downloadId)]);
+        const base = historyPlayback && historyIdentity || downloads.find(d => d.id === downloadId)?.infoHash || downloadId;
         await migrateWatchHistory(downloads.filter(d => d.id === downloadId), id => window.api.historyPlayback?.files(id) || Promise.resolve(all));
-        const streamable: StreamFile[] = all.map((f, index) => ({ index: f.index ?? index, name: f.name, path: f.path || f.name, length: f.length, kind: classifyMediaKind(f.name) }))
+        const streamable: StreamFile[] = all.map((f, index) => ({ index: f.index ?? index, name: f.name, path: f.path || f.name, length: f.length, kind: classifyMediaKind(f.name), availability: 'availability' in f ? f.availability as StreamFile['availability'] : undefined }))
           .filter(f => f.kind !== 'other').sort((a, b) => b.length - a.length);
         if (cancelled) return;
         setFiles(streamable); setPosKeyBase({ base, ready: true });
@@ -165,7 +178,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     return () => { cancelled = true; };
     // Initialization owns the requested file; subsequent playlist selections stay local.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [downloadId, initialFilePath, historyPlayback]);
+  }, [downloadId, initialFilePath, historyPlayback, historyIdentity]);
 
   // Resolve a stream URL whenever the active file (or transcode mode, or the
   // chosen audio track) changes. A non-default audio track forces transcode —
@@ -200,7 +213,44 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       }
     })();
     return () => { cancelled = true; };
-  }, [downloadId, activeIndex, forceTranscode, audioTrackIndex, streamStart, historyPlayback]);
+  }, [downloadId, activeIndex, forceTranscode, audioTrackIndex, streamStart, seekRevision, historyPlayback]);
+
+  // FFmpeg pipes have an unknown/segment duration. Use the source's duration for
+  // the seek bar, and retry once at download completion if its header was missing.
+  useEffect(() => {
+    if (activeIndex === null) return;
+    const index = activeIndex, file = files.find(item => item.index === index);
+    const cached = durations.current.get(index) || (file && getWatchEntry(posKeyBase.base, file.path)?.duration) || null;
+    setSourceDuration({ index, seconds: cached });
+    let disposed = false, pending = false, resolved = false, completionRequested = false, retry = false;
+    const probe = async () => {
+      if (disposed || resolved || !window.api.historyPlayback?.duration) return;
+      if (pending) { retry = true; return; }
+      pending = true;
+      try {
+        const seconds = await window.api.historyPlayback.duration(downloadId, index);
+        if (!disposed && seconds && Number.isFinite(seconds) && seconds > 0) {
+          durations.current.set(index, seconds);
+          setSourceDuration({ index, seconds });
+          resolved = true;
+        }
+      } catch { /* Incomplete files may not expose duration until completion. */ }
+      finally { pending = false; if (retry) { retry = false; void probe(); } }
+    };
+    void probe();
+    const release = downloadsModel.retain();
+    const checkCompletion = () => {
+      const state = downloadsModel.store.getState();
+      const download = state.statsById.get(downloadId) ?? state.byId.get(downloadId);
+      if (!completionRequested && download && (download.progress >= 1 || download.status === 'completed' || download.status === 'seeding')) {
+        completionRequested = true;
+        void probe();
+      }
+    };
+    const off = downloadsModel.store.subscribe(checkCompletion);
+    checkCompletion();
+    return () => { disposed = true; off(); release(); };
+  }, [downloadId, activeIndex, files, posKeyBase.base]);
 
   // Close on Escape.
   useEffect(() => {
@@ -266,11 +316,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     const file = files.find(f => f.index === mounted.index); if (!file) return;
     const key = playerFileKey(posKeyBase.base, file.path), session = watchSessions.current.get(key);
     if (!session) return;
-    let duration = getWatchEntry(posKeyBase.base, file.path)?.duration || durations.current.get(file.index) || null;
-    let disposed = false;
-    if (!duration && window.api.historyPlayback) void window.api.historyPlayback.duration(downloadId, file.index).then(d => {
-      if (d && Number.isFinite(d)) { durations.current.set(file.index, d); if (!disposed) duration = d; }
-    }).catch(() => {});
+    const duration = getWatchEntry(posKeyBase.base, file.path)?.duration || durations.current.get(file.index) || null;
     const ordered = files.filter(f => f.kind === 'video').sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
     const nextPath = ordered[ordered.findIndex(f => f.index === file.index) + 1]?.path;
     const save = (final: boolean) => {
@@ -278,7 +324,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       if (!final && Date.now() - posLastSaveRef.current < PLAY_POS_SAVE_INTERVAL_MS) return;
       posLastSaveRef.current = Date.now();
       const d = mounted.offset === 0 && Number.isFinite(mediaEl.duration) && mediaEl.duration > 0 && !transcoded ? mediaEl.duration :
-        duration || (Number.isFinite(mediaEl.duration) && mediaEl.duration > 0 ? mediaEl.duration + mounted.offset : null);
+        durations.current.get(file.index) || duration || (Number.isFinite(mediaEl.duration) && mediaEl.duration > 0 ? mediaEl.duration + mounted.offset : null);
       const position = mediaResumeTargets.current.get(mediaEl)?.time ?? Math.max(0, mediaEl.currentTime + mounted.offset);
       // For unknown-duration live transcodes, a broken stream cannot mark an episode watched.
       const completed = !!d && position >= d * PLAY_POS_FINISHED_FRAC;
@@ -292,7 +338,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     mediaEl.addEventListener('timeupdate', update); mediaEl.addEventListener('pause', flush); mediaEl.addEventListener('ended', flush);
     window.addEventListener('pagehide', flush);
     return () => {
-      disposed = true; mediaEl.removeEventListener('timeupdate', update); mediaEl.removeEventListener('pause', flush); mediaEl.removeEventListener('ended', flush);
+      mediaEl.removeEventListener('timeupdate', update); mediaEl.removeEventListener('pause', flush); mediaEl.removeEventListener('ended', flush);
       window.removeEventListener('pagehide', flush); save(true);
     };
   }, [mediaEl, posKeyBase, files, downloadId, downloadName, transcoded]);
@@ -321,6 +367,15 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
     const snapshot = snapshotMedia(el);
     resumeRef.current = snapshot; setStreamStart(snapshot.time);
   }, [mediaEl, snapshotMedia]);
+  const seekTranscode = useCallback((time: number) => {
+    if (!mediaEl || activeIndex === null || !Number.isFinite(time)) return;
+    const length = sourceDuration.index === activeIndex ? sourceDuration.seconds : null;
+    const target = Math.max(0, Math.min(length ? Math.max(0, length - 0.1) : time, time));
+    resumeRef.current = { ...snapshotMedia(mediaEl), time: target };
+    setStreamStart(target);
+    // Seeking to the same start (notably 0) still needs a fresh stream.
+    setSeekRevision(value => value + 1);
+  }, [mediaEl, activeIndex, sourceDuration, snapshotMedia]);
 
   // Direct playback failed — retry through the transcoder once.
   const handleMediaError = useCallback((event: React.SyntheticEvent<HTMLMediaElement>) => {
@@ -331,6 +386,13 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   }, [transcoded, forceTranscode, t, captureForSourceChange]);
 
   const activeFile = files.find((f) => f.index === activeIndex) || null;
+  const catalogKey = activeFile?.kind === 'video' && activeIndex !== null ? `${historyPlayback}:${downloadId}:${activeIndex}` : null;
+  const audioCatalog = useTrackCatalog<AudioTrack>(catalogKey, () => (historyPlayback ? window.api.historyPlayback.audio : window.api.audioTracks.list)(downloadId, activeIndex!));
+  const subCatalog = useTrackCatalog<SubtitleTrack>(catalogKey, () => (historyPlayback ? window.api.historyPlayback.subtitles : window.api.subtitles.list)(downloadId, activeIndex!));
+  const audioTracks = audioCatalog.tracks, subTracks = subCatalog.tracks;
+  useEffect(() => {
+    if (posKeyBase.ready && activeFile) return retainDevicePlayer(posKeyBase.base, activeFile.path.replace(/\\/g, '/'));
+  }, [posKeyBase, activeFile?.path]);
   const fileChoiceKey = posKeyBase.ready && activeFile ? playerFileKey(posKeyBase.base, activeFile.path) : null;
 
   // ── detached window ────────────────────────────────────────────────────────
@@ -380,8 +442,20 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   const nextFile = playlistPos >= 0 && playlistPos < playlist.length - 1 ? playlist[playlistPos + 1] : null;
 
   const playNext = useCallback(() => {
+    setNextCountdown(null);
     if (nextFile) selectFile(nextFile.index);
   }, [nextFile, selectFile]);
+  useEffect(() => {
+    if (!nextCountdown || !autoNext) { if (!autoNext) setNextCountdown(null); return; }
+    let finished = false;
+    const tick = () => {
+      if (finished) return;
+      if (activeIndexRef.current !== nextCountdown.from || nextFile?.index !== nextCountdown.to || cancelledNext.current === nextCountdown.from) { setNextCountdown(null); return; }
+      const remaining = Math.max(0, Math.ceil((nextCountdown.deadline - Date.now()) / 1000)); setNextSeconds(remaining);
+      if (!remaining) { finished = true; setNextCountdown(null); selectFile(nextCountdown.to); }
+    };
+    tick(); const timer = window.setInterval(tick, 250); return () => window.clearInterval(timer);
+  }, [nextCountdown, autoNext, nextFile, selectFile]);
 
   const toggleAutoNext = useCallback(() => {
     setAutoNext((v) => {
@@ -395,7 +469,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   useEffect(() => {
     if (!mediaEl || kind !== 'video') return;
     const onEnded = () => {
-      if (!autoNext || advancedRef.current || !nextFile) return;
+      if (!autoNext || advancedRef.current || !nextFile || nextCountdown || cancelledNext.current === activeIndexRef.current || nextFile.availability === 'missing' || nextFile.availability === 'paused') return;
       // A stale 'ended' from the OLD element after the user already picked
       // another file must not override that choice.
       if (activeIndexRef.current !== streamIndexRef.current) return;
@@ -407,46 +481,35 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       const d = durations.current.get(mounted.index) || historyDuration || (Number.isFinite(mediaEl.duration) ? mediaEl.duration + mounted.offset : 0);
       if (!d || (mediaEl.currentTime + mounted.offset) / d < PLAY_POS_FINISHED_FRAC) return;
       advancedRef.current = true;
-      playNext();
+      setNextSeconds(8);
+      setNextCountdown({ from: activeIndexRef.current!, to: nextFile.index, label: nextFile.label, deadline: Date.now() + 8000 });
     };
     mediaEl.addEventListener('ended', onEnded);
     return () => mediaEl.removeEventListener('ended', onEnded);
-  }, [mediaEl, kind, autoNext, nextFile, playNext, activeFile, posKeyBase.base]);
+  }, [mediaEl, kind, autoNext, nextFile, nextCountdown, activeFile, posKeyBase.base]);
 
   // ── Audio tracks ────────────────────────────────────────────────────────────
   // A fresh file gets its own catalog. Reordered audio ordinals never carry over.
   useEffect(() => {
     setAudioOpen(false);
-    setAudioTracks([]);
-    setCatalogFile(null);
     setSubOpen(false);
-    setSubTracks([]);
-    if (activeIndex === null || activeFile?.kind !== 'video') return;
-    let cancelled = false;
-    void (historyPlayback ? window.api.historyPlayback.audio : window.api.audioTracks.list)(downloadId, activeIndex).then(list => { if (!cancelled) { setAudioTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
-    void (historyPlayback ? window.api.historyPlayback.subtitles : window.api.subtitles.list)(downloadId, activeIndex).then(list => { if (!cancelled) { setSubTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [downloadId, activeIndex, activeFile?.kind, historyPlayback]);
+  }, [catalogKey]);
   useEffect(() => {
-    if (!mediaEl || activeIndex === null || activeFile?.kind !== 'video') return;
-    let cancelled = false;
-    const retry = () => {
-      if (!audioTracks.length) void (historyPlayback ? window.api.historyPlayback.audio : window.api.audioTracks.list)(downloadId, activeIndex).then(list => { if (!cancelled && list.length) { setAudioTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
-      if (!subTracks.length) void (historyPlayback ? window.api.historyPlayback.subtitles : window.api.subtitles.list)(downloadId, activeIndex).then(list => { if (!cancelled && list.length) { setSubTracks(list); setCatalogFile(activeIndex); } }).catch(() => {});
-    };
+    if (!mediaEl || !catalogKey) return;
+    const retry = () => { audioCatalog.afterMetadata(); subCatalog.afterMetadata(); };
     if (mediaEl.readyState >= 1) retry();
     else mediaEl.addEventListener('loadedmetadata', retry, { once: true });
-    return () => { cancelled = true; mediaEl.removeEventListener('loadedmetadata', retry); };
-  }, [mediaEl, downloadId, activeIndex, activeFile?.kind, audioTracks.length, subTracks.length, historyPlayback]);
+    return () => { mediaEl.removeEventListener('loadedmetadata', retry); };
+  }, [mediaEl, catalogKey, audioCatalog.afterMetadata, subCatalog.afterMetadata]);
   const switchAudio = useCallback((next: number | null) => {
     if (audioTrackIndex === next) return;
     captureForSourceChange(); setAudioTrackIndex(next);
   }, [audioTrackIndex, captureForSourceChange]);
   useEffect(() => {
-    if (!fileChoiceKey || !audioTracks.length || catalogFile !== activeIndex) return;
+    if (!fileChoiceKey || !audioTracks.length || audioCatalog.status !== 'ready') return;
     const chosen = preferredAudio(audioTracks, preferences, loadFileTrackChoice(fileChoiceKey));
     switchAudio(chosen?.index ?? null);
-  }, [fileChoiceKey, audioTracks, preferences, choiceRevision, switchAudio, catalogFile, activeIndex]);
+  }, [fileChoiceKey, audioTracks, preferences, choiceRevision, switchAudio, audioCatalog.status]);
   const selectAudio = (track: AudioTrack | null) => {
     setAudioOpen(false);
     if (fileChoiceKey) saveFileTrackChoice(fileChoiceKey, { audio: track ? trackIdentity(track) : 'default' });
@@ -545,10 +608,10 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
 
   // Automatic selection respects per-file choices and leaves unknown languages manual.
   useEffect(() => {
-    if (!fileChoiceKey || catalogFile !== activeIndex) return;
+    if (!fileChoiceKey || subCatalog.status !== 'ready' || audioCatalog.status !== 'ready') return;
     const chosen = preferredSubtitle(subTracks, preferences, effectiveAudioLanguage(audioTracks, audioTrackIndex), loadFileTrackChoice(fileChoiceKey));
     setSubActiveKey(chosen?.key ?? null);
-  }, [fileChoiceKey, subTracks, audioTracks, audioTrackIndex, preferences, choiceRevision, catalogFile, activeIndex]);
+  }, [fileChoiceKey, subTracks, audioTracks, audioTrackIndex, preferences, choiceRevision, subCatalog.status, audioCatalog.status]);
   const selectSubtitle = (key: string | null) => {
     setSubOpen(false);
     const track = subTracks.find(item => item.key === key);
@@ -558,7 +621,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
   };
   useEffect(() => {
     setSubUrl(null);
-    if (!subActiveKey || activeIndex === null) return;
+    if (!subActiveKey || activeIndex === null || subCatalog.status !== 'ready') return;
     let disposed = false;
     let url: string | null = null;
     void (historyPlayback ? window.api.historyPlayback.vtt : window.api.subtitles.get)(downloadId, activeIndex, subActiveKey).then(vtt => {
@@ -567,16 +630,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' })); setSubUrl(url);
     }).catch(() => { if (!disposed) toast.error(t('player.preferences.subError')); });
     return () => { disposed = true; if (url) URL.revokeObjectURL(url); };
-  }, [downloadId, activeIndex, subActiveKey, t, historyPlayback]);
+  }, [downloadId, activeIndex, subActiveKey, t, historyPlayback, subCatalog.status]);
 
   const activeCastUrl = castMode === 'remote' ? remoteInfo?.url : castInfo?.url;
-  const copyCastUrl = useCallback(() => {
-    if (!activeCastUrl) return;
-    navigator.clipboard.writeText(activeCastUrl).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
-  }, [activeCastUrl]);
+  const { copy: copyCastUrl, copied, copying } = useClipboardCopy(activeCastUrl ?? '', {
+    writeText: text => writeClipboardText(text, stageRef.current?.ownerDocument.defaultView ?? popout ?? window),
+    onSuccess: () => setCastCopyFailed(false), onError: () => setCastCopyFailed(true),
+  });
+  useEffect(() => { setCastCopyFailed(false); }, [activeCastUrl]);
 
   /**
    * Take the media element as it mounts, and put playback back where it was if a
@@ -655,7 +716,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
       return (
         <div className="player-message">
           <Icon name="alert-triangle" size={30} />
-          <p>{error}</p>
+          <p><ErrorMessage error={error} /></p>
         </div>
       );
     }
@@ -676,27 +737,36 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             ref={attachMedia}
             src={streamUrl}
             autoPlay
+            onLoadedMetadata={() => firstSteps.mediaReady(downloadId)}
+            onPlaying={() => firstSteps.mediaPlaying(downloadId)}
             onError={handleMediaError}
           />
-          <PlayerControls media={mediaEl} seekable={!transcoded} timeOffset={streamOffset}>{detachButton}</PlayerControls>
+          <PlayerControls media={mediaEl} seekable={!transcoded} timeOffset={streamOffset}
+            sourceDuration={transcoded && sourceDuration.index === activeIndex ? sourceDuration.seconds : null}
+            onSeek={transcoded ? seekTranscode : undefined}>{detachButton}</PlayerControls>
           <MediaBufferStatus media={mediaEl} downloadId={downloadId} transcoded={transcoded} />
         </div>
       );
     }
     return (
       <div className="player-stage" ref={stageRef}>
+        {nextCountdown && <div className="player-next-countdown" data-next-countdown><p role="status">{t('player.nextCountdown').replace('{name}', nextCountdown.label).replace('{seconds}', String(nextSeconds))}</p><div><button type="button" className="btn btn-primary btn-sm" onClick={playNext}>{t('player.nextNow')}</button><button type="button" className="btn btn-secondary btn-sm" onClick={() => { cancelledNext.current = nextCountdown.from; setNextCountdown(null); }}>{t('player.nextCancel')}</button><button type="button" className="btn btn-ghost btn-sm" onClick={() => setPlaylistOpen(true)}>{t('player.playlist')}</button></div></div>}
         <video
           key={streamUrl}
           ref={attachMedia}
           src={streamUrl}
           autoPlay
+          onLoadedMetadata={() => firstSteps.mediaReady(downloadId)}
+          onPlaying={() => firstSteps.mediaPlaying(downloadId)}
           className="player-video"
           onClick={() => { if (mediaEl) { if (mediaEl.paused) void mediaEl.play().catch(() => {}); else mediaEl.pause(); } }}
           onError={handleMediaError}
         >
           {subUrl && <track key={subUrl} kind="subtitles" src={subUrl} srcLang="und" label={t('player.subtitles')} default />}
         </video>
-        <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded} timeOffset={streamOffset}>
+        <PlayerControls media={mediaEl} fullscreenTarget={stageRef} seekable={!transcoded} timeOffset={streamOffset}
+          sourceDuration={transcoded && sourceDuration.index === activeIndex ? sourceDuration.seconds : null}
+          onSeek={transcoded ? seekTranscode : undefined}>
           {detachButton}
           {nextFile && (
             <button className="pc-btn" onClick={playNext} title={t('player.nextEpisode')}>
@@ -707,7 +777,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
         <MediaBufferStatus media={mediaEl} downloadId={downloadId} transcoded={transcoded} />
       </div>
     );
-  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext, detachButton, downloadId, attachMedia, streamOffset]);
+  }, [error, loading, streamUrl, kind, activeFile, transcoded, handleMediaError, t, subUrl, mediaEl, nextFile, playNext, nextCountdown, nextSeconds, detachButton, downloadId, attachMedia, streamOffset, sourceDuration, activeIndex, seekTranscode]);
 
   const shell = (
     <div
@@ -745,7 +815,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
                   <button className={`player-sub-item ${autoNext ? 'active' : ''}`} onClick={toggleAutoNext}>
                     <Icon name="skip-forward" size={13} />
                     <span>{t('player.autoNext')}</span>
-                    <span className="player-playlist-check">{autoNext ? '✓' : ''}</span>
+                    <span className="player-playlist-check" aria-hidden="true">{autoNext && <Icon name="check" size={14} />}</span>
                   </button>
                   {playlist.map((f, i) => (
                     <button
@@ -762,8 +832,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
               )}
             </div>
           )}
-          {activeFile?.kind === 'video' && catalogFile === activeIndex && audioTracks.length > 1 && (
-            <div className="player-sub-wrap">
+          {activeFile?.kind === 'video' && (
+            <div className="player-sub-wrap player-track-menu">
               <button
                 className={`player-cast-btn ${audioOpen ? 'active' : ''}`}
                 onClick={() => { setAudioOpen((o) => !o); setPlaylistOpen(false); setSubOpen(false); }}
@@ -780,6 +850,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
                   >
                     {t('player.audioDefault')}
                   </button>
+                  <PlayerTrackCatalogState status={audioCatalog.status} empty={!audioTracks.length} kind="audio" onRetry={audioCatalog.retry} />
                   {audioTracks.map((tr) => (
                     <button
                       key={tr.index}
@@ -796,7 +867,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             </div>
           )}
           {activeFile?.kind === 'video' && (
-            <div className="player-sub-wrap">
+            <div className="player-sub-wrap player-track-menu">
               <button
                 className={`player-cast-btn ${subOpen ? 'active' : ''}`}
                 onClick={() => { setSubOpen((o) => !o); setPlaylistOpen(false); setAudioOpen(false); }}
@@ -810,9 +881,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
                   <button className={`player-sub-item ${!subActiveKey ? 'active' : ''}`} onClick={() => selectSubtitle(null)}>
                     {t('player.subOff')}
                   </button>
-                  {subTracks.length === 0 ? (
-                    <div className="player-sub-empty">{t('player.subNone')}</div>
-                  ) : (
+                  <PlayerTrackCatalogState status={subCatalog.status} empty={!subTracks.length} kind="subtitles" onRetry={subCatalog.retry} />
+                  {subTracks.length > 0 && (
                     subTracks.map((tr) => (
                       <button key={tr.key} className={`player-sub-item ${subActiveKey === tr.key ? 'active' : ''}`} onClick={() => selectSubtitle(tr.key)}>
                         <Icon name={tr.source === 'embedded' ? 'film' : 'file-text'} size={13} />
@@ -884,7 +954,7 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
 
             {castMode === 'tv' ? (
               <div className="player-cast-tv">
-                {tvError && <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> {tvError}</div>}
+                {tvError && <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> <ErrorMessage error={tvError} /></div>}
                 {tvPlaying ? (
                   <>
                     <div className="player-cast-tv-now"><Icon name="tv" size={16} /> {t('player.castTvOn')} <strong>{tvPlaying.name}</strong></div>
@@ -914,14 +984,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
               castBusy ? (
                 <div className="player-cast-loading"><span className="spinner" /> {t('player.castStarting')}</div>
               ) : castError ? (
-                <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> {castError}</div>
+                <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> <ErrorMessage error={castError} /></div>
               ) : castInfo ? (
                 <>
                   <div className="player-cast-qr"><QRCode data={castInfo.url} size={180} /></div>
                   <div className="player-cast-desc">{t('player.castDesc')}</div>
-                  <button className="player-cast-url" onClick={copyCastUrl} title={t('player.castCopy')}>
+                  <button className="player-cast-url" onClick={copyCastUrl} disabled={copying} title={t(copied ? 'common.copied' : 'player.castCopy')}>
                     <span>{castInfo.url}</span>
-                    <Icon name={copied ? 'check-circle' : 'copy'} size={14} />
+                    <Icon name="copy" size={14} />
                   </button>
                   <div className="player-cast-hint"><Icon name="info" size={12} /> {t('player.castHint')}</div>
                 </>
@@ -930,14 +1000,14 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
               remoteBusy ? (
                 <div className="player-cast-loading"><span className="spinner" /> {t('player.castStarting')}</div>
               ) : remoteError ? (
-                <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> {remoteError}</div>
+                <div className="player-cast-error"><Icon name="alert-triangle" size={14} /> <ErrorMessage error={remoteError} /></div>
               ) : remoteInfo ? (
                 <>
                   <div className="player-cast-qr"><QRCode data={remoteInfo.url} size={180} /></div>
                   <div className="player-cast-desc">{t('player.castRemoteDesc')}</div>
-                  <button className="player-cast-url" onClick={copyCastUrl} title={t('player.castCopy')}>
+                  <button className="player-cast-url" onClick={copyCastUrl} disabled={copying} title={t(copied ? 'common.copied' : 'player.castCopy')}>
                     <span>{remoteInfo.url}</span>
-                    <Icon name={copied ? 'check-circle' : 'copy'} size={14} />
+                    <Icon name="copy" size={14} />
                   </button>
                   <div className="player-cast-hint"><Icon name="info" size={12} /> {t('player.castRemoteHint')}</div>
                 </>
@@ -945,6 +1015,8 @@ export const StreamPlayerModal: React.FC<StreamPlayerModalProps> = ({ downloadId
             )}
           </div>
         )}
+
+        {castOpen && castCopyFailed && <p className="player-cast-error" role="alert">{t('common.copyFailed')}</p>}
 
         <div className="player-body">{renderBody()}</div>
         {activeFile?.kind === 'video' && <PlayerPreferencesPanel prefs={preferences} onChange={updatePreferences} onResetFile={() => {
