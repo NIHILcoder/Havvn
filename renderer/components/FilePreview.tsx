@@ -1,9 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import { ErrorMessage } from './ErrorMessage';
+import React, { useEffect, useMemo, useState } from 'react';
 import { TorrentFile } from '../../shared/types';
+import { fileProgress } from '../../shared/file-progress';
 import { Icon, IconName } from './Icon';
 import { Modal } from './Modal';
 import { Button } from './Button';
 import { useTranslation } from '../utils/i18nContext';
+import { useResourceEconomy } from '../utils/resource-mode';
+import { RESOURCE_ECONOMY } from '../../shared/resource-mode';
+import { useVisibleWork } from '../utils/visible-work';
+import { useHostWindow } from '../utils/hostWindow';
+import { VirtualFileList } from './VirtualFileList';
+import { reconcileTorrentFiles, torrentFileKey } from '../utils/torrent-files';
 import './FilePreview.css';
 
 interface FilePreviewProps {
@@ -13,24 +21,43 @@ interface FilePreviewProps {
 
 export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose }) => {
   const { t } = useTranslation();
+  const economy = useResourceEconomy();
+  const visible = useVisibleWork();
+  const host = useHostWindow();
   const [files, setFiles] = useState<TorrentFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setFiles([]); setLoading(true); setError(null);
+  }, [downloadId]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    let timer: number | undefined;
     const loadFiles = async () => {
       try {
         const fileList = await window.api.getTorrentFiles(downloadId);
-        setFiles(fileList);
+        if (cancelled) return;
+        setFiles(previous => reconcileTorrentFiles(previous,
+          fileList.map(file => ({ ...file, ...fileProgress(file.length, file.downloaded) }))));
+        setError(null);
       } catch (err) {
+        if (cancelled) return;
         setError(t('filePreview.loadFailed'));
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          // Schedule after the response: slow IPC must not pile up requests.
+          timer = host.window.setTimeout(loadFiles, economy ? RESOURCE_ECONOMY.previewIntervalMs : 1000);
+        }
       }
     };
-    loadFiles();
-  }, [downloadId]);
+    void loadFiles();
+    return () => { cancelled = true; host.window.clearTimeout(timer); };
+  }, [downloadId, t, economy, visible, host]);
 
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return '0 B';
@@ -76,6 +103,21 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
     return fileName.split('.').pop()?.toUpperCase() || 'FILE';
   };
 
+  const { totalSize, downloadedSize, completedCount, totalProgress } = useMemo(() => {
+    let totalSize = 0, downloadedSize = 0, completedCount = 0;
+    let wantedSize = 0, wantedDownloaded = 0, wantedCount = 0, wantedComplete = 0;
+    for (const file of files) {
+      totalSize += file.length; downloadedSize += file.downloaded;
+      if (file.progress === 1) completedCount++;
+      if (file.priority !== 'skip') {
+        wantedCount++; wantedSize += file.length; wantedDownloaded += file.downloaded;
+        if (file.progress === 1) wantedComplete++;
+      }
+    }
+    return { totalSize, downloadedSize, completedCount,
+      totalProgress: wantedSize > 0 ? wantedDownloaded / wantedSize : wantedCount > 0 && wantedComplete === wantedCount ? 1 : 0 };
+  }, [files]);
+
   if (loading) {
     return (
       <Modal onClose={onClose} size="xl" ariaLabel={t('filePreview.loadingAria')}>
@@ -87,19 +129,19 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
     );
   }
 
-  if (error) {
+  if (error && files.length === 0) {
     return (
       <Modal
         onClose={onClose}
         size="xl"
-        ariaLabel={error}
+        ariaLabel={t('filePreview.loadFailed')}
         footer={<Button variant="secondary" onClick={onClose}>{t('common.close')}</Button>}
       >
         <div className="file-preview-error">
           <div className="fp-state-icon fp-state-icon--error">
             <Icon name="alert-circle" size={32} />
           </div>
-          <p>{error}</p>
+          <p><ErrorMessage error={error} /></p>
         </div>
       </Modal>
     );
@@ -117,11 +159,6 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
       </Modal>
     );
   }
-
-  const totalSize = files.reduce((sum, file) => sum + file.length, 0);
-  const downloadedSize = files.reduce((sum, file) => sum + file.downloaded, 0);
-  const totalProgress = totalSize > 0 ? downloadedSize / totalSize : 0;
-  const completedCount = files.filter(f => f.progress === 1).length;
 
   const headerTitle = (
     <span className="fp-header-text">
@@ -162,6 +199,7 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
       ariaLabel={`${t('downloads.files')} (${files.length})`}
       bodyClassName="fp-body"
     >
+      {error && <p role="status" className="fp-refresh-error"><ErrorMessage error={error} /></p>}
       {/* ── Overall progress bar (sticky) ── */}
       <div className="fp-total-progress">
         <div className="fp-total-bar">
@@ -173,14 +211,15 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
       </div>
 
       {/* ── File list ── */}
-      <div className="fp-list">
-        {files.map((file, index) => {
+      <VirtualFileList className="fp-list" items={files} getKey={torrentFileKey}
+        estimateSize={114} gap={6} resetKey={downloadId} label={t('downloads.files')}
+        renderRow={(file) => {
           const pct = Math.round(file.progress * 100);
           const isDone = file.progress === 1;
           const ext = getFileExtension(file.name);
 
           return (
-            <div key={index} className={`fp-item ${isDone ? 'fp-item--done' : ''}`}>
+            <div className={`fp-item ${isDone ? 'fp-item--done' : ''}`}>
               {/* Icon */}
               <div className="fp-item-icon" style={{ color: getFileTypeColor(file.name) }}>
                 <Icon name={getFileIcon(file.name)} size={22} />
@@ -229,8 +268,7 @@ export const FilePreview: React.FC<FilePreviewProps> = ({ downloadId, onClose })
               </div>
             </div>
           );
-        })}
-      </div>
+        }} />
     </Modal>
   );
 };

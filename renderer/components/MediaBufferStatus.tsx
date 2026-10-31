@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { bufferedSecondsAhead, playbackPhase, readBufferedRanges, type PlaybackSnapshot, type PlaybackSource } from '../../shared/playback-buffer';
 import { useTranslation } from '../utils/i18nContext';
 import { downloadsModel, useDownloads } from '../state/downloads';
+import { useDocumentVisible } from '../utils/visible-work';
 import './MediaBufferStatus.css';
 
 const EMPTY_MEDIA: PlaybackSnapshot = { attached: false, readyState: 0, paused: true, ended: false, seeking: false, waiting: false };
@@ -14,6 +15,8 @@ interface Props {
 
 export function MediaBufferStatus({ media, downloadId, resolving = false, transcoded = false }: Props) {
   const { t } = useTranslation();
+  const visible = useDocumentVisible(media);
+  useEffect(() => visible ? downloadsModel.retainVisibleCounters() : undefined, [visible]);
   const [snapshot, setSnapshot] = useState(EMPTY_MEDIA);
   const [ahead, setAhead] = useState(0);
   const download = useDownloads(s => s.byId.get(downloadId));

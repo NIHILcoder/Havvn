@@ -31,7 +31,7 @@ describe('ScreenView markup', () => {
   it('offers fullscreen and close actions', () => {
     const html = render();
     expect(html).toContain('rooms.screen.fullscreen');
-    expect(html).toContain('common.close');
+    expect(html).toContain('rooms.screen.closeView');
   });
 
   it('touches no DOM globals during render and needs no HostWindowProvider', () => {

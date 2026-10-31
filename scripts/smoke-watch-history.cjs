@@ -10,7 +10,7 @@ if (!process.versions.electron) {
   const root = path.resolve(__dirname, '..'), out = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'havvn-watch-history-'));
   app.setPath('userData', path.join(out, 'profile')); app.disableHardwareAcceleration();
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
-  const deadline = setTimeout(() => { console.error('watch history deadline'); app.exit(1); }, 55000);
+  const deadline = setTimeout(() => { console.error('watch history deadline'); app.exit(1); }, 95000);
   app.on('window-all-closed', () => {}); let service;
   app.whenReady().then(async () => {
     const ffmpeg = require('ffmpeg-static');
@@ -24,12 +24,19 @@ if (!process.versions.electron) {
     let files = [source, second].map(p => ({ name: path.basename(p), path: path.basename(p), length: fs.statSync(p).size, downloaded: fs.statSync(p).size, progress: 1 }));
     const externalOpened = []; let externalKind = 'default';
     const cache = new Map(); let streamStarts = 0;
+    let relocatedRecords = [], relocationChoice = source;
+    const relocation = new (require(path.join(root, 'dist/electron/electron/services/media-relocations.js')).MediaRelocations)(() => relocatedRecords, records => { relocatedRecords = records; });
+    ipcMain.handle('test:relocations', () => relocation.list());
+    ipcMain.handle('test:chooseRelocation', (_event, target) => relocation.preview(target, relocationChoice));
+    ipcMain.handle('test:confirmRelocation', (_event, token) => relocation.confirm(token));
+    ipcMain.handle('test:cancelRelocation', (_event, token) => relocation.cancel(token));
     service = new (require(path.join(root, 'dist/electron/electron/services/history-playback.js')).HistoryPlayback)({
+      relocations: relocation,
       download: async id => d?.id === id ? d : null, files: async () => files,
       stream: async () => { streamStarts++; throw Error('Must not start torrents'); }, ffmpeg: () => ffmpeg,
       cached: k => cache.get(k) || [], cache: (k, f) => cache.set(k, f),
     });
-    for (const method of ['files', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop']) ipcMain.handle('test:' + method, (_e, ...args) => service[method](...args));
+    for (const method of ['files', 'libraryFiles', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop']) ipcMain.handle('test:' + method, (_e, ...args) => service[method](...args));
     ipcMain.handle('test:downloads', () => d ? [d] : []);
     ipcMain.handle('test:externalConfig', () => ({ kind: externalKind, executable: externalKind === 'mpv' ? 'fixture-mpv' : null, available: true }));
     ipcMain.handle('test:externalTarget', (_e, id, rel) => service.watchTarget(id, rel));
@@ -41,11 +48,12 @@ if (!process.versions.electron) {
         position: 8, duration: 15, completed: false, lastOpened: Date.now(), updatedAt: Date.now() } } } : {}) };
     });
     const css = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css', 'renderer/pages/WatchHistoryPage.css',
-      'renderer/components/StreamPlayerModal.css', 'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/PlayerPreferencesPanel.css', 'renderer/components/Modal.css', 'renderer/components/ExternalPlayer.css']
+      'renderer/components/StreamPlayerModal.css', 'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/PlayerPreferencesPanel.css', 'renderer/components/Modal.css', 'renderer/components/ExternalPlayer.css', 'renderer/components/Select.css']
       .map(p => fs.readFileSync(path.join(root, p), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const page = path.join(out, 'preview.html'); fs.writeFileSync(page, '<html><style>' + css + 'body{background:#101114}</style><div id="root"></div></html>');
     const win = new BrowserWindow({ show: false, width: 1050, height: 720, webPreferences: { nodeIntegration: true, contextIsolation: false, offscreen: true, backgroundThrottling: false } });
-    win.webContents.on('console-message', event => console.log('[renderer]', event.message));
+    const rendererErrors = [];
+    win.webContents.on('console-message', event => { console.log('[renderer]', event.message); if (event.level === 'error') rendererErrors.push(event.message); });
     win.webContents.setWindowOpenHandler(() => ({ action: 'allow', overrideBrowserWindowOptions: { show: false, webPreferences: { offscreen: true, backgroundThrottling: false } } }));
     await win.loadFile(page);
     const run = async code => { try { return await win.webContents.executeJavaScript(code); } catch(error) { console.error('Failed renderer step:', code); throw error; } };
@@ -58,11 +66,12 @@ if (!process.versions.electron) {
       var React=require(path.join(root,'node_modules/react')),ReactDOM=require(path.join(root,'node_modules/react-dom/client')),portal=require(path.join(root,'node_modules/react-dom')).createPortal;
       var dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/ru.json'),'utf8')),translate=k=>dict[k]||k,cache={},ipc=require('electron').ipcRenderer;
       var calls=[],subscribers=[],toasts=[];
+      Object.defineProperty(document,'hidden',{configurable:true,get:()=>false});
       var unavailable=()=>{throw Error('Normal torrent API must not run in history')};
       window.api={getDownloads:()=>ipc.invoke('test:downloads'),getTorrentFiles:unavailable,getStreamUrl:unavailable,
         stopStream:async()=>{},audioTracks:{list:unavailable},subtitles:{list:unavailable,get:unavailable},
         onDownloadStats:fn=>{subscribers.push(fn);return()=>{subscribers=subscribers.filter(f=>f!==fn)}}};
-      window.api.historyPlayback=Object.fromEntries(['files','stream','audio','subtitles','vtt','duration','stop'].map(method=>[method, (...args)=>{if(method==='stream')calls.push(args);return ipc.invoke('test:'+method,...args)}]));
+      window.api.historyPlayback=Object.fromEntries(['files','libraryFiles','stream','audio','subtitles','vtt','duration','stop'].map(method=>[method, (...args)=>{if(method==='stream')calls.push(args);return ipc.invoke('test:'+method,...args)}]));
       window.api.externalPlayer={inspect:async()=> 'local',sessions:async()=>[],stop:async()=>{},watchTarget:(id,rel)=>ipc.invoke('test:externalTarget',id,rel),watchUpdates:async()=>[],acknowledgeWatch:async()=>{},getConfig:()=>ipc.invoke('test:externalConfig'),useDefault:()=>ipc.invoke('test:externalConfig'),choose:async()=>({ok:true,config:null}),open:(...args)=>ipc.invoke('test:externalOpen',...args).then(result=>{if(result.update)watchStore.applyExternalWatch(result.update);return result})};
       function usePopout(){const[child,setChild]=React.useState(null);return{popout:child,portal:body=>child?portal(React.createElement(load(path.join(root,'renderer/utils/hostWindow.tsx')).HostWindowProvider,{window:child},body),child.document.body):null,
         openPopout:()=>{const w=window.open('about:blank','history-player');if(!w)return false;w.document.head.innerHTML=document.head.innerHTML;window.testPopout=w;setChild(w);return true;},
@@ -84,6 +93,7 @@ if (!process.versions.electron) {
       mount();
     `;
     await run(bootstrap);
+    await run(`Object.assign(window.api.historyPlayback,{relocations:()=>ipc.invoke('test:relocations'),chooseRelocation:target=>ipc.invoke('test:chooseRelocation',target),confirmRelocation:token=>ipc.invoke('test:confirmRelocation',token),cancelRelocation:token=>ipc.invoke('test:cancelRelocation',token)});void 0;`);
     await wait(`document.querySelector('.watch-history-card')&&!!button('history.resume')&&!button('history.resume').disabled`);
     assert.ok((await run(`document.querySelector('.watch-history-meta').textContent`)).includes('0:06'));
     await run(`button('external.title').click()`); await wait(`button('external.open')&&!button('external.open').disabled`);
@@ -105,6 +115,20 @@ if (!process.versions.electron) {
     await run(`button('history.resume').click()`); await wait(`current()?.readyState>=3`); await run(`current().pause();current().currentTime=7`);
     assert.equal(await run(`calls[0][1]`), 0);
     assert.equal(await run(`calls[0][2].startTime`), 6);
+    const countdownCalls = await run(`calls.length`);
+    await run(`current().currentTime=14.7;`);
+    await wait(`current().currentTime>=14.6&&!current().seeking`);
+    await run(`current().dispatchEvent(new Event('ended'));`);
+    await wait(`!!document.querySelector('[data-next-countdown]')`);
+    await wait(`(()=>{const el=document.querySelector('[data-next-countdown]'),r=el?.getBoundingClientRect();return r?.width>100&&r.height>50&&document.elementFromPoint(r.left+r.width/2,r.top+10)?.closest('[data-next-countdown]')===el})()`);
+    assert.equal(await run(`calls.length`), countdownCalls, 'Completed episode shows countdown before requesting another stream');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    fs.writeFileSync(path.join(out, 'next-episode-countdown.png'), (await win.webContents.capturePage()).toPNG());
+    await run(`button('player.nextCancel').click()`); await wait(`!document.querySelector('[data-next-countdown]')`);
+    await new Promise(resolve => setTimeout(resolve, 8300));
+    assert.equal(await run(`calls.length`), countdownCalls, 'Cancellation lasts beyond the real eight-second deadline');
+    await run(`current().currentTime=7;current().dispatchEvent(new Event('pause'));`);
+    await wait(`Math.abs(current().currentTime-7)<0.1&&!current().seeking`);
     // Source remount must retain the absolute clock, including live transcoding.
     await wait(`!!button('player.audioTracks')`);
     await run(`button('player.audioTracks').click()`);
@@ -127,11 +151,31 @@ if (!process.versions.electron) {
     await run(`button('player.attach',testPopout.document).click()`);
     await wait(`document.querySelector('video')?.readyState>=3&&document.querySelector('video').paused`);
     await run(`reactRoot.unmount()`);
+    await run(`mount()`); await wait(`!!button('library.edit')`);
+    const beforeCorrection = await run(`watchStore.watchEntries()[0].position`);
+    await run(`button('library.edit').click()`); await wait(`!!document.querySelector('.media-library-editor')`);
+    await run(`var titleInput=document.querySelector('.media-library-editor input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(titleInput,'Corrected series');titleInput.dispatchEvent(new Event('input',{bubbles:true}));`);
+    await run(`var detailInputs=document.querySelectorAll('.media-library-editor input');for(const [index,value]of [[1,'2'],[2,'3']]){Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(detailInputs[index],value);detailInputs[index].dispatchEvent(new Event('input',{bubbles:true}));}`);
+    win.setSize(440, 820); await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await run(`Array.from(document.querySelectorAll('.media-library-editor input,.um-foot button')).every(e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1})`), true);
+    assert.equal(await run(`document.querySelectorAll('.media-library-editor input[type=number]').length`), 0);
+    fs.writeFileSync(path.join(out, 'library-editor-440.png'), (await win.webContents.capturePage()).toPNG());
+    await run(`button('common.save').click()`); await wait(`!document.querySelector('.media-library-editor')`);
+    assert.deepEqual(await run(`JSON.parse(localStorage.getItem('havvn.mediaLibrary.v1')).items.find(i=>i.manual)?.manual`), {kind:'series',title:'Corrected series',season:2,episode:3});
+    assert.equal(await run(`watchStore.watchEntries()[0].position`), beforeCorrection);
+    await run(`document.querySelector('[data-library-view=watching]').click()`); await wait(`document.querySelectorAll('.watch-history-card').length===1`);
+    await run(`document.querySelector('[data-library-view=completed]').click()`); await wait(`!!document.querySelector('.watch-history-empty')`);
+    await run(`document.querySelector('[data-library-view=all]').click()`); await wait(`document.querySelectorAll('.watch-history-card').length===2`);
+    await run(`var search=document.querySelector('.media-library-search input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(search,'S01E02');search.dispatchEvent(new Event('input',{bubbles:true}));`);
+    await wait(`document.querySelectorAll('.watch-history-card').length===1`);
+    assert.equal(await run(`document.querySelector('.watch-history-path').textContent`), 'S01E02.mp4');
+    await run(`reactRoot.unmount()`);
+    win.setSize(1050, 720);
     d = { ...d, id: 'readded', name: 'Renamed series' }; files.reverse();
     await win.loadFile(page); await run(bootstrap); // new renderer realm, persistent position/track choices
 
     await wait(`!!button('history.resume')&&!button('history.resume').disabled`);
-    assert.equal(await run(`document.querySelector('.watch-history-card h2').textContent`), 'Renamed series');
+    assert.equal(await run(`document.querySelector('.watch-history-card h2').textContent`), 'Corrected series');
     fs.writeFileSync(path.join(out, 'history-1050.png'), (await win.webContents.capturePage()).toPNG());
     await run(`button('history.resume').click()`);
     await wait(`current()?.readyState>=3`);
@@ -153,20 +197,76 @@ if (!process.versions.electron) {
     await run(`document.querySelector('.player-close').click();reactRoot.unmount();`);
     // Windows releases FFmpeg's input handle shortly after the close IPC arrives.
     await service.stop(d.id);
+    const movedDirectory = path.join(out, 'moved'); fs.mkdirSync(movedDirectory); relocationChoice = path.join(movedDirectory, 'renamed.mp4');
     for (let i = 0; i < 20; i++) {
-      try { fs.unlinkSync(source); break; } catch (error) { if (error.code !== 'EBUSY' || i === 19) throw error; await new Promise(r => setTimeout(r, 50)); }
+      try { fs.renameSync(source, relocationChoice); break; } catch (error) { if (error.code !== 'EBUSY' || i === 19) throw error; await new Promise(r => setTimeout(r, 50)); }
     }
     await run(`mount()`);
+    await wait(`!!document.querySelector('.watch-history-tabs')`);
+    await run(`document.querySelector('[data-library-view=all]').click()`);
     await wait(`document.querySelector('.watch-history-card')&&!!button('history.resume')&&button('history.resume').disabled`);
     win.setSize(440, 720);
     await new Promise(r => setTimeout(r, 100));
     assert.ok(await run(`document.documentElement.scrollWidth<=innerWidth`));
     fs.writeFileSync(path.join(out, 'history-440.png'), (await win.webContents.capturePage()).toPNG());
     await run(`button('history.clear').click()`);
-    await wait(`watchStore.watchEntries().length===0&&!document.querySelector('.watch-history-card')`);
+    await wait(`watchStore.watchEntries().length===0`);
+    assert.ok(await run(`!!document.querySelector('.watch-history-card')`), 'Clearing positions keeps the media index');
+    await run(`document.querySelector('[data-library-view=continue]').click()`);
+    await wait(`!document.querySelector('.watch-history-card')`);
     await run(`reactRoot.unmount();mount()`);
     await wait(`!!document.querySelector('.watch-history-empty')`);
     assert.equal(await run(`watchStore.watchEntries().length`), 0); assert.equal(streamStarts, 0);
+    await run(`document.querySelector('[data-library-view=all]').click()`);
+    await wait(`document.querySelectorAll('.watch-history-card').length===2`);
+    assert.equal(await run(`JSON.parse(localStorage.getItem('havvn.mediaLibrary.v1')).items.find(i=>i.manual)?.manual.title`), 'Corrected series');
+    d = null; await run(`reactRoot.unmount();mount()`); await wait(`!!document.querySelector('.watch-history-tabs')`);
+    await run(`document.querySelector('[data-library-view=all]').click()`);
+    await wait(`[...document.querySelectorAll('[data-media-availability]')].length===2&&[...document.querySelectorAll('[data-media-availability]')].every(e=>e.dataset.mediaAvailability==='missing')`);
+    assert.equal(await run(`button('history.resume').disabled`), true);
+    await run(`watchStore.saveWatch({identity:'abc',downloadId:'test',title:'Test series',path:'S01E01.mp4',fileIndex:0,position:6,duration:15,lastOpened:Date.now(),updatedAt:Date.now(),completed:false},watchStore.beginWatch('abc','S01E01.mp4'));void 0;`);
+    await run(`Object.assign(window.api.historyPlayback,{relocations:()=>ipc.invoke('test:relocations'),chooseRelocation:target=>ipc.invoke('test:chooseRelocation',target),confirmRelocation:token=>ipc.invoke('test:confirmRelocation',token),cancelRelocation:token=>ipc.invoke('test:cancelRelocation',token)});void 0;`);
+    await run(`[...document.querySelectorAll('.watch-history-card')].find(card=>card.textContent.includes('S01E01')).querySelector('[data-relocate-media]').click()`);
+    await wait(`!!button('library.relocate.chooseFile')`); await run(`button('library.relocate.chooseFile').click()`);
+    await wait(`!!document.querySelector('.media-relocation-review')`);
+    assert.equal(await run(`button('library.relocate.linkResume').disabled`), true, 'File selection alone cannot change the binding');
+    fs.writeFileSync(path.join(out, 'media-relocation-review.png'), (await win.webContents.capturePage()).toPNG());
+    await run(`document.querySelector('.media-relocation-review input').click()`); await run(`button('library.relocate.linkResume').click()`);
+    await wait(`current()?.readyState>=3&&current().currentTime>=6`);
+    assert.equal(await run(`watchStore.watchEntries().find(e=>e.path==='S01E01.mp4').identity`), 'abc', 'Relocation preserves the original history identity even without the torrent row');
+    assert.equal(streamStarts, 0, 'Relocation never starts torrent streaming');
+    await run(`reactRoot.unmount()`);
+    d = { id:'readded',infoHash:'abc',name:'Test series',status:'paused',progress:1,savePath:out,peers:0 };
+    await run(`var Playback=load(path.join(root,'renderer/components/StreamPlayerModal.tsx')).StreamPlayerModal;reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Playback,{downloadId:'readded',downloadName:'Series',historyPlayback:true,historyIdentity:'abc',initialFilePath:'S01E01.mp4',onClose:()=>{}}));`);
+    await wait(`current()?.readyState>=3&&!!button('player.audioTracks')`);
+    await run(`button('player.audioTracks').click()`); await wait(`!!button('player.audioDefault')`);
+    await run(`button('player.audioDefault').click()`);
+    await wait(`current()?.readyState>=3&&calls.at(-1)[2].transcode===false`);
+    await run(`current().pause();current().currentTime=14.7;`);
+    await wait(`current().currentTime>=14.6&&!current().seeking`);
+    await run(`current().dispatchEvent(new Event('ended'));`);
+    await wait(`!!document.querySelector('[data-next-countdown]')`);
+    await run(`button('player.nextNow').click()`);
+    await wait(`current()?.readyState>=3&&calls.at(-1)[1]===0`);
+    await run(`current().pause();current().currentTime=14.7;`);
+    await wait(`current().currentTime>=14.6&&!current().seeking`);
+    await run(`current().dispatchEvent(new Event('ended'));`);
+    await new Promise(resolve => setTimeout(resolve,300));
+    assert.equal(await run(`!!document.querySelector('[data-next-countdown]')`), false, 'Last episode has no countdown or wrap-around');
+    await run(`reactRoot.unmount()`);
+    await run(`watchStore.saveWatch({identity:'abc',downloadId:'readded',title:'Test series',path:'S01E01.mp4',fileIndex:1,position:6,duration:15,lastOpened:Date.now(),updatedAt:Date.now(),completed:false},watchStore.beginWatch('abc','S01E01.mp4'));reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Playback,{downloadId:'readded',downloadName:'Series',historyPlayback:true,historyIdentity:'abc',initialFilePath:'S01E01.mp4',onClose:()=>{}}));`);
+    await wait(`current()?.readyState>=3&&calls.at(-1)[1]===1&&calls.at(-1)[2].transcode===false`);
+    await run(`current().pause();current().currentTime=14.7;`); await wait(`current().currentTime>=14.6&&!current().seeking`);
+    const beforeAutomatic = await run(`calls.length`);
+    await run(`current().dispatchEvent(new Event('ended'));`); await wait(`!!document.querySelector('[data-next-countdown]')`);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(await run(`calls.length`), beforeAutomatic, 'Automatic transition waits for its deadline');
+    await wait(`calls.length>${beforeAutomatic}&&calls.at(-1)[1]===0&&current()?.readyState>=3`);
+    await run(`reactRoot.unmount()`);
+    assert.deepEqual(rendererErrors, [], 'No errors from the actual player and history surfaces');
+    fs.writeFileSync(path.join(out, 'acceptance.json'), JSON.stringify({passed:true,checkedAt:new Date().toISOString(),streamStarts,
+      scope:'One Windows PC, private Electron profile and real generated media; no user downloads or external metadata',
+      checks:['legacy-position-migration','builtin-resume-and-tracks','external-handoff-and-cancel','popout-controls','renderer-restart','readd-and-index-reorder','manual-title-season-episode','manual-edit-keeps-position','four-library-views-and-search','missing-file-disabled','clear-positions-keeps-index-and-classification','removed-source-unavailable','layout-1050-440-and-editor-without-native-spinners','completed-episode-countdown','cancel-persists-beyond-eight-seconds','truncated-transcode-no-advance','native-relocation-requires-confirmation','relocation-resumes-original-identity-and-time-without-torrent','next-now-and-no-last-episode-wrap','automatic-transition-after-real-deadline','no-renderer-errors'].map(id=>({id,passed:true}))},null,2));
     console.log('PASS watch history: migration, renderer restart, resume, paused local file, tracks, popout, external handoff/pause/cancel/Escape in both windows, truncated end, re-add/index/name, watched/start, missing file, clear, 1050/440 layout; screenshots: ' + out);
     service.close(); clearTimeout(deadline); app.exit(0);
   }).catch(error => { console.error(error); service?.close(); clearTimeout(deadline); app.exit(1); });

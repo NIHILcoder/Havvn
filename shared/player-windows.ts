@@ -31,9 +31,11 @@ export const PLAYER_AUDIO_FRAME = 'havvn-player-audio';
  * and the reaction bar are all still there when it is music.
  */
 export const PLAYER_ROOM_FRAME = 'havvn-player-room';
+/** Screen viewing owns a separate window, independent of file playback. */
+export const SCREEN_VIEW_FRAME = 'havvn-screen-view';
 
 /** Every name, for the main-process allowlist. */
-export const PLAYER_FRAME_NAMES: readonly string[] = [PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME];
+export const PLAYER_FRAME_NAMES: readonly string[] = [PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME, SCREEN_VIEW_FRAME];
 
 /**
  * The frame a given media kind detaches into. Anything that is not audio gets the
@@ -44,7 +46,7 @@ export function playerFrameName(kind: string | null | undefined): string {
   return kind === 'audio' ? PLAYER_AUDIO_FRAME : PLAYER_VIDEO_FRAME;
 }
 
-/** True for either player window (main uses it to skip the dock's slot logic). */
+/** Feature windows are separate from the dock's finite slot pool. */
 export function isPlayerFrame(name: string): boolean {
   return PLAYER_FRAME_NAMES.includes(name);
 }

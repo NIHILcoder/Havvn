@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  PLAYER_AUDIO_FRAME, PLAYER_VIDEO_FRAME, PLAYER_ROOM_FRAME, PLAYER_FRAME_NAMES,
+  PLAYER_AUDIO_FRAME, PLAYER_VIDEO_FRAME, PLAYER_ROOM_FRAME, SCREEN_VIEW_FRAME, PLAYER_FRAME_NAMES,
   playerFrameName, isPlayerFrame,
 } from './player-windows';
 import { POPOUT_FRAME_PREFIX, isPopoutFrameName, isDockWindowFrame } from './dock-windows';
@@ -34,6 +34,8 @@ describe('the detached player windows', () => {
     expect(PLAYER_ROOM_FRAME).not.toBe(PLAYER_AUDIO_FRAME);
     expect(new Set(PLAYER_FRAME_NAMES).size).toBe(PLAYER_FRAME_NAMES.length);
     expect(isPlayerFrame(PLAYER_ROOM_FRAME)).toBe(true);
+    expect(isPlayerFrame(SCREEN_VIEW_FRAME)).toBe(true);
+    expect(SCREEN_VIEW_FRAME).not.toBe(PLAYER_ROOM_FRAME);
   });
 
   it('is never mistaken for a dock slot', () => {
