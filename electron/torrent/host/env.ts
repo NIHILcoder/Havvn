@@ -37,13 +37,13 @@ export function getHostEnv(): HostEnv {
   if (!env) {
     // Lazy requires so the host process (which always setHostEnv() first) never
     // pulls in the Electron `app` module or the store, which don't exist there.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { app } = require('electron');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const path = require('path') as typeof import('path');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const fs = require('fs') as typeof import('fs');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getEngineChoice } = require('../../db/store') as typeof import('../../db/store.js');
 
     const engineBinary = resolveEngineBinary(process.platform, process.arch, app.isPackaged,
