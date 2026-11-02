@@ -1,0 +1,7 @@
+.effective-limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 20px; }
+.effective-limits-item { min-width: 0; overflow-wrap: anywhere; }
+.effective-limits-label { color: var(--color-text-secondary); margin-bottom: 6px; }
+.effective-limits-item strong { display: block; font-size: 18px; line-height: 1.45; }
+.effective-limits-item p, .effective-limits-note { color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.6; margin: 8px 0 0; }
+.effective-limits-block { padding: 12px; margin: 0 0 16px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.effective-limits-note { margin-top: 16px; }
