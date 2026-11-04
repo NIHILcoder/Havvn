@@ -1,0 +1,32 @@
+.um-backdrop.room-file-editor-backdrop { z-index: calc(var(--z-modal) + 1); }
+.room-file-editor-modal.um-card { max-width: 1120px; height: min(800px, 92vh); }
+.room-file-editor-modal > .um-body { padding: 0; overflow: hidden; }
+.room-file-editor-panel { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; color: var(--color-text-primary); }
+.room-file-editor-panel p { margin: 0; padding: 10px 20px; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; color: var(--color-text-secondary); flex-shrink: 0; }
+.room-file-editor-heading { display: flex; align-items: center; gap: 10px; padding: 16px 20px 0; }
+.room-file-editor-heading > svg { flex-shrink: 0; color: var(--color-accent-primary); }
+.room-file-editor-heading code { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 13px/1.5 var(--font-family-mono); }
+.room-file-editor-heading > span { flex-shrink: 0; color: var(--color-text-tertiary); font-size: 11px; }
+.room-file-editor-heading > .is-dirty { color: var(--color-warning); }
+.room-file-editor-panel .room-sync-notice { border-left: 2px solid var(--color-warning); background: var(--color-warning-bg); }
+.room-file-editor-panel .room-sync-error { border-left: 2px solid var(--color-error); color: var(--color-error); background: var(--color-error-bg); }
+.room-file-editor-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; border-block: 1px solid var(--color-border-subtle); background: var(--color-bg-secondary); }
+.room-file-editor-tools { display: flex; gap: 2px; padding-right: 8px; border-right: 1px solid var(--color-border-default); }
+.room-file-editor-toolbar .btn { min-height: 30px; height: 30px; padding: 4px 10px; font-size: 11px; }
+.room-file-editor-toolbar .btn-icon-only { width: 30px; min-width: 30px; padding: 6px; }
+.room-file-editor-toolbar .btn[aria-pressed=true] { color: var(--color-accent-primary); background: var(--color-accent-bg); }
+.room-file-editor-collaborate { margin-left: auto; }
+.room-file-editor-buffer { flex: 1; min-height: 140px; min-width: 0; overflow: hidden; font-size: 13px; }
+.room-file-editor-status { display: flex; align-items: center; gap: 16px; padding: 9px 20px; background: var(--color-bg-secondary); border-top: 1px solid var(--color-border-subtle); color: var(--color-text-tertiary); font: 11px/1.5 var(--font-family-mono); flex-shrink: 0; }
+.room-file-editor-status > :last-child { margin-left: auto; }
+.room-file-editor-modal .um-foot { padding: 12px 20px; }
+.room-file-editor-modal .um-foot .room-sync-library-work { width: 100%; padding: 0; border: 0; }
+@media (max-width: 600px) {
+  .room-file-editor-heading { flex-wrap: wrap; padding: 12px 12px 0; }
+  .room-file-editor-heading > span { padding-left: 28px; width: 100%; }
+  .room-file-editor-panel p { padding: 8px 12px; }
+  .room-file-editor-toolbar { padding: 8px; gap: 6px; }
+  .room-file-editor-collaborate { margin-left: 0; }
+  .room-file-editor-status { padding: 8px 12px; gap: 10px; }
+  .room-file-editor-modal .um-foot { padding: 12px; }
+}
