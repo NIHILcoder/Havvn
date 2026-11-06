@@ -1,0 +1,609 @@
+{
+  "version": 2,
+  "task": "FUN-01",
+  "generatedAt": "2026-10-25T21:17:09.201Z",
+  "collectorSha256": "676cf5061bb358ed2094637b776bbe881cda4f161a9ad399f2a5c416accbca53",
+  "appVersion": "3.2.0",
+  "sourceKind": "product-v2",
+  "sourceSha256": "277d7a36df84eea006c161e20a2c785eeefafb914dd3525f0531677d73d28c6e",
+  "executionScope": {
+    "physicalMachines": 1,
+    "loopbackOnly": true,
+    "realInternetNatOrTurnMeasured": false
+  },
+  "phases": {
+    "local": {
+      "status": "passed-current",
+      "receipt": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\local-run.json",
+      "sha256": "7ff57db0e0be9ac22f11eee71e50d3920e6f306082995a033bd8df37de4a8d9a",
+      "details": {
+        "version": 2,
+        "phase": "local",
+        "startedAt": "2026-10-25T20:51:02.492Z",
+        "status": "passed",
+        "sourceSha256": "277d7a36df84eea006c161e20a2c785eeefafb914dd3525f0531677d73d28c6e",
+        "physicalMachines": 1,
+        "loopbackOnly": true,
+        "environment": {
+          "os": "10.0.26300",
+          "platform": "win32",
+          "arch": "x64",
+          "node": "24.18.1",
+          "electron": "44.4.2"
+        },
+        "steps": [
+          {
+            "name": "compile-electron",
+            "args": [
+              "node_modules/typescript/bin/tsc",
+              "-p",
+              "tsconfig.electron.json"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:51:04.894Z",
+            "finishedAt": "2026-10-25T20:51:29.105Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\compile-electron.log",
+            "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "copy-engine",
+            "args": [
+              "scripts/copy-room-engine.cjs"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:51:29.108Z",
+            "finishedAt": "2026-10-25T20:51:51.834Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\copy-engine.log",
+            "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "typecheck-renderer",
+            "args": [
+              "node_modules/typescript/bin/tsc",
+              "-p",
+              "tsconfig.renderer.json",
+              "--noEmit"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:51:51.836Z",
+            "finishedAt": "2026-10-25T20:52:10.590Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\typecheck-renderer.log",
+            "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "units",
+            "args": [
+              "node_modules/vitest/vitest.mjs",
+              "run",
+              "renderer/pages/rooms/document-save-status.test.ts",
+              "electron/sharing/room-documents.test.ts",
+              "electron/db/room-documents-store.test.ts",
+              "electron/ipc/room-documents.test.ts",
+              "electron/sharing/room-sync-editor.test.ts",
+              "electron/sharing/room-file-sync.test.ts",
+              "electron/sharing/room-sync-work.test.ts",
+              "electron/sharing/room-sync-snapshot.test.ts",
+              "shared/room-file-sync.test.ts",
+              "electron/ipc/room-file-sync.test.ts",
+              "--maxWorkers=2",
+              "--reporter=default",
+              "--reporter=json",
+              "--outputFile=D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\unit.json"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:52:10.947Z",
+            "finishedAt": "2026-10-25T20:52:48.653Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\units.log",
+            "logSha256": "6f563c013fd6dc06ac153eb908b63970a5feab58e87c516b9d5f094e5ffe64b1"
+          },
+          {
+            "name": "build-sync-ui",
+            "args": [
+              "node_modules/webpack-cli/bin/cli.js",
+              "--config",
+              "scripts/room-sync-ui.webpack.cjs"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:52:48.659Z",
+            "finishedAt": "2026-10-25T20:52:57.837Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\build-sync-ui.log",
+            "logSha256": "ead48375e2f3e6c64ab5205956532af46f25b4a8ce076c83ba64d8caf29bf4bf"
+          },
+          {
+            "name": "documents",
+            "args": [
+              "scripts/smoke-room-file-sync.cjs",
+              "--ui",
+              "--documents"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:52:57.841Z",
+            "finishedAt": "2026-10-25T20:53:53.762Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\documents.log",
+            "logSha256": "1a72149057aa63c5e8ffb4de5328ec43f9db7e3c7016073bd01230416a4f45a7"
+          },
+          {
+            "name": "editor",
+            "args": [
+              "scripts/smoke-room-file-sync.cjs",
+              "--ui",
+              "--editor"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:53:53.776Z",
+            "finishedAt": "2026-10-25T20:54:03.153Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\editor.log",
+            "logSha256": "4f7ac7e100093999a1eb6c31554845ad7aed94488b5f79d7a381a749c7ca204d"
+          },
+          {
+            "name": "writers",
+            "args": [
+              "scripts/smoke-room-file-sync.cjs",
+              "--ui",
+              "--writers"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:54:03.156Z",
+            "finishedAt": "2026-10-25T20:54:14.028Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\writers.log",
+            "logSha256": "b993cb6cf5e870fe91349ce8c5c0c9d8a51de4acdea494748743d401d97c1f4b"
+          },
+          {
+            "name": "faults",
+            "args": [
+              "scripts/smoke-room-file-sync.cjs",
+              "--faults"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:54:14.030Z",
+            "finishedAt": "2026-10-25T20:54:25.957Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\faults.log",
+            "logSha256": "cccec8e90df463986f21c083f9c3691ae02748f633c90acff385dc71fa46c45f"
+          },
+          {
+            "name": "policy-tests",
+            "args": [
+              "--test",
+              "scripts/room-release-acceptance.test.cjs"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-16-47-248Z-policy-lint\\policy-tests.log",
+            "logSha256": "cd43b7a31f89145bbbdc125f909bf84ab2176913e04cd4146e80247f53387f87",
+            "finishedAt": "2026-10-25T21:16:47.491Z"
+          }
+        ],
+        "metadata": {
+          "unitTests": 173,
+          "unitReport": {
+            "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\unit.json",
+            "sha256": "f8714e79726b5858f685eba3b6f6b1c32bcf5c1ef3aa5f6ff5f3f555f729bbe2"
+          },
+          "documents": {
+            "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\documents.json",
+            "sha256": "c0c285d8251b606f6c2bdca26cb3fddadfd39b132c2cf7166771b14f00dade17",
+            "status": "passed",
+            "recordedAt": "2026-10-25T20:53:53.482Z",
+            "checks": 18,
+            "passedChecks": 18,
+            "physicalMachines": 1,
+            "loopbackOnly": true,
+            "limitations": [],
+            "remaining": [],
+            "appAsarSha256": null
+          },
+          "faults": {
+            "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-51-02-467Z-local\\faults.json",
+            "sha256": "da3023a01ee4a8ad341402b43ca4a4d352b154933169b477377a2595f5f8a8db",
+            "status": "passed",
+            "recordedAt": "2026-10-25T20:54:25.919Z",
+            "checks": 6,
+            "passedChecks": 6,
+            "physicalMachines": 1,
+            "loopbackOnly": true,
+            "limitations": [],
+            "remaining": [],
+            "appAsarSha256": null
+          }
+        },
+        "finishedAt": "2026-10-25T21:16:47.489Z",
+        "assessmentSha256": "676cf5061bb358ed2094637b776bbe881cda4f161a9ad399f2a5c416accbca53",
+        "sourceKind": "product-v2",
+        "harnessHashes": {
+          "electron/db/room-documents-store.test.ts": "e971c7c616b83a3dde87bd6d89087a8e39194ddc359a7189e4e0684d654f45f7",
+          "electron/ipc/room-documents.test.ts": "7288ebc633325f25b123d7ffeb751d3b95a926604571bf8385ef39713049fb6a",
+          "electron/ipc/room-file-sync.test.ts": "cb6c0d41684e4eaf3a5097d6485fa819c73ba7e74081dcbb0eca2eab19529c77",
+          "electron/sharing/room-documents.test.ts": "3c3f39ddad86987a1e832cb800bf9f885ce0facae76c545dfa6903afabf4c00d",
+          "electron/sharing/room-file-sync.test.ts": "35cf8829d30b4e43d8c75f848ce1d0de3b45d1f7735321b34aeb0c0c9343ce2a",
+          "electron/sharing/room-sync-editor.test.ts": "26e24d03104003e865752f0047eee602461be8eb490476f1df3b48f3e945d74e",
+          "electron/sharing/room-sync-snapshot.test.ts": "86000ec713baacf480a5db8edbfefc1e3e428a8f0cb471fcfa060b742583ecb7",
+          "electron/sharing/room-sync-work.test.ts": "07f7c1ba1d0a0c37ebd3e3086054ac9563594a03cdc0bbb06e7d78e9ba70ebdc",
+          "renderer/pages/rooms/document-save-status.test.ts": "1e82920f49cebd0313fd4506b9df71dd2c4f582e7084ea8244e504afb448fd34",
+          "scripts/copy-room-engine.cjs": "c750ca8bbda63129637b7e314e7e97a009b2e7e754a1f32d25394c864c2eb30b",
+          "scripts/fixtures/room-sync-ui.tsx": "7724f9138ffd776aca2b7db80af2a4966a1955acdf2ba9eb58c86d8aff565baa",
+          "scripts/room-release-acceptance.test.cjs": "6ebbe05d12b9c22b2008bdd34139d4108494367d26d3ab13c186dbd18f7abfc1",
+          "scripts/room-sync-ui.webpack.cjs": "f6954ecec3da97106501f9b29e5db1519dbd28fc665c960672c4d5f7ccdd026f",
+          "scripts/smoke-room-file-sync.cjs": "0a9db5ca48839181df5f1f8c0b80569326e0ae8abc8e2485affef0349e656621",
+          "shared/room-file-sync.test.ts": "827b8384e19e76f71df5704c76a411dbc4f42d08c3b12d698825113ec632649e"
+        },
+        "reconciledFrom": {
+          "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-10-22-914Z-reconciled-local\\previous-receipt.json",
+          "sourceSha256": "f79803ffbe2e573a8bb326d6ae27670b8b3af90c5fe3bdcf50d6b2910cee477c",
+          "capture": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\pre-reconcile-source.json",
+          "reason": "Unchanged product; original successful execution preserved. Only changed verification/report code is rerun."
+        },
+        "policyRecheckedFrom": {
+          "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-16-47-248Z-policy-lint\\previous-receipt.json",
+          "sha256": "44e2792fb4f9a12d4d7dcb57d3c6c5cc9f9f7c5c26d44a70f77ebfb9ca7f9935",
+          "reason": "Only a CommonJS ESLint comment was added; seven policy tests rerun. Unchanged product and native evidence retained."
+        }
+      }
+    },
+    "package": {
+      "status": "passed-current",
+      "receipt": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\package-run.json",
+      "sha256": "aa2b52227139ca27b9b02c055361d0d77bfb2db108ac2d665b6fd37a657ce2f9",
+      "details": {
+        "version": 2,
+        "phase": "package",
+        "startedAt": "2026-10-25T20:54:27.837Z",
+        "status": "passed",
+        "sourceSha256": "277d7a36df84eea006c161e20a2c785eeefafb914dd3525f0531677d73d28c6e",
+        "physicalMachines": 1,
+        "loopbackOnly": true,
+        "environment": {
+          "os": "10.0.26300",
+          "platform": "win32",
+          "arch": "x64",
+          "node": "24.18.1",
+          "electron": "44.4.2"
+        },
+        "steps": [
+          {
+            "name": "build-renderer",
+            "args": [
+              "node_modules/webpack-cli/bin/cli.js",
+              "--config",
+              "webpack.renderer.config.js",
+              "--mode",
+              "production"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:54:28.430Z",
+            "finishedAt": "2026-10-25T20:55:04.824Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-54-27-836Z-package\\build-renderer.log",
+            "logSha256": "59fc55c711b157f82b78cf263a80f9ebc77ada00bc53ad6dbc63337638678127"
+          },
+          {
+            "name": "build-guest",
+            "args": [
+              "node_modules/webpack-cli/bin/cli.js",
+              "--config",
+              "webpack.guest.config.js",
+              "--mode",
+              "production"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:55:04.826Z",
+            "finishedAt": "2026-10-25T20:55:11.611Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-54-27-836Z-package\\build-guest.log",
+            "logSha256": "1cbfeaf315eb5a8f83da493dd75df59d17ab39f3ba1f9d305765633eaa917531"
+          },
+          {
+            "name": "prepare-private-installers",
+            "args": [
+              "scripts/prepare-installer-acceptance.cjs"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:55:11.614Z",
+            "finishedAt": "2026-10-25T20:55:11.722Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-54-27-836Z-package\\prepare-private-installers.log",
+            "logSha256": "7c85fc4370c886ea97cbc594581261340aa9fd3744639ddd082299e7eda9ebaa"
+          },
+          {
+            "name": "build-private-0",
+            "args": [
+              "node_modules/electron-builder/cli.js",
+              "--config",
+              "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\baseline.json",
+              "--win",
+              "--x64",
+              "--publish",
+              "never"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:55:11.725Z",
+            "finishedAt": "2026-10-25T20:58:42.454Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-54-27-836Z-package\\build-private-0.log",
+            "logSha256": "653da13f70a2e3c0a4331370ebd1bbe8c85376fa5539d3e31e08395e7988564b"
+          },
+          {
+            "name": "build-private-1",
+            "args": [
+              "node_modules/electron-builder/cli.js",
+              "--config",
+              "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\updated.json",
+              "--win",
+              "--x64",
+              "--publish",
+              "never"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T20:58:42.456Z",
+            "finishedAt": "2026-10-25T21:00:07.750Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T20-54-27-836Z-package\\build-private-1.log",
+            "logSha256": "52d9d05d6ae1a6252d5c846a6bb22b3a8f4e2132a276efeb931e28e7e6a1b350"
+          },
+          {
+            "name": "packaged-smoke",
+            "args": [
+              "scripts/smoke-packaged.cjs",
+              "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\updated\\win-unpacked",
+              "--executable=HavvnAcceptancedde6e5.exe",
+              "--expected-version=3.2.1"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-10-24-398Z-reconciled-package\\packaged-smoke.log",
+            "logSha256": "078cd5f038a962bed3959fb24c7d3b212b8c276e9722185babf2cb39a9a43b9a",
+            "finishedAt": "2026-10-25T21:10:35.435Z"
+          }
+        ],
+        "metadata": {
+          "planPath": "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\plan.json",
+          "packaged": {
+            "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-10-24-398Z-reconciled-package\\packaged.json",
+            "sha256": "424f5782714975fdef5d20f6d830b32fb865517e88ff29aa24dc4f5ab21b31ac",
+            "status": "passed",
+            "recordedAt": "2026-10-25T21:10:35.407Z",
+            "checks": null,
+            "passedChecks": 0,
+            "physicalMachines": null,
+            "loopbackOnly": null,
+            "limitations": [],
+            "remaining": [],
+            "appAsarSha256": "67a15d2ebbc341553be16fddf6375008de3c604ecb0b9db0c7380acb12e31cae"
+          },
+          "asarSha256": "67a15d2ebbc341553be16fddf6375008de3c604ecb0b9db0c7380acb12e31cae",
+          "archivePath": "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\updated\\win-unpacked\\resources\\app.asar",
+          "sameCodeVersions": true
+        },
+        "finishedAt": "2026-10-25T21:10:35.438Z",
+        "assessmentSha256": "c4869d8815af2b89ee652452869df88837c7f208eb323091c24f3719b1bcbcff",
+        "sourceKind": "product-v2",
+        "harnessHashes": {
+          "build/installer-ui.nsh": "698c4db36384e580e07d1c76701a4daf331586bfee8c63f2aad4c7fa1c3fa018",
+          "build/installer.nsh": "7705d0d938224677f6481c53feb20fa5b3a6489707e9e3f6b63b88fb0db3fb30",
+          "scripts/prepare-installer-acceptance.cjs": "4b0dbd4ac4fc45baea1f22b2a019a32c3feea25b59e0e05f9f2ae186f27acad8",
+          "scripts/prepare-native-prebuilds.cjs": "bdf05fbf0fc0db730d574cd7876dcac1c7de07bbb0fe0f25e070885ffecb2820",
+          "scripts/smoke-packaged.cjs": "a1eb4ed75ade0c739c194bdea69df756baaac8eb1fc5a166b872a968c2517482"
+        },
+        "reconciledFrom": {
+          "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-10-24-398Z-reconciled-package\\previous-receipt.json",
+          "sourceSha256": "f79803ffbe2e573a8bb326d6ae27670b8b3af90c5fe3bdcf50d6b2910cee477c",
+          "capture": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\pre-reconcile-source.json",
+          "reason": "Unchanged product; original successful execution preserved. Only changed verification/report code is rerun."
+        }
+      }
+    },
+    "installer": {
+      "status": "passed-current",
+      "receipt": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\installer-run.json",
+      "sha256": "213d26e54870da933f07569fd074b7c49584379666bbffe6fef3fd893441aad2",
+      "details": {
+        "version": 2,
+        "phase": "installer",
+        "startedAt": "2026-10-25T21:13:09.423Z",
+        "status": "passed",
+        "assessmentSha256": "c4869d8815af2b89ee652452869df88837c7f208eb323091c24f3719b1bcbcff",
+        "sourceKind": "product-v2",
+        "sourceSha256": "277d7a36df84eea006c161e20a2c785eeefafb914dd3525f0531677d73d28c6e",
+        "harnessHashes": {
+          "build/installer-ui.nsh": "698c4db36384e580e07d1c76701a4daf331586bfee8c63f2aad4c7fa1c3fa018",
+          "build/installer.nsh": "7705d0d938224677f6481c53feb20fa5b3a6489707e9e3f6b63b88fb0db3fb30",
+          "scripts/smoke-installer.cjs": "f26224be3eb7ae34f8514ecef250e15f238a03b3dbae7c02f6b7d9be207c5c3f"
+        },
+        "physicalMachines": 1,
+        "loopbackOnly": true,
+        "environment": {
+          "os": "10.0.26300",
+          "platform": "win32",
+          "arch": "x64",
+          "node": "24.18.1",
+          "electron": "44.4.2"
+        },
+        "steps": [
+          {
+            "name": "isolated-installer",
+            "args": [
+              "scripts/smoke-installer.cjs",
+              "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\plan.json"
+            ],
+            "status": "passed",
+            "exitCode": 0,
+            "startedAt": "2026-10-25T21:13:10.009Z",
+            "finishedAt": "2026-10-25T21:15:33.736Z",
+            "log": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-13-09-394Z-installer\\isolated-installer.log",
+            "logSha256": "fa5fd855e16ca3272ff8321678a29d4e823e54170b68e290b1cbc8bf28230504"
+          }
+        ],
+        "metadata": {
+          "installer": {
+            "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\runs\\2026-10-25T21-13-09-394Z-installer\\installer.json",
+            "sha256": "8ef87bbcbf621915717482c3010fa58a4206f04162fa549ebd90953af189cd56",
+            "status": "passed",
+            "recordedAt": "2026-10-25T21:15:33.693Z",
+            "checks": 9,
+            "passedChecks": 9,
+            "physicalMachines": null,
+            "loopbackOnly": null,
+            "limitations": [
+              "Isolated appId, registry namespace, shortcuts and file/URI types; production installation is untouched",
+              "Both versions contain the current code; this checks NSIS replacement and state retention, not migrations from every historical release",
+              "Unsigned local test installers; no online auto-update feed or signature acceptance"
+            ],
+            "remaining": [],
+            "appAsarSha256": null
+          },
+          "planPath": "D:\\reps\\Havvn\\Havvn\\release\\installer-acceptance\\dde6e5\\plan.json"
+        },
+        "finishedAt": "2026-10-25T21:15:34.474Z"
+      }
+    }
+  },
+  "historical": [
+    {
+      "id": "office",
+      "title": "Настоящие Word и Excel",
+      "freshness": "historical",
+      "path": "D:\\reps\\Havvn\\Havvn\\dist\\room-sync-office\\office-acceptance-latest.json",
+      "sha256": "2f3fe68962f4be192a156f10ad5f5df9775711e4126f675be9d167ba672a8e07",
+      "status": "passed",
+      "recordedAt": "2026-10-22T20:07:19.4464845Z",
+      "checks": 14,
+      "passedChecks": 14,
+      "physicalMachines": 1,
+      "loopbackOnly": true,
+      "limitations": [
+        "One physical PC; loopback E2E only, no physical-PC/NAT acceptance",
+        "No installation/update acceptance",
+        "For controlled lock timing, real Office v2 bytes were staged through Save As and copied into the publisher root; separate normal Word and Excel Ctrl+S saves were also checked"
+      ],
+      "remaining": [],
+      "appAsarSha256": null
+    },
+    {
+      "id": "ide",
+      "title": "Внешняя IDE — незавершённая интерактивная проверка",
+      "freshness": "historical",
+      "path": "D:\\reps\\Havvn\\Havvn\\dist\\room-sync-ide\\ide-acceptance-latest.json",
+      "sha256": "bf8a089ac7eaa8c08914716f465c8514d75886debdaf5c20d6510b5c5f9dc328",
+      "status": "not-passed",
+      "recordedAt": null,
+      "checks": 5,
+      "passedChecks": 5,
+      "physicalMachines": 1,
+      "loopbackOnly": true,
+      "limitations": [
+        "One physical PC, loopback E2E only",
+        "Five checks passed; interactive open-file reload and independent-local-edit conflict checks remain incomplete while a Windows firewall prompt covers the IDE",
+        "Legacy .NET Framework build succeeded with reference-assembly/architecture warnings; modern dotnet SDK is not installed"
+      ],
+      "remaining": [
+        "open-vscode-file-allows-remote-atomic-update",
+        "vscode-reloads-open-clean-file-with-remote-text",
+        "real-vscode-local-save-preserved-as-conflict",
+        "real-vscode-conflict-keep-both-preserves-local-source"
+      ],
+      "appAsarSha256": null
+    },
+    {
+      "id": "packaged-previous",
+      "title": "Упакованная сборка 23 октября",
+      "freshness": "historical",
+      "path": "D:\\reps\\Havvn\\Havvn\\dist\\feature-tour-20261023\\packaged-acceptance.json",
+      "sha256": "4300a0891f6f2890ab208a2a56aa0e3d925841a7e6e6ff053fc9f3f60149a517",
+      "status": "passed",
+      "recordedAt": "2026-10-23T06:24:24.5047609Z",
+      "checks": null,
+      "passedChecks": 0,
+      "physicalMachines": null,
+      "loopbackOnly": null,
+      "limitations": [],
+      "remaining": [],
+      "appAsarSha256": "5096f0e5f6381c61171862e6da6d5a6a5c762dfb33f6027543bafa975d2cf2ed"
+    },
+    {
+      "id": "installer-previous",
+      "title": "Изолированный NSIS 23 октября",
+      "freshness": "historical",
+      "path": "D:\\reps\\Havvn\\Havvn\\artifacts\\fun01\\historical\\installer-20261023.json",
+      "sha256": "87de4fd0276da813de2741736537707ff996e6cd4a08dc4678287ba369fb7457",
+      "status": "passed",
+      "recordedAt": "2026-10-23T06:32:03.930Z",
+      "checks": 9,
+      "passedChecks": 9,
+      "physicalMachines": null,
+      "loopbackOnly": null,
+      "limitations": [
+        "Isolated appId, registry namespace, shortcuts and file/URI types; production installation is untouched",
+        "Both versions contain the current code; this checks NSIS replacement and state retention, not migrations from every historical release",
+        "Unsigned local test installers; no online auto-update feed or signature acceptance"
+      ],
+      "remaining": [],
+      "appAsarSha256": null
+    }
+  ],
+  "external": {
+    "status": "pending",
+    "unresolved": [
+      "physical-device-and-network-protocol-not-reviewed",
+      "real-older-client-not-reviewed"
+    ],
+    "requirements": [
+      {
+        "network": "lan",
+        "cases": [
+          "file-change",
+          "conflict",
+          "offline-return",
+          "office-lock",
+          "documents",
+          "rights-revocation",
+          "owner-unavailable",
+          "ownership-transfer",
+          "restart-during-write"
+        ]
+      },
+      {
+        "network": "different-networks",
+        "cases": [
+          "connection",
+          "file-change",
+          "documents"
+        ]
+      },
+      {
+        "network": "strict-nat",
+        "cases": [
+          "connection",
+          "file-change",
+          "documents"
+        ]
+      },
+      {
+        "network": "custom-turn",
+        "cases": [
+          "connection",
+          "file-change",
+          "documents"
+        ]
+      }
+    ]
+  },
+  "releaseGate": {
+    "ready": false,
+    "experimentalFlag": "HAVVN_FILE_SYNC",
+    "flagRemoved": false,
+    "sameCodeInstallerVersionsProveOldClientCompatibility": false,
+    "limitations": [
+      "Local E2E and application relay are not physical-device or Internet TURN acceptance",
+      "Private NSIS versions contain the same current code",
+      "Historical Office/IDE reports do not certify this candidate"
+    ]
+  }
+}
