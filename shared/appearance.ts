@@ -1,12 +1,17 @@
 /** Cosmetic preferences are separate from palette tokens: no executable CSS or remote assets. */
 export const APPEARANCE_VERSION = 1;
+/** Bundled, offline illustrations; imported profiles may reference only these IDs. */
+export const SCENIC_BACKGROUNDS = ['cyberpunk', 'steampunk', 'solarpunk', 'cosmos', 'abyss',
+  'sakura', 'deco', 'synthwave', 'arcane', 'arctic'] as const;
 export const MAX_WALLPAPER_LENGTH = 2_800_000;
 export const APPEARANCE_SCOPES = ['sidebar', 'header', 'menus', 'dialogs', 'panels', 'player'] as const;
 export type AppearanceScope = typeof APPEARANCE_SCOPES[number];
+export type NativeMaterial = 'acrylic' | 'mica';
 export interface Appearance {
   version: 1;
   material: 'solid' | 'frosted' | 'liquid';
   acrylic: boolean;
+  nativeMaterial: NativeMaterial;
   intensity: number;
   opacity: number;
   blur: number;
@@ -16,7 +21,7 @@ export interface Appearance {
   quality: 'full' | 'light';
   motion: boolean;
   scopes: AppearanceScope[];
-  background: 'none' | 'aurora' | 'aero' | 'sunset' | 'image';
+  background: 'none' | 'aurora' | 'aero' | 'sunset' | 'image' | typeof SCENIC_BACKGROUNDS[number];
   wallpaper: string;
   backgroundDim: number;
   radii: { panels: number | null; cards: number | null; buttons: number | null; inputs: number | null };
@@ -24,10 +29,11 @@ export interface Appearance {
 export interface AcrylicStatus {
   enabled: boolean;
   active: boolean;
-  reason: 'off' | 'active' | 'unsupported' | 'failed';
+  reason: 'off' | 'active' | 'unsupported' | 'failed' | 'system';
+  material: NativeMaterial;
 }
 export const DEFAULT_APPEARANCE: Appearance = {
-  version: 1, material: 'solid', acrylic: false, intensity: 55,
+  version: 1, material: 'solid', acrylic: false, nativeMaterial: 'acrylic', intensity: 55,
   opacity: 78, blur: 22, tint: 8, highlight: 35, depth: 25,
   quality: 'full', motion: true, scopes: [...APPEARANCE_SCOPES],
   background: 'none', wallpaper: '', backgroundDim: 30,
@@ -68,8 +74,9 @@ export function validateAppearance(value: unknown): Appearance | null {
   if (Object.keys(v).some(key => !Object.prototype.hasOwnProperty.call(DEFAULT_APPEARANCE, key)) || v.version !== 1 ||
       typeof v.material !== 'string' || !['solid', 'frosted', 'liquid'].includes(v.material) ||
       typeof v.quality !== 'string' || !['full', 'light'].includes(v.quality) ||
-      typeof v.background !== 'string' || !['none', 'aurora', 'aero', 'sunset', 'image'].includes(v.background) ||
+      typeof v.background !== 'string' || !['none', 'aurora', 'aero', 'sunset', 'image', ...SCENIC_BACKGROUNDS].includes(v.background) ||
       typeof v.acrylic !== 'boolean' || typeof v.motion !== 'boolean' || !validWallpaper(v.wallpaper) ||
+      (v.nativeMaterial !== undefined && v.nativeMaterial !== 'acrylic' && v.nativeMaterial !== 'mica') ||
       !Array.isArray(v.scopes) || v.scopes.length > APPEARANCE_SCOPES.length ||
       v.scopes.some(scope => !APPEARANCE_SCOPES.includes(scope)) || new Set(v.scopes).size !== v.scopes.length) return null;
   for (const [key, [min, max]] of Object.entries(ranges)) {
@@ -82,7 +89,7 @@ export function validateAppearance(value: unknown): Appearance | null {
     key in radii && (radii[key] === null || (typeof radii[key] === 'number' && Number.isFinite(radii[key]) &&
       (radii[key] as number) >= 0 && (radii[key] as number) <= 32)))) return null;
   if (v.background === 'image' && !v.wallpaper) return null;
-  return { ...v, scopes: [...v.scopes], radii: { ...radii } } as unknown as Appearance;
+  return { ...v, nativeMaterial: v.nativeMaterial ?? 'acrylic', scopes: [...v.scopes], radii: { ...radii } } as unknown as Appearance;
 }
 export const APPEARANCE_PRESETS: Record<string, Appearance> = {
   minimal: { ...DEFAULT_APPEARANCE, scopes: [...APPEARANCE_SCOPES] },
@@ -93,7 +100,7 @@ export const APPEARANCE_PRESETS: Record<string, Appearance> = {
     tint: 14, intensity: 75, depth: 35, scopes: [...APPEARANCE_SCOPES] },
 };
 export const APPEARANCE_MIRROR_ATTRS = ['data-material', 'data-acrylic', 'data-glass-scopes', 'data-glass-quality',
-  'data-glass-motion', 'data-app-background', 'data-radius-overrides'] as const;
+  'data-glass-motion', 'data-app-background', 'data-radius-overrides', 'data-native-material', 'data-resource-mode'] as const;
 export function supportsAcrylic(platform: string, release: string): boolean {
   const parts = release.split('.').map(Number);
   return platform === 'win32' && parts.length >= 3 && parts.every(Number.isFinite) &&

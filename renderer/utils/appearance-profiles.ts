@@ -2,7 +2,41 @@ import { validateAppearanceProfile, type AppearanceProfile } from '../../shared/
 import { readEffectiveAppearance, saveAppearance } from './appearance';
 import { getActiveTheme, loadLibrary, saveLibrary, activateTheme, deactivateTheme } from './theme-library';
 import { setAccentPref, setFontPref, currentFontId } from './theme-prefs';
+import { DEFAULT_APPEARANCE } from '../../shared/appearance';
 const KEY = 'havvn.appearance.profiles.v1';
+const PREVIOUS_KEY = 'havvn.appearance.previous.v1';
+let previousAppearance: AppearanceProfile | null | undefined;
+export const APPEARANCE_PROFILES_EVENT = 'havvn:appearance-profiles';
+export function loadPreviousAppearanceProfile(): AppearanceProfile | null {
+  if (previousAppearance !== undefined) return previousAppearance;
+  try { return validateAppearanceProfile(JSON.parse(localStorage.getItem(PREVIOUS_KEY) || 'null')); }
+  catch { return null; }
+}
+function rememberAppearance(profile: AppearanceProfile | null): void {
+  previousAppearance = profile;
+  try {
+    if (profile) localStorage.setItem(PREVIOUS_KEY, JSON.stringify(profile));
+    else localStorage.removeItem(PREVIOUS_KEY);
+  } catch {
+    // A large wallpaper must not prevent changing themes. Keep undo in memory
+    // for this session if the persistent storage quota is already exhausted.
+    try { localStorage.removeItem(PREVIOUS_KEY); } catch { /* storage unavailable */ }
+  }
+  window.dispatchEvent(new Event(APPEARANCE_PROFILES_EVENT));
+}
+export function standardAppearanceProfile(): AppearanceProfile {
+  return { version: 1, name: 'Havvn', appearance: structuredClone(DEFAULT_APPEARANCE), theme: null,
+    mode: 'system', accent: null, font: 'inter',
+    density: localStorage.getItem('density') === 'compact' ? 'compact' : 'normal',
+    reduceMotion: localStorage.getItem('reduceMotion') === '1' };
+}
+export async function restorePreviousAppearanceProfile(): Promise<AppearanceProfile | null> {
+  const profile = loadPreviousAppearanceProfile();
+  if (!profile) return null;
+  await applyAppearanceProfile(profile, false);
+  rememberAppearance(null);
+  return profile;
+}
 export function loadAppearanceProfiles(): AppearanceProfile[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(KEY) || '[]');
@@ -24,13 +58,16 @@ export function saveAppearanceProfile(p: AppearanceProfile): void {
   const profiles = loadAppearanceProfiles().filter(item => item.name !== valid.name);
   if (profiles.length >= 8) throw new Error('Profile limit');
   localStorage.setItem(KEY, JSON.stringify([...profiles, valid]));
+  window.dispatchEvent(new Event(APPEARANCE_PROFILES_EVENT));
 }
 export function removeAppearanceProfile(name: string): void {
   localStorage.setItem(KEY, JSON.stringify(loadAppearanceProfiles().filter(p => p.name !== name)));
+  window.dispatchEvent(new Event(APPEARANCE_PROFILES_EVENT));
 }
-export async function applyAppearanceProfile(profile: AppearanceProfile): Promise<void> {
+export async function applyAppearanceProfile(profile: AppearanceProfile, rememberPrevious = true): Promise<void> {
   const p = validateAppearanceProfile(profile);
   if (!p) throw new Error('Invalid profile');
+  const previous = rememberPrevious ? captureAppearanceProfile('Previous appearance') : null;
   await saveAppearance(p.appearance);
   localStorage.setItem('theme', p.mode);
   // Clear quick overrides before painting the palette, otherwise clearing an
@@ -54,4 +91,5 @@ export async function applyAppearanceProfile(profile: AppearanceProfile): Promis
   const root = document.documentElement;
   if (p.density === 'compact') root.dataset.density = 'compact'; else delete root.dataset.density;
   if (p.reduceMotion) root.dataset.reduceMotion = 'true'; else delete root.dataset.reduceMotion;
+  if (previous) rememberAppearance(previous);
 }

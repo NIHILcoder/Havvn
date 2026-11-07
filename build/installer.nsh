@@ -14,15 +14,13 @@
   SetOutPath "$INSTDIR"
   File "${BUILD_RESOURCES_DIR}\icon2.ico"
 
-  ; Builder creates its usual shortcuts first. Only remove shortcuts on a
-  ; fresh install when explicitly declined; never recreate a deleted upgrade link.
-  ${IfNot} ${isUpdated}
-    ${If} $HavvnDesktop == ${BST_UNCHECKED}
-      Delete "$newDesktopLink"
-    ${EndIf}
-    ${If} $HavvnMenu == ${BST_UNCHECKED}
-      Delete "$newStartMenuLink"
-    ${EndIf}
+  ; Builder may recreate links during a manually launched upgrade. customInit
+  ; restores actual existing links; the options page can explicitly change them.
+  ${If} $HavvnDesktop == ${BST_UNCHECKED}
+    Delete "$newDesktopLink"
+  ${EndIf}
+  ${If} $HavvnMenu == ${BST_UNCHECKED}
+    Delete "$newStartMenuLink"
   ${EndIf}
   ; StartApp must not point at a shortcut that the options page just declined.
   ${IfNot} ${FileExists} "$launchLink"

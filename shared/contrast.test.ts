@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { relativeLuminance, contrastRatio, wcagLevel, compositeOver } from './contrast';
+import { relativeLuminance, contrastRatio, contrastingTextColor, wcagLevel, compositeOver } from './contrast';
 
 describe('relativeLuminance', () => {
   it('is 1 for white and 0 for black', () => {
@@ -52,6 +52,23 @@ describe('wcagLevel', () => {
     expect(wcagLevel(4.5)).toBe('AA');
     expect(wcagLevel(3)).toBe('AA-large');
     expect(wcagLevel(2.9)).toBe('fail');
+  });
+});
+
+describe('contrastingTextColor', () => {
+  it('chooses dark or light text against all button backgrounds', () => {
+    expect(contrastingTextColor(['#42edf5', '#ff55ba'])).toBe('#000000');
+    expect(contrastingTextColor(['#006677', '#ac1765'])).toBe('#ffffff');
+  });
+
+  it('compares the weakest stop rather than just the first stop', () => {
+    expect(contrastingTextColor(['#888888', '#eeeeee'])).toBe('#000000');
+    expect(contrastingTextColor(['#888888', '#111111'])).toBe('#ffffff');
+  });
+
+  it('uses the underlying surface for translucent stops', () => {
+    expect(contrastingTextColor(['rgba(255,255,255,0.1)'], '#000000')).toBe('#ffffff');
+    expect(contrastingTextColor(['rgba(0,0,0,0.1)'], '#ffffff')).toBe('#000000');
   });
 });
 

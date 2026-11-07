@@ -16,7 +16,7 @@ describe('native window material lifecycle', () => {
   });
   it('keeps unsupported systems opaque without calling unsupported APIs', () => {
     const controller = new WindowMaterial(false), win = fakeWindow(); controller.register(win);
-    expect(controller.setEnabled(true)).toEqual({ enabled: true, active: false, reason: 'unsupported' });
+    expect(controller.setEnabled(true)).toEqual({ enabled: true, active: false, reason: 'unsupported', material: 'acrylic' });
     expect(win.setBackgroundMaterial).not.toHaveBeenCalled();
     expect(win.setBackgroundColor).toHaveBeenLastCalledWith('#141519');
   });
@@ -34,5 +34,34 @@ describe('native window material lifecycle', () => {
     expect(win.setBackgroundMaterial).not.toHaveBeenCalled();
     const gone = fakeWindow(); gone.isDestroyed.mockReturnValue(true); controller.register(gone);
     expect(gone.setBackgroundMaterial).not.toHaveBeenCalled();
+  });
+  it('switches native materials live without reconfiguring unchanged windows', () => {
+    const controller = new WindowMaterial(true), win = fakeWindow(); controller.register(win);
+    controller.setEnabled(true, 'mica'); expect(win.setBackgroundMaterial).toHaveBeenLastCalledWith('mica');
+    const calls = win.setBackgroundMaterial.mock.calls.length;
+    controller.setEnabled(true, 'mica'); expect(win.setBackgroundMaterial).toHaveBeenCalledTimes(calls);
+    controller.setEnabled(true, 'acrylic'); expect(win.setBackgroundMaterial).toHaveBeenLastCalledWith('acrylic');
+    controller.refresh(); expect(win.setBackgroundMaterial).toHaveBeenCalledTimes(calls + 2);
+  });
+  it('contains a detached window failure and retries only that window', () => {
+    const controller = new WindowMaterial(true), main = fakeWindow(), child = fakeWindow();
+    controller.register(main); controller.setEnabled(true);
+    child.setBackgroundMaterial.mockImplementationOnce(() => { throw Error('Compositor unavailable'); });
+    controller.register(child);
+    expect(controller.status()).toMatchObject({ active: true, reason: 'active' });
+    expect(controller.status(child)).toMatchObject({ active: false, reason: 'failed' });
+    expect(child.setBackgroundColor).toHaveBeenLastCalledWith('#141519');
+    const calls = main.setBackgroundMaterial.mock.calls.length;
+    controller.setEnabled(true); expect(controller.status(child).active).toBe(true);
+    expect(main.setBackgroundMaterial).toHaveBeenCalledTimes(calls);
+  });
+  it('honors system transparency restrictions without losing the selected material', () => {
+    const controller = new WindowMaterial(true), win = fakeWindow(); controller.register(win);
+    controller.setEnabled(true, 'mica');
+    expect(controller.setTransparencyAllowed(false)).toEqual({ enabled: true, active: false, reason: 'system', material: 'mica' });
+    expect(win.setBackgroundMaterial).toHaveBeenLastCalledWith('none');
+    expect(win.setBackgroundColor).toHaveBeenLastCalledWith('#141519');
+    expect(controller.setTransparencyAllowed(true).active).toBe(true);
+    expect(win.setBackgroundMaterial).toHaveBeenLastCalledWith('mica');
   });
 });

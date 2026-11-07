@@ -1,0 +1,12 @@
+/* Static offline illustrations shared by the window and collection previews. */
+html[data-app-background="cyberpunk"], [data-scene="cyberpunk"] { --ap-scene: url("../assets/scenes/cyberpunk.svg"); }
+html[data-app-background="steampunk"], [data-scene="steampunk"] { --ap-scene: url("../assets/scenes/steampunk.svg"); }
+html[data-app-background="solarpunk"], [data-scene="solarpunk"] { --ap-scene: url("../assets/scenes/solarpunk.svg"); }
+html[data-app-background="cosmos"], [data-scene="cosmos"] { --ap-scene: url("../assets/scenes/cosmos.svg"); }
+html[data-app-background="abyss"], [data-scene="abyss"] { --ap-scene: url("../assets/scenes/abyss.svg"); }
+html[data-app-background="sakura"], [data-scene="sakura"] { --ap-scene: url("../assets/scenes/sakura.svg"); }
+html[data-app-background="deco"], [data-scene="deco"] { --ap-scene: url("../assets/scenes/deco.svg"); }
+html[data-app-background="synthwave"], [data-scene="synthwave"] { --ap-scene: url("../assets/scenes/synthwave.svg"); }
+html[data-app-background="arcane"], [data-scene="arcane"] { --ap-scene: url("../assets/scenes/arcane.svg"); }
+html[data-app-background="arctic"], [data-scene="arctic"] { --ap-scene: url("../assets/scenes/arctic.svg"); }
+html[data-app-background]:not([data-app-background="none"]):not([data-app-background="image"]):not([data-app-background="aurora"]):not([data-app-background="aero"]):not([data-app-background="sunset"]) body::before { background-image: var(--ap-overlay), var(--ap-scene); }

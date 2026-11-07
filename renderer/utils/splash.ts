@@ -7,12 +7,22 @@ const messages = {
   en: {
     settings: 'Loading settings', interface: 'Preparing the interface', downloads: 'Preparing downloads', ready: 'Ready',
     tagline: 'Your space for downloads and connection', base: 'Havvn',
+    heading: 'Starting Havvn', appearance: 'Appearance', footer: 'Your workspace is getting ready',
+    stepSettings: 'Settings', stepInterface: 'Interface', stepDownloads: 'Downloads',
+    detailSettings: 'Your preferences and appearance', detailInterface: 'Preparing your workspace', detailDownloads: 'Restoring your download list',
+    featureDownloads: 'Downloads', featureRooms: 'Rooms', featureWorkspace: 'Shared workspace',
+    windowControls: 'Window controls', minimize: 'Minimize', maximize: 'Maximize or restore', close: 'Close',
     slow: 'Startup is taking longer than usual. You can open the logs or reload the window.',
     logs: 'Open logs', reload: 'Reload window', logsError: 'Could not open logs. Please try again.',
   },
   ru: {
     settings: 'Загрузка настроек', interface: 'Подготовка интерфейса', downloads: 'Подготовка загрузок', ready: 'Готово',
     tagline: 'Твоё пространство для загрузок и общения', base: 'Havvn',
+    heading: 'Запуск Havvn', appearance: 'Оформление', footer: 'Готовим твоё рабочее пространство',
+    stepSettings: 'Настройки', stepInterface: 'Интерфейс', stepDownloads: 'Загрузки',
+    detailSettings: 'Твои предпочтения и оформление', detailInterface: 'Подготовка рабочего пространства', detailDownloads: 'Восстановление списка загрузок',
+    featureDownloads: 'Загрузки', featureRooms: 'Комнаты', featureWorkspace: 'Совместная работа',
+    windowControls: 'Управление окном', minimize: 'Свернуть', maximize: 'Развернуть или восстановить', close: 'Закрыть',
     slow: 'Запуск занимает больше времени, чем обычно. Можно открыть журнал или перезагрузить окно.',
     logs: 'Открыть журнал', reload: 'Перезагрузить окно', logsError: 'Не удалось открыть журнал. Попробуй ещё раз.',
   },
@@ -38,6 +48,15 @@ export function initializeSplash(): void {
   el.dataset.backdrop = el.dataset.glass === 'true' ? p.background : 'none';
   const t = text();
   label('th-splash-tagline', t.tagline);
+  label('th-splash-heading', t.heading);
+  label('th-splash-theme-label', t.appearance);
+  label('th-splash-footer-label', t.footer);
+  for (const [name, title, detail] of [['settings', t.stepSettings, t.detailSettings], ['interface', t.stepInterface, t.detailInterface], ['downloads', t.stepDownloads, t.detailDownloads]]) {
+    label(`th-splash-step-${name}-title`, title); label(`th-splash-step-${name}-detail`, detail);
+  }
+  label('th-splash-feature-downloads', t.featureDownloads);
+  label('th-splash-feature-rooms', t.featureRooms);
+  label('th-splash-feature-workspace', t.featureWorkspace);
   label('th-splash-theme-name', getActiveTheme()?.name || t.base);
   label('th-splash-slow-text', t.slow);
   label('th-splash-logs', t.logs);
@@ -54,6 +73,18 @@ export function initializeSplash(): void {
   }
   const reload = document.getElementById('th-splash-reload');
   if (reload) reload.onclick = () => window.location.reload();
+  const controls = window.api?.win;
+  el.dataset.nativeControls = String(typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent || ''));
+  document.getElementById('th-splash-window-controls')?.setAttribute('aria-label', t.windowControls);
+  const bind = (id: string, title: string, action?: () => void) => {
+    const button = document.getElementById(id) as HTMLButtonElement | null;
+    if (button) { button.disabled = !action; button.title = title; button.setAttribute('aria-label', title); button.onclick = action ?? null; }
+  };
+  bind('th-splash-minimize', t.minimize, controls?.minimize);
+  bind('th-splash-maximize', t.maximize, controls?.toggleMaximize);
+  bind('th-splash-close', t.close, controls?.close);
+  const header = document.getElementById('th-splash-header');
+  if (header) header.ondblclick = event => { if (event.target === header || event.target instanceof Element && !event.target.closest('button')) controls?.toggleMaximize?.(); };
   setSplashStage(stage);
 }
 
@@ -64,6 +95,9 @@ export function setSplashStage(next: SplashStage): void {
   label('th-splash-status', text()[stage]);
   const el = splash();
   if (el) { el.dataset.stage = stage; el.dataset.ready = String(stage === 'ready'); }
+  const steps = ['settings', 'interface', 'downloads'] as const;
+  const current = stage === 'ready' ? steps.length : steps.indexOf(stage);
+  steps.forEach((name, index) => { const step = document.getElementById(`th-splash-step-${name}`); if (step) step.dataset.state = index < current ? 'done' : index === current ? 'active' : 'pending'; });
 }
 
 function hideNow(): void {
