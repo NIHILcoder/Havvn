@@ -1,23 +1,35 @@
+@import './appearance-scenes.css';
+
 /* Palette and radius inheritance; no filters on video pixels or scrolling rows. */
 html[data-material] {
   --ap-surface: color-mix(in srgb, var(--color-bg-secondary) var(--ap-opacity, 85%), transparent);
   --ap-tinted: color-mix(in srgb, var(--color-accent-primary) var(--ap-tint, 5%), var(--ap-surface));
   --ap-rim: color-mix(in srgb, var(--color-text-primary) var(--ap-highlight, 15%), transparent);
-  --ap-glint: radial-gradient(ellipse at var(--ap-x, 35%) var(--ap-y, 0%), color-mix(in srgb, white calc(var(--ap-highlight, 15%) / 4), transparent), transparent 68%);
+  --ap-glint: radial-gradient(ellipse at var(--ap-x, 35%) var(--ap-y, 0%), color-mix(in srgb, white calc(var(--ap-highlight, 15%) / 5), transparent), transparent 68%);
+  --ap-sheen: linear-gradient(145deg, color-mix(in srgb, white calc(var(--ap-highlight, 15%) / 7), transparent), transparent 42%, color-mix(in srgb, var(--color-accent-primary) 2%, transparent));
   --ap-panel-bg: var(--color-bg-primary);
   --ap-overlay: linear-gradient(color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent),color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent));
 }
 html[data-acrylic="active"], html[data-acrylic="active"] body { background: transparent !important; }
 html[data-material]:not([data-material="solid"]) { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 85%, transparent); }
 html[data-app-background]:not([data-app-background="none"]) { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 85%, transparent); }
-html[data-acrylic="active"] { --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) 65%, transparent); }
+/* DWM already blurs the desktop. One tint per region avoids stacking dark veils. */
+html[data-acrylic="active"][data-app-background="none"] {
+  --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) var(--ap-window-opacity, 40%), transparent);
+}
+html[data-acrylic="active"][data-native-material="mica"][data-app-background="none"] {
+  --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) calc(var(--ap-window-opacity, 40%) / 2), transparent);
+}
+/* A manually selected light palette must remain readable over a dark OS material. */
+html[data-theme="light"][data-acrylic="active"][data-app-background="none"] {
+  --ap-panel-bg: color-mix(in srgb, var(--color-bg-primary) calc(82% + var(--ap-dim, 30%) * .16), transparent);
+}
 html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) :is(.main-content,.popout-root) { background: var(--ap-panel-bg); }
 html[data-material] body { isolation: isolate; }
 html[data-material] body::before {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background-position: center; background-size: cover;
 }
-html[data-acrylic="active"] body::before { background-color: color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent); }
 html[data-app-background="image"] body::before {
   background-image: linear-gradient(color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent),color-mix(in srgb, var(--color-bg-primary) var(--ap-dim), transparent)), var(--ap-wallpaper);
 }
@@ -35,12 +47,32 @@ html:not([data-material="solid"])[data-glass-scopes~="dialogs"] :is(.um-card,.te
 html:not([data-material="solid"])[data-glass-scopes~="panels"] .stg-card,
 html:not([data-material="solid"])[data-glass-scopes~="player"] .pc,
 html:not([data-material="solid"]) .ap-preview-surface {
-  background: var(--ap-glint), var(--ap-tinted);
+  background: var(--ap-glint), var(--ap-sheen), var(--ap-tinted);
   backdrop-filter: blur(var(--ap-blur)) saturate(1.15);
   -webkit-backdrop-filter: blur(var(--ap-blur)) saturate(1.15);
   border-color: color-mix(in srgb, var(--color-border-default), var(--ap-rim) 45%);
   box-shadow: inset 0 1px 0 var(--ap-rim), inset 0 -1px 0 color-mix(in srgb, var(--color-bg-primary) 30%, transparent), 0 8px 24px rgba(0,0,0,var(--ap-depth));
 }
+/* Navigation sits directly on native glass; dialogs keep a denser reading surface. */
+html[data-acrylic="active"][data-app-background="none"]:not([data-material="solid"])[data-glass-scopes~="sidebar"] .sidebar,
+html[data-acrylic="active"][data-app-background="none"]:not([data-material="solid"])[data-glass-scopes~="header"] :is(.titlebar,.page-header,.status-bar) {
+  --ap-surface: color-mix(in srgb, var(--color-bg-secondary) max(36%, calc(var(--ap-opacity) - 34%)), transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ap-rim) 45%, transparent);
+}
+html[data-acrylic="active"][data-app-background="none"]:not([data-material="solid"])[data-glass-scopes~="panels"] .stg-card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-theme="light"][data-acrylic="active"][data-app-background="none"]:not([data-material="solid"])[data-glass-scopes~="sidebar"] .sidebar,
+html[data-theme="light"][data-acrylic="active"][data-app-background="none"]:not([data-material="solid"])[data-glass-scopes~="header"] :is(.titlebar,.page-header,.status-bar) {
+  --ap-surface: color-mix(in srgb, var(--color-bg-secondary) max(84%, var(--ap-opacity)), transparent);
+}
+html:not([data-material="solid"])[data-glass-scopes~="dialogs"] :is(.um-card,.ted) {
+  --ap-surface: color-mix(in srgb, var(--color-bg-secondary) max(88%, var(--ap-opacity)), transparent);
+}
+html[data-glass-quality="light"] { --ap-glint: linear-gradient(transparent, transparent); --ap-sheen: linear-gradient(transparent, transparent); }
 html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) .app-container { background: transparent; }
 html[data-material]:is([data-acrylic="active"], :not([data-app-background="none"]), :not([data-material="solid"])) :is(.stg-page,.search-page,.downloads-page,.rooms-page) { background: transparent; }
 html[data-acrylic="active"] .popout-root { background: var(--ap-panel-bg) !important; }

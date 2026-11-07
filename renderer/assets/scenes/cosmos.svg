@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <linearGradient id="sky" x2="100%" y2="100%"><stop stop-color="#090F26"/><stop offset="1" stop-color="#30244F"/></linearGradient>
+    <linearGradient id="planet" x2="80%" y2="100%"><stop stop-color="#DED2F8"/><stop offset=".48" stop-color="#8583BD"/><stop offset="1" stop-color="#242442"/></linearGradient>
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v1000H0z"/>
+  <circle cx="100" cy="60" r="2" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="449" cy="197" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="798" cy="334" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1147" cy="471" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="1496" cy="608" r="2" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="405" cy="75" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="754" cy="212" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="1103" cy="349" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1452" cy="486" r="2" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="361" cy="623" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="710" cy="90" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1059" cy="227" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1408" cy="364" r="2" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="317" cy="501" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="666" cy="638" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1015" cy="105" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="1364" cy="242" r="2" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="273" cy="379" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="622" cy="516" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="971" cy="653" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1320" cy="120" r="2" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="229" cy="257" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="578" cy="394" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="927" cy="531" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="1276" cy="668" r="2" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="185" cy="135" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="534" cy="272" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="883" cy="409" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="1232" cy="546" r="2" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="141" cy="683" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <circle cx="490" cy="150" r="1" fill="#DFE4FF" opacity="0.65"/>
+  <circle cx="839" cy="287" r="1" fill="#DFE4FF" opacity="0.3"/>
+  <g transform="translate(1190 400) rotate(-22)">
+    <ellipse rx="330" ry="82" stroke="#C3B5E4" stroke-opacity=".25" stroke-width="10"/>
+    <circle r="174" fill="url(#planet)"/>
+    <path d="M-330 0a330 82 0 0 0 660 0" stroke="#D0BFEF" stroke-opacity=".8" stroke-width="8"/>
+  </g>
+  <path d="M0 950C360 770 720 900 1000 880S1390 790 1600 870V1000H0Z" fill="#0D1428"/>
+</svg>

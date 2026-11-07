@@ -53,6 +53,7 @@
   --color-text-secondary: #B9B6AE;
   --color-text-tertiary: #98958D;
   --color-text-disabled: #615E57;
+  --color-text-on-accent: var(--color-bg-primary);
 
   /* Accent — ember */
   --color-accent-primary: #E25117;
@@ -252,6 +253,7 @@
   --color-text-secondary: #3A362F;
   --color-text-tertiary: #6E6A61;
   --color-text-disabled: #9A968C;
+  --color-text-on-accent: #ffffff;
 
   --color-accent-primary: #C2410C;
   --color-accent-primary-hover: #A63709;
@@ -305,10 +307,6 @@
 /* Light Theme Component Overrides */
 [data-theme="light"] .bulk-actions-count {
   background: var(--gradient-primary);
-  color: #ffffff;
-}
-
-[data-theme="light"] .btn-primary {
   color: #ffffff;
 }
 

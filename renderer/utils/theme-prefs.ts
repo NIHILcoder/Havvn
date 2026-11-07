@@ -112,3 +112,7 @@ export function restoreThemePrefs(): void {
   const font = readPref(FONT_KEY);
   if (font) applyFont(font);
 }
+
+export function clearQuickThemeOverrides(): void {
+  clearAccent(); rootStyle().removeProperty('--font-family'); rootStyle().removeProperty('--font-display');
+}

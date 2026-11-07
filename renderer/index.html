@@ -11,7 +11,16 @@
   <div id="root"></div>
   <div id="th-splash">
     <section class="th-splash-window" aria-label="Havvn">
+      <header id="th-splash-header" class="th-splash-header">
+        <div class="th-splash-app"><span class="th-splash-app-dot" aria-hidden="true"></span><span>HAVVN</span><span class="th-splash-version"><%= appVersion %></span></div>
+        <div id="th-splash-window-controls" class="th-splash-window-controls" role="group" aria-label="Window controls">
+          <button id="th-splash-minimize" type="button" aria-label="Minimize" disabled><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M1 6h10"/></svg></button>
+          <button id="th-splash-maximize" type="button" aria-label="Maximize or restore" disabled><svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
+          <button id="th-splash-close" type="button" aria-label="Close" disabled><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2 2 8 8M10 2l-8 8"/></svg></button>
+        </div>
+      </header>
       <div class="th-splash-content">
+        <div class="th-splash-hero">
         <div class="th-brand"><span class="th-tile"><svg aria-hidden="true" viewBox="0 0 512 295.8" xmlns="http://www.w3.org/2000/svg">
           <path class="th-mark-outline" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/>
           <path class="th-mark-face" d="M478.1 34.8L358.2 221.2L360.4 230.9L329.7 276.6L256 192.5L182.3 276.6L151.6 230.9L154.1 221.8L153.8 221.2L33.9 34.8L211 153.4L221.7 175.9L256 139.3L290.3 175.9L301 153.4Z"/>
@@ -25,14 +34,24 @@
         <path class="th-word-accent" d="M190.0 0.0L218.0 0.0L218.9 72.0L215.0 100.0ZM268.0 0.0L240.0 0.0L218.9 72.0L215.0 100.0ZM273.0 0.0L301.0 0.0L301.9 72.0L298.0 100.0ZM351.0 0.0L323.0 0.0L301.9 72.0L298.0 100.0Z"/>
       </svg></div></div>
         <p id="th-splash-tagline" class="th-splash-tagline">Your space for downloads and connection</p>
-        <div class="th-splash-meta"><div class="th-status" role="status" aria-live="polite"><span class="th-status-dot" aria-hidden="true"></span><span id="th-splash-status">Loading settings</span></div><span class="th-splash-version"><%= appVersion %></span></div>
-        <div class="th-splash-track" aria-hidden="true"></div>
-        <div class="th-splash-theme"><span><%= appVersion %></span><span id="th-splash-theme-name">Havvn</span></div>
-        <div id="th-splash-slow" class="th-splash-slow" hidden>
-          <p id="th-splash-slow-text" role="status">Startup is taking longer than usual.</p>
-          <div class="th-splash-actions"><button id="th-splash-logs" type="button" disabled>Open logs</button><button id="th-splash-reload" type="button">Reload window</button></div>
+          <div class="th-splash-features" aria-hidden="true"><span id="th-splash-feature-downloads">Downloads</span><span id="th-splash-feature-rooms">Rooms</span><span id="th-splash-feature-workspace">Shared workspace</span></div>
         </div>
+        <section class="th-splash-progress" aria-labelledby="th-splash-status">
+          <div class="th-splash-meta"><span id="th-splash-heading">Starting Havvn</span><span class="th-status-dot" aria-hidden="true"></span></div>
+          <h1 id="th-splash-status" class="th-status" role="status" aria-live="polite">Loading settings</h1>
+          <div class="th-splash-track" aria-hidden="true"></div>
+          <ol class="th-splash-steps" aria-hidden="true">
+            <li id="th-splash-step-settings" data-state="active"><span class="th-step-number"><span>01</span><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></span><div><strong id="th-splash-step-settings-title">Settings</strong><p id="th-splash-step-settings-detail">Your preferences and appearance</p></div></li>
+            <li id="th-splash-step-interface" data-state="pending"><span class="th-step-number"><span>02</span><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></span><div><strong id="th-splash-step-interface-title">Interface</strong><p id="th-splash-step-interface-detail">Preparing your workspace</p></div></li>
+            <li id="th-splash-step-downloads" data-state="pending"><span class="th-step-number"><span>03</span><svg viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg></span><div><strong id="th-splash-step-downloads-title">Downloads</strong><p id="th-splash-step-downloads-detail">Restoring your download list</p></div></li>
+          </ol>
+          <div id="th-splash-slow" class="th-splash-slow" hidden>
+            <p id="th-splash-slow-text" role="status">Startup is taking longer than usual.</p>
+            <div class="th-splash-actions"><button id="th-splash-logs" type="button" disabled>Open logs</button><button id="th-splash-reload" type="button">Reload window</button></div>
+          </div>
+        </section>
       </div>
+      <footer class="th-splash-footer"><div class="th-splash-theme"><span id="th-splash-theme-label">Appearance</span><span id="th-splash-theme-name">Havvn</span></div><span id="th-splash-footer-label">Your workspace is getting ready</span></footer>
     </section>
   </div>
 </body>
