@@ -163,30 +163,9 @@
   }
 
   const finePointer = window.matchMedia('(pointer: fine)');
-  const art = document.querySelector('.hero-art');
-  let pointerPending = false;
-  let pointerX = 0, pointerY = 0;
-  art.addEventListener('pointermove', e => {
-    if (motion.matches || !finePointer.matches) return;
-    const bounds = art.getBoundingClientRect();
-    pointerX = (e.clientX - bounds.left) / bounds.width - 0.5;
-    pointerY = (e.clientY - bounds.top) / bounds.height - 0.5;
-    if (!pointerPending) {
-      pointerPending = true;
-      window.requestAnimationFrame(() => {
-        art.style.setProperty('--tilt-x', (-pointerY * 12) + 'deg');
-        art.style.setProperty('--tilt-y', (pointerX * 16) + 'deg');
-        pointerPending = false;
-      });
-    }
-  });
-  art.addEventListener('pointerleave', () => {
-    art.style.setProperty('--tilt-x', '0deg');
-    art.style.setProperty('--tilt-y', '0deg');
-  });
   document.querySelectorAll('.feature').forEach(card => {
     card.addEventListener('pointermove', e => {
-      if (motion.matches || !finePointer.matches) return;
+      if (motion.matches || root.classList.contains('motion-paused') || !finePointer.matches) return;
       const bounds = card.getBoundingClientRect();
       card.style.setProperty('--pointer-x', (e.clientX - bounds.left) / bounds.width * 100 + '%');
       card.style.setProperty('--pointer-y', (e.clientY - bounds.top) / bounds.height * 100 + '%');
@@ -194,34 +173,17 @@
   });
 })();
 
-/* The hero is a real, locally rendered particle scene. No libraries or requests. */
+/* Shared motion controls also govern the progressively loaded Three.js scene. */
 (() => {
   'use strict';
   const root = document.documentElement;
-  const hero = document.querySelector('.hero');
-  const art = document.querySelector('.hero-art');
-  const canvas = document.querySelector('#network-scene');
-  const ctx = canvas.getContext('2d', {alpha:true});
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
   const fine = window.matchMedia('(pointer: fine)');
   const toggle = document.querySelector('#motion-toggle');
   const toggleText = toggle.querySelector('[data-ru]');
   const track = document.querySelector('.kinetic-track');
   const band = document.querySelector('.kinetic-band');
-  let paused = false, visible = true, frame = 0, last = 0, clock = 0;
-  let width = 0, height = 0, dpr = 1;
-  let aimX = 0, aimY = 0, x = 0, y = 0;
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const points = Array.from({length:110}, (_,i) => {
-    const py = 1 - (i / 109) * 2;
-    const r = Math.sqrt(1 - py * py), theta = golden * i;
-    return {x:Math.cos(theta)*r,y:py,z:Math.sin(theta)*r};
-  });
-  const links = [];
-  points.forEach((p,i) => points.slice(i+1).forEach((q,k) => {
-    const distance = Math.hypot(p.x-q.x,p.y-q.y,p.z-q.z);
-    if(distance<0.62) links.push([i,i+k+1,distance]);
-  }));
+  let paused = false;
   function labels() {
     const ru = root.lang === 'ru';
     toggleText.textContent = reduced.matches ? (ru ? 'Анимация снижена' : 'Reduced motion') : paused ? (ru ? 'Включить анимацию' : 'Resume motion') : (ru ? 'Анимация включена' : 'Motion is on');
@@ -231,105 +193,15 @@
   }
   new MutationObserver(labels).observe(root,{attributes:true,attributeFilter:['lang']});
   labels();
-  function rotate(p,angle,tilt) {
-    const px=p.x*Math.cos(angle)+p.z*Math.sin(angle);
-    const pz=p.z*Math.cos(angle)-p.x*Math.sin(angle);
-    return {x:px,y:p.y*Math.cos(tilt)-pz*Math.sin(tilt),z:p.y*Math.sin(tilt)+pz*Math.cos(tilt)};
+  function notifyMotion() {
+    window.dispatchEvent(new CustomEvent('havvn:motion-change', {detail: {paused}}));
   }
-  function project(p,r) {
-    const perspective=1/(1+p.z*.24);
-    return {x:width*.53+p.x*r*perspective,y:height*.5+p.y*r*perspective,z:p.z,s:perspective};
-  }
-  function paint(time) {
-    if (!ctx || !width) return;
-    const angle=time*.00013+x*.48, tilt=.2+y*.3;
-    const radius=Math.min(width,height)*.36;
-    ctx.clearRect(0,0,width,height);
-    const cloud=points.map(p=>project(rotate(p,angle,tilt),radius));
-    ctx.lineWidth=.7;
-    links.forEach(([i,j,distance])=>{
-      const p=cloud[i],q=cloud[j],alpha=(1-(p.z+q.z+2)/4)*.17+.025;
-      ctx.strokeStyle='rgba(248,141,91,'+alpha+')';
-      ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke();
-    });
-    for(let ring=0;ring<3;ring++) {
-      ctx.beginPath();
-      for(let n=0;n<=130;n++) {
-        const theta=n/130*Math.PI*2;
-        let p={x:Math.cos(theta)*1.1,y:Math.sin(theta)*1.1,z:0};
-        if(ring===1)p={x:p.x,y:p.y*.46,z:p.y*.88};
-        if(ring===2)p={x:p.x*.6,y:p.y,z:p.x*.8};
-        const projected=project(rotate(p,angle*(ring===1?-1:1)+ring*.6,tilt),radius);
-        if(n===0)ctx.moveTo(projected.x,projected.y);else ctx.lineTo(projected.x,projected.y);
-      }
-      ctx.strokeStyle=ring===1?'rgba(255,194,137,.23)':'rgba(229,114,69,.12)';
-      ctx.lineWidth=ring===1?1.2:.7;ctx.stroke();
-      const theta=time*.0004+ring*2.1;
-      let p={x:Math.cos(theta)*1.1,y:Math.sin(theta)*1.1,z:0};
-      if(ring===1)p={x:p.x,y:p.y*.46,z:p.y*.88};
-      if(ring===2)p={x:p.x*.6,y:p.y,z:p.x*.8};
-      const dot=project(rotate(p,angle*(ring===1?-1:1)+ring*.6,tilt),radius);
-      const glow=ctx.createRadialGradient(dot.x,dot.y,0,dot.x,dot.y,14);
-      glow.addColorStop(0,'rgba(255,210,160,.9)');glow.addColorStop(.2,'rgba(255,125,60,.45)');glow.addColorStop(1,'rgba(255,125,60,0)');
-      ctx.fillStyle=glow;ctx.fillRect(dot.x-14,dot.y-14,28,28);
-    }
-    cloud.sort((a,b)=>b.z-a.z).forEach((p,i)=>{
-      const alpha=.2+(1-p.z)*.28;
-      ctx.fillStyle='rgba(255,184,128,'+alpha+')';
-      ctx.beginPath();ctx.arc(p.x,p.y,(i%11===0?2.2:1.2)*p.s,0,Math.PI*2);ctx.fill();
-    });
-    // Small deterministic orbiting dust particles give the sculpture depth.
-    for(let i=0;i<130;i++) {
-      const a=i*golden+time*.000018, z=Math.sin(i*2.1);
-      const r=radius*(.82+(i%7)*.055);
-      const p=project(rotate({x:Math.cos(a)*r/radius,y:Math.sin(a)*r/radius,z},angle*.55,tilt),radius);
-      ctx.fillStyle='rgba(255,175,123,'+(.07+(i%5)*.025)+')';
-      ctx.fillRect(p.x,p.y,i%6===0?1.5:1,i%6===0?1.5:1);
-    }
-  }
-  function canAnimate() {return ctx && !paused && !reduced.matches && visible && !document.hidden;}
-  function tick(now) {
-    frame=0;
-    if(!canAnimate()){last=0;return;}
-    if(!last)last=now;
-    const elapsed=Math.min(40,now-last);
-    last=now;clock+=elapsed;
-    x+=(aimX-x)*.045;y+=(aimY-y)*.045;
-    art.style.setProperty('--tilt-x',(-y*12)+'deg');
-    art.style.setProperty('--tilt-y',(x*16)+'deg');
-    paint(clock);
-    frame=requestAnimationFrame(tick);
-  }
-  function start() {
-    if(canAnimate()&&!frame){last=0;frame=requestAnimationFrame(tick);}
-    else if(!canAnimate()){
-      cancelAnimationFrame(frame);frame=0;paint(clock);
-    }
-  }
-  function resize() {
-    const r=art.getBoundingClientRect();
-    width=r.width;height=r.height;dpr=Math.min(devicePixelRatio||1,1.75);
-    canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
-    if(ctx)ctx.setTransform(dpr,0,0,dpr,0,0);
-    paint(clock);start();
-  }
-  new ResizeObserver(resize).observe(art);
-  hero.addEventListener('pointermove',event=>{
-    if(!fine.matches||!canAnimate())return;
-    const bounds=art.getBoundingClientRect();
-    aimX=Math.max(-1,Math.min(1,(event.clientX-bounds.left)/bounds.width*2-1));
-    aimY=Math.max(-1,Math.min(1,(event.clientY-bounds.top)/bounds.height*2-1));
-  },{passive:true});
-  hero.addEventListener('pointerleave',()=>{aimX=0;aimY=0;});
-  toggle.addEventListener('click',()=>{
-    paused=!paused;root.classList.toggle('motion-paused',paused);labels();start();
+  toggle.addEventListener('click', () => {
+    paused = !paused;
+    root.classList.toggle('motion-paused', paused);
+    labels(); notifyMotion(); updateScrollScene();
   });
-  reduced.addEventListener('change',()=>{labels();start();updateScrollScene();});
-  document.addEventListener('visibilitychange',start);
-  if('IntersectionObserver' in window){
-    const observer=new IntersectionObserver(entries=>{visible=entries[0].isIntersecting;start();},{rootMargin:'100px'});
-    observer.observe(hero);
-  }
+  reduced.addEventListener('change', () => { labels(); notifyMotion(); updateScrollScene(); });
   let scrollFrame=0;
   function updateScrollScene(){
     const r=band.getBoundingClientRect();
@@ -355,5 +227,12 @@
     });
     button.addEventListener('pointerleave',()=>{button.style.translate='0 0';button.style.setProperty('--button-x','50%');button.style.setProperty('--button-y','50%');});
   });
-  resize();
 })();
+
+// Loading or WebGL failures leave the original brand SVG and all controls usable.
+const heroSceneUrl = document.currentScript?.dataset.scene;
+if (heroSceneUrl) {
+  import(new URL(heroSceneUrl, document.baseURI).href)
+    .then(scene => scene.createHeroScene())
+    .catch(() => { document.querySelector('.hero-art').dataset.scene = 'fallback'; });
+}

@@ -8,7 +8,7 @@ function stampSiteAssets({check = false} = {}) {
   const file = path.join(root, 'index.html');
   const original = fs.readFileSync(file, 'utf8');
   let updated = original;
-  for (const asset of ['assets/site.css', 'assets/site.js']) {
+  for (const asset of ['assets/site.css', 'assets/site.js', 'assets/hero-scene.js']) {
     const hash = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, asset), 'utf8').replace(/\r\n/g, '\n')).digest('hex').slice(0, 12);
     const escaped = asset.replaceAll('.', '\\.');
     const expression = new RegExp(escaped + '(?:\\?[^"\']*)?(?=["\'])', 'g');

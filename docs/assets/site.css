@@ -662,6 +662,28 @@ html[lang=ru] .hero h1{font-size:clamp(70px,6.65vw,104px);max-width:810px}
 }
 
 .hero .hero-sculpture{z-index:2}
+.hero-art[data-scene=webgl] .hero-sculpture{visibility:hidden;animation:none;will-change:auto}
+.hero-art[data-scene=webgl] .scene-halo{visibility:hidden;animation:none}
+.hero-art[data-scene=webgl] #network-scene{z-index:2}
+.hero-art[data-scene=fallback] #network-scene{visibility:hidden}
+#network-scene{touch-action:pan-y;outline:none}
+.hero-art[data-scene=webgl] #network-scene{cursor:grab}
+.hero-art[data-scene=webgl] #network-scene.is-dragging{cursor:grabbing}
+.hero-art[data-scene=webgl] #network-scene.is-over-peer{cursor:pointer}
+#network-scene:focus-visible{box-shadow:inset 0 0 0 1px #ffc39670;border-radius:24px}
+.scene-aura,.scene-halo,.hero-sculpture,.scene-coordinate,.scene-orbit-tag{pointer-events:none}
+.scene-tools{position:absolute;z-index:4;left:21%;right:8%;bottom:5%;display:flex;align-items:center;flex-direction:column;gap:11px;text-align:center}
+#scene-instructions{font-size:10px;letter-spacing:.035em;color:#c7a898;line-height:1.5}
+.scene-tool-actions{display:flex;gap:8px}
+.scene-tool-actions button{display:inline-flex;align-items:center;justify-content:center;gap:10px;min-height:44px;padding:9px 17px;border:1px solid #ffb47a38;border-radius:9px;background:linear-gradient(140deg,#402b22ed,#1a1413ed);color:#f9dcc7;font-size:11px;box-shadow:0 6px 20px #0003;transition:background .2s,border-color .2s,transform .2s}
+.scene-tool-actions button:hover{background:#573625;border-color:#ffb47a90;transform:translateY(-2px)}
+.scene-tool-actions button:active{transform:translateY(0)}
+.scene-tool-actions button:focus-visible{outline:2px solid #ffb47a;outline-offset:4px}
+.scene-tool-actions button>span:first-child{font-size:23px;line-height:1;color:var(--orange-light)}
+#scene-reset{width:44px;padding:9px}
+#scene-status{min-height:15px;font-size:9px;line-height:1.5;color:#b3a29a}
+@media(max-width:900px){.scene-tools{left:27%;right:13%;bottom:7%}#scene-instructions{font-size:9px}}
+@media(max-width:600px){.scene-tools{left:20%;right:20%;bottom:1%}#scene-instructions{font-size:9px}.scene-tool-actions button{font-size:10px}#scene-status{font-size:8px}}
 .scene-aura,.scene-halo{z-index:0}
 .hero-copy>h1{animation:hero-arrive .95s cubic-bezier(.16,1,.3,1) both}
 .hero-copy>.lead{animation:hero-arrive .95s .12s cubic-bezier(.16,1,.3,1) both}
