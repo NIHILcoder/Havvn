@@ -1,147 +1,1169 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Havvn — your people. Your files. Your rules.</title>
-  <meta name="description" content="A free, open-source P2P hub for Windows and Linux. Download torrents, share files, watch together and talk in private rooms. No Havvn accounts or cloud storage.">
-  <meta property="og:title" content="Havvn — your people. Your files. Your rules.">
-  <meta property="og:description" content="Downloads, private rooms, watch-together and voice. One open-source P2P hub. Windows + Linux.">
-  <meta property="og:type" content="website">
-  <meta property="og:image" content="https://raw.githubusercontent.com/NIHILcoder/Havvn/main/assets/havvn-cover.png">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="theme-color" content="#0c0c0e">
-  <meta property="og:url" content="https://nihilcoder.github.io/Havvn/">
-  <link rel="canonical" href="https://nihilcoder.github.io/Havvn/">
-  <link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="assets/fonts/inter-cyrillic-400-normal.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="icon" href="assets/mark-gloss-768.png">
-  <link rel="stylesheet" href="assets/site.css?hash=a0617fd72520">
-  <script src="assets/site.js?hash=e9f02fcb734d" data-scene="assets/hero-scene.js?hash=ce361e717024" defer></script>
-</head>
-<body>
-<div class="scroll-progress" aria-hidden="true"></div>
-<a class="skip" href="#main" data-ru="К содержимому">Skip to content</a>
-<header>
-  <nav class="wrap" aria-label="Main navigation">
-    <a class="brand" href="#" aria-label="Havvn home"><img src="assets/mark-gloss-768.png" width="768" height="440" alt=""><img class="brand-wordmark" src="assets/wordmark.svg" width="440" height="100" alt=""><span class="brand-dot"></span></a>
-    <div id="navigation" class="navlinks"><a href="#features" data-ru="Возможности">Explore</a><a href="#rooms" data-ru="Комнаты">Rooms</a><a href="#privacy" data-ru="Приватность">Privacy</a><a href="#updates" data-ru="Обновления">Updates</a><a href="https://github.com/NIHILcoder/Havvn">GitHub ↗</a></div>
-    <div class="nav-actions"><button id="language" class="language" type="button" aria-label="Switch to Russian">RU</button><a class="button small" href="#download"><span class="button-label" data-ru="Скачать">Get Havvn</span><span class="button-icon" data-direction="diagonal" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a><button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false" aria-controls="navigation" aria-label="Open navigation"><span></span><span></span></button></div>
-  </nav>
-</header>
-<main id="main">
-  <section class="hero wrap">
-    <div class="hero-copy">
-      <a class="release-pill" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="status-dot"></span><span data-ru="Для Windows и Linux">For Windows &amp; Linux</span><span aria-hidden="true">↗</span></a>
-      <p class="eyebrow" data-ru="ТВОИ ЛЮДИ. ТВОИ ФАЙЛЫ. ТВОИ ПРАВИЛА.">YOUR PEOPLE. YOUR FILES. YOUR RULES.</p>
-      <h1><span data-ru="Больше,">Beyond</span><br><em data-ru="чем торренты.">the download.</em></h1>
-      <p class="lead" data-ru="Торренты, кино с друзьями, голос и общие файлы. Одно пространство для всего, что связывает вас. Напрямую. Без аккаунтов Havvn и облачного хранения.">Torrents, movie nights, voice and shared files. One space for everything that connects you. Peer to peer. No Havvn accounts or cloud storage.</p>
-      <div class="hero-actions"><a class="button" href="#download"><span class="button-label" data-ru="Скачать Havvn">Download Havvn</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a><a class="text-link" href="#experience"><span data-ru="Посмотреть, как это работает">See it in action</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
-      <p class="micro" data-ru="Бесплатно · Открытый код · Без телеметрии">Free · Open source · No telemetry</p>
-    </div>
-<div class="hero-art">
-      <canvas id="network-scene" tabindex="-1" role="group" aria-hidden="true" aria-describedby="scene-instructions"></canvas>
-      <div class="scene-aura" aria-hidden="true"></div><div class="scene-halo" aria-hidden="true"></div>
-      <svg class="hero-mark hero-sculpture" viewBox="0 0 512 325" fill="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="metal" x1="40" y1="20" x2="405" y2="285" gradientUnits="userSpaceOnUse"><stop stop-color="#fff1d7"/><stop offset=".14" stop-color="#ffaf70"/><stop offset=".28" stop-color="#532c20"/><stop offset=".42" stop-color="#e86a32"/><stop offset=".53" stop-color="#ffe6c5"/><stop offset=".56" stop-color="#b9471f"/><stop offset=".78" stop-color="#3c1b15"/><stop offset="1" stop-color="#ff9351"/></linearGradient>
-          <linearGradient id="edge" x1="60" y1="0" x2="410" y2="280" gradientUnits="userSpaceOnUse"><stop stop-color="#ffeace"/><stop offset=".37" stop-color="#ff8a45"/><stop offset=".64" stop-color="#4a2019"/><stop offset="1" stop-color="#ef7039"/></linearGradient>
-          <linearGradient id="facet" x1="250" y1="75" x2="310" y2="260" gradientUnits="userSpaceOnUse"><stop stop-color="#fcd6b2"/><stop offset=".43" stop-color="#b95028"/><stop offset="1" stop-color="#230f0d"/></linearGradient>
-        </defs>
-        <path class="sculpture-depth" transform="translate(0 19)" fill="#27130f" stroke="#9a452b" stroke-width="2" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/>
-        <path fill="url(#metal)" stroke="url(#edge)" stroke-width="2" stroke-linejoin="round" d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"/>
-        <path fill="url(#facet)" opacity=".72" d="M34 35L222 176L256 139L290 176L478 35L358 221L330 276L256 192L182 276L154 221Z"/>
-        <path stroke="#ffe2ba" stroke-opacity=".48" stroke-width="1.4" d="M34 35L222 176L256 139L290 176L478 35M182 276L256 192L330 276"/>
-        <path stroke="#ffb36f" stroke-opacity=".23" stroke-width="1" d="M6 6L181 289M506 6L330 289"/>
-      </svg>
-      <div class="scene-coordinate coord-one" aria-hidden="true">01 — P2P</div><div class="scene-coordinate coord-two" aria-hidden="true">02 — E2E</div>
-      <div class="scene-orbit-tag" aria-hidden="true"><span class="status-dot"></span><span data-ru="МЕЖДУ ВАМИ. НАПРЯМУЮ.">BETWEEN YOU. DIRECTLY.</span></div>
-      <div class="scene-tools" hidden>
-        <p id="scene-instructions" data-ru="Потяни, чтобы повернуть · нажми на узел">Drag to rotate · tap a node</p>
-        <div class="scene-tool-actions"><button id="scene-pulse" type="button"><span aria-hidden="true">⌁</span><span data-ru="Отправить импульс">Send a pulse</span></button><button id="scene-reset" type="button" aria-label="Reset scene"><span aria-hidden="true">↺</span></button></div>
-        <p id="scene-status" role="status" aria-live="polite" aria-atomic="true"></p>
-      </div>
-    </div>
-    <div class="hero-bottom"><span>01 / <span data-ru="СВОБОДА СОЕДИНЯТЬСЯ">FREEDOM TO CONNECT</span></span><button id="motion-toggle" class="motion-toggle" type="button" aria-pressed="false" aria-label="Pause visual effects"><span class="motion-led"></span><span data-ru="Анимация включена">Motion is on</span></button><a href="#experience" data-ru="Листай дальше ↓">SCROLL TO EXPLORE ↓</a></div>
-  </section>
-  <div class="principles"><div class="wrap"><span data-ru="Без аккаунтов">No accounts</span><span class="star">✳</span><span data-ru="Без облачного хранилища">No cloud storage</span><span class="star">✳</span><span data-ru="Без подписки">No subscription</span><span class="star">✳</span><span data-ru="Открытый код">Open source</span><span class="star">✳</span><span>100% HAVVN</span></div></div>
-  <section id="experience" class="section wrap">
-    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="ОДНО ПРИЛОЖЕНИЕ. БОЛЬШЕ ВОЗМОЖНОСТЕЙ.">ONE APP. MORE POSSIBILITIES.</p><h2><span data-ru="Гораздо больше,">So much more</span><br><span class="muted" data-ru="чем загрузки.">than downloads.</span></h2></div><p data-ru="Торренты — только начало. Посмотри, как Havvn соединяет файлы, друзей и общие вечера.">Torrents are just the beginning. Explore how Havvn brings files, friends and shared nights together.</p></div>
-    <div class="experience reveal">
-      <div class="scenario-controls" role="tablist" aria-label="Product scenarios">
-        <button id="tab-downloads" role="tab" aria-selected="true" aria-controls="panel-downloads" data-scenario="downloads"><span class="tab-num">01</span><span><b data-ru="Скачивай без суеты">Download without the friction</b><small data-ru="Торренты, поиск и полный контроль">Torrents, search and complete control</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
-        <button id="tab-rooms" role="tab" aria-selected="false" aria-controls="panel-rooms" tabindex="-1" data-scenario="rooms"><span class="tab-num">02</span><span><b data-ru="Собери своих">Bring your people together</b><small data-ru="Приватная комната для вашей компании">A private room for your circle</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
-        <button id="tab-watch" role="tab" aria-selected="false" aria-controls="panel-watch" tabindex="-1" data-scenario="watch"><span class="tab-num">03</span><span><b data-ru="Раздели момент">Share the moment</b><small data-ru="Кино, музыка и голос — вместе">Films, music and voice — together</small></span><span class="tab-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>
-        <p class="demo-note" data-ru="Интерактивная иллюстрация возможностей. Данные в примере вымышлены.">Interactive feature illustration. Sample data is fictional.</p>
-      </div>
-      <div class="app-preview">
-        <div class="window-bar"><div class="window-dots"><i></i><i></i><i></i></div><span>HAVVN</span><span class="window-label">P2P HUB</span></div>
-        <div id="panel-downloads" class="scenario" role="tabpanel" aria-labelledby="tab-downloads" tabindex="0">
-          <div class="preview-title"><span data-ru="Твои загрузки">Your downloads</span><span class="preview-badge" data-ru="Нативный движок">Native engine</span></div>
-          <div class="preview-search"><span>⌕</span><span data-ru="Magnet-ссылка, .torrent или поиск…">Magnet link, .torrent or search…</span><span class="search-plus">+</span></div>
-          <div class="file-row"><span class="file-icon">↓</span><div><b>Big Buck Bunny · Blender Open Movie</b><small data-ru="Загрузка · последовательный режим">Downloading · sequential mode</small><div class="progress"><i></i></div></div><span class="file-stat">64%<small>1.2 / 1.9 GB</small></span></div>
-          <div class="file-row"><span class="file-icon completed">✓</span><div><b>Ubuntu Desktop</b><small data-ru="Готово · можно поделиться">Complete · ready to share</small></div><span class="file-stat completed" data-ru="Готово">Ready</span></div>
-          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="Выбирай файлы. Задавай приоритеты. Управляй скоростью.">Pick files. Set priorities. Control bandwidth.</span></div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Havvn — files, friends &amp; a little more.</title>
+    <meta
+      name="description"
+      content="A free, open-source P2P hub for Windows and Linux. Download torrents, share files, watch together and talk in private rooms. No Havvn accounts or cloud storage."
+    />
+    <meta
+      property="og:title"
+      content="Havvn — files, friends &amp; a little more."
+    />
+    <meta
+      property="og:description"
+      content="Downloads, private rooms, watch-together and voice. One open-source P2P hub. Windows + Linux."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/NIHILcoder/Havvn/main/assets/havvn-cover.png"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#eeece5" />
+    <meta property="og:url" content="https://nihilcoder.github.io/Havvn/" />
+    <link rel="canonical" href="https://nihilcoder.github.io/Havvn/" />
+    <link
+      rel="preload"
+      href="assets/fonts/inter-latin-400-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/inter-cyrillic-400-normal.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="icon" href="assets/mark-gloss-768.png" />
+    <link rel="stylesheet" href="assets/site.css?hash=586ba30980d8" />
+    <script
+      src="assets/site.js?hash=c8be98e89fce"
+      data-scene="assets/hero-scene.js?hash=038dd0521394"
+      defer
+    ></script>
+  </head>
+  <body>
+    <a class="skip" href="#main" data-ru="К содержимому">Skip to content</a>
+    <header>
+      <nav class="wrap" aria-label="Main navigation">
+        <a class="brand" href="#" aria-label="Havvn home"
+          ><img
+            src="assets/mark-gloss-768.png"
+            width="768"
+            height="440"
+            alt="" /><img
+            class="brand-wordmark"
+            src="assets/wordmark-ink.svg"
+            width="440"
+            height="100"
+            alt="Havvn"
+        /></a>
+        <div id="navigation" class="navlinks">
+          <a class="text-link" href="#experience"
+            ><span data-ru="Внутри Havvn">Inside Havvn</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg></a
+          ><a class="text-link" href="#rooms"
+            ><span data-ru="Между своими">Between friends</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg></a
+          ><a class="text-link" href="#privacy"
+            ><span data-ru="Как устроено">Our approach</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg></a
+          ><a class="text-link" href="https://github.com/NIHILcoder/Havvn"
+            ><span data-ru="GitHub">GitHub</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg
+          ></a>
         </div>
-        <div id="panel-rooms" class="scenario" role="tabpanel" aria-labelledby="tab-rooms" tabindex="0" hidden>
-          <div class="preview-title"><span data-ru="Свои люди">The inner circle</span><span class="preview-badge">E2E</span></div>
-          <div class="avatars"><span>A</span><span>M</span><span>K</span><div><b data-ru="Вечер с друзьями">A night with friends</b><small data-ru="Чат · файлы · голос">Chat · files · voice</small></div></div>
-          <div class="chat-bubble"><small>Alex</small><p data-ru="Собираемся? Я добавил фильм в общие файлы.">Movie night? I've added the film to our shared files.</p></div>
-          <div class="chat-bubble own"><small>Mika</small><p data-ru="Я здесь. Включай совместный просмотр ✳">I'm here. Let's watch together ✳</p></div>
-          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="По приглашению. Скачивание файлов — под твоим контролем.">Invite only. File downloads stay in your control.</span></div>
+        <div class="nav-actions">
+          <button
+            id="language"
+            class="language"
+            type="button"
+            aria-label="Switch to Russian"
+          >
+            RU</button
+          ><a class="button small" href="#download"
+            ><span data-ru="Скачать">Download</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg></a
+          ><button
+            id="menu-toggle"
+            class="menu-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="navigation"
+            aria-label="Open navigation"
+          >
+            <span></span><span></span>
+          </button>
         </div>
-        <div id="panel-watch" class="scenario" role="tabpanel" aria-labelledby="tab-watch" tabindex="0" hidden>
-          <div class="preview-title"><span data-ru="Ваш общий кинотеатр">Your shared cinema</span><span class="preview-badge" data-ru="Вместе">Together</span></div>
-          <div class="cinema"><div class="cinema-sun"></div><div class="cinema-mountain"></div><span class="cinema-caption" data-ru="ВАШ ОБЩИЙ ЭКРАН">YOUR SHARED SCREEN</span><button id="demo-play" class="play-symbol" type="button" aria-pressed="false" aria-label="Play the animation demo"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m9 5 10 7-10 7V5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg></button></div>
-          <div class="playback"><span id="demo-state" data-ru="Демо на паузе">Demo paused</span><div class="progress"><i></i></div><span data-ru="Иллюстрация">Illustration</span></div>
-          <div class="preview-bottom"><span class="status-dot"></span><span data-ru="Общие пауза и перемотка. Видно, кто ещё загружает.">Shared pause and seek. See who's still buffering.</span></div>
+      </nav>
+    </header>
+    <main id="main">
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <p class="eyebrow">
+            <span class="tiny-square" aria-hidden="true"></span>
+            <span data-ru="ПРОСТРАНСТВО МЕЖДУ СВОИМИ"
+              >A PEER-TO-PEER PLACE TO BE</span
+            >
+          </p>
+          <h1>
+            <span data-ru="Файл — тебе.">A file for you.</span><br /><em
+              data-ru="Вечер — нам."
+              >A night for us.</em
+            >
+          </h1>
+          <p
+            class="lead"
+            data-ru="Скачай фильм. Собери друзей. Останьтесь на связи. Havvn соединяет торренты, общие файлы и ваши вечера в одном приложении."
+          >
+            Download a film. Gather your friends. Stay a little longer. Havvn
+            brings torrents, shared files and your evenings into one app.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#download"
+              ><span data-ru="Скачать Havvn">Get Havvn</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg></a
+            ><a class="text-link" href="#experience"
+              ><span data-ru="Заглянуть внутрь">Take a look inside</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg
+            ></a>
+          </div>
+          <div class="hero-footnote">
+            <span class="mono">WINDOWS / LINUX</span>
+            <p data-ru="Бесплатно. Открытый код. Без аккаунта Havvn.">
+              Free. Open source. No Havvn account.
+            </p>
+          </div>
+        </div>
+        <div class="hero-art">
+          <div class="stage-heading" aria-hidden="true">
+            <span>HAVVN OBJECT / 001</span><span>↗ P2P</span>
+          </div>
+          <canvas
+            id="network-scene"
+            tabindex="-1"
+            role="group"
+            aria-hidden="true"
+            aria-describedby="scene-instructions"
+          ></canvas>
+          <div class="scene-aura" aria-hidden="true"></div>
+          <div class="scene-halo" aria-hidden="true"></div>
+          <svg
+            class="hero-mark hero-sculpture"
+            viewBox="0 0 512 325"
+            fill="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient
+                id="metal"
+                x1="40"
+                y1="20"
+                x2="405"
+                y2="285"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#fff1d7" />
+                <stop offset=".14" stop-color="#ffaf70" />
+                <stop offset=".28" stop-color="#532c20" />
+                <stop offset=".42" stop-color="#e86a32" />
+                <stop offset=".53" stop-color="#ffe6c5" />
+                <stop offset=".56" stop-color="#b9471f" />
+                <stop offset=".78" stop-color="#3c1b15" />
+                <stop offset="1" stop-color="#ff9351" />
+              </linearGradient>
+              <linearGradient
+                id="edge"
+                x1="60"
+                y1="0"
+                x2="410"
+                y2="280"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#ffeace" />
+                <stop offset=".37" stop-color="#ff8a45" />
+                <stop offset=".64" stop-color="#4a2019" />
+                <stop offset="1" stop-color="#ef7039" />
+              </linearGradient>
+              <linearGradient
+                id="facet"
+                x1="250"
+                y1="75"
+                x2="310"
+                y2="260"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#fcd6b2" />
+                <stop offset=".43" stop-color="#b95028" />
+                <stop offset="1" stop-color="#230f0d" />
+              </linearGradient>
+            </defs>
+            <path
+              class="sculpture-depth"
+              transform="translate(0 19)"
+              fill="#27130f"
+              stroke="#9a452b"
+              stroke-width="2"
+              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
+            />
+            <path
+              fill="url(#metal)"
+              stroke="url(#edge)"
+              stroke-width="2"
+              stroke-linejoin="round"
+              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
+            />
+            <path
+              fill="url(#facet)"
+              opacity=".72"
+              d="M34 35L222 176L256 139L290 176L478 35L358 221L330 276L256 192L182 276L154 221Z"
+            />
+            <path
+              stroke="#ffe2ba"
+              stroke-opacity=".48"
+              stroke-width="1.4"
+              d="M34 35L222 176L256 139L290 176L478 35M182 276L256 192L330 276"
+            />
+            <path
+              stroke="#ffb36f"
+              stroke-opacity=".23"
+              stroke-width="1"
+              d="M6 6L181 289M506 6L330 289"
+            />
+          </svg>
+          <div class="scene-coordinate coord-one" aria-hidden="true">
+            51° / CONNECTION STUDY
+          </div>
+          <div class="scene-tools" hidden>
+            <p
+              id="scene-instructions"
+              data-ru="Потяни, чтобы повернуть. Выбери узел, чтобы соединить."
+            >
+              Drag to turn. Pick a peer to connect.
+            </p>
+            <div class="scene-tool-actions">
+              <button id="scene-pulse" type="button">
+                <span data-ru="Показать связь">Make a connection</span
+                ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M5 12h14m-6-6 6 6-6 6"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                  />
+                </svg></button
+              ><button id="scene-reset" type="button" aria-label="Reset scene">
+                ↺
+              </button>
+            </div>
+            <p
+              id="scene-status"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            ></p>
+          </div>
+        </div>
+        <div class="hero-bottom">
+          <span class="mono"
+            >01 /
+            <span data-ru="МЕНЬШЕ РАССТОЯНИЙ. БОЛЬШЕ ОБЩЕГО."
+              >LESS DISTANCE. MORE CONNECTION.</span
+            ></span
+          ><button
+            id="motion-toggle"
+            class="motion-toggle"
+            type="button"
+            aria-pressed="false"
+            aria-label="Pause visual effects"
+          >
+            <span class="motion-led"></span
+            ><span data-ru="Анимация включена">Motion is on</span>
+          </button>
+        </div>
+      </section>
+
+      <div class="principles wrap">
+        <span><span data-ru="Без аккаунтов Havvn">No Havvn accounts</span></span
+        ><span><span data-ru="Без облачных копий">No cloud copies</span></span
+        ><span><span data-ru="Без подписки">No subscription</span></span
+        ><span>MIT / OPEN SOURCE</span>
+      </div>
+
+      <section id="experience" class="section wrap">
+        <div class="section-heading">
+          <p class="eyebrow">
+            01 / <span data-ru="НА КАЖДЫЙ ДЕНЬ">THE EVERYDAY PART</span>
+          </p>
+          <div class="heading-row">
+            <h2>
+              <span data-ru="Меньше настроек.">Less setup.</span><br /><em
+                data-ru="Больше планов."
+                >More actual plans.</em
+              >
+            </h2>
+            <p
+              data-ru="Загрузка, разговор или общий сеанс. Выбери сценарий и попробуй несколько деталей прямо здесь."
+            >
+              A download, a conversation, a shared screen. Pick a scene and try
+              a few of the details right here.
+            </p>
+          </div>
+        </div>
+        <div class="experience">
+          <div
+            class="scenario-controls"
+            role="tablist"
+            aria-label="Product scenarios"
+          >
+            <button
+              id="tab-downloads"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-downloads"
+              data-scenario="downloads"
+            >
+              <span class="tab-num">01</span
+              ><span
+                ><b data-ru="Скачать">Download</b
+                ><small data-ru="Твои файлы. Твой темп."
+                  >Your files, at your pace.</small
+                ></span
+              ><span class="tab-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button
+              id="tab-rooms"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-rooms"
+              tabindex="-1"
+              data-scenario="rooms"
+            >
+              <span class="tab-num">02</span
+              ><span
+                ><b data-ru="Собраться">Get together</b
+                ><small data-ru="Комната со знакомыми голосами."
+                  >A room with a familiar crowd.</small
+                ></span
+              ><span class="tab-arrow" aria-hidden="true">↗</span>
+            </button>
+            <button
+              id="tab-watch"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-watch"
+              tabindex="-1"
+              data-scenario="watch"
+            >
+              <span class="tab-num">03</span
+              ><span
+                ><b data-ru="Смотреть">Press play</b
+                ><small data-ru="Общая пауза. Общий момент."
+                  >Same pause. Same moment.</small
+                ></span
+              ><span class="tab-arrow" aria-hidden="true">↗</span>
+            </button>
+          </div>
+          <div class="app-preview" data-theme="graphite">
+            <div class="window-bar">
+              <span class="window-dots" aria-hidden="true"
+                ><i></i><i></i><i></i></span
+              ><span class="window-brand"
+                >HAVVN
+                <span
+                  >/
+                  <span data-ru="маленькое знакомство"
+                    >a little preview</span
+                  ></span
+                ></span
+              >
+              <div
+                class="preview-themes"
+                role="group"
+                aria-label="Preview appearance"
+              >
+                <button
+                  type="button"
+                  data-preview-theme="graphite"
+                  aria-label="Graphite appearance"
+                  aria-pressed="true"
+                ></button
+                ><button
+                  type="button"
+                  data-preview-theme="paper"
+                  aria-label="Paper appearance"
+                  aria-pressed="false"
+                ></button
+                ><button
+                  type="button"
+                  data-preview-theme="moss"
+                  aria-label="Moss appearance"
+                  aria-pressed="false"
+                ></button>
+              </div>
+            </div>
+            <div
+              id="panel-downloads"
+              class="scenario"
+              role="tabpanel"
+              aria-labelledby="tab-downloads"
+              tabindex="0"
+            >
+              <div class="preview-title">
+                <span data-ru="Твои загрузки">Your downloads</span
+                ><span class="preview-badge">BitTorrent</span>
+              </div>
+              <label class="preview-search"
+                ><span aria-hidden="true">⌕</span
+                ><input
+                  id="demo-search"
+                  type="search"
+                  maxlength="80"
+                  autocomplete="off"
+                  placeholder="Find a sample file…"
+                  data-placeholder-en="Find a sample file…"
+                  data-placeholder-ru="Найти файл в примере…"
+                  aria-label="Find a sample file"
+              /></label>
+              <div id="demo-files">
+                <div
+                  class="file-row"
+                  data-file="big buck bunny blender movie film фильм кино"
+                >
+                  <span class="file-icon movie-icon" aria-hidden="true">↙</span>
+                  <div class="file-info">
+                    <b>Big Buck Bunny</b
+                    ><small>Blender Open Movie · 1.9 GB</small>
+                    <div class="progress"><i></i></div>
+                  </div>
+                  <div class="file-actions">
+                    <span class="file-stat">64%</span
+                    ><button
+                      id="demo-transfer"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Pause sample download"
+                    >
+                      Ⅱ
+                    </button>
+                  </div>
+                </div>
+                <div class="file-row" data-file="ubuntu desktop linux iso">
+                  <span class="file-icon" aria-hidden="true">↙</span>
+                  <div class="file-info">
+                    <b>Ubuntu Desktop</b><small>Linux ISO · 5.9 GB</small>
+                  </div>
+                </div>
+                <div
+                  class="file-row"
+                  data-file="sintel blender movie film фильм кино"
+                >
+                  <span class="file-icon" aria-hidden="true">↙</span>
+                  <div class="file-info">
+                    <b>Sintel</b><small>Blender Open Movie · 1.3 GB</small>
+                  </div>
+                </div>
+              </div>
+              <p
+                id="demo-empty"
+                role="status"
+                hidden
+                data-ru="Такого файла в примере нет. Попробуй Ubuntu или Sintel."
+              >
+                No sample matches. Try Ubuntu or Sintel.
+              </p>
+              <div class="preview-bottom">
+                <span class="status-dot"></span
+                ><span
+                  id="transfer-status"
+                  role="status"
+                  data-ru="Демо загрузки · последовательный режим"
+                  >Sample download · sequential mode</span
+                ><span class="preview-bottom-end">↓ 12.4 MB/s</span>
+              </div>
+            </div>
+            <div
+              id="panel-rooms"
+              class="scenario"
+              role="tabpanel"
+              aria-labelledby="tab-rooms"
+              tabindex="0"
+              hidden
+            >
+              <div class="preview-title">
+                <span data-ru="Пятница, без спешки.">Friday, no rush.</span
+                ><span class="preview-badge">E2E</span>
+              </div>
+              <div class="room-attendees">
+                <span class="avatar alex">A</span
+                ><span class="avatar mika">M</span
+                ><span class="avatar guest" id="demo-guest" hidden>Л</span>
+                <div>
+                  <b id="guest-count" role="status"></b
+                  ><small data-ru="В демонстрационной комнате"
+                    >In the sample room</small
+                  >
+                </div>
+                <button id="demo-invite" type="button" aria-pressed="false">
+                  <span data-ru="+ Пригласить друга">+ Invite a friend</span>
+                </button>
+              </div>
+              <div
+                class="demo-messages"
+                id="demo-messages"
+                role="log"
+                aria-label="Sample chat"
+              >
+                <div class="chat-bubble">
+                  <span class="message-author">Alex <small>20:41</small></span>
+                  <p data-ru="Я здесь. Что смотрим?">
+                    I'm here. What are we watching?
+                  </p>
+                </div>
+                <div class="chat-bubble own">
+                  <span class="message-author">Mika <small>20:42</small></span>
+                  <p data-ru="Космос. И никуда не спешим.">
+                    Space. And absolutely no rush.
+                  </p>
+                </div>
+              </div>
+              <form id="demo-chat" class="chat-compose">
+                <input
+                  id="demo-message"
+                  maxlength="160"
+                  autocomplete="off"
+                  placeholder="Say something in the sample room…"
+                  data-placeholder-en="Say something in the sample room…"
+                  data-placeholder-ru="Напиши что-нибудь в демо-комнату…"
+                  aria-label="Sample message"
+                  required
+                /><button type="submit" aria-label="Send sample message">
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M5 12h14m-6-6 6 6-6 6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                  </svg>
+                </button>
+              </form>
+            </div>
+            <div
+              id="panel-watch"
+              class="scenario watch-scenario"
+              role="tabpanel"
+              aria-labelledby="tab-watch"
+              tabindex="0"
+              hidden
+            >
+              <div class="preview-title">
+                <span data-ru="Немного перспективы.">A little perspective.</span
+                ><span class="preview-badge" data-ru="Совместный просмотр"
+                  >Watch together</span
+                >
+              </div>
+              <div class="cinema">
+                <img
+                  src="assets/earthrise.jpg"
+                  width="1920"
+                  height="1080"
+                  alt="Earthrise — NASA / Apollo 8"
+                  loading="eager"
+                /><span class="cinema-caption">EARTHRISE / APOLLO 8</span
+                ><button
+                  id="demo-play"
+                  class="play-symbol"
+                  type="button"
+                  aria-pressed="false"
+                  aria-label="Play the animation demo"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="m9 5 10 7-10 7V5Z"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div class="playback">
+                <span id="demo-state" data-ru="Демо на паузе">Demo paused</span>
+                <div class="progress"><i></i></div>
+                <span>NASA / 1968</span>
+              </div>
+              <div class="preview-bottom">
+                <span data-ru="Общий экран. Общая пауза."
+                  >A shared screen. A shared pause.</span
+                ><a
+                  class="preview-bottom-end"
+                  href="https://nssdc.gsfc.nasa.gov/photo_gallery/photogallery-earthmoon.html"
+                  ><span data-ru="Источник фото ↗">Image source ↗</span></a
+                >
+              </div>
+            </div>
+          </div>
+          <p class="demo-note">
+            <span aria-hidden="true">↳</span
+            ><span
+              data-ru="Интерактивный макет. Файлы не скачиваются. Сообщения остаются на этой странице."
+              >An interactive mockup. No files download. Messages stay on this
+              page.</span
+            >
+          </p>
+        </div>
+      </section>
+
+      <section id="rooms" class="room-section section">
+        <div class="wrap room-layout">
+          <div class="room-copy">
+            <p class="eyebrow">
+              02 /
+              <span data-ru="МЕСТО ДЛЯ СВОИХ">YOUR PEOPLE, YOUR PLACE</span>
+            </p>
+            <h2>
+              <span data-ru="Передай файл.">Send a file.</span><br /><em
+                data-ru="Останься ещё."
+                >Stay for a while.</em
+              >
+            </h2>
+            <p
+              class="lead"
+              data-ru="Другу не обязательно устанавливать Havvn. Ссылки достаточно, чтобы получить файл или зайти в комнату через браузер — поговорить и посмотреть вместе."
+            >
+              Your friend doesn't always need Havvn. A link can bring a file to
+              their browser, or bring them into your room to talk and watch
+              together.
+            </p>
+            <a class="text-link room-demo-link" href="#experience"
+              ><span data-ru="Попробовать комнату">Try the room</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg
+            ></a>
+          </div>
+          <div class="room-poster" aria-hidden="true">
+            <div class="poster-top">
+              <span>ROOM / 001</span><span>BY INVITATION ONLY</span>
+            </div>
+            <div class="poster-voices">
+              <span class="voice-circle voice-a">a.</span
+              ><span class="voice-circle voice-m">m.</span
+              ><span class="voice-circle voice-you"
+                ><span data-ru="ты.">you.</span></span
+              ><svg
+                class="poster-connections"
+                viewBox="0 0 450 300"
+                fill="none"
+              >
+                <path
+                  d="M96 88 337 99 215 235 96 88Z"
+                  stroke="currentColor"
+                  stroke-width="1"
+                  stroke-dasharray="3 7"
+                />
+              </svg>
+            </div>
+            <div class="poster-bottom">
+              <span class="poster-dot"></span>
+              <p data-ru="Комната — это те, кто в ней.">
+                A room is the people in it.
+              </p>
+              <span>↗</span>
+            </div>
+          </div>
+        </div>
+        <div class="wrap room-footnotes">
+          <p>
+            <span>01</span
+            ><span data-ru="Общие файлы, подписанный чат и голос."
+              >Shared files, signed chat and voice.</span
+            >
+          </p>
+          <p>
+            <span>02</span
+            ><span data-ru="Сквозное шифрование в E2E-комнатах."
+              >End-to-end encryption in E2E rooms.</span
+            >
+          </p>
+          <p>
+            <span>03</span
+            ><span data-ru="Живёт на компьютерах участников."
+              >Hosted on members’ computers.</span
+            >
+          </p>
+        </div>
+      </section>
+
+      <section id="features" class="section wrap capabilities-layout">
+        <div class="capabilities-heading">
+          <p class="eyebrow">
+            03 / <span data-ru="ПОЛЕЗНЫЕ ДЕТАЛИ">THE USEFUL DETAILS</span>
+          </p>
+          <h2>
+            <span data-ru="Не всё">Not everything</span><br /><em
+              data-ru="нуждается в новом приложении."
+              >needs a new app.</em
+            >
+          </h2>
+          <p
+            data-ru="Пара вещей, ради которых обычно открывают что-то ещё. Здесь они уже рядом."
+          >
+            A few things you would usually open something else for. Here,
+            they're already close by.
+          </p>
+        </div>
+        <div class="capabilities-list">
+          <details open>
+            <summary>
+              <span>01</span
+              ><span data-ru="Смотри, пока скачивается"
+                >Watch before the download ends</span
+              ><i aria-hidden="true">+</i>
+            </summary>
+            <p
+              data-ru="Последовательная загрузка, передача видео на телефон или ТВ и преобразование неподдерживаемых браузером форматов на лету."
+            >
+              Sequential downloading, streaming to your phone or TV, and
+              on-the-fly transcoding for formats the browser can't play.
+            </p>
+            <div class="tags">
+              <span>Chromecast</span><span>Android TV</span>
+            </div>
+          </details>
+          <details>
+            <summary>
+              <span>02</span
+              ><span data-ru="Ещё одна игра с друзьями"
+                >One more game with friends</span
+              ><i aria-hidden="true">+</i>
+            </summary>
+            <p
+              data-ru="Виртуальная LAN на Windows и выделенный сервер на твоём компьютере. Игровые миры остаются после остановки сервера."
+            >
+              Virtual LAN on Windows and a dedicated server on your computer.
+              Your game worlds stay after the server stops.
+            </p>
+            <div class="tags"><span>Windows</span><span>Virtual LAN</span></div>
+          </details>
+          <details>
+            <summary>
+              <span>03</span
+              ><span data-ru="Подстрой интерфейс под себя"
+                >Make the interface your own</span
+              ><i aria-hidden="true">+</i>
+            </summary>
+            <p
+              data-ru="Темы, стеклянные материалы, локальные фоны и профили оформления. В макете выше можно переключить три палитры точками в правом верхнем углу."
+            >
+              Themes, glass materials, local backgrounds and appearance
+              profiles. Try three preview palettes with the dots in the mockup's
+              top-right corner.
+            </p>
+            <a class="text-link" href="#experience"
+              ><span data-ru="Попробовать палитры">Try the palettes</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg
+            ></a>
+          </details>
+          <details>
+            <summary>
+              <span>04</span
+              ><span data-ru="Подключи свои источники"
+                >Bring your search sources</span
+              ><i aria-hidden="true">+</i>
+            </summary>
+            <p
+              data-ru="Источники поиска и RSS, сравнение качества, размера и языков релиза. Предпочтения и выбор файлов — в приложении."
+            >
+              Search sources and RSS, with quality, size and release-language
+              comparisons. Preferences and file selection live in the app.
+            </p>
+            <div class="tags">
+              <span>Jackett</span><span>Prowlarr</span><span>RSS</span>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <section id="privacy" class="privacy-section section">
+        <div class="wrap">
+          <p class="eyebrow">
+            04 /
+            <span data-ru="НЕСКОЛЬКО ПРОСТЫХ ПРИНЦИПОВ"
+              >A FEW THINGS WE BELIEVE</span
+            >
+          </p>
+          <div class="privacy-intro">
+            <h2>
+              <span data-ru="Интернет может быть">The internet could</span
+              ><br /><em data-ru="чуть более личным."
+                >feel a little more personal.</em
+              >
+            </h2>
+            <p
+              data-ru="Без аккаунта Havvn. Без подписки. Без телеметрии. И с кодом, который можно открыть и посмотреть."
+            >
+              No Havvn account. No subscription. No telemetry. And code you can
+              actually open and read.
+            </p>
+          </div>
+          <div class="privacy-grid">
+            <article>
+              <span>01 / LOCAL</span>
+              <h3 data-ru="Файлы остаются у вас.">Files stay with you.</h3>
+              <p
+                data-ru="Комнаты и передача файлов опираются на компьютеры участников. Облачная копия Havvn не создаётся."
+              >
+                Rooms and file transfers rely on members' computers. Havvn
+                doesn't create a cloud copy.
+              </p>
+            </article>
+            <article>
+              <span>02 / ENCRYPTED</span>
+              <h3 data-ru="Ключи — на твоей стороне.">Keys on your side.</h3>
+              <p
+                data-ru="Секреты защищаются средствами ОС. В E2E-комнатах файлы шифруются перед раздачей."
+              >
+                Secrets use OS-backed protection. E2E room files are encrypted
+                before they're shared.
+              </p>
+            </article>
+            <article>
+              <span>03 / OPEN</span>
+              <h3 data-ru="Можно проверить.">Open to inspection.</h3>
+              <p
+                data-ru="MIT-лицензия, исходники и история изменений на GitHub. Настройки сети и хранения доступны в приложении."
+              >
+                MIT-licensed source and changelog on GitHub. Network and storage
+                controls in the app.
+              </p>
+            </article>
+          </div>
+          <details class="network-note">
+            <summary>
+              <span data-ru="Что здесь означает peer-to-peer?"
+                >What does peer to peer mean here?</span
+              ><span aria-hidden="true">+</span>
+            </summary>
+            <p
+              data-ru="Обнаружение участников использует внешние трекеры и STUN, а поиск — выбранные источники. Соединение зависит от сети и доступности участников. Шифрование защищает содержимое, но не скрывает IP от участников и инфраструктуры обнаружения."
+            >
+              Peer discovery uses external trackers and STUN; search uses
+              selected sources. Connectivity depends on networks and available
+              members. Encryption protects content, but doesn't hide your IP
+              from peers and discovery infrastructure.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section id="updates" class="source-section wrap">
+        <span class="source-symbol" aria-hidden="true">↗</span>
+        <div>
+          <p class="eyebrow">BUILT IN THE OPEN</p>
+          <h3 data-ru="Проект живёт на GitHub.">
+            The project lives on GitHub.
+          </h3>
+          <p data-ru="Свежие сборки, изменения и разговор о том, что дальше.">
+            Current builds, recent changes, and the conversation about what
+            comes next.
+          </p>
+        </div>
+        <div class="source-links">
+          <a
+            class="text-link"
+            href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md"
+            ><span data-ru="Что изменилось">Changelog</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg></a
+          ><a
+            class="text-link"
+            href="https://github.com/NIHILcoder/Havvn/issues"
+            ><span data-ru="Обсудить проект">Join the conversation</span
+            ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M5 12h14m-6-6 6 6-6 6"
+                stroke="currentColor"
+                stroke-width="1.5"
+              /></svg
+          ></a>
+        </div>
+      </section>
+
+      <section id="download" class="download-section section">
+        <div class="wrap download-layout">
+          <div class="download-heading">
+            <p class="eyebrow">
+              05 / <span data-ru="РАСПОЛАГАЙСЯ">COME ON IN</span>
+            </p>
+            <h2>
+              <span data-ru="Место для файлов.">A little space</span><br /><em
+                data-ru="И для своих."
+                >for your people.</em
+              >
+            </h2>
+            <p data-ru="Бесплатно, с открытым кодом. Без регистрации в Havvn.">
+              Free, open source, and no Havvn registration.
+            </p>
+          </div>
+          <div class="download-picker">
+            <div
+              class="platform-tabs"
+              role="tablist"
+              aria-label="Download platform"
+            >
+              <button
+                id="platform-windows"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="download-windows"
+                data-platform="windows"
+              >
+                Windows</button
+              ><button
+                id="platform-linux"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="download-linux"
+                data-platform="linux"
+                tabindex="-1"
+              >
+                Linux <small>preview</small>
+              </button>
+            </div>
+            <div class="platforms">
+              <article
+                id="download-windows"
+                role="tabpanel"
+                aria-labelledby="platform-windows"
+              >
+                <p class="platform-format">WINDOWS / x64</p>
+                <h3 data-ru="Установить. Или просто открыть.">
+                  Install it. Or just open it.
+                </h3>
+                <p
+                  data-ru="Установщик и portable-архив — на странице релиза. Выбирай удобный вариант."
+                >
+                  An installer and a portable archive are available on the
+                  release page. Choose what works for you.
+                </p>
+                <a
+                  class="button primary"
+                  href="https://github.com/NIHILcoder/Havvn/releases/latest"
+                  ><span data-ru="Выбрать файл для Windows"
+                    >Choose a Windows download</span
+                  ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M5 12h14m-6-6 6 6-6 6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    /></svg
+                ></a>
+              </article>
+              <article
+                id="download-linux"
+                role="tabpanel"
+                aria-labelledby="platform-linux"
+                hidden
+              >
+                <p class="platform-format">LINUX / x64 · PREVIEW</p>
+                <h3 data-ru="На твоей стороне пингвины.">Penguins welcome.</h3>
+                <p
+                  data-ru="AppImage и deb. Первые сборки: требования и ограничения — в руководстве Linux."
+                >
+                  AppImage and deb. Early builds: check the Linux guide for
+                  requirements and limitations.
+                </p>
+                <a
+                  class="button primary"
+                  href="https://github.com/NIHILcoder/Havvn/releases/latest"
+                  ><span data-ru="Выбрать пакет Linux"
+                    >Choose a Linux package</span
+                  ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M5 12h14m-6-6 6 6-6 6"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                    /></svg></a
+                ><a
+                  class="linux-guide"
+                  href="https://github.com/NIHILcoder/Havvn/blob/main/docs/linux.md"
+                  data-ru="Руководство Linux ↗"
+                  >Linux guide ↗</a
+                >
+              </article>
+            </div>
+            <details class="verify">
+              <summary data-ru="Проверить скачанный файл">
+                Verify your download
+              </summary>
+              <p
+                data-ru="Сравни SHA-256 с контрольной суммой в описании релиза. В Linux-сборках опубликован SHA256SUMS-linux.txt."
+              >
+                Compare SHA-256 with the checksum in the release notes. Linux
+                builds include SHA256SUMS-linux.txt.
+              </p>
+              <code
+                >Get-FileHash .\Havvn-Setup-&lt;version&gt;.exe -Algorithm
+                SHA256</code
+              >
+            </details>
+            <p class="download-note" data-ru="macOS пока в планах.">
+              macOS is planned.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section id="faq" class="section wrap faq-layout">
+        <div>
+          <p class="eyebrow">
+            06 / <span data-ru="ПЕРЕД ПЕРВЫМ ЗАПУСКОМ">BEFORE YOU GO</span>
+          </p>
+          <h2 data-ru="Кстати.">By the way.</h2>
+        </div>
+        <div class="faq-list">
+          <details>
+            <summary data-ru="Другу обязательно устанавливать Havvn?">
+              Does my friend have to install Havvn?
+            </summary>
+            <p
+              data-ru="Для получения файла по ссылке и участия в браузерной комнате — нет. В браузере доступны чат, голос и совместный просмотр. Полное управление файлами и серверами — в приложении."
+            >
+              Not for a shared file or browser room. Browser guests can chat,
+              talk and watch together. Full file and server management is in the
+              desktop app.
+            </p>
+          </details>
+          <details>
+            <summary data-ru="Это правда бесплатно?">
+              Is it really free?
+            </summary>
+            <p
+              data-ru="Да. MIT-лицензия, открытый код, без платного тарифа и аккаунтов Havvn."
+            >
+              Yes. MIT-licensed, open source, without paid tiers or Havvn
+              accounts.
+            </p>
+          </details>
+          <details>
+            <summary data-ru="Можно пользоваться без VPN?">
+              Can I use it without a VPN?
+            </summary>
+            <p
+              data-ru="Да, но P2P-соединения не скрывают IP. Havvn не заменяет VPN. VPN-защита приложения работает вместе с твоим VPN и настройками ОС."
+            >
+              Yes, but P2P connections don't hide your IP. Havvn doesn't replace
+              a VPN. Its VPN protection works with your VPN and OS settings.
+            </p>
+          </details>
+          <details>
+            <summary data-ru="С чего начать?">Where should I start?</summary>
+            <p
+              data-ru="Скачай сборку своей платформы. Открой magnet-ссылку или .torrent, а для общения создай комнату и пригласи друзей."
+            >
+              Download your platform's build. Open a magnet link or .torrent, or
+              create a room and invite your friends.
+            </p>
+          </details>
+        </div>
+      </section>
+    </main>
+    <footer>
+      <div class="wrap">
+        <div class="footer-top">
+          <p data-ru="Между вами. Напрямую.">Between you. Directly.</p>
+          <div>
+            <a class="text-link" href="https://github.com/NIHILcoder/Havvn"
+              ><span data-ru="GitHub">GitHub</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg></a
+            ><a
+              class="text-link"
+              href="https://github.com/NIHILcoder/Havvn/issues"
+              ><span data-ru="Написать нам">Say hello</span
+              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M5 12h14m-6-6 6 6-6 6"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                /></svg
+            ></a>
+          </div>
+          <a class="back-top" href="#" aria-label="Back to top">↑</a>
+        </div>
+        <img
+          class="footer-wordmark"
+          src="assets/wordmark-ink.svg"
+          width="440"
+          height="100"
+          alt="Havvn"
+        />
+        <div class="footer-bottom">
+          <span>© 2026 HAVVN</span
+          ><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE"
+            >MIT LICENSE</a
+          ><span data-ru="Для хорошей компании."
+            >Made for the good company.</span
+          >
         </div>
       </div>
-    </div>
-  </section>
-  <div class="kinetic-band" aria-hidden="true"><div class="kinetic-track"><span data-ru="ЗАГРУЖАЙ.">DOWNLOAD.</span><span data-ru="ДЕЛИСЬ.">SHARE.</span><span data-ru="БУДЬ ВМЕСТЕ.">CONNECT.</span><span>HAVVN.</span></div></div>
-  <section id="features" class="section wrap">
-    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="СДЕЛАНО ДЛЯ ТВОЕГО РИТМА">BUILT FOR YOUR FLOW</p><h2 data-ru="Всё, что нужно. И ещё немного.">All you need. Then some.</h2></div><span class="section-index" data-ru="02 / ВОЗМОЖНОСТИ">02 / CAPABILITIES</span></div>
-    <div class="feature-grid">
-      <article class="feature wide reveal"><span class="feature-icon">↗</span><span class="feature-number">01</span><h3 data-ru="Файл. Ссылка. Готово.">A file. A link. That's it.</h3><p data-ru="Передай завершённую загрузку прямо в браузер друга по WebRTC. Получателю не нужны установка приложения и аккаунт Havvn.">Send a completed download straight to a friend's browser over WebRTC. No app installation or Havvn account needed on their side.</p><div class="share-visual" aria-hidden="true"><span data-ru="ТВОЙ ФАЙЛ">YOUR FILE</span><div class="transfer-line"><i></i></div><span data-ru="БРАУЗЕР ДРУГА">THEIR BROWSER</span></div><div class="tags"><span>WebRTC</span><span data-ru="Без облачной копии">No cloud copy</span></div></article>
-      <article class="feature reveal"><span class="feature-icon">▷</span><span class="feature-number">02</span><h3 data-ru="Не жди конца загрузки.">Don't wait for the download.</h3><p data-ru="Смотри во время загрузки, передавай видео на телефон или ТВ. Неподдерживаемые браузером форматы преобразуются на лету.">Watch while downloading, stream to your phone or TV. Formats your browser can't play are transcoded on the fly.</p><div class="tags"><span>Chromecast</span><span>Android TV</span></div></article>
-      <article class="feature reveal"><span class="feature-icon">⌁</span><span class="feature-number">03</span><h3 data-ru="Голос ближе. Шум тише.">Closer voices. Less noise.</h3><p data-ru="Голосовой чат, нейросетевое шумоподавление, демонстрация экрана и системный звук на Windows. Push-to-talk там, где платформа поддерживает глобальные клавиши.">Voice chat, neural noise suppression, screen sharing and system audio on Windows. Push-to-talk where the platform supports global shortcuts.</p><div class="waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></article>
-      <article class="feature reveal"><span class="feature-icon">⌘</span><span class="feature-number">04</span><h3 data-ru="Одна сеть. Ваша игра.">One network. Your game.</h3><p data-ru="Виртуальная LAN на Windows для игр через интернет и выделенный сервер на твоём компьютере. Миры сохраняются после остановки сервера.">A virtual LAN on Windows for games over the internet and a dedicated server on your computer. Worlds stay with you when the server stops.</p><div class="tags"><span>Virtual LAN · Windows</span><span data-ru="Свои серверы">Self-hosted</span></div></article>
-      <article class="feature reveal"><span class="feature-icon">✳</span><span class="feature-number">05</span><h3 data-ru="Твой стиль. До деталей.">Your style. Down to the details.</h3><p data-ru="Темы, стеклянные материалы, локальные фоны и профили оформления. Настраивай прозрачность, размытие и анимации под себя.">Themes, glass materials, local backgrounds and appearance profiles. Make opacity, blur and motion feel right for you.</p><div class="theme-swatches" aria-hidden="true"><i></i><i></i><i></i><i></i></div></article>
-      <article class="feature wide discovery reveal"><span class="feature-icon">⌕</span><span class="feature-number">06</span><h3 data-ru="Найди свой вариант.">Find your kind of download.</h3><p data-ru="Подключай свои источники поиска и RSS. Сравнивай качество, размер и языки релизов, выбирай файлы и сохраняй предпочтения — прямо в приложении.">Connect your search providers and RSS feeds. Compare release quality, size and languages, choose files and save your preferences — right in the app.</p><div class="tags"><span>Jackett</span><span>Prowlarr</span><span>RSS</span><span>Python</span></div></article>
-    </div>
-  </section>
-  <section id="rooms" class="room-section section">
-    <div class="wrap room-layout">
-      <div class="reveal"><p class="eyebrow" data-ru="ЛИЧНОЕ ПРОСТРАНСТВО. ОБЩИЕ МОМЕНТЫ.">PRIVATE SPACE. SHARED MOMENTS.</p><h2><span data-ru="Своя комната.">Your own room.</span><br><em data-ru="Своя компания.">Your own people.</em></h2><p class="lead" data-ru="Общая папка, подписанный чат, голос и синхронный просмотр. Комната живёт на компьютерах участников — без серверов приложения.">Shared files, signed chat, voice and synchronized playback. Your room lives on its members' computers — without application servers.</p><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/README.md"><span data-ru="Подробнее о комнатах">Explore room features</span> ↗</a></div>
-      <div class="room-steps reveal"><article><span>01</span><div><h3 data-ru="Создай пространство">Create your space</h3><p data-ru="Выбери параметры комнаты и сквозное шифрование. Получи код приглашения.">Choose your room settings and end-to-end encryption. Get an invitation code.</p></div></article><article><span>02</span><div><h3 data-ru="Пригласи своих">Invite your people</h3><p data-ru="Поделись кодом для приложения или ссылкой для браузера. Гости могут общаться и смотреть вместе.">Share a code for the app or a browser link. Guests can chat, talk and watch together.</p></div></article><article><span>03</span><div><h3 data-ru="Будь вместе">Make it a shared moment</h3><p data-ru="Добавь файлы и включи совместный просмотр. Файлы скачиваются вручную по умолчанию; очередь и приоритеты выбираешь ты.">Add files and start watching together. File downloads are manual by default; you choose the queue and priorities.</p></div></article></div>
-    </div>
-  </section>
-  <section id="privacy" class="section wrap">
-    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="ПРИВАТНОСТЬ, КОТОРУЮ МОЖНО ПРОВЕРИТЬ">PRIVACY YOU CAN INSPECT</p><h2><span data-ru="Твои данные.">Your data.</span><br><span class="muted" data-ru="Под твоим контролем.">In your hands.</span></h2></div><p data-ru="Открытый код и понятные настройки. Ты видишь, как приложение подключается к сети и где хранит данные.">Open source and clear controls. See how the app connects to the network and where your data stays.</p></div>
-    <div class="privacy-grid"><article class="reveal"><span>◎</span><h3 data-ru="Понятная картина сети">A clearer network picture</h3><p data-ru="Прямой HTTPS IP, системный веб-прокси и маршруты туннеля показаны отдельно. Страна выходного IP не выдаётся за твоё местоположение.">Direct HTTPS IP, system web proxy and tunnel routes are shown separately. An exit IP's country isn't presented as your location.</p></article><article class="reveal"><span>⏸</span><h3 data-ru="Защита при сбое VPN">Protection when a VPN drops</h3><p data-ru="VPN-защита проверяет локальные маршруты, приостанавливает передачи и сеть комнат. Привязка нативного движка к туннелю зависит от доступной конфигурации.">VPN protection checks local routes and suspends transfers and room networking. Native engine tunnel binding depends on the available configuration.</p></article><article class="reveal"><span>◇</span><h3 data-ru="Ключи остаются у тебя">Your keys stay with you</h3><p data-ru="Секреты защищаются средствами ОС, история чата хранится зашифрованной. В E2E-комнатах файлы шифруются перед раздачей.">Secrets use OS-backed protection; chat history is stored encrypted. In E2E rooms, files are encrypted before being shared.</p></article></div>
-    <div class="network-note reveal"><span class="note-icon">↳</span><p data-ru="Без собственных серверов не означает без внешних соединений. Обнаружение участников использует трекеры и STUN; поиск — выбранные тобой источники. Соединение зависит от сети и доступности участников; ретрансляция через участника возможна, но не гарантирует связь в любой сети.">No application servers doesn't mean no external connections. Peer discovery uses trackers and STUN; search uses the sources you choose. Connectivity depends on networks and available peers; member relaying is possible, but cannot guarantee access across every network.</p></div>
-  </section>
-  <section id="updates" class="section updates-section wrap">
-    <div class="section-heading reveal"><div><p class="eyebrow" data-ru="HAVVN ПРОДОЛЖАЕТ РАСТИ">HAVVN KEEPS MOVING</p><h2 data-ru="Что нового?">What's new?</h2></div><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md"><span data-ru="Все изменения">Full changelog</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
-    <div class="updates-grid">
-      <article class="reveal"><div class="update-meta"><b data-ru="ПЛАТФОРМЫ">PLATFORMS</b><span>Windows + Linux</span></div><h3 data-ru="Больше пространства для Havvn.">More room for Havvn.</h3><p data-ru="Загрузки, приватные комнаты и совместный просмотр на Windows и Linux. Выбирай привычную систему — твои файлы и твоя компания остаются рядом.">Downloads, private rooms and shared watching on Windows and Linux. Choose the system you know — keep your files and your people close.</p><a class="text-link" href="#download"><span data-ru="Выбрать платформу">Choose your platform</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></article>
-      <article class="reveal"><div class="update-meta"><b data-ru="ТВОЙ ОПЫТ">YOUR EXPERIENCE</b><span data-ru="Поиск · комнаты · оформление">Search · rooms · appearance</span></div><h3 data-ru="Больше контроля. Больше тебя.">More control. More you.</h3><p data-ru="Сравнивай варианты в поиске, управляй очередью общих файлов и настраивай интерфейс под себя. Возможности Havvn развиваются вместе с проектом.">Compare search results, manage shared-file queues and make the interface your own. Havvn's capabilities grow with the project.</p><a class="text-link" href="#features"><span data-ru="Исследовать возможности">Explore the possibilities</span><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></article>
-    </div>
-    <div class="next-update update-source reveal"><span class="update-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b data-ru="Всё развитие — на GitHub.">Follow the project on GitHub.</b><p data-ru="Свежие сборки, новые возможности и исправления — в релизах и истории изменений проекта.">Find current downloads, new capabilities and fixes in the project's releases and changelog.</p></div><a class="text-link" href="https://github.com/NIHILcoder/Havvn/blob/main/CHANGELOG.md" aria-label="Read the changelog"><span class="link-arrow" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M6 18 18 6M6 6h12v12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></a></div>
-  </section>
-  <section id="download" class="section download-section">
-    <div class="wrap"><div class="download-heading reveal"><p class="eyebrow" data-ru="НАЧНИ СВОЮ ИСТОРИЮ">MAKE IT YOURS</p><h2><span data-ru="Меньше барьеров.">Less friction.</span><br><em data-ru="Больше свободы.">More freedom.</em></h2><p data-ru="Бесплатно. Открытый код. Никаких подписок.">Free. Open source. No subscriptions.</p></div>
-      <div class="platforms reveal"><article><div class="platform-top"><svg class="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 4.5 10 3.4v7.7H2zm9.5-1.3L22 1.7v9.4H11.5zM2 12.6h8v7.8l-8-1.1zm9.5 0H22V22l-10.5-1.4z"/></svg><span class="platform-label" data-ru="ДЛЯ КОМПЬЮТЕРА">DESKTOP</span></div><h3>Windows</h3><p data-ru="Установщик и portable-архив · x64">Installer and portable archive · x64</p><a class="button" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="button-label" data-ru="Выбрать файл Windows">Choose a Windows download</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a></article><article><div class="platform-top"><svg class="os-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M8 11c0-2-1-3 0-6 1-3 7-3 8 0 1 3 0 4 0 6l3 7c1 3-3 3-7 3s-8 0-7-3zM9 8h.01M15 8h.01M10 10l2 2 2-2M8 15l-2 3m10-3 2 3"/></svg><span class="platform-label" data-ru="ПЕРВЫЕ СБОРКИ">PREVIEW</span></div><h3>Linux</h3><p>AppImage &amp; deb · x64</p><a class="button secondary" href="https://github.com/NIHILcoder/Havvn/releases/latest"><span class="button-label" data-ru="Выбрать пакет Linux">Choose a Linux package</span><span class="button-icon" data-direction="down" aria-hidden="true"><span class="button-arrow"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="button-arrow-echo"><svg viewBox="0 0 24 24" fill="none"><path d="M12 4v16m-6-6 6 6 6-6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></span></a></article></div>
-      <div class="download-notes"><p data-ru="Выбери файл своей платформы на GitHub Releases. Linux — первые сборки: ограничения и требования указаны в документации. macOS пока в планах.">Choose your platform's asset on GitHub Releases. Linux packages are early builds: see the documentation for requirements and limitations. macOS is planned.</p><a href="https://github.com/NIHILcoder/Havvn/blob/main/docs/linux.md" data-ru="Руководство Linux ↗">Linux guide ↗</a></div>
-      <details class="verify"><summary data-ru="Как проверить скачанный файл?">How do I verify my download?</summary><p data-ru="Сравни SHA-256 с контрольной суммой в релизе. Для Linux опубликован SHA256SUMS-linux.txt. Результаты проверки и предупреждения установщика смотри в описании выбранной версии.">Compare SHA-256 with the checksum in the release. Linux packages include SHA256SUMS-linux.txt. See your release notes for scan results and installer warnings.</p><code>Get-FileHash .\Havvn-Setup-&lt;version&gt;.exe -Algorithm SHA256</code><p data-ru="Совпадение суммы подтверждает соответствие опубликованному файлу; это не гарантия безопасности.">A matching checksum confirms the file matches the published one; it isn't a security guarantee.</p></details>
-    </div>
-  </section>
-  <section id="faq" class="section wrap faq-layout">
-    <div class="reveal"><p class="eyebrow" data-ru="ДАВАЙ РАЗБЕРЁМСЯ">GOOD TO KNOW</p><h2 data-ru="Без недомолвок.">No loose ends.</h2><p class="muted" data-ru="Ответы перед первым запуском.">A few answers before you jump in.</p></div>
-    <div class="faq-list reveal"><details><summary data-ru="Это действительно бесплатно?">Is it really free?</summary><p data-ru="Да. Havvn — проект с открытым кодом под лицензией MIT. Нет платного тарифа, аккаунтов Havvn и телеметрии.">Yes. Havvn is open source under the MIT license. No paid tier, Havvn accounts or telemetry.</p></details><details><summary data-ru="Другу обязательно устанавливать приложение?">Does my friend need to install the app?</summary><p data-ru="Для получения файла по ссылке и участия в браузерной комнате — нет. В браузере доступны чат, голос и совместный просмотр. Полные возможности управления файлами и серверами доступны в приложении.">Not for receiving a shared file or joining a browser room. Browser guests can chat, talk and watch together. Full file and server management is available in the desktop app.</p></details><details><summary data-ru="Havvn заменяет VPN?">Does Havvn replace a VPN?</summary><p data-ru="Нет. P2P-соединения могут раскрывать IP участникам и инфраструктуре обнаружения. E2E-шифрование защищает содержимое, а не скрывает адрес. VPN-защита приложения работает вместе с твоим VPN и настройками ОС.">No. P2P connections can expose IP addresses to peers and discovery infrastructure. E2E encryption protects content, not your address. The app's VPN protection works alongside your VPN and OS settings.</p></details><details><summary data-ru="Откуда берутся результаты поиска?">Where do search results come from?</summary><p data-ru="Источники и RSS-ленты добавляешь ты. Havvn не включает индексаторы материалов, защищённых авторским правом. Используй приложение только для контента, который имеешь право скачивать и распространять.">You add search providers and RSS feeds. Havvn doesn't bundle indexers for copyrighted material. Use it for content you're allowed to download and distribute.</p></details></div>
-  </section>
-</main>
-<footer><div class="wrap"><div class="footer-top"><a class="brand" href="#"><img src="assets/mark-gloss-768.png" width="768" height="440" alt=""><img class="brand-wordmark" src="assets/wordmark.svg" width="440" height="100" alt=""><span class="brand-dot"></span></a><p data-ru="Между вами. Напрямую.">Between you. Directly.</p><div><a href="https://github.com/NIHILcoder/Havvn">GitHub ↗</a><a href="https://github.com/NIHILcoder/Havvn/issues" data-ru="Обратная связь ↗">Feedback ↗</a><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE">MIT ↗</a></div></div><div class="footer-bottom"><span>© 2026 HAVVN</span><span data-ru="Сделано для свободы соединяться.">Built for the freedom to connect.</span><a href="#" data-ru="Наверх ↑">Back to top ↑</a></div></div></footer>
-</body>
+    </footer>
+  </body>
 </html>

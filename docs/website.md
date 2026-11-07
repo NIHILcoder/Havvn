@@ -58,27 +58,57 @@ attribute. The browser language selects the initial language; a user's choice
 is saved locally. Product names and technical names keep their original spelling.
 
 The landing page deliberately contains no pinned release numbers or release dates.
-The hero and download buttons link to the latest GitHub release. The updates
-section describes enduring product capabilities and links to the changelog as
-the source of current changes. Publishing a release needs no corresponding
-website edit.
+The hero and download buttons link to the latest GitHub release. The source
+section links to the changelog and issues. Publishing a release needs no
+corresponding website edit.
 
 Keep platform details aligned with `docs/linux.md`: Linux is a preview;
 virtual LAN and system audio capture in this page are described as Windows
 features. P2P and E2E encryption do not promise anonymity or connectivity in every
 network.
 
+## Design and local demonstrations
+
+The page uses warm paper colors, dark ink, a restrained copper accent and an
+italic system serif alongside the locally served Inter font. Numbered editorial
+sections replace repetitive feature cards. The 3D sculpture has its own dark
+frame; it doesn't overlap the headline. There are no moving marquees, magnetic
+buttons, animated gradients, background orbit lights or ambient particle dust.
+
+The product preview has three manually selected tabs. Sample file search filters
+three fictional rows and has an empty state; the pause control changes the sample
+transfer state. In the room tab, inviting a guest toggles a fictional participant,
+and a local chat accepts plain text only, retaining up to ten submitted messages
+in memory. No file download, room connection or message transmission occurs.
+The on-page caption explicitly describes this as an interactive mockup.
+
+Three palette buttons change the mockup between Graphite, Paper and Moss; they
+don't change the rest of the site. The platform picker supports pointer and
+keyboard selection, defaults to Linux on Linux desktops, and otherwise starts
+with Windows. Both platforms lead to the official latest release.
+
+The watch tab uses a locally served NASA Earthrise photograph, with its source
+linked in the mockup. Playing the demo animates this still and a progress line;
+it does not stream a video. Playback stops when leaving the tab, hiding the
+document or scrolling the preview out of view. Reduced motion disables the
+visual animation. See `docs/assets/PHOTO-CREDITS.md` for the photo source.
+
+Only the language preference is persisted. Demo messages, invited guests,
+palette choice and transfer state are reset on reload. The smoke check covers
+these interactions, user-input HTML escaping, native touch input and keyboard
+navigation. Section screenshots are saved in `artifacts/site/`.
+
 ## Visual effects
 
 The hero uses Three.js to extrude the existing HAVVN outline into a beveled,
-faceted copper sculpture, with a procedural studio reflection, a 3D peer network,
-pointer response and orbiting light signals. The environment and glow textures
+faceted copper sculpture, with a procedural studio reflection, a subtle 3D peer
+network and pointer response. The environment and glow textures
 are generated locally; no remote models or textures are fetched.
 
 Drag the scene with a mouse or horizontally with a finger to rotate it. Vertical
 touch gestures remain available for page scrolling. Brighter network beacons
 invite selection; clicking a visible peer sends light packets to its six nearest
-neighbors. The **Send a pulse** button selects a front-facing peer, and the reset
+neighbors. The **Make a connection** button selects a front-facing peer, and the reset
 button clears the route and restores the orientation. The status explicitly
 labels this as a P2P demo; no real peer connection or transfer is started.
 
@@ -98,7 +128,7 @@ The original SVG remains visible until the first successful WebGL render. It
 also serves as the fallback when loading fails, WebGL 2 is unavailable, or the
 context is lost. The scene and studio reflections rebuild when the context is
 restored. Pausing, language switching and the rest of the page work independently
-of Three.js. The scrolling text uses one scheduled frame per scroll update.
+of Three.js.
 
 Three.js **0.180.0** is vendored unchanged under
 `docs/assets/vendor/three-0.180.0/` (`three.module.min.js`, `three.core.min.js`
