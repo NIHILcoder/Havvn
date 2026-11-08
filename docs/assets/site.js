@@ -14,7 +14,8 @@
     playing = false,
     transferPaused = false,
     guest = false,
-    paused = false;
+    paused = false,
+    roomMuted = false;
   const playButton = document.querySelector("#demo-play");
   const inviteButton = document.querySelector("#demo-invite");
   const transferButton = document.querySelector("#demo-transfer");
@@ -29,6 +30,15 @@
     ru: "Бесплатный P2P-хаб с открытым кодом для Windows и Linux. Скачивай торренты, делись файлами, смотри вместе и общайся в приватных комнатах. Без аккаунтов Havvn и облачного хранения.",
   };
   function updateLabels() {
+    document
+      .querySelector(".room-modes")
+      .setAttribute("aria-label", text("Room features", "Возможности комнаты"));
+    document.querySelector("#room-mic-label").textContent = roomMuted
+      ? text("Unmute sample microphone", "Включить демо-микрофон")
+      : text("Mute sample microphone", "Выключить демо-микрофон");
+    document.querySelector("#room-mic-status").textContent = roomMuted
+      ? text("Sample voice muted", "Демо-голос выключен")
+      : text("Sample voice on", "Демо-голос включён");
     menuButton.setAttribute(
       "aria-label",
       menuButton.getAttribute("aria-expanded") === "true"
@@ -263,6 +273,30 @@
     tab.addEventListener("keydown", (event) =>
       tabKeys(event, tabs, index, selectScenario),
     );
+  });
+  const roomModes = [...document.querySelectorAll("[data-room-mode]")];
+  function selectRoomMode(tab, focus = false) {
+    roomModes.forEach((item) => {
+      const selected = item === tab;
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      document.getElementById(item.getAttribute("aria-controls")).hidden =
+        !selected;
+    });
+    if (focus) tab.focus();
+  }
+  roomModes.forEach((tab, index) => {
+    tab.addEventListener("click", () => selectRoomMode(tab));
+    tab.addEventListener("keydown", (event) =>
+      tabKeys(event, roomModes, index, selectRoomMode),
+    );
+  });
+  document.querySelector("#room-mic").addEventListener("click", () => {
+    roomMuted = !roomMuted;
+    document
+      .querySelector("#room-mic")
+      .setAttribute("aria-pressed", String(roomMuted));
+    updateLabels();
   });
   document
     .querySelector(".room-demo-link")

@@ -297,6 +297,23 @@ if (!process.versions.electron) {
             );
           }
           checks.push(width + ":" + language);
+          for (const mode of ["voice", "files", "watch"]) {
+            await run(
+              "document.querySelector('#room-mode-" + mode + "').click()",
+            );
+            assert.equal(
+              await run(
+                "document.documentElement.scrollWidth<=document.documentElement.clientWidth+1",
+              ),
+              true,
+              width +
+                "px " +
+                language +
+                " room " +
+                mode +
+                " has no horizontal overflow",
+            );
+          }
         }
       }
       assert.equal(
@@ -454,6 +471,50 @@ if (!process.versions.electron) {
         "Platform picker supports keyboard navigation",
       );
       await run("document.querySelector('#platform-windows').click()");
+      await run("document.querySelector('#room-mode-watch').focus()");
+      win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Down" });
+      win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Down" });
+      await wait(30);
+      assert.equal(
+        await run(
+          "document.activeElement.id==='room-mode-voice' && !document.querySelector('#room-scene-voice').hidden && document.querySelector('#room-scene-watch').hidden",
+        ),
+        true,
+        "Room modes support arrow-key selection",
+      );
+      await run(
+        "document.querySelector('#room-mic').click();document.querySelector('#language').click()",
+      );
+      assert.equal(
+        await run(
+          "document.querySelector('#room-mic').getAttribute('aria-pressed')==='true' && document.querySelector('#room-mic-status').textContent==='Демо-голос выключен'",
+        ),
+        true,
+        "Sample microphone state survives language switching",
+      );
+      await run(
+        "document.querySelector('#language').click();document.querySelector('#room-mic').click();document.querySelector('#room-mode-voice').focus()",
+      );
+      win.webContents.sendInputEvent({ type: "keyDown", keyCode: "End" });
+      win.webContents.sendInputEvent({ type: "keyUp", keyCode: "End" });
+      await wait(30);
+      assert.equal(
+        await run(
+          "document.activeElement.id==='room-mode-files' && !document.querySelector('#room-scene-files').hidden",
+        ),
+        true,
+        "End selects the room file preview",
+      );
+      await run(
+        "document.querySelector('#room-mode-watch').click();document.querySelector('.room-demo-link').click()",
+      );
+      assert.equal(
+        await run(
+          "document.querySelector('#tab-rooms').getAttribute('aria-selected')==='true' && !document.querySelector('#panel-rooms').hidden",
+        ),
+        true,
+        "Room call to action opens the chat demonstration",
+      );
       assert.ok(
         requests.every(
           (url) => url.startsWith(baseUrl) || url.startsWith("data:"),
@@ -699,6 +760,28 @@ if (!process.versions.electron) {
           (await win.webContents.capturePage()).toPNG(),
         );
       }
+      for (const mode of ["voice", "files", "watch"]) {
+        await run(
+          "document.querySelector('#room-mode-" +
+            mode +
+            "').click();document.querySelector('#rooms').scrollIntoView({behavior:'instant'})",
+        );
+        await wait(100);
+        fs.writeFileSync(
+          path.join(screenshots, "rooms-" + mode + ".png"),
+          (await win.webContents.capturePage()).toPNG(),
+        );
+      }
+      win.setSize(390, 1250);
+      await wait(100);
+      await run(
+        "document.querySelector('#rooms').scrollIntoView({behavior:'instant'})",
+      );
+      await wait(100);
+      fs.writeFileSync(
+        path.join(screenshots, "rooms-mobile.png"),
+        (await win.webContents.capturePage()).toPNG(),
+      );
       win.destroy();
 
       const fallback = new BrowserWindow({
@@ -794,6 +877,9 @@ if (!process.versions.electron) {
               "local chat and guest invitation",
               "preview appearance palettes",
               "keyboard platform picker",
+              "room feature tabs at every layout",
+              "sample voice state and language",
+              "room chat navigation",
               "mobile navigation",
               "FAQ",
               "keyboard scene rotation and reset",

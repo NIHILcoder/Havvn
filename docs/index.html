@@ -40,9 +40,9 @@
       crossorigin
     />
     <link rel="icon" href="assets/mark-gloss-768.png" />
-    <link rel="stylesheet" href="assets/site.css?hash=586ba30980d8" />
+    <link rel="stylesheet" href="assets/site.css?hash=eceb29458a51" />
     <script
-      src="assets/site.js?hash=c8be98e89fce"
+      src="assets/site.js?hash=26a9f28540af"
       data-scene="assets/hero-scene.js?hash=038dd0521394"
       defer
     ></script>
@@ -656,25 +656,91 @@
         <div class="wrap room-layout">
           <div class="room-copy">
             <p class="eyebrow">
-              02 /
-              <span data-ru="МЕСТО ДЛЯ СВОИХ">YOUR PEOPLE, YOUR PLACE</span>
+              02 / <span data-ru="ЛИЧНЫЕ КОМНАТЫ">PRIVATE ROOMS</span>
             </p>
             <h2>
-              <span data-ru="Передай файл.">Send a file.</span><br /><em
-                data-ru="Останься ещё."
-                >Stay for a while.</em
+              <span data-ru="Вы далеко.">Different places.</span><br /><span
+                class="room-heading-tail"
+                data-ru="Вечер общий."
+                >Same evening.</span
               >
             </h2>
             <p
               class="lead"
-              data-ru="Другу не обязательно устанавливать Havvn. Ссылки достаточно, чтобы получить файл или зайти в комнату через браузер — поговорить и посмотреть вместе."
+              data-ru="Общий экран, голос и файлы — в приватной комнате. Друг может присоединиться из браузера."
             >
-              Your friend doesn't always need Havvn. A link can bring a file to
-              their browser, or bring them into your room to talk and watch
-              together.
+              A shared screen, voice and files in a private room. Your friend
+              can join from a browser.
             </p>
+            <div
+              class="room-modes"
+              role="tablist"
+              aria-label="Room features"
+              aria-orientation="vertical"
+            >
+              <button
+                id="room-mode-watch"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="room-scene-watch"
+                data-room-mode="watch"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="13" rx="2" />
+                  <path d="m10 8 5 2.5-5 2.5zM8 21h8m-4-4v4" />
+                </svg>
+                <span
+                  ><b data-ru="Смотреть вместе">Watch together</b
+                  ><small data-ru="Один сеанс. Общая пауза и перемотка."
+                    >One screening. Shared pause and seek.</small
+                  ></span
+                ><span class="room-mode-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button
+                id="room-mode-voice"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="room-scene-voice"
+                data-room-mode="voice"
+                tabindex="-1"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <rect x="9" y="3" width="6" height="12" rx="3" />
+                  <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+                </svg>
+                <span
+                  ><b data-ru="Быть на связи">Stay in the conversation</b
+                  ><small data-ru="Голос рядом с тем, что вы делаете."
+                    >Voice, right alongside whatever you're doing.</small
+                  ></span
+                ><span class="room-mode-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button
+                id="room-mode-files"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="room-scene-files"
+                data-room-mode="files"
+                tabindex="-1"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M3 8V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Zm0 0h18"
+                  />
+                </svg>
+                <span
+                  ><b data-ru="Делиться файлами">Keep files in common</b
+                  ><small data-ru="Общая папка. Загрузки под твоим контролем."
+                    >A shared folder. Downloads in your control.</small
+                  ></span
+                ><span class="room-mode-arrow" aria-hidden="true">↗</span>
+              </button>
+            </div>
             <a class="text-link room-demo-link" href="#experience"
-              ><span data-ru="Попробовать комнату">Try the room</span
+              ><span data-ru="Попробовать чат">Try the chat</span
               ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h14m-6-6 6 6-6 6"
@@ -683,56 +749,162 @@
                 /></svg
             ></a>
           </div>
-          <div class="room-poster" aria-hidden="true">
-            <div class="poster-top">
-              <span>ROOM / 001</span><span>BY INVITATION ONLY</span>
-            </div>
-            <div class="poster-voices">
-              <span class="voice-circle voice-a">a.</span
-              ><span class="voice-circle voice-m">m.</span
-              ><span class="voice-circle voice-you"
-                ><span data-ru="ты.">you.</span></span
-              ><svg
-                class="poster-connections"
-                viewBox="0 0 450 300"
-                fill="none"
+          <div class="room-preview">
+            <div class="room-session">
+              <div class="room-session-header">
+                <span class="room-session-symbol" aria-hidden="true"
+                  ><svg viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="m12 3 8 4v10l-8 4-8-4V7l8-4Zm0 0v18M4 7l8 4 8-4"
+                    /></svg
+                ></span>
+                <div>
+                  <b data-ru="Вечер с друзьями">An evening with friends</b
+                  ><small data-ru="Приватная комната · макет"
+                    >Private room · mockup</small
+                  >
+                </div>
+                <span class="room-session-label" data-ru="По приглашению"
+                  >Invite only</span
+                >
+              </div>
+              <div
+                id="room-scene-watch"
+                class="room-scene"
+                role="tabpanel"
+                aria-labelledby="room-mode-watch"
+                tabindex="0"
               >
-                <path
-                  d="M96 88 337 99 215 235 96 88Z"
-                  stroke="currentColor"
-                  stroke-width="1"
-                  stroke-dasharray="3 7"
-                />
-              </svg>
+                <div class="room-shared-screen">
+                  <img
+                    src="assets/earthrise.jpg"
+                    width="640"
+                    height="640"
+                    alt="Earthrise — NASA / Apollo 8"
+                  /><span class="room-film-label"
+                    >EARTHRISE <span>APOLLO 8 / NASA</span></span
+                  ><span class="room-screen-note" data-ru="Общий экран"
+                    >Shared screen</span
+                  >
+                </div>
+                <div class="room-viewers">
+                  <div>
+                    <span class="room-person-avatar">A</span><span>Alex</span>
+                  </div>
+                  <div>
+                    <span class="room-person-avatar room-person-mika">M</span
+                    ><span>Mika</span>
+                  </div>
+                  <div>
+                    <span class="room-person-avatar room-person-you" data-ru="Я"
+                      >Y</span
+                    ><span data-ru="Ты">You</span>
+                  </div>
+                  <span
+                    class="room-viewer-caption"
+                    data-ru="Один момент на троих."
+                    >One moment, the three of you.</span
+                  >
+                </div>
+              </div>
+              <div
+                id="room-scene-voice"
+                class="room-scene"
+                role="tabpanel"
+                aria-labelledby="room-mode-voice"
+                tabindex="0"
+                hidden
+              >
+                <div class="room-voice-scene">
+                  <p class="room-scene-eyebrow" data-ru="РАЗГОВОР ПРОДОЛЖАЕТСЯ">
+                    THE CONVERSATION CONTINUES
+                  </p>
+                  <div class="room-speakers">
+                    <div class="room-speaker">
+                      <span>A</span><b>Alex</b>
+                      <div class="room-level" aria-hidden="true">
+                        <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                      </div>
+                    </div>
+                    <div class="room-speaker">
+                      <span>M</span><b>Mika</b>
+                      <div class="room-level" aria-hidden="true">
+                        <i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                      </div>
+                    </div>
+                  </div>
+                  <p
+                    class="room-voice-copy"
+                    data-ru="Можно просто остаться в разговоре."
+                  >
+                    You can just stay in the conversation.
+                  </p>
+                </div>
+                <div class="room-voice-controls">
+                  <button id="room-mic" type="button" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <rect x="9" y="3" width="6" height="12" rx="3" />
+                      <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
+                      <path class="room-mic-slash" d="m3 3 18 18" /></svg
+                    ><span id="room-mic-label"
+                      >Mute sample microphone</span
+                    ></button
+                  ><span id="room-mic-status" role="status"></span>
+                </div>
+              </div>
+              <div
+                id="room-scene-files"
+                class="room-scene"
+                role="tabpanel"
+                aria-labelledby="room-mode-files"
+                tabindex="0"
+                hidden
+              >
+                <div class="room-folder-scene">
+                  <div class="room-folder-heading">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path
+                        d="M3 8V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Zm0 0h18"
+                      />
+                    </svg>
+                    <div>
+                      <h3 data-ru="Общая папка">Shared folder</h3>
+                      <p data-ru="Для того, чем хочется поделиться.">
+                        For the things worth sharing.
+                      </p>
+                    </div>
+                  </div>
+                  <div class="room-shared-file">
+                    <span aria-hidden="true">↗</span>
+                    <div>
+                      <b>Earthrise.jpg</b><small>NASA · Apollo 8</small>
+                    </div>
+                    <span>21 KB</span>
+                  </div>
+                  <div class="room-shared-file">
+                    <span aria-hidden="true">↗</span>
+                    <div>
+                      <b>Sintel.torrent</b><small>Blender Open Movie</small>
+                    </div>
+                    <span>.torrent</span>
+                  </div>
+                  <p
+                    class="room-folder-note"
+                    data-ru="Ты выбираешь, какие файлы скачать и когда."
+                  >
+                    Choose which files to download, and when.
+                  </p>
+                </div>
+              </div>
             </div>
-            <div class="poster-bottom">
-              <span class="poster-dot"></span>
-              <p data-ru="Комната — это те, кто в ней.">
-                A room is the people in it.
-              </p>
-              <span>↗</span>
-            </div>
+            <p class="room-preview-caption">
+              <span aria-hidden="true">↳</span
+              ><span
+                data-ru="Демонстрация комнаты. Реальные участники не подключены."
+                >A room illustration. No real participants are connected.</span
+              >
+            </p>
           </div>
-        </div>
-        <div class="wrap room-footnotes">
-          <p>
-            <span>01</span
-            ><span data-ru="Общие файлы, подписанный чат и голос."
-              >Shared files, signed chat and voice.</span
-            >
-          </p>
-          <p>
-            <span>02</span
-            ><span data-ru="Сквозное шифрование в E2E-комнатах."
-              >End-to-end encryption in E2E rooms.</span
-            >
-          </p>
-          <p>
-            <span>03</span
-            ><span data-ru="Живёт на компьютерах участников."
-              >Hosted on members’ computers.</span
-            >
-          </p>
         </div>
       </section>
 

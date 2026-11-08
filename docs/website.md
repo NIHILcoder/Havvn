@@ -82,6 +82,15 @@ and a local chat accepts plain text only, retaining up to ten submitted messages
 in memory. No file download, room connection or message transmission occurs.
 The on-page caption explicitly describes this as an interactive mockup.
 
+The dedicated rooms section uses a sage background and a room preview with
+watch-together, voice and shared-folder tabs. Each tab can be selected by pointer
+or arrow keys (Home/End also work). The sample microphone button only toggles
+local demo state; it doesn't request microphone access or capture audio. Its
+state and accessible label follow language switching. The chat link selects the
+interactive room tab in the product preview above. All three room layouts are
+checked at every supported smoke-test width and language; dedicated desktop
+and mobile screenshots are saved alongside the other site captures.
+
 Three palette buttons change the mockup between Graphite, Paper and Moss; they
 don't change the rest of the site. The platform picker supports pointer and
 keyboard selection, defaults to Linux on Linux desktops, and otherwise starts
