@@ -1,0 +1,24 @@
+.automation-section { min-width:0; }
+.automation-section fieldset { border:0; padding:0; margin:0; min-width:0; }
+.automation-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr)); gap:18px 20px; margin-top:18px; }
+.automation-grid label { display:flex; flex-direction:column; gap:8px; min-width:0; font-size:12px; color:var(--color-text-secondary); }
+.automation-grid input,.automation-grid .custom-select-container { width:100%; min-width:0; box-sizing:border-box; }
+.automation-grid input { min-height:38px; padding:9px 12px; }
+.automation-grid .number-input { width:100%; }
+.automation-wide { grid-column:1/-1; }
+.automation-note { font-size:12px; line-height:1.6; color:var(--color-text-secondary); margin:0; }
+.automation-rule { margin-top:18px; padding:16px; border:1px solid var(--color-border); border-radius:var(--radius-md); }
+.automation-rule>summary { cursor:pointer; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:baseline; overflow-wrap:anywhere; }
+.automation-rule>summary::before { content:'▸'; }
+.automation-rule[open]>summary::before { content:'▾'; }
+.automation-rule>summary small { color:var(--color-text-secondary); margin-left:auto; }
+.automation-switches { display:flex; flex-wrap:wrap; gap:18px 24px; margin-top:22px; }
+.automation-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:16px; }
+.automation-actions .btn { white-space:normal; height:auto; min-height:38px; text-align:center; }
+.automation-footer { margin-top:22px; border-top:1px solid var(--color-border); padding:20px 0 16px; }
+.automation-rule-actions { border-top:1px solid var(--color-border); padding-top:18px; margin-top:20px; }
+.automation-result,.automation-history { font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
+.automation-result ol,.automation-history { padding-left:20px; }
+.automation-result li { margin-top:14px; }
+.automation-result li>span,.automation-result li>small { display:block; color:var(--color-text-secondary); }
+.automation-history>li { margin:0 0 20px; padding-bottom:20px; border-bottom:1px solid var(--color-border); }

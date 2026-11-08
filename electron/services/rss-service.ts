@@ -11,6 +11,7 @@ import * as db from '../db/store';
 import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { parseFeed } from '../../shared/feed-parse';
 import { ruleCoversFeed, selectForRule, rememberKeys, isRssInventorySeeded, keysToRemember } from '../../shared/rss-rules';
+import { forecastRssRule, type RssForecast } from '../../shared/rss-forecast';
 import { getTorrentManager } from '../torrent';
 
 const log = logger.child('RSSService');
@@ -45,11 +46,17 @@ function backoffMultiplier(consecutiveFailures = 0): number {
 
 export class RSSService {
   private checkTimers: Map<string, NodeJS.Timeout> = new Map();
+  private catchUpTimers = new Map<string, NodeJS.Timeout>();
+  private checks = new Map<string, Promise<RSSItem[]>>();
+  private checkVersions = new Map<string, number>();
+  private generation = 0;
+  private destroyed = false;
   private initialized = false;
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+    this.destroyed = false;
 
     // Existing per-feed filters become rules before anything runs, so an upgrade
     // doesn't silently stop working subscriptions.
@@ -72,11 +79,14 @@ export class RSSService {
     // leave at once.
     overdue.forEach((feed, idx) => {
       const delay = 3000 + idx * 2000;
-      setTimeout(() => {
+      const timer = setTimeout(() => {
+        this.catchUpTimers.delete(feed.id);
         this.checkFeed(feed.id).catch(err => {
           log.error('Catch-up RSS feed check failed', { feedId: feed.id, error: err });
         });
-      }, delay).unref?.();
+      }, delay);
+      timer.unref?.();
+      this.catchUpTimers.set(feed.id, timer);
     });
 
     if (overdue.length > 0) {
@@ -95,6 +105,7 @@ export class RSSService {
   private scheduleCheck(feed: RSSFeed): void {
     // Clear existing timer
     this.clearTimer(feed.id);
+    if (!feed.enabled || this.destroyed) return;
 
     const base = (feed.intervalMinutes || 30) * 60 * 1000;
     const multiplier = backoffMultiplier(feed.consecutiveFailures);
@@ -118,6 +129,9 @@ export class RSSService {
   }
 
   private clearTimer(feedId: string): void {
+    const catchUp = this.catchUpTimers.get(feedId);
+    if (catchUp) clearTimeout(catchUp);
+    this.catchUpTimers.delete(feedId);
     const existing = this.checkTimers.get(feedId);
     if (existing) {
       clearInterval(existing);
@@ -139,6 +153,7 @@ export class RSSService {
 
   async updateFeed(id: string, updates: Partial<RSSFeed>): Promise<RSSFeed> {
     const feed = await db.updateRSSFeed(id, updates);
+    this.invalidateCheck(id);
     // Reschedule if enabled state or interval changed
     if (feed.enabled) {
       this.scheduleCheck(feed);
@@ -149,12 +164,32 @@ export class RSSService {
   }
 
   async removeFeed(id: string): Promise<void> {
+    this.invalidateCheck(id);
     this.clearTimer(id);
     await db.removeRSSFeed(id);
   }
 
-  async checkFeed(feedId: string): Promise<RSSItem[]> {
+  private invalidateCheck(feedId: string): void {
+    this.checkVersions.set(feedId, (this.checkVersions.get(feedId) ?? 0) + 1);
+    this.checks.delete(feedId);
+  }
+
+  checkFeed(feedId: string): Promise<RSSItem[]> {
+    if (this.destroyed) return Promise.resolve([]);
+    const pending = this.checks.get(feedId);
+    if (pending) return pending;
+    const version = this.checkVersions.get(feedId), generation = this.generation;
+    const current = () => !this.destroyed && generation === this.generation && version === this.checkVersions.get(feedId);
+    const task = this.performCheck(feedId, current).finally(() => {
+      if (this.checks.get(feedId) === task) this.checks.delete(feedId);
+    });
+    this.checks.set(feedId, task);
+    return task;
+  }
+
+  private async performCheck(feedId: string, current: () => boolean): Promise<RSSItem[]> {
     const feeds = await db.getRSSFeeds();
+    if (!current()) return [];
     const feed = feeds.find(f => f.id === feedId);
     if (!feed) throw new Error(`RSS feed not found: ${feedId}`);
 
@@ -170,6 +205,7 @@ export class RSSService {
     try {
       fetched = await this.fetchFeed(feed);
     } catch (err) {
+      if (!current()) return [];
       // Record the failure on the feed itself and let the caller see it too.
       const message = err instanceof Error ? err.message : String(err);
       const failures = (feed.consecutiveFailures || 0) + 1;
@@ -179,11 +215,17 @@ export class RSSService {
         lastError: message,
         consecutiveFailures: failures,
       });
+      if (!current()) return [];
       // Back off so a dead feed isn't hammered on its normal interval.
       this.scheduleCheck({ ...feed, consecutiveFailures: failures });
       log.warn('RSS feed check failed', { name: feed.name, error: message, failures });
       throw err;
     }
+
+    // A removed/disabled/edited feed or a shut-down service no longer owns this
+    // response. In particular, it must not recreate deleted items or polling.
+    if (!current()) return [];
+    const wasFailing = (feed.consecutiveFailures || 0) > 0;
 
     // 304: the server says nothing changed, so there is nothing to parse.
     if (fetched.notModified) {
@@ -193,6 +235,8 @@ export class RSSService {
         lastError: undefined,
         consecutiveFailures: 0,
       });
+      if (!current()) return [];
+      if (wasFailing) this.scheduleCheck({ ...feed, consecutiveFailures: 0 });
       log.debug('RSS feed unchanged (304)', { name: feed.name });
       return db.getRSSItems(feedId);
     }
@@ -201,8 +245,7 @@ export class RSSService {
 
     // Save and learn which items are actually NEW (not seen on a prior check)
     const newItems = await db.saveRSSItems(items);
-
-    const wasFailing = (feed.consecutiveFailures || 0) > 0;
+    if (!current()) return [];
     await db.updateRSSFeed(feedId, {
       lastChecked: checkedAt,
       lastStatus: 'ok',
@@ -212,15 +255,16 @@ export class RSSService {
       etag: fetched.etag,
       lastModified: fetched.lastModified,
     });
+    if (!current()) return [];
     // A feed that recovered goes back to its normal interval from its backoff.
     if (wasFailing) this.scheduleCheck({ ...feed, consecutiveFailures: 0 });
 
     // Rules act only on items that appeared after the feed was added.
     if (!isFirstCheck && newItems.length > 0) {
-      await this.applyRules(feed, newItems);
+      await this.applyRules(feed, newItems, current);
       // A feed fetching quietly in the background is invisible otherwise: you
       // only learn it found something by opening the page.
-      await this.notifyNewItems(feed, newItems);
+      if (current()) await this.notifyNewItems(feed, newItems);
     }
 
     log.info('RSS feed checked', { name: feed.name, items: items.length, newItems: newItems.length });
@@ -230,13 +274,10 @@ export class RSSService {
   /** Tell the user a feed brought something in, if they asked to be told. */
   private async notifyNewItems(feed: RSSFeed, newItems: RSSItem[]): Promise<void> {
     try {
-      const settings = await db.getSettings();
-      if (!settings.enableNotifications) return;
-
       const body = newItems.length === 1
         ? newItems[0].title
         : t('rss.notifyBody', { count: newItems.length });
-      showOsNotification(feed.name, body);
+      showOsNotification(feed.name, body, { context: { kind: 'rss', categoryId: feed.categoryId } });
     } catch (err) {
       log.debug('RSS notification skipped', { error: String(err) });
     }
@@ -248,7 +289,7 @@ export class RSSService {
    * Replaces the old one-filter-per-feed path: a rule can span feeds, several
    * rules can share a feed, and each brings its own destination.
    */
-  private async applyRules(feed: RSSFeed, newItems: RSSItem[]): Promise<void> {
+  private async applyRules(feed: RSSFeed, newItems: RSSItem[], current: () => boolean): Promise<void> {
     const rules = (await db.getRSSRules()).filter(r => r.enabled && ruleCoversFeed(r, feed.id));
     if (rules.length === 0) return;
 
@@ -256,6 +297,7 @@ export class RSSService {
     const claimed = new Set<string>();
 
     for (const rule of rules) {
+      if (!current()) return;
       const candidates = newItems.filter(i => !claimed.has(i.guid));
       if (candidates.length === 0) break;
 
@@ -269,7 +311,7 @@ export class RSSService {
 
       for (const item of selected) claimed.add(item.guid);
 
-      const grabbed = await this.downloadForRule(rule, feed, selected);
+      const grabbed = await this.downloadForRule(rule, feed, selected, current);
       await db.updateRSSRule(rule.id, {
         lastMatch: new Date().toISOString(),
         grabbedKeys: rememberKeys(rule, keysToRemember(rule, selected, grabbed)),
@@ -334,11 +376,12 @@ export class RSSService {
   }
 
   /** Add everything a rule selected, honouring its destination. */
-  private async downloadForRule(rule: RSSRule, feed: RSSFeed, items: RSSItem[]): Promise<string[]> {
+  private async downloadForRule(rule: RSSRule, feed: RSSFeed, items: RSSItem[], current: () => boolean = () => true): Promise<string[]> {
     const manager = getTorrentManager();
     const grabbed: string[] = [];
 
     for (const item of items) {
+      if (!current()) break;
       try {
         const isMagnet = item.link.startsWith('magnet:');
         await manager.addDownload({
@@ -377,7 +420,7 @@ export class RSSService {
     if (!rule) throw new Error(`RSS rule not found: ${ruleId}`);
 
     const feeds = await db.getRSSFeeds();
-    const items = (await db.getRSSItems()).filter(i => !i.downloaded && !i.ignored);
+    const items = (await db.getRSSItems()).filter(i => !i.downloaded && !i.ignored && feeds.some(feed => feed.id === i.feedId));
 
     const { selected, skippedDuplicates } = selectForRule(rule, items);
     const grabbedGuids: string[] = [];
@@ -403,9 +446,19 @@ export class RSSService {
     const items = await db.getRSSItems();
     return selectForRule(rule, items).selected;
   }
+  async forecastRule(rule: RSSRule): Promise<RssForecast> {
+    const [items, feeds, saved] = await Promise.all([db.getRSSItems(), db.getRSSFeeds(), db.getRSSRules()]);
+    // The renderer edits conditions; processed-episode memory belongs to storage.
+    return forecastRssRule({ ...rule, grabbedKeys: saved.find(value => value.id === rule.id)?.grabbedKeys ?? [] }, items, feeds);
+  }
 
   destroy(): void {
-    for (const [id] of this.checkTimers) {
+    this.destroyed = true;
+    this.initialized = false;
+    this.generation += 1;
+    this.checks.clear();
+    this.checkVersions.clear();
+    for (const id of new Set([...this.checkTimers.keys(), ...this.catchUpTimers.keys()])) {
       this.clearTimer(id);
     }
     log.info('RSS service destroyed');
