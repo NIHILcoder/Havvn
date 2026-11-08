@@ -1,0 +1,292 @@
+{
+  "schema": 1,
+  "task": "FUN-04",
+  "recordedAt": "2026-10-26T11:30:38.8888436Z",
+  "passed": true,
+  "scope": {
+    "physicalMachines": 1,
+    "platform": "Windows",
+    "electron": "44.4.2",
+    "isolatedProfiles": true,
+    "realTorrentTransferInThisScenario": false,
+    "actualOsPopupsMeasured": false,
+    "notificationsDisabledInUiTest": true,
+    "packagedInstallerRetested": false,
+    "fullRepositoryLintPassed": false,
+    "roomsReleaseAcceptanceSuperseded": false,
+    "universalExactlyOnceClaimed": false
+  },
+  "sourceSha256": "0433ef4163d0064a4021b3b304ff362542130ffdc85488aa9f8218dc82539938",
+  "sources": [
+    {
+      "path": "electron/db/automation-hooks.ts",
+      "sha256": "5ee19b47a3e406c0fe5a904b3de1eccbd7e31b2ac87c74ba4e7eb1b1e7186e45"
+    },
+    {
+      "path": "electron/db/store.ts",
+      "sha256": "bc684f0decc7a20cf51d4368f8265bacf71bf8ffd51d34a78b15d44f6274b767"
+    },
+    {
+      "path": "electron/i18n/index.ts",
+      "sha256": "a4d164ef7380965921637b6dac23fdf300b8c6abd7ec93f2cc11207c816491de"
+    },
+    {
+      "path": "electron/ipc/automation-rules.ts",
+      "sha256": "3ad4a6ef7ddd2d0508ef492c5ad6e44c72b7e272580b561814f3e76b05e9643f"
+    },
+    {
+      "path": "electron/ipc/handlers.ts",
+      "sha256": "a6f2a5f5d5279b24e3eddca9ca86852e2eb16b6e820e7fee9a43c9d3d2776457"
+    },
+    {
+      "path": "electron/preload.ts",
+      "sha256": "578c59c93b6e2f7eb2904c8cfea7c244902f4213d14d87bf2af6b969bef7019a"
+    },
+    {
+      "path": "electron/services/app-event-store.ts",
+      "sha256": "56bbd9bd0b2e38f66b0128a4cbf5a09e131adc8ad359a013142c74701287caa9"
+    },
+    {
+      "path": "electron/services/automation-rules.test.ts",
+      "sha256": "76037ba0faf497dcf396502438875607bd4068294fe458b6abb2f65d1154d0b5"
+    },
+    {
+      "path": "electron/services/automation-rules.ts",
+      "sha256": "efe2c3e2a6cb3849f7b47d92ebeb0e9a4084096c7fc73c21982be6922bee9304"
+    },
+    {
+      "path": "electron/services/automation-runtime.ts",
+      "sha256": "8e9c3a7bee0c035e0ca7f9a98c3e1e0a9a12fbdfe4acccc2d8e449c05800f649"
+    },
+    {
+      "path": "electron/services/download-defaults.ts",
+      "sha256": "a7a285f2d7332ccd39203e14b3dff6cd1a3cc11dd21687e27922a1e2bac4c3ce"
+    },
+    {
+      "path": "electron/torrent/host/manager-proxy.test.ts",
+      "sha256": "5297d0041bbe6b1eb2603ccfd61e165bdfe2589540f451a83d324600cf4f6843"
+    },
+    {
+      "path": "electron/torrent/host/manager-proxy.ts",
+      "sha256": "0f862236698d1e7b6ddaa0eb952551faca39b8cf4d0c91701118bfd1ec4ac9dd"
+    },
+    {
+      "path": "electron/torrent/manager.ts",
+      "sha256": "2c96a2159fde3bc5b80565f226d8f8ba03688c2f7c0498b72138df40e0b79169"
+    },
+    {
+      "path": "electron/torrent/native/native-manager.ts",
+      "sha256": "6d08331b1c5bdec8d4bd4ed9d9e4624f0498ba98a8895adb6da76db73a12c522"
+    },
+    {
+      "path": "package.json",
+      "sha256": "33a9e73bd0a85c552dcd052b8ee06797b92d40f6ba8c02f6b5695bbeacfb640a"
+    },
+    {
+      "path": "renderer/components/TorrentFileSelector.tsx",
+      "sha256": "26b62887609cbe81a3e10933ddb5cf09c8342d48abf20a047a95929d43973a4a"
+    },
+    {
+      "path": "renderer/i18n/en.json",
+      "sha256": "ad404da37e6034e2511bd333ef004e152b1018fe162431ca04353714368cf829"
+    },
+    {
+      "path": "renderer/i18n/ru.json",
+      "sha256": "085343b1905cffe40a223eeb643ede190b6189f5e4ed2e82e369d87a1cc2ca06"
+    },
+    {
+      "path": "renderer/pages/DownloadsPage.tsx",
+      "sha256": "4609b1bbbab0c8edf59e63937eb61ae1b69a95bc121595c8b19990b12c41edf7"
+    },
+    {
+      "path": "renderer/pages/settings/nav.ts",
+      "sha256": "366ffae5164f73ee3e6daff98ecf8c569c008cc5410214bd188c61c4bf676369"
+    },
+    {
+      "path": "renderer/pages/settings/sections/AutomationSection.css",
+      "sha256": "a3ae25eb68ff5968fa3590a750a9096786a2a5d2753b25914c745d22e2bda0d2"
+    },
+    {
+      "path": "renderer/pages/settings/sections/AutomationSection.tsx",
+      "sha256": "87baa3b346bf0422b02ed7e10f5d387a97db2c285099821c96622537c65f563a"
+    },
+    {
+      "path": "renderer/pages/settings/settingsSearchCatalog.ts",
+      "sha256": "0831cd37b4c3d3573b5f5680ffb4bd7cea2151fadce9e3e0fd3b5a5450168834"
+    },
+    {
+      "path": "renderer/pages/SettingsPage.tsx",
+      "sha256": "5692836c2212dce5968a8b0a9af7873bcd43197be1ba2cdf9cd02ecf650c859f"
+    },
+    {
+      "path": "scripts/render-plan-progress.cjs",
+      "sha256": "a66c81540f71e2547a043082a3dee31311f4a22a246c9d0304df0082c1f9f51e"
+    },
+    {
+      "path": "scripts/smoke-automation.cjs",
+      "sha256": "fb8cb4c73155c5fafa70cc955e3a29541a799db9fcc30d08ed31293d19cc8589"
+    },
+    {
+      "path": "shared/app-events.ts",
+      "sha256": "2da4bcd5e9a4fc92e20421f72a64abc2b259f60d0ee2dee76aade6e7e1813cb3"
+    },
+    {
+      "path": "shared/automation-rules.test.ts",
+      "sha256": "ffc5dd74a1aca9c5aa752081bb3dec1dbe88cc6c43ec000b06bc9bf83fabfefd"
+    },
+    {
+      "path": "shared/automation-rules.ts",
+      "sha256": "796a17b698b51b609459a18709fc00af812bba7822420c4d1647d8ad46dc3d5d"
+    },
+    {
+      "path": "shared/category-defaults.ts",
+      "sha256": "c3f596761d880c39446531e047fddc7b138ab20efeae9b3317d91ffb2eb1bfa7"
+    },
+    {
+      "path": "shared/types.ts",
+      "sha256": "cfe54d55cde7f9ff565aa22b792676027c3e59b6ad42352db2b118509450aa65"
+    }
+  ],
+  "results": {
+    "targetedTests": {
+      "files": 10,
+      "passed": 158
+    },
+    "ui": {
+      "passed": true,
+      "screenshots": [
+        "editor-ru-1000.png",
+        "editor-ru-440.png",
+        "editor-en-1000.png",
+        "editor-en-440.png"
+      ],
+      "checks": [
+        "production preload reads empty rule storage",
+        "production IPC saves validated rules",
+        "dry run explains conflicts without writing config or creating a download",
+        "new defaults and receipt are committed with the download before engine startup",
+        "atomic add receipt is drained with notifications suppressed by real app policy",
+        "true completion captures its receipt and can replace an automated category",
+        "duplicate completion and recovery reuse one event and one download; results reach event history",
+        "untrusted renderer cannot access automation IPC",
+        "actual settings editor loads rules and durable execution history",
+        "text fields use themed controls and categories resolve to their labels",
+        "actual dry-run form explains the conflicting rule",
+        "new rules start disabled",
+        "editor saves through the production main service",
+        "stale save shows an error and retains the draft",
+        "reload resolves a save conflict without losing stored rules",
+        "ru 1000 labels and buttons fit",
+        "ru 440 labels and buttons fit",
+        "en 1000 labels and buttons fit",
+        "en 440 labels and buttons fit",
+        "editor has no React or runtime console errors"
+      ]
+    },
+    "restart": {
+      "passed": true,
+      "checks": [
+        "encrypted rules and both durable receipts survive a fresh Electron process",
+        "restart recovery leaves completed effects unchanged"
+      ]
+    },
+    "typecheck": {
+      "targets": [
+        "electron",
+        "renderer",
+        "guest"
+      ],
+      "passed": true
+    },
+    "build": {
+      "webpackWarnings": 3,
+      "passed": true
+    },
+    "newCodeLint": {
+      "warnings": 0,
+      "passed": true
+    },
+    "graph": {
+      "planSummaryVerified": true,
+      "readinessIsLocalScopeOnly": true,
+      "canvasTypecheckPassed": true,
+      "localDoneBefore": 21,
+      "total": 24,
+      "localDoneAfter": 22,
+      "svgAndPngRendered": true
+    }
+  },
+  "evidence": [
+    {
+      "path": "artifacts/fun04-tests.log",
+      "sha256": "3d4ea33aeb4b2e86307c13b28ed9a29d37ba9c22b12e58e6f77ab01c08b6e937"
+    },
+    {
+      "path": "artifacts/fun04-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/fun04-build.log",
+      "sha256": "d972e45d6c1e7adf532d800e842667281766490ee9ccd5d9d7dd99f382cd4d0e"
+    },
+    {
+      "path": "artifacts/fun04-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun04-ui.log",
+      "sha256": "560608d30374231bef2dadeaa646517b8fcb846e8c45f6a1686344f160e9dc7b"
+    },
+    {
+      "path": "artifacts/fun04-chart.log",
+      "sha256": "ef9f327d8c4bff6fb2eba3888b1bd2c7f3d7bd45460578abf8af5bb02a1c1d08"
+    },
+    {
+      "path": "artifacts/fun04-canvas-typecheck.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun04/ui/report.json",
+      "sha256": "fa047b139da4808b9b9f76090b857ab952c2640f6c6f9442b23db0a97e9e1fbb"
+    },
+    {
+      "path": "docs/havvn-progress.json",
+      "sha256": "3fbf4efb2099cfe3bc988632aab1ef16866ba32ec7efbab1e865c2819e7ad7e4"
+    },
+    {
+      "path": "docs/havvn-progress.svg",
+      "sha256": "70c16957c50329c0f869724e0e71dbe627eda27a98587b8c02bf4f50f7326430"
+    },
+    {
+      "path": "docs/havvn-progress.png",
+      "sha256": "cd0dad6c820d8a37c6544eb13e815ef36199f9f7ee15efad89a69f504698f3a1"
+    },
+    {
+      "path": "local-canvas/havvn-plan-progress.canvas.tsx",
+      "sha256": "3ab232da416c0a3799baee72ea6fc32f0951a500da3b9a1f50842a001d6ede28"
+    },
+    {
+      "path": "artifacts/fun04/ui/editor-ru-1000.png",
+      "sha256": "a57407e792f78efef1776ed386ff755a12384144fe78f6eb4d64cb2a6406c3c7"
+    },
+    {
+      "path": "artifacts/fun04/ui/editor-ru-440.png",
+      "sha256": "412abc98540e4c02b3094f548a37fdcae376ea0e9e7129c190e6faea92cdcd98"
+    },
+    {
+      "path": "artifacts/fun04/ui/editor-en-1000.png",
+      "sha256": "8b8651787a56c3eaeae7fe6dae5f3ddbe7b4d06667a54e4eb7ed126e15a05df7"
+    },
+    {
+      "path": "artifacts/fun04/ui/editor-en-440.png",
+      "sha256": "bc7e01a64fad4f0114b018e154410b38883bbcc7abf6a2b28568dc688b12ca8b"
+    }
+  ],
+  "remaining": [
+    "FUN-01 two physical PCs, real networks and old installer",
+    "FUN-06 separate device-pairing research",
+    "Native bounded prefetch remains unavailable",
+    "OPT-02 GPU and actual shared workloads",
+    "Automation rules are not included in settings transfer v1"
+  ]
+}
