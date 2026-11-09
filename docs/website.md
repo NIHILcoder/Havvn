@@ -1,8 +1,10 @@
 # HAVVN website
 
 The public landing page is the static GitHub Pages entry point in `docs/index.html`.
-Its styling and interactions live in `docs/assets/site.css` and `docs/assets/site.js`.
-The progressively loaded Three.js hero lives in `docs/assets/hero-scene.js`.
+Its layout and interactions live in `docs/assets/site.css` and `docs/assets/site.js`.
+`docs/assets/brand.css` applies the application's Graphite + Ember visual language.
+The interactive Three.js network lives in `docs/assets/hero-scene.js`; the lazily
+loaded closing sequence lives in `docs/assets/signal-outro.js`.
 No build step, CDN, remote font or package installation is needed to serve the site.
 
 ## Local preview
@@ -27,6 +29,7 @@ node scripts/stamp-site-assets.cjs
 This updates their content hashes in `docs/index.html`. Changed assets get fresh
 URLs, so returning visitors receive the new styles and interactions instead of
 old cached files. Include the updated HTML in the same commit as the assets.
+The script covers both stylesheets, the main script and both Three.js modules.
 The smoke check rejects stale hashes. Product release numbers are not involved.
 
 ## Browser checks
@@ -46,8 +49,12 @@ without WebGL, content visibility without JavaScript, and hero alignment with
 the centered content on wide displays. It also verifies that assets make no
 external requests and saves desktop/mobile screenshots in `artifacts/site/`.
 Interaction checks cover mouse dragging, native touch events, arrow keys, reset,
-clicking a peer, sending pulses, translated selection status, and static routes
-with reduced motion. `interactive.png` shows a selected route.
+clicking a peer, sending pulses, translated selection status, sculpture disassembly,
+and static routes with reduced motion. The real application screenshot gallery is
+checked separately from the interactive HTML demo. The closing sequence is checked
+for scroll progress, instanced geometry, bounded blur, idle suspension, pause,
+reduced motion, context restoration and the no-WebGL fallback.
+`interactive.png` shows a selected route; `signal-*.png` capture the closing scene.
 The isolated smoke profile uses software WebGL; real-device GPU performance
 should be checked separately when changing scene complexity.
 
@@ -69,11 +76,17 @@ network.
 
 ## Design and local demonstrations
 
-The page uses warm paper colors, dark ink, a restrained copper accent and an
-italic system serif alongside the locally served Inter font. Numbered editorial
-sections replace repetitive feature cards. The 3D sculpture has its own dark
-frame; it doesn't overlap the headline. There are no moving marquees, magnetic
-buttons, animated gradients, background orbit lights or ambient particle dust.
+The page follows the application's Graphite + Ember palette: dark neutral surfaces,
+off-white text, orange actions, thin rules and square controls. Inter is the body
+font; headings use Chakra Petch in English and Exo 2 in Russian, matching the app's
+technical typography. Fonts are served locally with their licenses. Large type
+and open space keep the layout legible around the two dedicated 3D sections.
+
+The hero gallery shows actual application screenshots: downloads, the room
+workspace, and the light appearance. Its three tabs support pointer and keyboard
+selection. These images use isolated fixtures with synthetic data; their provenance
+is recorded in `docs/assets/app/README.md`. They are distinct from the working HTML
+demonstrations below and are captioned accordingly.
 
 The product preview has three manually selected tabs. Sample file search filters
 three fictional rows and has an empty state; the pause control changes the sample
@@ -82,7 +95,7 @@ and a local chat accepts plain text only, retaining up to ten submitted messages
 in memory. No file download, room connection or message transmission occurs.
 The on-page caption explicitly describes this as an interactive mockup.
 
-The dedicated rooms section uses a sage background and a room preview with
+The dedicated rooms section uses the same dark palette and a room preview with
 watch-together, voice and shared-folder tabs. Each tab can be selected by pointer
 or arrow keys (Home/End also work). The sample microphone button only toggles
 local demo state; it doesn't request microphone access or capture audio. Its
@@ -109,7 +122,7 @@ navigation. Section screenshots are saved in `artifacts/site/`.
 
 ## Visual effects
 
-The hero uses Three.js to extrude the existing HAVVN outline into a beveled,
+The dedicated network section uses Three.js to extrude the existing HAVVN outline into a beveled,
 faceted copper sculpture, with a procedural studio reflection, a subtle 3D peer
 network and pointer response. The environment and glow textures
 are generated locally; no remote models or textures are fetched.
@@ -118,7 +131,9 @@ Drag the scene with a mouse or horizontally with a finger to rotate it. Vertical
 touch gestures remain available for page scrolling. Brighter network beacons
 invite selection; clicking a visible peer sends light packets to its six nearest
 neighbors. The **Make a connection** button selects a front-facing peer, and the reset
-button clears the route and restores the orientation. The status explicitly
+button clears the route and restores the orientation. **Separate mark** splits
+the sculpture into individual extruded facets; the same button reassembles it.
+This manual action also works while motion is paused. The status explicitly
 labels this as a P2P demo; no real peer connection or transfer is started.
 
 The canvas is keyboard-focusable: arrows rotate, Enter/Space sends a pulse,
@@ -139,9 +154,24 @@ context is lost. The scene and studio reflections rebuild when the context is
 restored. Pausing, language switching and the rest of the page work independently
 of Three.js.
 
+The closing scene loads only when its section approaches the viewport. It samples
+the original brand SVG into a single instanced mesh of small 3D blocks. Native
+scroll position assembles those blocks into HAVVN; a short, bounded shader
+displacement and canvas blur respond near the end of the assembly. A sticky stage
+provides scroll travel without intercepting the wheel, touch gestures or scroll
+position. Text, links and the download button remain normal, sharp HTML elements.
+
+The closing renderer draws on demand during scroll and a short settling period;
+it has no permanent idle loop. It suspends offscreen and in background tabs, caps
+pixel ratio, and limits mobile updates to 30 fps. The footer pause control mirrors
+the main animation control. Reduced motion shows a completed static wordmark and
+removes the extended sticky travel, glitch and blur. The original SVG is visible
+without JavaScript or WebGL and after context loss. Resources and observers are
+released on navigation, while back/forward-cache restores are supported.
+
 Three.js **0.180.0** is vendored unchanged under
 `docs/assets/vendor/three-0.180.0/` (`three.module.min.js`, `three.core.min.js`
 and its MIT `LICENSE`). Both modules come from the official npm `three` package.
 When updating the library, use a new versioned directory and update the import
-in `hero-scene.js`; then restamp assets and run the smoke check. The original
+in both `hero-scene.js` and `signal-outro.js`; then restamp assets and run the smoke check. The original
 brand SVG and locally served font licenses are included with the assets.

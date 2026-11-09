@@ -102,6 +102,14 @@ if (!process.versions.electron) {
         path.join(screenshots, "desktop.png"),
         (await win.webContents.capturePage()).toPNG(),
       );
+      await run("document.querySelector('#shot-downloads').focus()");
+      win.webContents.sendInputEvent({type:'keyDown',keyCode:'Right'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode:'Right'});
+      await wait(30);
+      assert.equal(await run("document.activeElement.id==='shot-workspace' && !document.querySelector('#screen-workspace').hidden && document.querySelector('#screen-downloads').hidden"),true,'Actual application screenshots support keyboard selection');
+      await run("document.querySelector('#shot-light').click()");
+      assert.equal(await run("!document.querySelector('#screen-light').hidden && document.querySelector('#screen-light img').naturalWidth>0"),true,'Light application screenshot loads');
+      await run("document.querySelector('#shot-downloads').click()");
       assert.equal(
         await run(
           "!document.querySelector('.scene-tools').hidden && document.querySelector('#network-scene').tabIndex === 0",
@@ -110,7 +118,7 @@ if (!process.versions.electron) {
         "Scene controls are keyboard accessible",
       );
       await run(
-        "document.querySelector('#motion-toggle').click();document.querySelector('#network-scene').focus({preventScroll:true})",
+        "document.querySelector('#network').scrollIntoView({behavior:'instant'});document.querySelector('#motion-toggle').click();document.querySelector('#network-scene').focus({preventScroll:true})",
       );
       await wait(80);
       const crop = await run(
@@ -135,8 +143,15 @@ if (!process.versions.electron) {
         rotatedView,
         "Home visibly resets the rotated sculpture",
       );
+      await run("document.querySelector('#scene-explode').click()");
+      assert.equal(await run("document.querySelector('#scene-explode').getAttribute('aria-pressed')"),'true','Sculpture can be separated while motion is paused');
+      await wait(80);
+      fs.writeFileSync(path.join(screenshots,'network-exploded.png'),(await win.webContents.capturePage()).toPNG());
+      await run("document.querySelector('#scene-reset').click();document.querySelector('#network-scene').focus({preventScroll:true})");
+      assert.equal(await run("document.querySelector('#scene-explode').getAttribute('aria-pressed')"),'false','Reset reassembles the sculpture');
       win.webContents.sendInputEvent({ type: "keyDown", keyCode: "Return" });
       win.webContents.sendInputEvent({ type: "keyUp", keyCode: "Return" });
+      await wait(50);
       assert.equal(
         await run(
           "/→ 6/.test(document.querySelector('#scene-status').textContent)",
@@ -226,7 +241,7 @@ if (!process.versions.electron) {
       );
       assert.equal(
         await run(
-          "document.fonts.check('600 60px Inter') && document.fonts.check('400 15px Inter')",
+          "document.fonts.check(document.documentElement.lang==='ru'?'600 50px \"Exo 2\"':'600 50px \"Chakra Petch\"') && document.fonts.check('400 15px Inter')",
         ),
         true,
         "Local fonts load",
@@ -564,7 +579,7 @@ if (!process.versions.electron) {
       );
       assert.deepEqual(errors, [], "No browser console errors");
       await run(
-        "document.documentElement.style.scrollBehavior='auto';window.scrollTo({top:0,behavior:'instant'})",
+        "document.documentElement.style.scrollBehavior='auto';document.querySelector('#network').scrollIntoView({behavior:'instant'})",
       );
       await wait(100);
       await waitFor(
@@ -631,7 +646,7 @@ if (!process.versions.electron) {
       win.setSize(390, 1250);
       await wait(1200);
       fs.writeFileSync(
-        path.join(screenshots, "mobile.png"),
+        path.join(screenshots, "network-mobile.png"),
         (await win.webContents.capturePage()).toPNG(),
       );
       await run("document.querySelector('#motion-toggle').click()");
@@ -690,7 +705,7 @@ if (!process.versions.electron) {
         offscreenFrame,
         "Offscreen scene stops rendering",
       );
-      await run("window.scrollTo({top:0,behavior:'instant'})");
+      await run("document.querySelector('#network').scrollIntoView({behavior:'instant'})");
       await wait(200);
       assert.notEqual(
         await run("document.querySelector('#network-scene').dataset.frame"),
@@ -782,6 +797,54 @@ if (!process.versions.electron) {
         path.join(screenshots, "rooms-mobile.png"),
         (await win.webContents.capturePage()).toPNG(),
       );
+      await run("window.scrollTo({top:0,behavior:'instant'})"); await wait(100);
+      fs.writeFileSync(path.join(screenshots,'mobile.png'),(await win.webContents.capturePage()).toPNG());
+      win.setSize(1440,1000); await wait(100);
+      await run("document.querySelector('#signal-outro').scrollIntoView({behavior:'instant'})");
+      await waitFor("document.querySelector('#signal-outro').dataset.scene==='webgl'",'Scroll finale renders through Three.js');
+      assert.ok(await run("Number(document.querySelector('#signal-canvas').dataset.instances)>300"),'Finale wordmark uses real instanced geometry');
+      const signalBounds=await run("(()=>{const e=document.querySelector('#signal-outro'),header=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-height'));return {top:scrollY+e.getBoundingClientRect().top-header,travel:e.offsetHeight-(innerHeight-header)}})()");
+      const seekSignal=async progress=>{
+        await run('window.scrollTo({top:'+Math.round(signalBounds.top+signalBounds.travel*progress)+",behavior:'instant'})");
+        await wait(120);
+      };
+      await seekSignal(.2);
+      assert.ok(await run("Number(document.querySelector('#signal-outro').dataset.progress)<.3"),'Finale progress follows scroll position');
+      fs.writeFileSync(path.join(screenshots,'signal-scattered.png'),(await win.webContents.capturePage()).toPNG());
+      await seekSignal(.7);
+      assert.ok(await run("parseFloat(document.querySelector('#signal-outro').style.getPropertyValue('--signal-blur'))>0"),'Scroll produces bounded blur in the finale');
+      fs.writeFileSync(path.join(screenshots,'signal-glitch.png'),(await win.webContents.capturePage()).toPNG());
+      await seekSignal(.99); await wait(900);
+      assert.ok(await run("Number(document.querySelector('#signal-outro').dataset.progress)>.9"),'Finale settles into the assembled wordmark');
+      fs.writeFileSync(path.join(screenshots,'signal-complete.png'),(await win.webContents.capturePage()).toPNG());
+      const idleSignalFrame=await run("document.querySelector('#signal-canvas').dataset.frame");
+      await wait(160);
+      assert.equal(await run("document.querySelector('#signal-canvas').dataset.frame"),idleSignalFrame,'Finale does not render continuously while idle');
+      await run("document.querySelector('#outro-motion').click()");
+      await seekSignal(.3);
+      assert.equal(await run("document.querySelector('#signal-outro').dataset.progress==='1.0000' && document.querySelector('#signal-outro').style.getPropertyValue('--signal-blur')==='0px'"),true,'Pause removes glitch and shows a static complete wordmark');
+      await run("document.querySelector('#outro-motion').click()");
+      win.webContents.debugger.attach('1.3');
+      await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+      await run("document.querySelector('#signal-outro').scrollIntoView({behavior:'instant'})");
+      await wait(200);
+      const stillSignal=await run("document.querySelector('#signal-canvas').dataset.frame");
+      await wait(150);
+      assert.equal(await run("document.querySelector('#signal-canvas').dataset.frame"),stillSignal,'Reduced-motion finale stays static');
+      assert.equal(await run("document.querySelector('#signal-outro').dataset.progress==='1.0000' && getComputedStyle(document.querySelector('#signal-canvas')).filter==='none'"),true,'Reduced motion disables blur and the assembly transition');
+      await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia',{features:[]});
+      win.webContents.debugger.detach();
+      await run("window.signalLossTest=document.querySelector('#signal-canvas').getContext('webgl2').getExtension('WEBGL_lose_context');window.signalLossTest.loseContext()");
+      await waitFor("document.querySelector('#signal-outro').dataset.scene==='fallback'",'Finale survives context loss');
+      assert.equal(await run("getComputedStyle(document.querySelector('.signal-fallback')).visibility"),'visible','Finale shows a legible fallback wordmark');
+      await run("window.signalLossTest.restoreContext()");
+      await waitFor("document.querySelector('#signal-outro').dataset.scene==='webgl'",'Finale restores its WebGL resources');
+      win.setSize(390,844);await wait(100);
+      await run("document.querySelector('#signal-outro').scrollIntoView({behavior:'instant'})");
+      await wait(180);
+      assert.equal(await run("document.documentElement.scrollWidth<=document.documentElement.clientWidth+1"),true,'Mobile scroll finale fits the viewport');
+      fs.writeFileSync(path.join(screenshots,'signal-mobile.png'),(await win.webContents.capturePage()).toPNG());
+      assert.deepEqual(errors,[],'No browser errors in application screenshots or the WebGL finale');
       win.destroy();
 
       const fallback = new BrowserWindow({
@@ -830,6 +893,18 @@ if (!process.versions.electron) {
         "true",
         "Controls work without WebGL",
       );
+      await fallback.webContents.executeJavaScript(
+        "document.querySelector('#signal-outro').scrollIntoView({behavior:'instant'})",
+      );
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (await fallback.webContents.executeJavaScript(
+          "document.querySelector('#signal-outro').dataset.scene==='fallback'",
+        )) break;
+        await wait(100);
+      }
+      assert.equal(await fallback.webContents.executeJavaScript(
+        "document.querySelector('#signal-outro').dataset.scene==='fallback' && getComputedStyle(document.querySelector('.signal-fallback')).visibility==='visible' && document.querySelector('.signal-bottom .button').getBoundingClientRect().height>0",
+      ), true, 'Finale preserves the wordmark and download link without WebGL');
       fallback.destroy();
 
       const plain = new BrowserWindow({
@@ -872,6 +947,7 @@ if (!process.versions.electron) {
               "language persistence",
               "metadata",
               "keyboard tabs",
+              "actual application screenshot gallery",
               "demo controls",
               "sample file search and pause",
               "local chat and guest invitation",
@@ -885,11 +961,15 @@ if (!process.versions.electron) {
               "keyboard scene rotation and reset",
               "mouse and touch dragging",
               "peer picking and pulse controls",
+              "manual sculpture disassembly and reset",
               "translated peer status",
               "WebGL animation and pause",
               "offscreen suspension",
               "reduced motion with manual interaction",
               "WebGL context restoration",
+              "instanced scroll finale and bounded blur",
+              "finale idle suspension and reduced motion",
+              "finale pause and context restoration",
               "no WebGL fallback",
               "no JavaScript",
               "browser console",

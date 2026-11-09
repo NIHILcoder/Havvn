@@ -31,6 +31,12 @@
   };
   function updateLabels() {
     document
+      .querySelector(".capture-tabs")
+      .setAttribute(
+        "aria-label",
+        text("Application screenshots", "Снимки приложения"),
+      );
+    document
       .querySelector(".room-modes")
       .setAttribute("aria-label", text("Room features", "Возможности комнаты"));
     document.querySelector("#room-mic-label").textContent = roomMuted
@@ -161,6 +167,20 @@
           : text("Pause visual effects", "Остановить визуальные эффекты"),
     );
     motionButton.disabled = motion.matches;
+    const outroMotion = document.querySelector("#outro-motion");
+    outroMotion.disabled = motion.matches;
+    outroMotion.setAttribute("aria-pressed", String(paused));
+    outroMotion.querySelector("span").textContent = motion.matches
+      ? text("Reduced motion", "Анимация снижена")
+      : paused
+        ? text("Resume effects", "Включить эффекты")
+        : text("Pause effects", "Остановить эффекты");
+    document
+      .querySelector("#signal-outro")
+      .setAttribute(
+        "aria-label",
+        text("Havvn closing sequence", "Финальная сцена Havvn"),
+      );
   }
   function setLanguage(next, remember = false) {
     language = next;
@@ -244,6 +264,23 @@
     updateLabels();
   }
   const tabs = [...document.querySelectorAll("[data-scenario]")];
+  const screenshots = [...document.querySelectorAll("[data-ui-shot]")];
+  function selectScreenshot(tab, focus = false) {
+    screenshots.forEach((item) => {
+      const selected = item === tab;
+      item.setAttribute("aria-selected", String(selected));
+      item.tabIndex = selected ? 0 : -1;
+      document.getElementById(item.getAttribute("aria-controls")).hidden =
+        !selected;
+    });
+    if (focus) tab.focus();
+  }
+  screenshots.forEach((tab, index) => {
+    tab.addEventListener("click", () => selectScreenshot(tab));
+    tab.addEventListener("keydown", (event) =>
+      tabKeys(event, screenshots, index, selectScreenshot),
+    );
+  });
   function selectScenario(tab, focus = false) {
     tabs.forEach((item) => {
       const selected = item === tab;
@@ -391,6 +428,9 @@
       new CustomEvent("havvn:motion-change", { detail: { paused } }),
     );
   });
+  document
+    .querySelector("#outro-motion")
+    .addEventListener("click", () => motionButton.click());
   motion.addEventListener("change", () => {
     updateLabels();
     if (motion.matches) setPlaying(false);
@@ -424,11 +464,37 @@
   }
 })();
 
-const heroSceneUrl = document.currentScript?.dataset.scene;
+const siteScript = document.currentScript;
+const heroSceneUrl = siteScript?.dataset.scene;
 if (heroSceneUrl) {
   import(new URL(heroSceneUrl, document.baseURI).href)
     .then((scene) => scene.createHeroScene())
     .catch(() => {
       document.querySelector(".hero-art").dataset.scene = "fallback";
     });
+}
+const outroUrl = siteScript?.dataset.outro;
+if (outroUrl) {
+  let requested = false;
+  const loadOutro = () => {
+    if (requested) return;
+    requested = true;
+    import(new URL(outroUrl, document.baseURI).href)
+      .then((module) => module.createSignalOutro())
+      .catch(() => {
+        document.querySelector("#signal-outro").dataset.scene = "fallback";
+      });
+  };
+  if ("IntersectionObserver" in window) {
+    const preloadOutro = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          preloadOutro.disconnect();
+          loadOutro();
+        }
+      },
+      { rootMargin: "250px" },
+    );
+    preloadOutro.observe(document.querySelector("#signal-outro"));
+  } else loadOutro();
 }

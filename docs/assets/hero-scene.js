@@ -2,12 +2,14 @@
 import * as THREE from "./vendor/three-0.180.0/three.module.min.js";
 
 export function createHeroScene() {
-  const hero = document.querySelector(".hero");
   const art = document.querySelector(".hero-art");
+  const hero =
+    art.closest(".network-section") || document.querySelector(".hero");
   const canvas = document.querySelector("#network-scene");
   const controls = document.querySelector(".scene-tools");
   const pulseButton = document.querySelector("#scene-pulse");
   const resetButton = document.querySelector("#scene-reset");
+  const explodeButton = document.querySelector("#scene-explode");
   const status = document.querySelector("#scene-status");
   const reduced = matchMedia("(prefers-reduced-motion: reduce)");
   const fine = matchMedia("(pointer: fine)");
@@ -138,6 +140,36 @@ export function createHeroScene() {
   mark.rotation.set(-0.16, -0.3, -0.15);
   mark.position.z = 1;
   stage.add(mark);
+  // Twelve physical face pieces can be separated and reassembled by the visitor.
+  const pieces = new THREE.Group();
+  const contour = shape.getPoints();
+  if (contour[0].equals(contour[contour.length - 1])) contour.pop();
+  const triangles = THREE.ShapeUtils.triangulateShape(contour, []);
+  triangles.forEach((triangle, index) => {
+    const face = new THREE.Shape(triangle.map((id) => contour[id]));
+    const pieceGeometry = new THREE.ExtrudeGeometry(face, {
+      depth: 0.25,
+      bevelEnabled: true,
+      bevelThickness: 0.025,
+      bevelSize: 0.014,
+      bevelSegments: 2,
+      steps: 1,
+    });
+    const center = new THREE.Vector3();
+    pieceGeometry.computeBoundingBox();
+    pieceGeometry.boundingBox.getCenter(center);
+    pieceGeometry.translate(-center.x, -center.y, -center.z);
+    const piece = new THREE.Mesh(pieceGeometry, [copper, edge]);
+    piece.userData.center = center;
+    piece.userData.direction = new THREE.Vector3(
+      center.x,
+      center.y,
+      ((index % 3) - 1) * 0.5,
+    ).normalize();
+    pieces.add(piece);
+  });
+  pieces.visible = false;
+  stage.add(pieces);
 
   const network = new THREE.Group();
   network.rotation.z = -0.25;
@@ -274,6 +306,8 @@ export function createHeroScene() {
     aimY = 0,
     pointerX = 0,
     pointerY = 0;
+  let exploded = false,
+    separation = 0;
   let drag = null,
     targetYaw = 0,
     targetPitch = 0,
@@ -289,6 +323,14 @@ export function createHeroScene() {
   const canInteract = () => !disposed && !lost && visible && !document.hidden;
   function labels() {
     const ru = document.documentElement.lang === "ru";
+    explodeButton.querySelector("span").textContent = exploded
+      ? ru
+        ? "Собрать знак"
+        : "Assemble mark"
+      : ru
+        ? "Разобрать знак"
+        : "Explode mark";
+    explodeButton.setAttribute("aria-pressed", String(exploded));
     canvas.setAttribute(
       "aria-label",
       ru
@@ -324,6 +366,20 @@ export function createHeroScene() {
       -0.15 + Math.sin(t * 0.35) * 0.025,
     );
     mark.position.y = Math.sin(t * 0.4) * 0.055;
+    pieces.visible = separation > 0.002;
+    mark.visible = !pieces.visible;
+    pieces.rotation.copy(mark.rotation);
+    pieces.position.copy(mark.position);
+    pieces.children.forEach((piece, index) => {
+      piece.position
+        .copy(piece.userData.center)
+        .addScaledVector(piece.userData.direction, separation * 0.9);
+      piece.rotation.set(
+        separation * Math.sin(index * 2) * 0.3,
+        separation * Math.cos(index) * 0.26,
+        separation * Math.sin(index) * 0.14,
+      );
+    });
     network.rotation.y = t * 0.025 + pointerX * 0.1;
     network.rotation.x = 0.15 + pointerY * 0.08;
     if (activePeer >= 0) {
@@ -364,6 +420,7 @@ export function createHeroScene() {
     pointerY += (aimY - pointerY) * ease;
     yaw += (targetYaw - yaw) * ease;
     pitch += (targetPitch - pitch) * ease;
+    separation += ((exploded ? 1 : 0) - separation) * ease;
     paint();
   }
   function sync() {
@@ -544,8 +601,17 @@ export function createHeroScene() {
     activePeer = -1;
     pulseCount = 0;
     pulse.visible = false;
+    exploded = false;
+    separation = 0;
     labels();
     applyRotation();
+  }
+  function togglePieces() {
+    if (!canInteract()) return;
+    exploded = !exploded;
+    if (!canAnimate()) separation = exploded ? 1 : 0;
+    labels();
+    paint();
   }
   function keyboard(event) {
     if (!canInteract()) return;
@@ -634,6 +700,7 @@ export function createHeroScene() {
   canvas.addEventListener("keydown", keyboard);
   pulseButton.addEventListener("click", nextPulse);
   resetButton.addEventListener("click", resetScene);
+  explodeButton.addEventListener("click", togglePieces);
   window.addEventListener("havvn:motion-change", motionChange);
   document.addEventListener("visibilitychange", sync);
   reduced.addEventListener("change", sync);
@@ -660,6 +727,7 @@ export function createHeroScene() {
     canvas.removeEventListener("keydown", keyboard);
     pulseButton.removeEventListener("click", nextPulse);
     resetButton.removeEventListener("click", resetScene);
+    explodeButton.removeEventListener("click", togglePieces);
     window.removeEventListener("havvn:motion-change", motionChange);
     document.removeEventListener("visibilitychange", sync);
     reduced.removeEventListener("change", sync);

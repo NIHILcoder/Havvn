@@ -41,9 +41,11 @@
     />
     <link rel="icon" href="assets/mark-gloss-768.png" />
     <link rel="stylesheet" href="assets/site.css?hash=eceb29458a51" />
+    <link rel="stylesheet" href="assets/brand.css?hash=0524976c4718" />
     <script
-      src="assets/site.js?hash=26a9f28540af"
-      data-scene="assets/hero-scene.js?hash=038dd0521394"
+      src="assets/site.js?hash=58b53e4e0199"
+      data-outro="assets/signal-outro.js?hash=8f2341c4ce0a"
+      data-scene="assets/hero-scene.js?hash=9a5a6465a2af"
       defer
     ></script>
   </head>
@@ -58,7 +60,7 @@
             height="440"
             alt="" /><img
             class="brand-wordmark"
-            src="assets/wordmark-ink.svg"
+            src="assets/wordmark.svg"
             width="440"
             height="100"
             alt="Havvn"
@@ -131,27 +133,25 @@
       <section class="hero wrap">
         <div class="hero-copy">
           <p class="eyebrow">
-            <span class="tiny-square" aria-hidden="true"></span>
-            <span data-ru="ПРОСТРАНСТВО МЕЖДУ СВОИМИ"
-              >A PEER-TO-PEER PLACE TO BE</span
-            >
+            <span class="tiny-square" aria-hidden="true"></span> HAVVN / PRIVATE
+            P2P WORKSPACE
           </p>
           <h1>
-            <span data-ru="Файл — тебе.">A file for you.</span><br /><em
-              data-ru="Вечер — нам."
-              >A night for us.</em
-            >
+            <span data-ru="ЗАГРУЗКИ.">DOWNLOADS.</span><br /><span
+              data-ru="КОМНАТЫ."
+              >ROOMS.</span
+            ><br /><em data-ru="ТВОЙ P2P-ХАБ.">YOUR P2P HUB.</em>
           </h1>
           <p
             class="lead"
-            data-ru="Скачай фильм. Собери друзей. Останьтесь на связи. Havvn соединяет торренты, общие файлы и ваши вечера в одном приложении."
+            data-ru="Торренты, общие файлы, чат и совместная работа — напрямую между вашими компьютерами. Без аккаунта Havvn и облачных копий."
           >
-            Download a film. Gather your friends. Stay a little longer. Havvn
-            brings torrents, shared files and your evenings into one app.
+            Torrents, shared files, chat and collaboration — directly between
+            your computers. No Havvn account or cloud copies.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#download"
-              ><span data-ru="Скачать Havvn">Get Havvn</span
+              ><span data-ru="Скачать Havvn">Download Havvn</span
               ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h14m-6-6 6 6-6 6"
@@ -159,7 +159,7 @@
                   stroke-width="1.5"
                 /></svg></a
             ><a class="text-link" href="#experience"
-              ><span data-ru="Заглянуть внутрь">Take a look inside</span
+              ><span data-ru="Попробовать возможности">Try the features</span
               ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h14m-6-6 6 6-6 6"
@@ -169,146 +169,102 @@
             ></a>
           </div>
           <div class="hero-footnote">
-            <span class="mono">WINDOWS / LINUX</span>
-            <p data-ru="Бесплатно. Открытый код. Без аккаунта Havvn.">
-              Free. Open source. No Havvn account.
+            <span class="mono">WINDOWS / LINUX PREVIEW</span>
+            <p data-ru="Свободное ПО. Лицензия MIT.">
+              Free software. MIT license.
             </p>
           </div>
         </div>
-        <div class="hero-art">
-          <div class="stage-heading" aria-hidden="true">
-            <span>HAVVN OBJECT / 001</span><span>↗ P2P</span>
-          </div>
-          <canvas
-            id="network-scene"
-            tabindex="-1"
-            role="group"
-            aria-hidden="true"
-            aria-describedby="scene-instructions"
-          ></canvas>
-          <div class="scene-aura" aria-hidden="true"></div>
-          <div class="scene-halo" aria-hidden="true"></div>
-          <svg
-            class="hero-mark hero-sculpture"
-            viewBox="0 0 512 325"
-            fill="none"
-            aria-hidden="true"
+        <div class="product-capture">
+          <div
+            class="capture-tabs"
+            role="tablist"
+            aria-label="Application screenshots"
           >
-            <defs>
-              <linearGradient
-                id="metal"
-                x1="40"
-                y1="20"
-                x2="405"
-                y2="285"
-                gradientUnits="userSpaceOnUse"
-              >
-                <stop stop-color="#fff1d7" />
-                <stop offset=".14" stop-color="#ffaf70" />
-                <stop offset=".28" stop-color="#532c20" />
-                <stop offset=".42" stop-color="#e86a32" />
-                <stop offset=".53" stop-color="#ffe6c5" />
-                <stop offset=".56" stop-color="#b9471f" />
-                <stop offset=".78" stop-color="#3c1b15" />
-                <stop offset="1" stop-color="#ff9351" />
-              </linearGradient>
-              <linearGradient
-                id="edge"
-                x1="60"
-                y1="0"
-                x2="410"
-                y2="280"
-                gradientUnits="userSpaceOnUse"
-              >
-                <stop stop-color="#ffeace" />
-                <stop offset=".37" stop-color="#ff8a45" />
-                <stop offset=".64" stop-color="#4a2019" />
-                <stop offset="1" stop-color="#ef7039" />
-              </linearGradient>
-              <linearGradient
-                id="facet"
-                x1="250"
-                y1="75"
-                x2="310"
-                y2="260"
-                gradientUnits="userSpaceOnUse"
-              >
-                <stop stop-color="#fcd6b2" />
-                <stop offset=".43" stop-color="#b95028" />
-                <stop offset="1" stop-color="#230f0d" />
-              </linearGradient>
-            </defs>
-            <path
-              class="sculpture-depth"
-              transform="translate(0 19)"
-              fill="#27130f"
-              stroke="#9a452b"
-              stroke-width="2"
-              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
-            />
-            <path
-              fill="url(#metal)"
-              stroke="url(#edge)"
-              stroke-width="2"
-              stroke-linejoin="round"
-              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
-            />
-            <path
-              fill="url(#facet)"
-              opacity=".72"
-              d="M34 35L222 176L256 139L290 176L478 35L358 221L330 276L256 192L182 276L154 221Z"
-            />
-            <path
-              stroke="#ffe2ba"
-              stroke-opacity=".48"
-              stroke-width="1.4"
-              d="M34 35L222 176L256 139L290 176L478 35M182 276L256 192L330 276"
-            />
-            <path
-              stroke="#ffb36f"
-              stroke-opacity=".23"
-              stroke-width="1"
-              d="M6 6L181 289M506 6L330 289"
-            />
-          </svg>
-          <div class="scene-coordinate coord-one" aria-hidden="true">
-            51° / CONNECTION STUDY
-          </div>
-          <div class="scene-tools" hidden>
-            <p
-              id="scene-instructions"
-              data-ru="Потяни, чтобы повернуть. Выбери узел, чтобы соединить."
+            <button
+              id="shot-downloads"
+              role="tab"
+              aria-selected="true"
+              aria-controls="screen-downloads"
+              data-ui-shot="downloads"
             >
-              Drag to turn. Pick a peer to connect.
-            </p>
-            <div class="scene-tool-actions">
-              <button id="scene-pulse" type="button">
-                <span data-ru="Показать связь">Make a connection</span
-                ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path
-                    d="M5 12h14m-6-6 6 6-6 6"
-                    stroke="currentColor"
-                    stroke-width="1.5"
-                  />
-                </svg></button
-              ><button id="scene-reset" type="button" aria-label="Reset scene">
-                ↺
-              </button>
-            </div>
-            <p
-              id="scene-status"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            ></p>
+              <span data-ru="Загрузки">Downloads</span>
+            </button>
+            <button
+              id="shot-workspace"
+              role="tab"
+              aria-selected="false"
+              aria-controls="screen-workspace"
+              data-ui-shot="workspace"
+              tabindex="-1"
+            >
+              <span data-ru="Рабочая область">Workspace</span>
+            </button>
+            <button
+              id="shot-light"
+              role="tab"
+              aria-selected="false"
+              aria-controls="screen-light"
+              data-ui-shot="light"
+              tabindex="-1"
+            >
+              <span data-ru="Светлая тема">Light palette</span></button
+            ><span class="capture-indicator" aria-hidden="true">● APP</span>
           </div>
+          <div
+            id="screen-downloads"
+            class="capture-screen"
+            role="tabpanel"
+            aria-labelledby="shot-downloads"
+            tabindex="0"
+          >
+            <img
+              src="assets/app/downloads.png"
+              width="1440"
+              height="900"
+              alt="Havvn application: downloads with sample data"
+            />
+          </div>
+          <div
+            id="screen-workspace"
+            class="capture-screen"
+            role="tabpanel"
+            aria-labelledby="shot-workspace"
+            tabindex="0"
+            hidden
+          >
+            <img
+              src="assets/app/workspace.png"
+              width="1234"
+              height="835"
+              alt="Havvn application: collaborative room workspace"
+            />
+          </div>
+          <div
+            id="screen-light"
+            class="capture-screen"
+            role="tabpanel"
+            aria-labelledby="shot-light"
+            tabindex="0"
+            hidden
+          >
+            <img
+              src="assets/app/light.png"
+              width="1440"
+              height="900"
+              alt="Havvn application: light interface with sample data"
+            />
+          </div>
+          <p class="capture-caption">
+            <span aria-hidden="true">↳</span
+            ><span
+              data-ru="Настоящий интерфейс Havvn. Демонстрационные файлы и данные комнаты."
+              >The real Havvn interface. Sample files and room data.</span
+            >
+          </p>
         </div>
         <div class="hero-bottom">
-          <span class="mono"
-            >01 /
-            <span data-ru="МЕНЬШЕ РАССТОЯНИЙ. БОЛЬШЕ ОБЩЕГО."
-              >LESS DISTANCE. MORE CONNECTION.</span
-            ></span
+          <span class="mono">01 / LOCAL FIRST · PEER TO PEER · OPEN SOURCE</span
           ><button
             id="motion-toggle"
             class="motion-toggle"
@@ -321,7 +277,6 @@
           </button>
         </div>
       </section>
-
       <div class="principles wrap">
         <span><span data-ru="Без аккаунтов Havvn">No Havvn accounts</span></span
         ><span><span data-ru="Без облачных копий">No cloud copies</span></span
@@ -336,9 +291,9 @@
           </p>
           <div class="heading-row">
             <h2>
-              <span data-ru="Меньше настроек.">Less setup.</span><br /><em
-                data-ru="Больше планов."
-                >More actual plans.</em
+              <span data-ru="ПОПРОБУЙ">TRY IT</span><br /><em
+                data-ru="В РАБОТЕ."
+                >IN ACTION.</em
               >
             </h2>
             <p
@@ -652,17 +607,194 @@
         </div>
       </section>
 
+      <section id="network" class="network-section section wrap">
+        <div class="network-copy">
+          <p class="eyebrow">
+            02 / <span data-ru="ПРЯМАЯ СВЯЗЬ">DIRECT CONNECTION</span>
+          </p>
+          <h2>
+            <span data-ru="ВАШИ УЗЛЫ.">YOUR NODES.</span><br /><em
+              data-ru="ВАША СЕТЬ."
+              >YOUR NETWORK.</em
+            >
+          </h2>
+          <p
+            class="lead"
+            data-ru="Соединение складывается из участников. Поверни модель, выбери узел или разбери знак на детали — здесь всё можно потрогать."
+          >
+            The connection is made by its participants. Turn the model, pick a
+            peer, or pull the mark apart — this little network is yours to
+            explore.
+          </p>
+          <div class="network-specs">
+            <p>
+              <span>01</span
+              ><span data-ru="Потяни или вращай стрелками"
+                >Drag or use arrow keys to rotate</span
+              >
+            </p>
+            <p>
+              <span>02</span
+              ><span data-ru="Выбери узел, чтобы увидеть связь"
+                >Pick a peer to trace a connection</span
+              >
+            </p>
+            <p>
+              <span>03</span
+              ><span data-ru="Разбери знак, чтобы рассмотреть грани"
+                >Explode the mark to inspect its facets</span
+              >
+            </p>
+          </div>
+          <p
+            data-ru="Визуальная демонстрация. Реальные соединения не создаются."
+            class="network-note-small"
+          >
+            A visual experiment. No real peer connections.
+          </p>
+        </div>
+        <div class="hero-art">
+          <div class="stage-heading" aria-hidden="true">
+            <span>HAVVN // CONNECTION MAP</span><span>↗ P2P</span>
+          </div>
+          <canvas
+            id="network-scene"
+            tabindex="-1"
+            role="group"
+            aria-hidden="true"
+            aria-describedby="scene-instructions"
+          ></canvas>
+          <div class="scene-aura" aria-hidden="true"></div>
+          <div class="scene-halo" aria-hidden="true"></div>
+          <svg
+            class="hero-mark hero-sculpture"
+            viewBox="0 0 512 325"
+            fill="none"
+            aria-hidden="true"
+          >
+            <defs>
+              <linearGradient
+                id="metal"
+                x1="40"
+                y1="20"
+                x2="405"
+                y2="285"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#fff1d7" />
+                <stop offset=".14" stop-color="#ffaf70" />
+                <stop offset=".28" stop-color="#532c20" />
+                <stop offset=".42" stop-color="#e86a32" />
+                <stop offset=".53" stop-color="#ffe6c5" />
+                <stop offset=".56" stop-color="#b9471f" />
+                <stop offset=".78" stop-color="#3c1b15" />
+                <stop offset="1" stop-color="#ff9351" />
+              </linearGradient>
+              <linearGradient
+                id="edge"
+                x1="60"
+                y1="0"
+                x2="410"
+                y2="280"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#ffeace" />
+                <stop offset=".37" stop-color="#ff8a45" />
+                <stop offset=".64" stop-color="#4a2019" />
+                <stop offset="1" stop-color="#ef7039" />
+              </linearGradient>
+              <linearGradient
+                id="facet"
+                x1="250"
+                y1="75"
+                x2="310"
+                y2="260"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop stop-color="#fcd6b2" />
+                <stop offset=".43" stop-color="#b95028" />
+                <stop offset="1" stop-color="#230f0d" />
+              </linearGradient>
+            </defs>
+            <path
+              class="sculpture-depth"
+              transform="translate(0 19)"
+              fill="#27130f"
+              stroke="#9a452b"
+              stroke-width="2"
+              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
+            />
+            <path
+              fill="url(#metal)"
+              stroke="url(#edge)"
+              stroke-width="2"
+              stroke-linejoin="round"
+              d="M6.2 6.3L217 147.9L223.9 161.8L256 127.7L288.1 161.8L295 147.9L505.8 6.3L366.7 222.8L369.2 232.2L330.5 289.6L256 204.6L181.5 289.6L142.8 232.2L145.3 222.8Z"
+            />
+            <path
+              fill="url(#facet)"
+              opacity=".72"
+              d="M34 35L222 176L256 139L290 176L478 35L358 221L330 276L256 192L182 276L154 221Z"
+            />
+            <path
+              stroke="#ffe2ba"
+              stroke-opacity=".48"
+              stroke-width="1.4"
+              d="M34 35L222 176L256 139L290 176L478 35M182 276L256 192L330 276"
+            />
+            <path
+              stroke="#ffb36f"
+              stroke-opacity=".23"
+              stroke-width="1"
+              d="M6 6L181 289M506 6L330 289"
+            />
+          </svg>
+          <div class="scene-coordinate coord-one" aria-hidden="true">
+            51° / CONNECTION STUDY
+          </div>
+          <div class="scene-tools" hidden>
+            <p
+              id="scene-instructions"
+              data-ru="Потяни, чтобы повернуть. Выбери узел, чтобы соединить."
+            >
+              Drag to turn. Pick a peer to connect.
+            </p>
+            <div class="scene-tool-actions">
+              <button id="scene-pulse" type="button">
+                <span data-ru="Показать связь">Make a connection</span
+                ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M5 12h14m-6-6 6 6-6 6"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                  />
+                </svg></button
+              ><button id="scene-explode" type="button" aria-pressed="false">
+                <span data-ru="Разобрать знак">Explode mark</span></button
+              ><button id="scene-reset" type="button" aria-label="Reset scene">
+                ↺
+              </button>
+            </div>
+            <p
+              id="scene-status"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            ></p>
+          </div>
+        </div>
+      </section>
       <section id="rooms" class="room-section section">
         <div class="wrap room-layout">
           <div class="room-copy">
             <p class="eyebrow">
-              02 / <span data-ru="ЛИЧНЫЕ КОМНАТЫ">PRIVATE ROOMS</span>
+              03 / <span data-ru="ЛИЧНЫЕ КОМНАТЫ">PRIVATE ROOMS</span>
             </p>
             <h2>
-              <span data-ru="Вы далеко.">Different places.</span><br /><span
+              <span data-ru="ОБЩИЕ ФАЙЛЫ.">SHARED FILES.</span><br /><span
                 class="room-heading-tail"
-                data-ru="Вечер общий."
-                >Same evening.</span
+                data-ru="ПРЯМАЯ СВЯЗЬ."
+                >DIRECT CONNECTION.</span
               >
             </h2>
             <p
@@ -911,12 +1043,12 @@
       <section id="features" class="section wrap capabilities-layout">
         <div class="capabilities-heading">
           <p class="eyebrow">
-            03 / <span data-ru="ПОЛЕЗНЫЕ ДЕТАЛИ">THE USEFUL DETAILS</span>
+            04 / <span data-ru="ПОЛЕЗНЫЕ ДЕТАЛИ">THE USEFUL DETAILS</span>
           </p>
           <h2>
-            <span data-ru="Не всё">Not everything</span><br /><em
-              data-ru="нуждается в новом приложении."
-              >needs a new app.</em
+            <span data-ru="ПОЛЕЗНЫЕ">USEFUL</span><br /><em
+              data-ru="ИНСТРУМЕНТЫ."
+              >TOOLS.</em
             >
           </h2>
           <p
@@ -1006,16 +1138,16 @@
       <section id="privacy" class="privacy-section section">
         <div class="wrap">
           <p class="eyebrow">
-            04 /
+            05 /
             <span data-ru="НЕСКОЛЬКО ПРОСТЫХ ПРИНЦИПОВ"
               >A FEW THINGS WE BELIEVE</span
             >
           </p>
           <div class="privacy-intro">
             <h2>
-              <span data-ru="Интернет может быть">The internet could</span
-              ><br /><em data-ru="чуть более личным."
-                >feel a little more personal.</em
+              <span data-ru="ПРИВАТНОСТЬ,">PRIVACY</span><br /><em
+                data-ru="КОТОРУЮ МОЖНО ПРОВЕРИТЬ."
+                >YOU CAN INSPECT.</em
               >
             </h2>
             <p
@@ -1116,12 +1248,11 @@
         <div class="wrap download-layout">
           <div class="download-heading">
             <p class="eyebrow">
-              05 / <span data-ru="РАСПОЛАГАЙСЯ">COME ON IN</span>
+              06 / <span data-ru="РАСПОЛАГАЙСЯ">COME ON IN</span>
             </p>
             <h2>
-              <span data-ru="Место для файлов.">A little space</span><br /><em
-                data-ru="И для своих."
-                >for your people.</em
+              <span data-ru="НАЧНИ">START</span><br /><em data-ru="С HAVVN."
+                >WITH HAVVN.</em
               >
             </h2>
             <p data-ru="Бесплатно, с открытым кодом. Без регистрации в Havvn.">
@@ -1242,9 +1373,9 @@
       <section id="faq" class="section wrap faq-layout">
         <div>
           <p class="eyebrow">
-            06 / <span data-ru="ПЕРЕД ПЕРВЫМ ЗАПУСКОМ">BEFORE YOU GO</span>
+            07 / <span data-ru="ПЕРЕД ПЕРВЫМ ЗАПУСКОМ">BEFORE YOU GO</span>
           </p>
-          <h2 data-ru="Кстати.">By the way.</h2>
+          <h2 data-ru="ПЕРЕД ЗАПУСКОМ.">BEFORE YOU START.</h2>
         </div>
         <div class="faq-list">
           <details>
@@ -1294,22 +1425,53 @@
       </section>
     </main>
     <footer>
-      <div class="wrap">
-        <div class="footer-top">
-          <p data-ru="Между вами. Напрямую.">Between you. Directly.</p>
-          <div>
-            <a class="text-link" href="https://github.com/NIHILcoder/Havvn"
-              ><span data-ru="GitHub">GitHub</span
-              ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path
-                  d="M5 12h14m-6-6 6 6-6 6"
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                /></svg></a
-            ><a
-              class="text-link"
-              href="https://github.com/NIHILcoder/Havvn/issues"
-              ><span data-ru="Написать нам">Say hello</span
+      <section
+        id="signal-outro"
+        class="signal-outro"
+        aria-label="Havvn closing sequence"
+      >
+        <div class="signal-sticky">
+          <div class="signal-topline wrap" aria-hidden="true">
+            <span>HAVVN / CONNECTION COMPLETE</span
+            ><span class="signal-progress">000 / 100</span>
+          </div>
+          <div class="signal-title wrap">
+            <p class="eyebrow">
+              <span data-ru="ДАЛЬШЕ — ТВОИ ПРАВИЛА">TAKE IT FROM HERE</span>
+            </p>
+            <h2>
+              <span data-ru="ВСЁ">KEEP IT</span><br /><em
+                data-ru="ПОД КОНТРОЛЕМ."
+                >IN YOUR HANDS.</em
+              >
+            </h2>
+          </div>
+          <canvas id="signal-canvas" aria-hidden="true"></canvas
+          ><img
+            class="signal-fallback"
+            src="assets/wordmark.svg"
+            width="440"
+            height="100"
+            alt="Havvn"
+          />
+          <div class="signal-noise" aria-hidden="true"></div>
+          <div class="signal-scan" aria-hidden="true"></div>
+          <div class="signal-bottom wrap">
+            <p>
+              <span data-ru="Твои файлы. Твои люди. Твоё пространство."
+                >Your files. Your people. Your own space.</span
+              ><small>WINDOWS / LINUX PREVIEW · MIT</small
+              ><button
+                id="outro-motion"
+                class="signal-motion"
+                type="button"
+                aria-pressed="false"
+              >
+                <span data-ru="Остановить эффекты">Pause effects</span>
+              </button>
+            </p>
+            <a class="button primary" href="#download"
+              ><span data-ru="Скачать Havvn">Get Havvn</span
               ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path
                   d="M5 12h14m-6-6 6 6-6 6"
@@ -1318,23 +1480,33 @@
                 /></svg
             ></a>
           </div>
-          <a class="back-top" href="#" aria-label="Back to top">↑</a>
+          <div class="signal-meter" aria-hidden="true"><i></i></div>
         </div>
-        <img
-          class="footer-wordmark"
-          src="assets/wordmark-ink.svg"
-          width="440"
-          height="100"
-          alt="Havvn"
-        />
-        <div class="footer-bottom">
-          <span>© 2026 HAVVN</span
-          ><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE"
-            >MIT LICENSE</a
-          ><span data-ru="Для хорошей компании."
-            >Made for the good company.</span
-          >
-        </div>
+      </section>
+      <div class="wrap footer-links">
+        <a class="text-link" href="https://github.com/NIHILcoder/Havvn"
+          >GitHub
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M5 12h14m-6-6 6 6-6 6"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /></svg></a
+        ><a class="text-link" href="https://github.com/NIHILcoder/Havvn/issues"
+          ><span data-ru="Обратная связь">Feedback</span
+          ><svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M5 12h14m-6-6 6 6-6 6"
+              stroke="currentColor"
+              stroke-width="1.5"
+            /></svg></a
+        ><a class="back-top" href="#" aria-label="Back to top">↑</a>
+      </div>
+      <div class="wrap footer-bottom">
+        <span>© 2026 HAVVN</span
+        ><a href="https://github.com/NIHILcoder/Havvn/blob/main/LICENSE"
+          >MIT LICENSE</a
+        ><span>LOCAL FIRST / P2P</span>
       </div>
     </footer>
   </body>
