@@ -21,6 +21,10 @@
   const transferButton = document.querySelector("#demo-transfer");
   const motionButton = document.querySelector("#motion-toggle");
   const text = (en, ru) => (language === "ru" ? ru : en);
+  const statusText = (selector, value) => {
+    const element = document.querySelector(selector);
+    if (element.textContent !== value) element.textContent = value;
+  };
   const titles = {
     en: "Havvn — files, friends & a little more.",
     ru: "Havvn — файлы и хорошая компания.",
@@ -42,9 +46,9 @@
     document.querySelector("#room-mic-label").textContent = roomMuted
       ? text("Unmute sample microphone", "Включить демо-микрофон")
       : text("Mute sample microphone", "Выключить демо-микрофон");
-    document.querySelector("#room-mic-status").textContent = roomMuted
+    statusText("#room-mic-status", roomMuted
       ? text("Sample voice muted", "Демо-голос выключен")
-      : text("Sample voice on", "Демо-голос включён");
+      : text("Sample voice on", "Демо-голос включён"));
     menuButton.setAttribute(
       "aria-label",
       menuButton.getAttribute("aria-expanded") === "true"
@@ -128,9 +132,9 @@
       input.placeholder =
         input.dataset[language === "ru" ? "placeholderRu" : "placeholderEn"];
     });
-    document.querySelector("#guest-count").textContent = guest
+    statusText("#guest-count", guest
       ? text("3 people", "3 участника")
-      : text("2 people", "2 участника");
+      : text("2 people", "2 участника"));
     inviteButton.querySelector("span").textContent = guest
       ? text("− Remove guest", "− Убрать гостя")
       : text("+ Invite a friend", "+ Пригласить друга");
@@ -140,12 +144,12 @@
         ? text("Resume sample download", "Продолжить демо-загрузку")
         : text("Pause sample download", "Остановить демо-загрузку"),
     );
-    document.querySelector("#transfer-status").textContent = transferPaused
+    statusText("#transfer-status", transferPaused
       ? text("Sample download paused", "Демо загрузки на паузе")
       : text(
           "Sample download · sequential mode",
           "Демо загрузки · последовательный режим",
-        );
+        ));
     document.querySelectorAll("[data-demo-author]").forEach((author) => {
       author.textContent = text("You", "Ты");
     });
@@ -327,6 +331,15 @@
     tab.addEventListener("keydown", (event) =>
       tabKeys(event, roomModes, index, selectRoomMode),
     );
+  });
+  document.addEventListener("havvn:presentation-cue", (event) => {
+    const { sequence, step } = event.detail;
+    if (sequence === "screens") selectScreenshot(screenshots[step]);
+    if (sequence === "demo") {
+      selectScenario(tabs[step]);
+      setPlaying(step === 2);
+    }
+    if (sequence === "rooms") selectRoomMode(roomModes[step]);
   });
   document.querySelector("#room-mic").addEventListener("click", () => {
     roomMuted = !roomMuted;

@@ -22,7 +22,7 @@
       content="https://raw.githubusercontent.com/NIHILcoder/Havvn/main/assets/havvn-cover.png"
     />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="theme-color" content="#eeece5" />
+    <meta name="theme-color" content="#0f1014" />
     <meta property="og:url" content="https://nihilcoder.github.io/Havvn/" />
     <link rel="canonical" href="https://nihilcoder.github.io/Havvn/" />
     <link
@@ -42,12 +42,14 @@
     <link rel="icon" href="assets/mark-gloss-768.png" />
     <link rel="stylesheet" href="assets/site.css?hash=eceb29458a51" />
     <link rel="stylesheet" href="assets/brand.css?hash=0524976c4718" />
+    <link rel="stylesheet" href="assets/presentation.css?hash=bf4141d3c744" />
     <script
-      src="assets/site.js?hash=58b53e4e0199"
+      src="assets/site.js?hash=19c364c86a4c"
       data-outro="assets/signal-outro.js?hash=8f2341c4ce0a"
-      data-scene="assets/hero-scene.js?hash=9a5a6465a2af"
+      data-scene="assets/hero-scene.js?hash=0966e8bd5337"
       defer
     ></script>
+    <script src="assets/presentation.js?hash=85f8bb54a70a" defer></script>
   </head>
   <body>
     <a class="skip" href="#main" data-ru="К содержимому">Skip to content</a>
@@ -130,7 +132,7 @@
       </nav>
     </header>
     <main id="main">
-      <section class="hero wrap">
+      <section id="overview" class="hero wrap" data-presentation data-sequence="screens">
         <div class="hero-copy">
           <p class="eyebrow">
             <span class="tiny-square" aria-hidden="true"></span> HAVVN / PRIVATE
@@ -284,23 +286,23 @@
         ><span>MIT / OPEN SOURCE</span>
       </div>
 
-      <section id="experience" class="section wrap">
+      <section id="experience" class="section wrap" data-presentation data-sequence="demo">
         <div class="section-heading">
           <p class="eyebrow">
             01 / <span data-ru="НА КАЖДЫЙ ДЕНЬ">THE EVERYDAY PART</span>
           </p>
           <div class="heading-row">
             <h2>
-              <span data-ru="ПОПРОБУЙ">TRY IT</span><br /><em
+              <span data-ru="HAVVN">HAVVN</span><br /><em
                 data-ru="В РАБОТЕ."
-                >IN ACTION.</em
+            >IN ACTION.</em
               >
             </h2>
             <p
-              data-ru="Загрузка, разговор или общий сеанс. Выбери сценарий и попробуй несколько деталей прямо здесь."
+              data-ru="Загрузка, разговор, общий сеанс. Короткие сцены сменяются сами — просто смотри, как всё устроено."
             >
-              A download, a conversation, a shared screen. Pick a scene and try
-              a few of the details right here.
+              A download, a conversation, a shared screen. A short sequence
+              plays by itself — see how everything fits together.
             </p>
           </div>
         </div>
@@ -607,7 +609,7 @@
         </div>
       </section>
 
-      <section id="network" class="network-section section wrap">
+      <section id="network" class="network-section section wrap" data-presentation data-sequence="network">
         <div class="network-copy">
           <p class="eyebrow">
             02 / <span data-ru="ПРЯМАЯ СВЯЗЬ">DIRECT CONNECTION</span>
@@ -620,29 +622,28 @@
           </h2>
           <p
             class="lead"
-            data-ru="Соединение складывается из участников. Поверни модель, выбери узел или разбери знак на детали — здесь всё можно потрогать."
+            data-ru="Сеть складывается из участников. Импульс проходит между узлами, а знак раскрывается на отдельные грани — и снова собирается в целое."
           >
-            The connection is made by its participants. Turn the model, pick a
-            peer, or pull the mark apart — this little network is yours to
-            explore.
+            The network is made by its participants. A pulse travels between
+            peers as the mark unfolds into individual facets, then becomes whole again.
           </p>
           <div class="network-specs">
             <p>
               <span>01</span
-              ><span data-ru="Потяни или вращай стрелками"
-                >Drag or use arrow keys to rotate</span
+              ><span data-ru="Участники образуют прямые связи"
+                >Peers form direct connections</span
               >
             </p>
             <p>
               <span>02</span
-              ><span data-ru="Выбери узел, чтобы увидеть связь"
-                >Pick a peer to trace a connection</span
+              ><span data-ru="Данные передаются между компьютерами"
+                >Data travels between computers</span
               >
             </p>
             <p>
               <span>03</span
-              ><span data-ru="Разбери знак, чтобы рассмотреть грани"
-                >Explode the mark to inspect its facets</span
+              ><span data-ru="Отдельные узлы. Одна общая сеть."
+                >Individual peers. One shared network.</span
               >
             </p>
           </div>
@@ -784,7 +785,7 @@
           </div>
         </div>
       </section>
-      <section id="rooms" class="room-section section">
+      <section id="rooms" class="room-section section" data-presentation data-sequence="rooms">
         <div class="wrap room-layout">
           <div class="room-copy">
             <p class="eyebrow">
@@ -1040,7 +1041,7 @@
         </div>
       </section>
 
-      <section id="features" class="section wrap capabilities-layout">
+      <section id="features" class="section wrap capabilities-layout" data-presentation>
         <div class="capabilities-heading">
           <p class="eyebrow">
             04 / <span data-ru="ПОЛЕЗНЫЕ ДЕТАЛИ">THE USEFUL DETAILS</span>
@@ -1059,13 +1060,20 @@
           </p>
         </div>
         <div class="capabilities-list">
-          <details open>
-            <summary>
+          <article class="capability-item">
+            <div class="capability-title">
               <span>01</span
-              ><span data-ru="Смотри, пока скачивается"
-                >Watch before the download ends</span
-              ><i aria-hidden="true">+</i>
-            </summary>
+              ><h3 data-ru="Смотри, пока скачивается">Watch before the download ends</h3>
+            </div>
+            <div class="feature-motion motion-stream" aria-hidden="true">
+              <svg viewBox="0 0 420 72" fill="none">
+                <path class="diagram-line" d="M62 36h282" />
+                <path class="diagram-flow" d="M62 36h282" />
+                <path class="diagram-outline" d="M16 13h26l11 11v35H16zM42 13v13h11M25 37h19m-19 8h12" />
+                <g class="buffer-blocks"><rect x="114" y="29" width="10" height="14"/><rect x="132" y="29" width="10" height="14"/><rect x="150" y="29" width="10" height="14"/><rect x="168" y="29" width="10" height="14"/><rect x="186" y="29" width="10" height="14"/><rect x="204" y="29" width="10" height="14"/><rect x="222" y="29" width="10" height="14"/><rect x="240" y="29" width="10" height="14"/></g>
+                <path class="diagram-outline" d="M343 14h61v40h-61zM358 62h31m-15-8v8m-7-36 13 8-13 8z" />
+              </svg>
+            </div>
             <p
               data-ru="Последовательная загрузка, передача видео на телефон или ТВ и преобразование неподдерживаемых браузером форматов на лету."
             >
@@ -1075,14 +1083,22 @@
             <div class="tags">
               <span>Chromecast</span><span>Android TV</span>
             </div>
-          </details>
-          <details>
-            <summary>
+          </article>
+          <article class="capability-item">
+            <div class="capability-title">
               <span>02</span
-              ><span data-ru="Ещё одна игра с друзьями"
-                >One more game with friends</span
-              ><i aria-hidden="true">+</i>
-            </summary>
+              ><h3 data-ru="Ещё одна игра с друзьями">One more game with friends</h3>
+            </div>
+            <div class="feature-motion motion-lan" aria-hidden="true">
+              <svg viewBox="0 0 420 72" fill="none">
+                <path class="diagram-line" d="M45 36h126l39-23 39 23h126M210 13v46M45 36l165 23 165-23" />
+                <path class="diagram-flow" d="M45 36h126l39-23 39 23h126" />
+                <g class="lan-node"><rect x="27" y="23" width="36" height="26"/><path d="M34 56h22m-11-7v7"/></g>
+                <g class="lan-node"><rect x="357" y="23" width="36" height="26"/><path d="M364 56h22m-11-7v7"/></g>
+                <g class="lan-core"><rect x="197" y="24" width="26" height="26"/><path d="M203 34h14m-14 7h9"/></g>
+                <circle class="lan-ping" cx="210" cy="37" r="24" />
+              </svg>
+            </div>
             <p
               data-ru="Виртуальная LAN на Windows и выделенный сервер на твоём компьютере. Игровые миры остаются после остановки сервера."
             >
@@ -1090,20 +1106,22 @@
               Your game worlds stay after the server stops.
             </p>
             <div class="tags"><span>Windows</span><span>Virtual LAN</span></div>
-          </details>
-          <details>
-            <summary>
+          </article>
+          <article class="capability-item">
+            <div class="capability-title">
               <span>03</span
-              ><span data-ru="Подстрой интерфейс под себя"
-                >Make the interface your own</span
-              ><i aria-hidden="true">+</i>
-            </summary>
+              ><h3 data-ru="Подстрой интерфейс под себя">Make the interface your own</h3>
+            </div>
+            <div class="feature-motion motion-palettes" aria-hidden="true">
+              <div class="palette-window palette-graphite"><i></i><b></b><span></span><span></span></div>
+              <div class="palette-window palette-paper"><i></i><b></b><span></span><span></span></div>
+              <div class="palette-window palette-moss"><i></i><b></b><span></span><span></span></div>
+            </div>
             <p
-              data-ru="Темы, стеклянные материалы, локальные фоны и профили оформления. В макете выше можно переключить три палитры точками в правом верхнем углу."
+              data-ru="Темы, стеклянные материалы, локальные фоны и профили оформления. От графитового интерфейса до светлой палитры — под своё рабочее пространство."
             >
               Themes, glass materials, local backgrounds and appearance
-              profiles. Try three preview palettes with the dots in the mockup's
-              top-right corner.
+              profiles. From graphite to a light palette, shaped for your workspace.
             </p>
             <a class="text-link" href="#experience"
               ><span data-ru="Попробовать палитры">Try the palettes</span
@@ -1114,14 +1132,20 @@
                   stroke-width="1.5"
                 /></svg
             ></a>
-          </details>
-          <details>
-            <summary>
+          </article>
+          <article class="capability-item">
+            <div class="capability-title">
               <span>04</span
-              ><span data-ru="Подключи свои источники"
-                >Bring your search sources</span
-              ><i aria-hidden="true">+</i>
-            </summary>
+              ><h3 data-ru="Подключи свои источники">Bring your search sources</h3>
+            </div>
+            <div class="feature-motion motion-sources" aria-hidden="true">
+              <svg viewBox="0 0 420 72" fill="none">
+                <path class="diagram-line" d="M38 14h78l40 22h74m-192 0h192M38 58h78l40-22" />
+                <path class="diagram-flow" d="M38 14h78l40 22h74m-192 0h192M38 58h78l40-22" />
+                <circle cx="30" cy="14" r="5"/><circle cx="30" cy="36" r="5"/><circle cx="30" cy="58" r="5"/>
+                <g class="search-results"><path d="M248 14h145m-145 9h80"/><path d="M248 33h123m-123 9h92"/><path d="M248 52h136m-136 9h65"/></g>
+              </svg>
+            </div>
             <p
               data-ru="Источники поиска и RSS, сравнение качества, размера и языков релиза. Предпочтения и выбор файлов — в приложении."
             >
@@ -1131,11 +1155,11 @@
             <div class="tags">
               <span>Jackett</span><span>Prowlarr</span><span>RSS</span>
             </div>
-          </details>
+          </article>
         </div>
       </section>
 
-      <section id="privacy" class="privacy-section section">
+      <section id="privacy" class="privacy-section section" data-presentation>
         <div class="wrap">
           <p class="eyebrow">
             05 /
@@ -1160,6 +1184,12 @@
           <div class="privacy-grid">
             <article>
               <span>01 / LOCAL</span>
+              <svg class="privacy-motion motion-local" viewBox="0 0 280 90" fill="none" aria-hidden="true">
+                <path class="diagram-line" d="M83 42h114" />
+                <path class="diagram-flow" d="M83 42h114" />
+                <path class="diagram-outline" d="M22 17h61v45H22zM35 73h35m-17-11v11M197 18h58v56h-58zM197 35h58m-58 20h58" />
+                <circle class="local-led" cx="245" cy="27" r="2"/><circle class="local-led" cx="245" cy="45" r="2"/><circle class="local-led" cx="245" cy="65" r="2"/>
+              </svg>
               <h3 data-ru="Файлы остаются у вас.">Files stay with you.</h3>
               <p
                 data-ru="Комнаты и передача файлов опираются на компьютеры участников. Облачная копия Havvn не создаётся."
@@ -1170,6 +1200,13 @@
             </article>
             <article>
               <span>02 / ENCRYPTED</span>
+              <svg class="privacy-motion motion-lock" viewBox="0 0 280 90" fill="none" aria-hidden="true">
+                <path class="cipher-lines" d="M24 26h47m-47 13h61M24 52h41m139-26h47m-61 13h61m-41 13h41" />
+                <rect class="lock-body" x="113" y="37" width="54" height="38" />
+                <path class="lock-shackle" d="M124 37V23a16 16 0 0 1 32 0v14" />
+                <circle cx="140" cy="53" r="3"/><path d="M140 56v8" />
+                <path class="lock-check" d="m176 64 6 6 13-15" />
+              </svg>
               <h3 data-ru="Ключи — на твоей стороне.">Keys on your side.</h3>
               <p
                 data-ru="Секреты защищаются средствами ОС. В E2E-комнатах файлы шифруются перед раздачей."
@@ -1180,6 +1217,10 @@
             </article>
             <article>
               <span>03 / OPEN</span>
+              <svg class="privacy-motion motion-code" viewBox="0 0 280 90" fill="none" aria-hidden="true">
+                <path class="code-brackets" d="m53 23-22 22 22 22m174-44 22 22-22 22M161 12l-37 66" />
+                <g class="code-lines"><path d="M76 27h61m-61 13h33"/><path d="M171 47h33m-44 13h44"/></g>
+              </svg>
               <h3 data-ru="Можно проверить.">Open to inspection.</h3>
               <p
                 data-ru="MIT-лицензия, исходники и история изменений на GitHub. Настройки сети и хранения доступны в приложении."
@@ -1207,8 +1248,12 @@
         </div>
       </section>
 
-      <section id="updates" class="source-section wrap">
-        <span class="source-symbol" aria-hidden="true">↗</span>
+      <section id="updates" class="source-section wrap" data-presentation>
+        <svg class="source-symbol source-graph" viewBox="0 0 80 100" fill="none" aria-hidden="true">
+          <path class="diagram-line" d="M21 6v88m0-42c0-20 37-8 37-32V6" />
+          <path class="diagram-flow" d="M21 94V52c0-20 37-8 37-32V6" />
+          <circle cx="21" cy="80" r="5"/><circle cx="21" cy="23" r="5"/><circle cx="58" cy="12" r="5"/>
+        </svg>
         <div>
           <p class="eyebrow">BUILT IN THE OPEN</p>
           <h3 data-ru="Проект живёт на GitHub.">
@@ -1244,7 +1289,7 @@
         </div>
       </section>
 
-      <section id="download" class="download-section section">
+      <section id="download" class="download-section section" data-presentation>
         <div class="wrap download-layout">
           <div class="download-heading">
             <p class="eyebrow">
@@ -1258,6 +1303,15 @@
             <p data-ru="Бесплатно, с открытым кодом. Без регистрации в Havvn.">
               Free, open source, and no Havvn registration.
             </p>
+            <div class="install-motion" aria-hidden="true">
+              <svg viewBox="0 0 320 130" fill="none">
+                <path class="install-frame" d="M20 17h280v99H20zM20 35h280" />
+                <path class="install-window-lines" d="M35 26h2m6 0h2m6 0h2M177 60h92m-92 13h63m-63 13h77" />
+                <g class="install-blocks"><path d="M61 53h20v20H61z"/><path d="M85 53h20v20H85z"/><path d="M61 77h20v20H61z"/><path d="M85 77h20v20H85z"/></g>
+                <path class="install-check" d="m126 75 8 8 17-21" />
+                <path class="install-track" d="M177 100h92" />
+              </svg>
+            </div>
           </div>
           <div class="download-picker">
             <div
@@ -1370,7 +1424,7 @@
         </div>
       </section>
 
-      <section id="faq" class="section wrap faq-layout">
+      <section id="faq" class="section wrap faq-layout" data-presentation>
         <div>
           <p class="eyebrow">
             07 / <span data-ru="ПЕРЕД ПЕРВЫМ ЗАПУСКОМ">BEFORE YOU GO</span>
@@ -1378,7 +1432,7 @@
           <h2 data-ru="ПЕРЕД ЗАПУСКОМ.">BEFORE YOU START.</h2>
         </div>
         <div class="faq-list">
-          <details>
+          <details open>
             <summary data-ru="Другу обязательно устанавливать Havvn?">
               Does my friend have to install Havvn?
             </summary>
@@ -1390,7 +1444,7 @@
               desktop app.
             </p>
           </details>
-          <details>
+          <details open>
             <summary data-ru="Это правда бесплатно?">
               Is it really free?
             </summary>
@@ -1401,7 +1455,7 @@
               accounts.
             </p>
           </details>
-          <details>
+          <details open>
             <summary data-ru="Можно пользоваться без VPN?">
               Can I use it without a VPN?
             </summary>
@@ -1412,7 +1466,7 @@
               a VPN. Its VPN protection works with your VPN and OS settings.
             </p>
           </details>
-          <details>
+          <details open>
             <summary data-ru="С чего начать?">Where should I start?</summary>
             <p
               data-ru="Скачай сборку своей платформы. Открой magnet-ссылку или .torrent, а для общения создай комнату и пригласи друзей."

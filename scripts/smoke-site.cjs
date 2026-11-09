@@ -97,7 +97,7 @@ if (!process.versions.electron) {
       );
       const screenshots = path.join(root, "artifacts", "site");
       fs.mkdirSync(screenshots, { recursive: true });
-      await wait(200);
+      await wait(1300);
       fs.writeFileSync(
         path.join(screenshots, "desktop.png"),
         (await win.webContents.capturePage()).toPNG(),
@@ -744,7 +744,7 @@ if (!process.versions.electron) {
         "No browser errors after scene lifecycle checks",
       );
       await run(
-        "document.querySelectorAll('[data-local-message]').forEach(e=>e.remove());document.querySelector('#demo-messages').scrollTop=0;document.querySelector('.verify').open=false;document.querySelectorAll('#faq details').forEach(e=>e.open=false)",
+        "document.querySelectorAll('[data-local-message]').forEach(e=>e.remove());document.querySelector('#demo-messages').scrollTop=0;document.querySelector('.verify').open=false;document.querySelectorAll('#faq details').forEach(e=>e.open=true)",
       );
       win.setSize(1440, 1000);
       await wait(100);
@@ -769,7 +769,7 @@ if (!process.versions.electron) {
             JSON.stringify(section) +
             ").scrollIntoView({behavior:'instant'})",
         );
-        await wait(100);
+        await wait(1100);
         fs.writeFileSync(
           path.join(screenshots, file + ".png"),
           (await win.webContents.capturePage()).toPNG(),
@@ -846,6 +846,84 @@ if (!process.versions.electron) {
       fs.writeFileSync(path.join(screenshots,'signal-mobile.png'),(await win.webContents.capturePage()).toPNG());
       assert.deepEqual(errors,[],'No browser errors in application screenshots or the WebGL finale');
       win.destroy();
+
+      // Observe the presentation as a visitor: no clicks or focused controls needed.
+      const autoplay = new BrowserWindow({
+        width: 1440, height: 1000, frame: false, show: false,
+        webPreferences: { offscreen: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
+      });
+      autoplay.webContents.on('console-message', (detail) => {
+        if (detail.level === 'error') errors.push(detail.message);
+      });
+      const autoRun = (code) => autoplay.webContents.executeJavaScript(code);
+      const autoWait = async (condition, message) => {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if (await autoRun(condition)) return;
+          await wait(100);
+        }
+        assert.fail(message);
+      };
+      const autoShot = async (file) => fs.writeFileSync(path.join(screenshots, file + '.png'), (await autoplay.webContents.capturePage()).toPNG());
+      await autoplay.loadURL(baseUrl);
+      await autoRun("document.fonts.ready.then(()=>true)");
+      await autoRun("document.querySelector('.app-preview').scrollIntoView({behavior:'instant',block:'center'})");
+      await autoWait("document.querySelector('#experience').dataset.presentationState==='playing'", 'Product presentation starts on entering the viewport');
+      await autoRun("window.autoStatusChanges=0;window.autoStatusObserver=new MutationObserver(records=>window.autoStatusChanges+=records.length);document.querySelectorAll('#guest-count,#transfer-status,#room-mic-status').forEach(e=>window.autoStatusObserver.observe(e,{childList:true,characterData:true,subtree:true}))");
+      await wait(7800);
+      assert.equal(await autoRun("document.querySelector('#tab-rooms').getAttribute('aria-selected')"), 'true', 'Product scenarios advance without interaction');
+      assert.equal(await autoRun("window.autoStatusChanges"), 0, 'Automatic scenes do not repeatedly announce unchanged live statuses');
+      await autoRun("window.autoStatusObserver.disconnect()");
+      await wait(1700);
+      await autoShot('presentation-chat');
+      await autoRun("document.querySelector('#demo-message').focus();document.querySelector('#demo-message').value='Keep my draft';document.querySelector('#demo-message').dispatchEvent(new Event('input',{bubbles:true}))");
+      const manualStep = await autoRun("document.querySelector('#experience').dataset.sequenceStep");
+      await wait(7600);
+      assert.equal(await autoRun("document.querySelector('#experience').dataset.sequenceStep"), manualStep, 'Autoplay never replaces a focused input or current demo');
+      assert.equal(await autoRun("document.querySelector('#demo-message').value"), 'Keep my draft', 'Manual input survives the presentation timer');
+      await autoRun("document.activeElement.blur();document.querySelector('.room-preview').scrollIntoView({behavior:'instant',block:'center'})");
+      await autoWait("document.querySelector('#rooms').dataset.presentationState==='playing'", 'Rooms start presenting on their own');
+      await wait(7100);
+      assert.equal(await autoRun("document.querySelector('#room-mode-voice').getAttribute('aria-selected')"), 'true', 'Room presentation advances to voice automatically');
+      assert.equal(await autoRun("getComputedStyle(document.querySelector('.room-level i')).animationPlayState"), 'running', 'Voice drawing animates in the visible scene');
+      await autoShot('presentation-voice');
+      await autoRun("document.querySelector('#motion-toggle').click()");
+      await wait(100);
+      const voiceTime = await autoRun("document.querySelector('.room-level i').getAnimations()[0].currentTime");
+      await wait(200);
+      assert.equal(await autoRun("document.querySelector('.room-level i').getAnimations()[0].currentTime"), voiceTime, 'Global pause freezes the automatic drawings');
+      assert.equal(await autoRun("document.querySelector('#rooms').dataset.presentationState"), 'paused', 'Global pause also stops the scene timer');
+      await autoRun("document.querySelector('#motion-toggle').click()");
+      autoplay.webContents.debugger.attach('1.3');
+      await autoplay.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: [{name:'prefers-reduced-motion',value:'reduce'}]});
+      await wait(100);
+      assert.equal(await autoRun("document.querySelectorAll('[data-presentation-state=playing]').length"), 0, 'Reduced motion prevents automatic scene changes');
+      assert.equal(await autoRun("getComputedStyle(document.querySelector('.room-level i')).animationName"), 'none', 'Reduced motion shows static drawings');
+      await autoplay.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features: []});
+      autoplay.webContents.debugger.detach();
+      const offscreenStep = await autoRun("document.querySelector('#rooms').dataset.sequenceStep");
+      await autoRun("window.scrollTo({top:0,behavior:'instant'})");
+      await autoWait("document.querySelector('#overview').dataset.presentationState==='playing'", 'Screenshot gallery starts when visible');
+      await wait(7100);
+      assert.equal(await autoRun("document.querySelector('#rooms').dataset.sequenceStep"), offscreenStep, 'Offscreen sections do not advance their presentation');
+      assert.equal(await autoRun("document.querySelector('#shot-workspace').getAttribute('aria-selected')"), 'true', 'Actual application screenshots advance automatically');
+      await autoShot('presentation-gallery');
+      await autoRun("document.querySelector('.hero-art').scrollIntoView({behavior:'instant',block:'center'})");
+      await autoWait("document.querySelector('.hero-art').dataset.autoCue==='1'", 'Three.js mark unfolds without interaction');
+      await wait(550);
+      assert.equal(await autoRun("document.querySelector('#scene-explode').getAttribute('aria-pressed')"), 'true', 'Automatic network sequence visibly separates the mark');
+      await autoShot('presentation-network');
+      autoplay.setSize(390,844);
+      await autoRun("document.querySelector('.room-preview').scrollIntoView({behavior:'instant',block:'center'})");
+      await wait(1300);
+      assert.equal(await autoRun("document.documentElement.scrollWidth<=document.documentElement.clientWidth+1"), true, 'Mobile presentation fits the viewport');
+      await autoShot('presentation-mobile');
+      await autoRun("document.querySelector('.capability-item').scrollIntoView({behavior:'instant',block:'center'})");
+      await wait(1300);
+      await autoShot('presentation-tools-mobile');
+      assert.equal(await autoRun("[...document.querySelectorAll('.capability-item > p')].every(e=>e.getBoundingClientRect().height>0)"), true, 'Every tool description is available without expanding anything');
+      assert.equal(await autoRun("[...document.querySelectorAll('#faq details')].every(e=>e.open)"), true, 'FAQ answers are visible without clicks');
+      assert.deepEqual(errors, [], 'Automatic presentation produces no browser errors');
+      autoplay.destroy();
 
       const fallback = new BrowserWindow({
         width: 390,
@@ -948,6 +1026,10 @@ if (!process.versions.electron) {
               "metadata",
               "keyboard tabs",
               "actual application screenshot gallery",
+              "automatic gallery, product and room sequences",
+              "automatic Three.js unfolding and pulses",
+              "manual takeover preserves input",
+              "presentation pause, reduced motion and offscreen suspension",
               "demo controls",
               "sample file search and pause",
               "local chat and guest invitation",

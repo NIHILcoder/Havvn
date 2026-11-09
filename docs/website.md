@@ -3,6 +3,8 @@
 The public landing page is the static GitHub Pages entry point in `docs/index.html`.
 Its layout and interactions live in `docs/assets/site.css` and `docs/assets/site.js`.
 `docs/assets/brand.css` applies the application's Graphite + Ember visual language.
+`docs/assets/presentation.css` and `docs/assets/presentation.js` coordinate section
+arrivals, autonomous demo sequences and the small animated diagrams.
 The interactive Three.js network lives in `docs/assets/hero-scene.js`; the lazily
 loaded closing sequence lives in `docs/assets/signal-outro.js`.
 No build step, CDN, remote font or package installation is needed to serve the site.
@@ -29,7 +31,8 @@ node scripts/stamp-site-assets.cjs
 This updates their content hashes in `docs/index.html`. Changed assets get fresh
 URLs, so returning visitors receive the new styles and interactions instead of
 old cached files. Include the updated HTML in the same commit as the assets.
-The script covers both stylesheets, the main script and both Three.js modules.
+The script covers all three stylesheets, the main and presentation scripts and
+both Three.js modules.
 The smoke check rejects stale hashes. Product release numbers are not involved.
 
 ## Browser checks
@@ -84,11 +87,12 @@ and open space keep the layout legible around the two dedicated 3D sections.
 
 The hero gallery shows actual application screenshots: downloads, the room
 workspace, and the light appearance. Its three tabs support pointer and keyboard
-selection. These images use isolated fixtures with synthetic data; their provenance
+selection, and advance automatically while visible. These images use isolated fixtures with synthetic data; their provenance
 is recorded in `docs/assets/app/README.md`. They are distinct from the working HTML
 demonstrations below and are captioned accordingly.
 
-The product preview has three manually selected tabs. Sample file search filters
+The product preview has three automatically presented tabs, with manual selection
+available. Sample file search filters
 three fictional rows and has an empty state; the pause control changes the sample
 transfer state. In the room tab, inviting a guest toggles a fictional participant,
 and a local chat accepts plain text only, retaining up to ten submitted messages
@@ -96,7 +100,8 @@ in memory. No file download, room connection or message transmission occurs.
 The on-page caption explicitly describes this as an interactive mockup.
 
 The dedicated rooms section uses the same dark palette and a room preview with
-watch-together, voice and shared-folder tabs. Each tab can be selected by pointer
+watch-together, voice and shared-folder tabs. They advance automatically while the
+preview is visible. Each tab can also be selected by pointer
 or arrow keys (Home/End also work). The sample microphone button only toggles
 local demo state; it doesn't request microphone access or capture audio. Its
 state and accessible label follow language switching. The chat link selects the
@@ -119,6 +124,35 @@ Only the language preference is persisted. Demo messages, invited guests,
 palette choice and transfer state are reset on reload. The smoke check covers
 these interactions, user-input HTML escaping, native touch input and keyboard
 navigation. Section screenshots are saved in `artifacts/site/`.
+
+## Automatic presentation
+
+Each information section has a one-time, staggered arrival as it enters the
+viewport. The main gallery advances every 6.8 seconds, the product demo every
+7.4 seconds, and the rooms every 6.8 seconds. Their selected tabs show a thin
+progress rule. Scenes do not move focus or announce an automatic slideshow
+through live regions. Clicking, typing or focusing a control inside a demo
+hands that section to the visitor for the rest of the page session.
+
+The network performs a four-part sequence: send a pulse, separate the mark,
+reassemble, then send another pulse. Tool descriptions are always visible,
+accompanied by small SVG/HTML diagrams for streaming, LAN, appearance and search.
+Privacy diagrams show local storage, encryption and inspectable code; the source
+section has a commit graph, and the download section assembles an application
+window. The FAQ answers start open. No step requires clicking to see the content.
+
+Presentation timers retain their remaining time while offscreen or in background
+tabs. CSS drawings are suspended individually when outside the viewport, including
+inside tall mobile sections. No presentation JavaScript runs on an idle frame loop.
+The existing global pause controls freeze all scenes. System reduced motion
+disables automatic switching and animated drawings and exposes all arrival content
+immediately. Without JavaScript, the content and diagrams remain visible and static.
+Observers, timers and listeners are released on navigation; bfcache restores resume
+the page without adding duplicate timers.
+
+The smoke check observes real automatic transitions without clicking, verifies
+manual takeover with a typed draft, offscreen suspension, global pause and reduced
+motion, and captures desktop/mobile presentation frames in `artifacts/site/`.
 
 ## Visual effects
 

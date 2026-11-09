@@ -11,7 +11,9 @@ function stampSiteAssets({ check = false } = {}) {
   for (const asset of [
     "assets/site.css",
     "assets/brand.css",
+    "assets/presentation.css",
     "assets/site.js",
+    "assets/presentation.js",
     "assets/hero-scene.js",
     "assets/signal-outro.js",
   ]) {

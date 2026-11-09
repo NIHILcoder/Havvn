@@ -1,0 +1,250 @@
+/* A quiet presentation rhythm: type arrives once, diagrams keep telling the story. */
+[data-presentation] { --scene-play: paused; }
+[data-presentation].is-presenting { --scene-play: running; }
+.presentation-enabled [data-reveal] {
+  transition: opacity .8s ease, transform .9s cubic-bezier(.2,.75,.2,1), filter .8s ease;
+  transition-delay: var(--arrival-delay, 0ms);
+}
+.presentation-enabled [data-reveal]:not(.has-arrived) {
+  opacity: 0;
+  transform: translateY(24px);
+  filter: blur(5px);
+}
+.presentation-enabled [data-reveal]:focus-within,
+.motion-paused [data-reveal] {
+  opacity: 1 !important;
+  transform: none !important;
+  filter: none !important;
+  transition: none !important;
+}
+
+/* An unobtrusive clock on the current scene. It freezes when the scene is hidden. */
+[data-sequence] [role="tab"] { position: relative; }
+.presentation-enabled .capture-tabs button[aria-selected="true"]::after,
+.presentation-enabled .scenario-controls button[aria-selected="true"]::after,
+.presentation-enabled .room-modes button[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  width: auto;
+  background: var(--orange);
+  transform-origin: left;
+  transform: scaleX(1);
+  pointer-events: none;
+}
+.presentation-enabled [data-sequence][data-presentation-state="playing"] [role="tab"][aria-selected="true"]::after {
+  animation: scene-clock var(--sequence-duration) linear both;
+}
+.presentation-enabled [data-sequence][data-presentation-state="paused"] [role="tab"][aria-selected="true"]::after {
+  animation: scene-clock var(--sequence-duration) linear both paused;
+}
+@keyframes scene-clock { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.presentation-enabled .capture-screen:not([hidden]) img {
+  animation: capture-arrive 1.1s cubic-bezier(.2,.7,.2,1) both;
+  animation-play-state: var(--scene-play);
+  transform-origin: 50% 25%;
+}
+@keyframes capture-arrive {
+  from { opacity: .25; transform: scale(1.025); filter: blur(2px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+.presentation-enabled .scenario:not([hidden]) .preview-title,
+.presentation-enabled .scenario:not([hidden]) .file-row,
+.presentation-enabled .room-scene:not([hidden]) {
+  animation: scene-arrive .75s cubic-bezier(.2,.7,.2,1) both;
+  animation-play-state: var(--scene-play);
+}
+.presentation-enabled .scenario:not([hidden]) .file-row:nth-child(2) { animation-delay: .14s; }
+.presentation-enabled .scenario:not([hidden]) .file-row:nth-child(3) { animation-delay: .28s; }
+@keyframes scene-arrive { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+#experience[data-presentation-state="playing"] #panel-downloads .progress i { position: relative; overflow: hidden; }
+#experience[data-presentation-state="playing"] #panel-downloads .progress i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 35%;
+  background: #fff2d8;
+  animation: transfer-packet 2.6s cubic-bezier(.45,0,.2,1) infinite;
+  animation-play-state: var(--scene-play);
+}
+@keyframes transfer-packet { from { transform: translateX(-110%); } to { transform: translateX(390%); } }
+#experience[data-presentation-state="playing"] #panel-rooms:not([hidden]) .chat-bubble:not([data-local-message]) {
+  animation: message-arrive .8s cubic-bezier(.2,.8,.2,1) .5s both;
+  animation-play-state: var(--scene-play);
+}
+#experience[data-presentation-state="playing"] #panel-rooms:not([hidden]) .chat-bubble.own { animation-delay: 1.8s; }
+@keyframes message-arrive { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.presentation-enabled .cinema.is-playing > img,
+.presentation-enabled .cinema.is-playing ~ .playback .progress i {
+  animation-play-state: var(--scene-play);
+}
+
+/* Watch, talk, share: the room shows all three without a click. */
+.presentation-enabled #room-scene-watch:not([hidden]) .room-shared-screen img {
+  animation: room-camera 14s ease-in-out infinite alternate;
+  animation-play-state: var(--scene-play);
+}
+@keyframes room-camera { from { transform: scale(1); } to { transform: scale(1.06) translateY(-1%); } }
+.presentation-enabled .room-person-avatar {
+  position: relative;
+}
+.presentation-enabled .room-person-avatar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -5px;
+  height: 1px;
+  background: var(--green);
+  animation: room-sync 5s ease infinite;
+  animation-play-state: var(--scene-play);
+  transform-origin: left;
+}
+.presentation-enabled .room-person-mika::after { animation-delay: .2s; }
+.presentation-enabled .room-person-you::after { animation-delay: .4s; }
+@keyframes room-sync { 0%, 85%, 100% { transform: scaleX(.2); opacity: .25; } 35%, 60% { transform: scaleX(1); opacity: 1; } }
+.presentation-enabled .room-level i {
+  animation: voice-level .85s ease-in-out infinite alternate;
+  animation-play-state: var(--scene-play);
+  transform-origin: center;
+}
+.presentation-enabled .room-level i:nth-child(2n) { animation-duration: .64s; animation-delay: -.3s; }
+.presentation-enabled .room-level i:nth-child(3n) { animation-duration: 1.1s; animation-delay: -.7s; }
+.presentation-enabled .room-speaker:nth-child(2) .room-level i { animation-delay: -.45s; }
+.room-voice-scene:has(+ .room-voice-controls #room-mic[aria-pressed="true"]) .room-level i { animation-play-state: paused; }
+@keyframes voice-level { from { transform: scaleY(.35); opacity: .45; } to { transform: scaleY(1.1); opacity: 1; } }
+.presentation-enabled .room-shared-file { position: relative; }
+.presentation-enabled .room-shared-file::after {
+  content: "";
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  width: 100%;
+  height: 1px;
+  background: var(--green);
+  transform-origin: left;
+  animation: shared-file 6.8s cubic-bezier(.2,.55,.2,1) infinite;
+  animation-play-state: var(--scene-play);
+}
+.presentation-enabled .room-shared-file:nth-of-type(3)::after { animation-delay: -.8s; }
+@keyframes shared-file { 0% { transform: scaleX(0); opacity: .8; } 65%, 85% { transform: scaleX(1); opacity: .8; } 100% { transform: scaleX(1); opacity: 0; } }
+
+/* All tools are visible. Small schematics explain what each one does. */
+.capabilities-layout { align-items: start; }
+.capability-item { padding: 25px 0 29px; border-bottom: 1px solid var(--line); }
+.capability-title { display: flex; gap: 18px; align-items: baseline; }
+.capability-title > span { font: 10px "Courier New", monospace; color: var(--orange); }
+.capability-title h3 { font: 600 20px/1.4 var(--display); letter-spacing: -.02em; }
+.capability-item > p { font-size: 12px; line-height: 1.9; color: var(--muted); margin: 13px 0 0 32px; max-width: 500px; }
+.capability-item > .text-link { margin: 17px 0 0 32px; font-size: 11px; }
+.capability-item .tags { margin-left: 32px; }
+.feature-motion { margin: 20px 0 0 32px; padding: 9px 0; height: 90px; max-width: 470px; overflow: hidden; }
+.feature-motion > svg { display: block; width: 100%; height: 72px; }
+.feature-motion svg, .privacy-motion, .source-graph, .install-motion svg { stroke: #ecebe666; stroke-width: 1.2; }
+.diagram-line { stroke: #ecebe61c; }
+.diagram-flow { stroke: var(--orange); stroke-dasharray: 5 27; animation: diagram-packets 3.6s linear infinite; animation-play-state: var(--scene-play); }
+.diagram-outline { stroke: #ecebe67a; }
+@keyframes diagram-packets { to { stroke-dashoffset: -128; } }
+.buffer-blocks rect { fill: #e25117; stroke: #0f1014; animation: buffer-load 4.8s ease infinite; animation-play-state: var(--scene-play); }
+.buffer-blocks rect:nth-child(2) { animation-delay: -.4s; }
+.buffer-blocks rect:nth-child(3) { animation-delay: -.8s; }
+.buffer-blocks rect:nth-child(4) { animation-delay: -1.2s; }
+.buffer-blocks rect:nth-child(5) { animation-delay: -1.6s; }
+.buffer-blocks rect:nth-child(6) { animation-delay: -2s; }
+.buffer-blocks rect:nth-child(7) { animation-delay: -2.4s; }
+.buffer-blocks rect:nth-child(8) { animation-delay: -2.8s; }
+@keyframes buffer-load { 0%,100% { opacity: .18; } 35%,60% { opacity: 1; } }
+.lan-node { fill: var(--bg); stroke: #ecebe680; }
+.lan-core { stroke: var(--orange); fill: #191b21; }
+.lan-ping { stroke: #adb87c; transform-origin: 210px 37px; animation: lan-ping 4.5s ease-out infinite; animation-play-state: var(--scene-play); }
+@keyframes lan-ping { 0% { transform: scale(.65); opacity: .8; } 80%,100% { transform: scale(1.5); opacity: 0; } }
+.motion-palettes { display: flex; align-items: center; gap: 16px; padding-inline: 3px; }
+.palette-window { flex: 1; height: 59px; position: relative; background: #15161c; border: 1px solid #ecebe636; padding: 11px; animation: palette-present 8.4s ease-in-out infinite; animation-play-state: var(--scene-play); }
+.palette-window i { position: absolute; left: 0; top: 0; bottom: 0; width: 24%; border-right: 1px solid #ecebe620; }
+.palette-window b { display: block; margin-left: 26%; width: 52%; height: 4px; background: var(--swatch, #e25117); }
+.palette-window span { display: block; margin: 8px 0 0 26%; width: 64%; height: 2px; background: #98958d80; }
+.palette-window span:last-child { width: 43%; margin-top: 5px; }
+.palette-paper { background: #ecebe6; border-color: #ecebe680; --swatch: #8c4830; animation-delay: -2.8s; }
+.palette-moss { background: #22291f; --swatch: #adb87c; animation-delay: -5.6s; }
+@keyframes palette-present { 0%,65%,100% { transform: translateY(3px); opacity: .65; } 20%,40% { transform: translateY(-5px); opacity: 1; border-color: var(--swatch, #e25117); } }
+.motion-sources circle { stroke: var(--orange); fill: #15161c; }
+.search-results path { stroke-dasharray: 240; animation: result-lines 6s ease-in-out infinite; animation-play-state: var(--scene-play); }
+.search-results path:nth-child(2) { animation-delay: -.5s; }
+.search-results path:nth-child(3) { animation-delay: -1s; }
+@keyframes result-lines { 0%,100% { opacity: .25; stroke-dashoffset: 200; } 35%,80% { opacity: 1; stroke-dashoffset: 0; } }
+
+/* Three principles, three drawings: local storage, a closing lock, inspectable code. */
+.privacy-motion { display: block; width: 100%; max-width: 300px; height: 90px; margin-top: 27px; overflow: hidden; }
+.privacy-grid h3 { margin-top: 21px; }
+.local-led { fill: var(--green); stroke: none; animation: storage-led 5s ease infinite; animation-play-state: var(--scene-play); }
+.local-led:nth-of-type(2) { animation-delay: -.6s; }
+.local-led:nth-of-type(3) { animation-delay: -1.2s; }
+@keyframes storage-led { 0%,100% { opacity: .3; } 40%,70% { opacity: 1; } }
+.lock-body { stroke: var(--orange); fill: #e2511708; }
+.lock-shackle { stroke: var(--orange); animation: close-lock 7.5s cubic-bezier(.2,.7,.2,1) infinite; animation-play-state: var(--scene-play); }
+@keyframes close-lock { 0%,100% { transform: translateY(-5px); opacity: .45; } 25%,85% { transform: none; opacity: 1; } }
+.cipher-lines { stroke: #ecebe630; animation: cipher-settle 7.5s ease infinite; animation-play-state: var(--scene-play); }
+@keyframes cipher-settle { 0%,100% { transform: translateX(-4px); opacity: .4; } 30%,85% { transform: none; opacity: 1; } }
+.lock-check { stroke: var(--green); stroke-dasharray: 32; animation: draw-check 7.5s ease infinite; animation-play-state: var(--scene-play); }
+@keyframes draw-check { 0%,20%,100% { stroke-dashoffset: 32; opacity: 0; } 40%,85% { stroke-dashoffset: 0; opacity: 1; } }
+.code-brackets { stroke: var(--orange); }
+.code-lines path { stroke: #ecebe670; stroke-dasharray: 100; animation: code-write 7s ease infinite; animation-play-state: var(--scene-play); }
+.code-lines path:nth-child(2) { animation-delay: -1s; }
+@keyframes code-write { 0%,100% { stroke-dashoffset: 75; opacity: .3; } 40%,80% { stroke-dashoffset: 0; opacity: 1; } }
+.source-graph { flex: 0 0 70px; width: 70px; height: 90px; }
+.source-graph circle { fill: var(--bg); stroke: var(--orange); }
+.install-motion { width: 300px; max-width: 100%; margin-top: 29px; }
+.download-heading > p:not(.eyebrow) { font-size: 13px; line-height: 1.9; max-width: 310px; margin-top: 24px; color: var(--muted); }
+.install-motion svg { display: block; width: 100%; height: auto; }
+.install-frame { stroke: #ecebe629; }
+.install-window-lines { stroke: #ecebe647; }
+.install-blocks path { fill: #e2511724; stroke: var(--orange); animation: install-assemble 8s cubic-bezier(.2,.7,.2,1) infinite; animation-play-state: var(--scene-play); transform-box: fill-box; transform-origin: center; }
+.install-blocks path:nth-child(2) { animation-delay: -.25s; }
+.install-blocks path:nth-child(3) { animation-delay: -.5s; }
+.install-blocks path:nth-child(4) { animation-delay: -.75s; }
+@keyframes install-assemble { 0%,100% { transform: translateY(-12px) scale(.7); opacity: .1; } 25%,85% { transform: none; opacity: 1; } }
+.install-check { stroke: var(--green); stroke-dasharray: 40; animation: install-check 8s ease infinite; animation-play-state: var(--scene-play); }
+@keyframes install-check { 0%,25%,100% { stroke-dashoffset: 40; opacity: 0; } 50%,85% { stroke-dashoffset: 0; opacity: 1; } }
+.install-track { stroke: var(--orange); stroke-dasharray: 92; animation: install-track 8s ease infinite; animation-play-state: var(--scene-play); }
+@keyframes install-track { 0%,100% { stroke-dashoffset: 92; } 55%,85% { stroke-dashoffset: 0; } }
+.faq-list details { position: relative; }
+.presentation-enabled .faq-list details.has-arrived::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -1px;
+  height: 1px;
+  width: 100%;
+  background: #e2511780;
+  transform-origin: left;
+  animation: question-rule 1.4s cubic-bezier(.2,.7,.2,1) both;
+  animation-play-state: var(--scene-play);
+}
+@keyframes question-rule { from { transform: scaleX(0); opacity: 1; } to { transform: scaleX(1); opacity: .25; } }
+@media (min-width: 901px) {
+  .capabilities-heading { position: sticky; top: calc(var(--nav-height) + 45px); }
+}
+@media (max-width: 700px) {
+  .capability-item { padding-block: 22px 25px; }
+  .capability-title { gap: 13px; }
+  .capability-title h3 { font-size: 17px; }
+  .capability-item > p, .capability-item > .text-link, .capability-item .tags, .feature-motion { margin-left: 26px; }
+  .feature-motion { height: 78px; margin-top: 14px; }
+  .feature-motion > svg { height: 60px; }
+  .motion-palettes { gap: 10px; }
+  .palette-window { height: 49px; padding: 8px; }
+  .privacy-motion { max-width: 240px; height: 78px; margin-top: 18px; }
+  .privacy-grid h3 { margin-top: 13px; }
+  .source-graph { flex-basis: 48px; width: 48px; height: 70px; }
+  .install-motion { width: 245px; margin-top: 19px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .presentation-enabled [data-reveal] { opacity: 1 !important; transform: none !important; filter: none !important; transition: none !important; }
+  .diagram-flow { stroke-dasharray: 5 15; }
+  .lock-check, .install-check { stroke-dashoffset: 0; opacity: 1; }
+}

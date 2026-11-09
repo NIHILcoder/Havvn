@@ -292,6 +292,7 @@ export function createHeroScene() {
   });
   let routes = [],
     activePeer = -1,
+    automaticPulse = false,
     pulseStart = 0,
     pulseCount = 0;
   let visible = true,
@@ -341,14 +342,15 @@ export function createHeroScene() {
       "aria-label",
       ru ? "Сбросить поворот и импульс" : "Reset rotation and pulse",
     );
-    status.textContent =
-      activePeer < 0
+    const nextStatus =
+      activePeer < 0 || automaticPulse
         ? ru
           ? "Демо P2P · 86 узлов"
           : "P2P demo · 86 peers"
         : (ru ? "Демо P2P · узел " : "P2P demo · peer ") +
           String(activePeer + 1).padStart(2, "0") +
           (ru ? " → 6 соседей" : " → 6 neighbors");
+    if (status.textContent !== nextStatus) status.textContent = nextStatus;
   }
   const languageObserver = new MutationObserver(labels);
   languageObserver.observe(document.documentElement, {
@@ -479,8 +481,9 @@ export function createHeroScene() {
       ? peer.index
       : -1;
   }
-  function sendPulse(index) {
+  function sendPulse(index, announce = true) {
     if (!canInteract()) return;
+    automaticPulse = !announce;
     activePeer = index;
     const source = peers[index];
     routes = peers
@@ -520,7 +523,7 @@ export function createHeroScene() {
     labels();
     paint();
   }
-  function nextPulse() {
+  function nextPulse({ automatic = false } = {}) {
     if (!canInteract()) return;
     scene.updateMatrixWorld(true);
     const front = peers
@@ -528,7 +531,15 @@ export function createHeroScene() {
       .filter(
         ({ world }) => world.z > 0 && Math.hypot(world.x, world.y) > 1.75,
       );
-    sendPulse(front.length ? front[pulseCount++ % front.length].id : 5);
+    sendPulse(front.length ? front[pulseCount++ % front.length].id : 5, !automatic);
+  }
+  function presentationCue(event) {
+    if (event.detail.sequence !== "network" || !canAnimate()) return;
+    const step = event.detail.step;
+    art.dataset.autoCue = String(step);
+    if (step === 0 || step === 3) nextPulse({ automatic: true });
+    exploded = step === 1;
+    labels();
   }
   function applyRotation() {
     if (!canAnimate()) {
@@ -702,6 +713,7 @@ export function createHeroScene() {
   resetButton.addEventListener("click", resetScene);
   explodeButton.addEventListener("click", togglePieces);
   window.addEventListener("havvn:motion-change", motionChange);
+  hero.addEventListener("havvn:presentation-cue", presentationCue);
   document.addEventListener("visibilitychange", sync);
   reduced.addEventListener("change", sync);
   canvas.addEventListener("webglcontextlost", contextLost);
@@ -729,6 +741,7 @@ export function createHeroScene() {
     resetButton.removeEventListener("click", resetScene);
     explodeButton.removeEventListener("click", togglePieces);
     window.removeEventListener("havvn:motion-change", motionChange);
+    hero.removeEventListener("havvn:presentation-cue", presentationCue);
     document.removeEventListener("visibilitychange", sync);
     reduced.removeEventListener("change", sync);
     window.removeEventListener("pageshow", sync);
@@ -752,4 +765,6 @@ export function createHeroScene() {
   });
   resize();
   sync();
+  if (hero.dataset.presentationState === "playing")
+    presentationCue({ detail: { sequence: "network", step: Number(hero.dataset.sequenceStep || 0) } });
 }
