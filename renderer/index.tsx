@@ -24,12 +24,16 @@ import '@fontsource/exo-2/600.css';
 import '@fontsource/exo-2/700.css';
 import './index.css';
 import { setSplashStage } from './utils/splash';
+import { listenDeviceChanges } from './utils/devices';
 
 setSplashStage('interface');
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
-root.render(
+const render = () => root.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+listenDeviceChanges();
+// Replay the protected journal before React reads persisted preferences.
+void (window.api.devices?.start() ?? Promise.resolve()).catch(() => {}).finally(render);

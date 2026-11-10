@@ -1,8 +1,13 @@
 import { sealRoomBackup, openRoomBackup, writeRoomBackup, validateBackupPassword, ROOM_BACKUP_MAX_BYTES } from '../db/room-backup';
-import { ipcMain, dialog, BrowserWindow, shell, app, Notification } from 'electron';
+import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron';
+import { showOsNotification, setNotificationWindow } from '../utils/os-notify';
 import { validateEpisodePrefetch, type EpisodePrefetchRequest } from '../../shared/episode-prefetch';
 import { getTorrentManager, TorrentError, getDefaultTrackers } from '../torrent';
 import * as db from '../db/store';
+import { registerDownloadRemovalIpc } from './download-removal';
+import { downloadRestoreWarnings } from '../services/download-restore-policy';
+import { TorrentCreationService } from '../services/torrent-creation';
+import { registerNotificationRulesIpc } from './notification-rules';
 import { AddDownloadRequest, DownloadStats, CreateTorrentRequest, FilePriority, RoomState } from '../../shared/types';
 import { safeBaseName } from '../../shared/path-safety';
 import { peerHostToIPv4 } from '../../shared/ip-range';
@@ -11,6 +16,11 @@ import { InvalidStateTransitionError } from '../../shared/state-machine';
 import fs from 'fs/promises';
 import Store from 'electron-store';
 import { HistoryPlayback } from '../services/history-playback';
+import { MediaRelocations, type MediaRelocationRecord } from '../services/media-relocations';
+import { inspectDownloadHelp } from '../services/download-help';
+import { validServerPreparationInput, type ServerPreparationInput } from '../../shared/server-readiness';
+import type { MediaRelocationTarget } from '../../shared/media-relocation';
+import { registerDeviceUi } from './devices';
 import { ExternalPlayer } from '../services/external-player';
 import { ExternalWatchQueue } from '../services/external-watch-queue';
 import type { ExternalWatchUpdate, WatchSession } from '../../shared/watch-history';
@@ -20,11 +30,20 @@ import fsSync from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { logger, detectVPN, getAppIconPath } from '../utils';
+import { logger, detectVPN } from '../utils';
 import { getRSSService } from '../services/rss-service';
 import { getShareManager, downloadContentPath } from '../sharing/share-manager';
 import { customTurnToIce, resolveTrackers } from '../sharing/ice-servers';
 import { getRoomManager } from '../sharing/room-manager';
+import { registerRoomFileSyncIpc } from './room-file-sync';
+import { registerStorageOverviewIpc } from './storage-overview';
+import { decryptSecretStrict } from '../db/secrets';
+import { registerRoomDocumentsIpc } from './room-documents';
+import { registerSettingsTransferIpc, notifyCategoriesChanged } from './settings-transfer';
+import { registerAppEventsIpc } from './app-events';
+import { registerAutomationIpc } from './automation-rules';
+import { getAppEvents } from '../services/app-events';
+import { AppEventSources } from '../services/app-event-sources';
 import { serverManager } from '../gameserver/server-manager';
 import type { MinecraftPlayerEntry } from '../../shared/gameserver-types';
 import { openProviderLogin } from '../services/provider-login';
@@ -43,6 +62,7 @@ import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from 
 import {
   validateDownloadPath,
   validateTrackerUrl,
+  validateTrackerRemoval,
   validateSeedLimit,
   validateMagnetUri,
   validateRoomId,
@@ -55,8 +75,10 @@ import {
   generateSecureToken,
 } from '../utils/security';
 import { globalRateLimiter, RATE_LIMITS, createWebContentsKey } from '../utils/rate-limiter';
+import { assertAppUiSender } from '../utils/app-ui-security';
 
 const log = logger.child('IPC');
+let eventSources: AppEventSources | undefined;
 const publicSearchProvider = (provider: import('../../shared/types').SearchProvider) => {
   const { password: _password, apiKey: _apiKey, ...publicFields } = provider;
   return publicFields;
@@ -138,6 +160,7 @@ type IpcHandler = (event: Electron.IpcMainInvokeEvent, ...args: any[]) => Promis
  */
 function wrapHandler(name: string, handler: IpcHandler): IpcHandler {
   return async (event, ...args) => {
+    assertAppUiSender(event, mainWindow);
     log.debug(`IPC call: ${name}`, { args: ['rooms:exportIdentity', 'rooms:importIdentity'].includes(name) ? '[redacted]' : args });
     try {
       const result = await handler(event, ...args);
@@ -152,6 +175,7 @@ function wrapHandler(name: string, handler: IpcHandler): IpcHandler {
       });
 
       // Re-throw with a clean message for the renderer
+      if (errorCode === 'TRANSFER_BLOCKED') throw new Error(t('transfer.blocked'));
       if (error instanceof TorrentError) {
         throw new Error(`${error.message} (${error.code})`);
       }
@@ -172,6 +196,7 @@ let mainWindow: BrowserWindow;
 
 export function setupIpcHandlers(window: BrowserWindow): void {
   mainWindow = window;
+  setNotificationWindow(() => mainWindow);
 
   const roomManager = getRoomManager();
   roomManager.setMainWindow(window);
@@ -228,7 +253,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   if (!handlersRegistered) {
     roomManager.onRoomUnavailable((roomId, reason) => serverManager.onRoomUnavailable(roomId, reason));
+    roomManager.onRoomUnavailable((roomId, reason) => {
+      if (['removed', 'left', 'left-local'].includes(reason)) eventSources?.removed('room', roomId);
+    });
     roomManager.onRoomUpdate((state, prev) => {
+      eventSources?.room(state);
       const prevVip = prev?.lan?.active && prev.lan.selfVip;
       const newVip = state.lan?.active && state.lan.selfVip;
       if (prevVip !== newVip || prev?.lan?.active !== state.lan?.active) {
@@ -272,6 +301,41 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   handlersRegistered = true;
 
   const torrentManager = getTorrentManager();
+  registerNotificationRulesIpc(() => mainWindow, (id, rule, mode) => roomManager.setNotificationRule(id, rule, mode));
+  const downloadRemovals = registerDownloadRemovalIpc(() => mainWindow, torrentManager, async snapshot => downloadRestoreWarnings(snapshot.download, {
+    settings: db.getSettings, privacy: db.getPrivacyConfig, bind: () => torrentManager.getVpnBindStatus(),
+    free: async target => (await import('../utils/index.js')).checkDiskSpace(target),
+    vpnSafe: async bind => {
+      const route = await (await import('../utils/vpn-network.js')).getRoutedVpnIPv4();
+      return !!route && (!bind?.enabled || (!bind.fallback && bind.boundIp === route.address));
+    },
+  }));
+  eventSources = new AppEventSources(getAppEvents());
+  registerAutomationIpc(() => mainWindow);
+  registerAppEventsIpc(() => mainWindow, {
+    getDownload: db.getDownloadById,
+    getRoomIds: async () => db.getPersistedRooms().map(room => room.roomId),
+    retry: id => torrentManager.retryDownload(id),
+  });
+  const observedStatuses = new Map<string, string>();
+  const captureDownload = (download: { id: string; status: import('../../shared/types').DownloadStatus; lastError?: string | null }, notify = true) => {
+    if (observedStatuses.get(download.id) === download.status) return;
+    observedStatuses.set(download.id, download.status);
+    if (download.status === 'error' && download.lastError === undefined) {
+      void db.getDownloadById(download.id).then(live => {
+        if (live && live.status === 'error' && observedStatuses.get(live.id) === 'error') eventSources?.download(live);
+      }).catch(() => {});
+    } else eventSources?.download({ ...download, lastError: download.lastError ?? null });
+    if (notify && download.status === 'error') void db.getDownloadById(download.id).then(live => {
+      if (live?.status === 'error' && observedStatuses.get(live.id) === 'error') showOsNotification(t('notify.downloadError.title'), t('notify.downloadError.body', { name: live.name }),
+        { context: { kind: 'download-error', downloadId: live.id } });
+    }).catch(() => {});
+  };
+  void db.getAllDownloads().then(downloads => {
+    for (const download of downloads) if (!observedStatuses.has(download.id)) captureDownload(download, false);
+    getAppEvents().reconcileObjects('download', new Set(downloads.map(d => d.id)));
+    getAppEvents().reconcileObjects('room', new Set(db.getPersistedRooms().map(room => room.roomId)));
+  }).catch(() => {});
 
   log.info('Setting up IPC handlers');
 
@@ -338,7 +402,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   ipcMain.handle('downloads:remove', wrapHandler('downloads:remove',
-    async (event, id: string, deleteFiles: boolean) => {
+    async (event, id: string, deleteFiles: boolean, previewToken?: string) => {
       // Rate limiting
       const key = createWebContentsKey('downloads:remove', event.sender.id);
       globalRateLimiter.checkOrThrow(key, RATE_LIMITS.REMOVE_DOWNLOAD.maxRequests, RATE_LIMITS.REMOVE_DOWNLOAD.windowMs);
@@ -348,7 +412,12 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       if (typeof deleteFiles !== 'boolean') {
         throw new Error(`Invalid deleteFiles parameter: expected boolean, got ${typeof deleteFiles}`);
       }
-      return await torrentManager.removeDownload(id, deleteFiles);
+      downloadRemovals.trusted(event);
+      if (previewToken !== undefined && (typeof previewToken !== 'string' || !/^[a-f0-9-]{36}$/i.test(previewToken))) throw new Error('Invalid deletion preview token');
+      const plan = deleteFiles && previewToken ? await downloadRemovals.previews.consume(id, previewToken) : undefined;
+      const result = await downloadRemovals.journal.remove(id, deleteFiles, plan);
+      eventSources?.removed('download', id); observedStatuses.delete(id);
+      return result;
     }
   ));
 
@@ -460,7 +529,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   const playbackCache = new Store<{ files: Record<string, TorrentFile[]> }>({ name: 'playback-files', clearInvalidConfig: true, defaults: { files: {} } });
+  const relocationStore = new Store<{ records: MediaRelocationRecord[] }>({ name: 'media-relocations', clearInvalidConfig: true, defaults: { records: [] } });
+  const relocations = new MediaRelocations(() => relocationStore.get('records'), records => relocationStore.set('records', records));
   const historyPlayback = new HistoryPlayback({
+    relocations,
     download: db.getDownloadById, files: id => torrentManager.getHistoryFiles(id),
     stream: (id, index, opts) => torrentManager.getStreamUrl(id, index, opts), ffmpeg: () => torrentManager.ffmpegBinary,
     cached: key => playbackCache.get('files')[key] || [],
@@ -492,14 +564,39 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('externalPlayer:watchUpdates', wrapHandler('externalPlayer:watchUpdates', async event => { externalSender(event); return externalWatch.list(); }));
   ipcMain.handle('externalPlayer:acknowledgeWatch', wrapHandler('externalPlayer:acknowledgeWatch', async (event, ids: string[]) => { externalSender(event); externalWatch.acknowledge(ids); }));
   app.once('before-quit', () => externalPlayer.close());
+  registerDeviceUi(mainWindow, historyPlayback, externalPlayer);
   ipcMain.handle('externalPlayer:inspect', wrapHandler('externalPlayer:inspect', async (event, id: string, rel: string) => { externalSender(event); validateDownloadId(id); return externalPlayer.inspect(id, rel); }));
   ipcMain.handle('externalPlayer:sessions', wrapHandler('externalPlayer:sessions', async event => { externalSender(event); return externalPlayer.sessions(); }));
   ipcMain.handle('externalPlayer:stop', wrapHandler('externalPlayer:stop', async (event, id: string) => { externalSender(event); if (typeof id !== 'string' || id.length > 80) throw new Error('Invalid stream'); externalPlayer.stop(id); }));
-  const historyMethods = ['files', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop'] as const;
+  const historyMethods = ['files', 'libraryFiles', 'stream', 'audio', 'subtitles', 'vtt', 'duration', 'stop'] as const;
+  ipcMain.handle('historyPlayback:relocations', wrapHandler('historyPlayback:relocations', async event => { externalSender(event); return relocations.list(); }));
+  ipcMain.handle('historyPlayback:chooseRelocation', wrapHandler('historyPlayback:chooseRelocation', async (event, target: MediaRelocationTarget, folder = false) => {
+    externalSender(event); validateDownloadId(target?.downloadId);
+    const current = await db.getDownloadById(target.downloadId);
+    if (current && (current.infoHash || current.id) !== target.identity) throw new Error('Media relocation source changed');
+    const result = await dialog.showOpenDialog(BrowserWindow.getFocusedWindow() ?? mainWindow, { properties: [folder ? 'openDirectory' : 'openFile'] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    let candidate = result.filePaths[0];
+    if (folder) {
+      // Inspect two explicit locations only; never crawl a user directory.
+      if (!target.path || target.path.includes('..') || target.path.includes(':') || path.isAbsolute(target.path)) throw new Error('Invalid media path');
+      const candidates = [...new Set([path.join(candidate, target.path), path.join(candidate, path.basename(target.path.replace(/\\/g, '/')))])].filter(file => { try { return fsSync.statSync(file).isFile(); } catch { return false; } });
+      if (candidates.length !== 1) throw new Error('Media relocation folder ambiguous');
+      candidate = candidates[0];
+    }
+    return relocations.preview(target, candidate);
+  }));
+  ipcMain.handle('historyPlayback:confirmRelocation', wrapHandler('historyPlayback:confirmRelocation', async (event, token: string) => { externalSender(event); return relocations.confirm(token); }));
+  ipcMain.handle('historyPlayback:cancelRelocation', wrapHandler('historyPlayback:cancelRelocation', async (event, token: string) => { externalSender(event); relocations.cancel(token); }));
   for (const method of historyMethods) ipcMain.handle('historyPlayback:' + method, wrapHandler('historyPlayback:' + method, async (_event, id: string, ...args: unknown[]) => {
     validateDownloadId(id);
     const invoke = historyPlayback[method].bind(historyPlayback) as (id: string, ...args: unknown[]) => unknown;
     return invoke(id, ...args);
+  }));
+
+  ipcMain.handle('downloads:inspectHelp', wrapHandler('downloads:inspectHelp', async (event, id: string) => {
+    externalSender(event); validateDownloadId(id);
+    return inspectDownloadHelp(id, { download: db.getDownloadById, stats: () => torrentManager.getStats(), settings: () => torrentManager.getEffectiveSettings(), files: value => torrentManager.getHistoryFiles(value) });
   }));
 
   ipcMain.handle('downloads:getFiles', wrapHandler('downloads:getFiles',
@@ -520,6 +617,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
   ipcMain.handle('downloads:prefetchSupport', wrapHandler('downloads:prefetchSupport', async () => torrentManager.getEpisodePrefetchSupport()));
+  ipcMain.handle('downloads:engineCapabilities', wrapHandler('downloads:engineCapabilities', async () => torrentManager.getEngineCapabilities()));
   ipcMain.handle('downloads:prefetchEpisode', wrapHandler('downloads:prefetchEpisode', async (_event, id: string, request: EpisodePrefetchRequest) => {
     validateDownloadId(id);
     validateEpisodePrefetch(request);
@@ -555,8 +653,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('share:stop', wrapHandler('share:stop',
     async (_event, downloadId: string) => {
-      await getShareManager().stop(downloadId);
-      return { ok: true };
+      return getShareManager().stop(downloadId);
     }
   ));
 
@@ -652,6 +749,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   // ── Friend swarms / private rooms (Phase 3) ─────────────────────────────
+  registerRoomFileSyncIpc(mainWindow, roomManager);
+  registerStorageOverviewIpc(mainWindow, { userData: app.getPath('userData'), sessionData: app.getPath('sessionData'),
+    downloads: db.getAllDownloads, rooms: db.getStorageRoomRecords, manifest: db.getRoomManifest, decrypt: decryptSecretStrict });
+  registerRoomDocumentsIpc(mainWindow, roomManager);
   ipcMain.handle('rooms:getProfile', wrapHandler('rooms:getProfile',
     async () => roomManager.getProfile()
   ));
@@ -733,8 +834,16 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:diagnose', wrapHandler('rooms:diagnose', async (_event, roomId: string) => {
     validateRoomId(roomId); return roomManager.diagnoseRoom(roomId);
   }));
+  ipcMain.handle('rooms:preflight', wrapHandler('rooms:preflight', async (_event, roomId: string, action: import('../../shared/room-preflight').RoomAction, targetId?: string) => {
+    validateRoomId(roomId);
+    if (!['watch', 'watch-host', 'lan', 'file-sync', 'documents'].includes(action) || targetId !== undefined && (typeof targetId !== 'string' || !/^[a-f0-9]{32}$/.test(targetId))) throw new Error('Invalid room action');
+    return roomManager.preflight(roomId, action, { targetId });
+  }));
   ipcMain.handle('rooms:retryConnection', wrapHandler('rooms:retryConnection', async (_event, roomId: string) => {
     validateRoomId(roomId); return roomManager.retryConnection(roomId);
+  }));
+  ipcMain.handle('rooms:probeConnection', wrapHandler('rooms:probeConnection', async (_event, roomId: string) => {
+    validateRoomId(roomId); return roomManager.probeConnection(roomId);
   }));
   ipcMain.handle('rooms:exportDiagnostics', wrapHandler('rooms:exportDiagnostics', async (_event, roomId: string) => {
     validateRoomId(roomId);
@@ -935,8 +1044,8 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('rooms:broadcastSync', wrapHandler('rooms:broadcastSync',
     async (_event, roomId: string, payload: import('../../shared/room-watch-sync').WatchInput) => {
-      roomManager.broadcastSync(roomId, payload);
-      return { ok: true };
+      const result = await roomManager.broadcastSync(roomId, payload);
+      return result ?? { ok: payload.action !== 'request' };
     }
   ));
 
@@ -1035,16 +1144,28 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:voiceMicTestStop', wrapHandler('rooms:voiceMicTestStop',
     async () => roomManager.voiceMicTestStop()
   ));
+  ipcMain.handle('rooms:voiceSpeakerTestStart', wrapHandler('rooms:voiceSpeakerTestStart',
+    async (_event, settings: unknown) => roomManager.voiceSpeakerTestStart(settings as never)
+  ));
+  ipcMain.handle('rooms:voiceSpeakerTestStop', wrapHandler('rooms:voiceSpeakerTestStop',
+    async () => roomManager.voiceSpeakerTestStop()
+  ));
 
   // ── Screenshare ───────────────────────────────────────────────────────────
   ipcMain.handle('rooms:screenSources', wrapHandler('rooms:screenSources',
     async () => roomManager.screenSources()
   ));
   ipcMain.handle('rooms:screenShareStart', wrapHandler('rooms:screenShareStart',
-    async (_event, roomId: string, sourceId: string, withAudio?: boolean) => roomManager.screenShareStart(roomId, String(sourceId || ''), !!withAudio)
+    async (_event, roomId: string, sourceId: string, withAudio?: boolean, settings?: import('../../shared/screen-share').ScreenShareSettings) => roomManager.screenShareStart(roomId, String(sourceId || ''), !!withAudio, settings)
   ));
   ipcMain.handle('rooms:screenShareStop', wrapHandler('rooms:screenShareStop',
     async (_event, roomId: string) => roomManager.screenShareStop(roomId)
+  ));
+  ipcMain.handle('rooms:screenConfigure', wrapHandler('rooms:screenConfigure',
+    async (_event, roomId: string, settings: import('../../shared/screen-share').ScreenShareSettings) => roomManager.screenConfigure(roomId, settings)
+  ));
+  ipcMain.handle('rooms:screenPlayback', wrapHandler('rooms:screenPlayback',
+    async (_event, roomId: string, memberId: string, volume: number, muted: boolean) => roomManager.screenPlayback(roomId, memberId, volume, muted)
   ));
   ipcMain.handle('rooms:screenWatchStart', wrapHandler('rooms:screenWatchStart',
     async (_event, roomId: string, memberId: string) => roomManager.screenWatchStart(roomId, String(memberId || ''))
@@ -1114,6 +1235,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rooms:srvState', wrapHandler('rooms:srvState',
     async (_event, roomId: string) => serverManager.stateForRoom(String(roomId || ''))
   ));
+  ipcMain.handle('rooms:srvPreparation', wrapHandler('rooms:srvPreparation', async (_event, roomId: string, input: ServerPreparationInput) => {
+    if (typeof roomId !== 'string' || !roomId || roomId.length > 128 || !validServerPreparationInput(input)) throw new Error('Invalid server preparation');
+    return roomManager.publishServerPreparation(roomId, input, serverManager.preparationMirror(roomId));
+  }));
   ipcMain.handle('rooms:srvVersions', wrapHandler('rooms:srvVersions',
     async (_event, moduleId: string) => serverManager.listVersions(String(moduleId || ''))
   ));
@@ -1460,6 +1585,15 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (_event, roomId: string, memberId: string) => roomManager.transferOwner(roomId, memberId)
   ));
 
+  ipcMain.handle('rooms:rotateKey', wrapHandler('rooms:rotateKey',
+    async (_event, roomId: string) => { validateRoomId(roomId); return roomManager.rotateKey(roomId); }
+  ));
+  ipcMain.handle('rooms:setKeyRotation', wrapHandler('rooms:setKeyRotation',
+    async (_event, roomId: string, plan: import('../../shared/room-key-rotation').RoomKeyRotationPlan | null) => {
+      validateRoomId(roomId); return roomManager.setKeyRotation(roomId, plan);
+    }
+  ));
+
   ipcMain.handle('rooms:sendChat', wrapHandler('rooms:sendChat',
     async (event, roomId: string, text: string, replyTo?: string, messageId?: string) => {
       // Rate limiting
@@ -1591,6 +1725,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   // Settings
+  ipcMain.handle('settings:effective', wrapHandler('settings:effective',
+    async () => torrentManager.getEffectiveSettings()
+  ));
+
   ipcMain.handle('settings:get', wrapHandler('settings:get',
     async () => {
       return db.getSettings();
@@ -1605,6 +1743,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
         settings = { ...settings, roomResources: result.policy };
       }
       const updated = await db.updateSettings(settings);
+      if (settings.resourceMode !== undefined) {
+        const { getResourceModeService } = await import('../services/resource-mode.js');
+        await getResourceModeService().refresh();
+      }
 
       // Update torrent manager with new settings.
       //
@@ -1695,19 +1837,24 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('categories:add', wrapHandler('categories:add',
     async (_event, category: Omit<import('../../shared/types.js').Category, 'id'>) => {
-      return db.addCategory(category);
+      const added = await db.addCategory(category);
+      notifyCategoriesChanged();
+      return added;
     }
   ));
 
   ipcMain.handle('categories:update', wrapHandler('categories:update',
     async (_event, id: string, updates: Partial<import('../../shared/types.js').Category>) => {
-      return db.updateCategory(id, updates);
+      const updated = await db.updateCategory(id, updates);
+      notifyCategoriesChanged();
+      return updated;
     }
   ));
 
   ipcMain.handle('categories:delete', wrapHandler('categories:delete',
     async (_event, id: string) => {
-      return db.deleteCategory(id);
+      await db.deleteCategory(id);
+      notifyCategoriesChanged();
     }
   ));
 
@@ -1726,7 +1873,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('scheduler:update', wrapHandler('scheduler:update',
     async (_event, config: Partial<import('../../shared/types.js').SchedulerConfig>) => {
-      return db.updateScheduler(config);
+      const updated = await db.updateScheduler(config);
+      await torrentManager.refreshEffectiveSettings();
+      return updated;
     }
   ));
 
@@ -1762,6 +1911,14 @@ export function setupIpcHandlers(window: BrowserWindow): void {
       return { path: filePath, content };
     }
   ));
+
+  ipcMain.handle('dialog:selectTorrentFiles', wrapHandler('dialog:selectTorrentFiles', async event => {
+    downloadRemovals.trusted(event);
+    const result = await dialog.showOpenDialog(mainWindow, { properties: ['openFile', 'multiSelections'], filters: [{ name: t('dialog.filter.torrent'), extensions: ['torrent'] }] });
+    if (result.canceled) return [];
+    if (result.filePaths.length > 64) throw new Error(t('downloads.queue.limit').replace('{count}', '64'));
+    return result.filePaths;
+  }));
 
   // Generic showOpenDialog
   ipcMain.handle('dialog:showOpenDialog', wrapHandler('dialog:showOpenDialog',
@@ -1820,6 +1977,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   // can't display anything and would just waste IPC/CPU. Live values are still
   // kept in the main process and pushed on the next tick after the window shows.
   torrentManager.onStats((stats: DownloadStats[]) => {
+    for (const download of stats) captureDownload(download);
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
       mainWindow.webContents.send('downloads:stats', stats);
     }
@@ -1833,16 +1991,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   });
 
   // Download completion — OS notification
-  torrentManager.onComplete(({ name }) => {
-    if (Notification.isSupported()) {
-      const iconPath = getAppIconPath();
-      const notification = new Notification({
-        title: t('notify.downloadComplete.title'),
-        body: t('notify.downloadComplete.body', { name }),
-        ...(iconPath ? { icon: iconPath } : {}),
-      });
-      notification.show();
-    }
+  torrentManager.onComplete(({ id, name }) => {
+    eventSources?.complete(id);
+    void db.getDownloadById(id).then(download => {
+      if (!download?.automation?.completed?.plan.notifyRules.length) showOsNotification(t('notify.downloadComplete.title'), t('notify.downloadComplete.body', { name }), { context: { kind: 'download-complete', downloadId: id } });
+    }).catch(() => {});
   });
 
   // ===== Create Torrent =====
@@ -1899,7 +2052,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
       const build = async (p: string): Promise<import('../../shared/types.js').FsFileNode | null> => {
         if (count >= MAX_ENTRIES) return null;
-        const stats = await fs.stat(p);
+        const stats = await fs.lstat(p);
+        if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory())) return null;
+        // Count directories too: an empty-directory tree also needs a bound.
+        count++;
         if (stats.isDirectory()) {
           const entries = await fs.readdir(p, { withFileTypes: true });
           const children: import('../../shared/types.js').FsFileNode[] = [];
@@ -1914,7 +2070,6 @@ export function setupIpcHandlers(window: BrowserWindow): void {
           }
           return { path: p, name: path.basename(p), size: dirSize, isDirectory: true, children };
         }
-        count++;
         return { path: p, name: path.basename(p), size: stats.size, isDirectory: false };
       };
 
@@ -1977,27 +2132,17 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ));
 
   // Create torrent file
+  const torrentCreation = new TorrentCreationService(torrentManager, progress => {
+    if (!mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('torrent:createProgress', progress);
+  });
+  ipcMain.handle('torrent:cancelCreate', wrapHandler('torrent:cancelCreate',
+    (event, requestId: string) => torrentCreation.cancel(event.sender.id, requestId)
+  ));
   ipcMain.handle('torrent:create', wrapHandler('torrent:create',
-    async (_event, request: CreateTorrentRequest) => {
-      log.info('Creating torrent', { sourcePaths: request.sourcePaths });
-      
-      const result = await torrentManager.createTorrentFile(request);
-      
-      // If startSeeding is true, seed the created torrent from the source files
-      // on disk (so a custom name can't break the content mapping → 0% stall).
-      if (request.startSeeding && result.torrentFilePath) {
-        log.info('Auto-starting seeding for created torrent', { infoHash: result.infoHash });
-        await torrentManager.addSeed({
-          sourcePaths: request.sourcePaths,
-          name: request.options.name,
-          announceList: request.options.announceList,
-          pieceLength: request.options.pieceLength,
-          torrentFilePath: result.torrentFilePath,
-        });
-      }
-      
-      return result;
-    }
+    (event, request: CreateTorrentRequest) => torrentCreation.create(event.sender.id, request)
+  ));
+  ipcMain.handle('torrent:retryCreatedSeed', wrapHandler('torrent:retryCreatedSeed',
+    (event, seedRetryId: string) => torrentCreation.retrySeed(event.sender.id, seedRetryId)
   ));
 
   // Get default trackers
@@ -2213,13 +2358,10 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
-  // The engine this session actually booted with. Captured at handler setup
-  // (before the user can touch settings), so the renderer can tell "configured"
-  // apart from "running" and keep its restart-pending banner honest across
-  // page remounts.
-  const runningEngine = db.getEngineChoice();
+  // Use the cached boot environment, including native-binary fallback, so a
+  // pending settings choice does not change the engine reported for this run.
   ipcMain.handle('app:getRunningEngine', wrapHandler('app:getRunningEngine',
-    async () => runningEngine
+    async () => (await torrentManager.getEngineCapabilities()).engine
   ));
 
   // Default client
@@ -2293,81 +2435,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
-  // Export settings
-  ipcMain.handle('settings:export', wrapHandler('settings:export',
-    async () => {
-      const result = await dialog.showSaveDialog(mainWindow, {
-        title: t('dialog.exportSettings'),
-        defaultPath: 'havvn-settings.json',
-        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { success: false };
-      }
-
-      const settings = await db.getSettings();
-      const categories = await db.getCategories();
-      const scheduler = await db.getScheduler();
-      const privacyConfig = await db.getPrivacyConfig();
-
-      // Never write secrets to the export file in plaintext — the store keeps
-      // the proxy password encrypted at rest, the export must not undo that.
-      const exportableSettings = { ...settings, proxyPassword: '' };
-
-      const exportData = {
-        version: 1,
-        exportedAt: new Date().toISOString(),
-        settings: exportableSettings,
-        categories,
-        scheduler,
-        privacyConfig,
-      };
-
-      await fs.writeFile(result.filePath, JSON.stringify(exportData, null, 2), 'utf-8');
-      log.info('Settings exported', { path: result.filePath });
-      return { success: true, path: result.filePath };
-    }
-  ));
-
-  // Import settings
-  ipcMain.handle('settings:import', wrapHandler('settings:import',
-    async () => {
-      const result = await dialog.showOpenDialog(mainWindow, {
-        title: t('dialog.importSettings'),
-        properties: ['openFile'],
-        filters: [{ name: t('dialog.filter.json'), extensions: ['json'] }],
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { success: false };
-      }
-
-      const content = await fs.readFile(result.filePaths[0], 'utf-8');
-      const importData = JSON.parse(content);
-
-      if (!importData.version || !importData.settings) {
-        throw new Error('Invalid settings file format');
-      }
-
-      // Apply imported settings. Drop an empty proxyPassword so importing a
-      // (secret-stripped) export doesn't wipe a configured password.
-      if (importData.settings) {
-        const incoming = { ...importData.settings };
-        if (!incoming.proxyPassword) delete incoming.proxyPassword;
-        await db.updateSettings(incoming);
-      }
-      if (importData.scheduler) {
-        await db.updateScheduler(importData.scheduler);
-      }
-      if (importData.privacyConfig) {
-        await db.updatePrivacyConfig(importData.privacyConfig);
-      }
-
-      log.info('Settings imported', { path: result.filePaths[0] });
-      return { success: true };
-    }
-  ));
+  registerSettingsTransferIpc(() => mainWindow);
 
   // App Statistics
   ipcMain.handle('stats:getAppStats', wrapHandler('stats:getAppStats',
@@ -2472,7 +2540,7 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     async (event, id: string, url: string) => {
       // Validate inputs
       validateDownloadId(id);
-      validateTrackerUrl(url);
+      validateTrackerRemoval(url);
 
       return await torrentManager.removeTracker(id, url);
     }
@@ -2672,6 +2740,9 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('rss:previewRule', wrapHandler('rss:previewRule',
     async (_event, rule) => getRSSService().previewRule(rule)
   ));
+  ipcMain.handle('rss:forecastRule', wrapHandler('rss:forecastRule',
+    async (_event, rule) => getRSSService().forecastRule(rule)
+  ));
 
   ipcMain.handle('rss:runRule', wrapHandler('rss:runRule',
     async (_event, id: string) => getRSSService().runRuleNow(id)
@@ -2705,6 +2776,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     }
   ));
 
+  ipcMain.handle('search:more', wrapHandler('search:more', async (event, page: string) => {
+    const sender = event.sender;
+    return getSearchService().more(page, progress => { if (!sender.isDestroyed()) sender.send('search:progress', progress); });
+  }));
+
   ipcMain.handle('search:getNetworkSettings', wrapHandler('search:getNetworkSettings', async () => getSearchNetworkSettings()));
   ipcMain.handle('search:saveNetworkProfile', wrapHandler('search:saveNetworkProfile', async (_e, input) => {
     const profile = saveSearchNetworkProfile(input);
@@ -2715,7 +2791,13 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     return profile;
   }));
   ipcMain.handle('search:setNetworkAccess', wrapHandler('search:setNetworkAccess', async (_e, id, access) => {
-    if (!(await db.getSearchProviders()).some(p => p.id === id)) throw new Error('Provider not found');
+    const provider = (await db.getSearchProviders()).find(p => p.id === id);
+    if (!provider) throw new Error('Provider not found');
+    if (provider.type === 'rutracker') {
+      if (!access) throw new Error('RuTracker requires a shared session');
+      const { rutrackerBase } = await import('../../shared/rutracker.js');
+      access = { ...access, mirrors: (access.mirrors ?? []).map(rutrackerBase) };
+    }
     setProviderAccess(id, access);
     getSearchService().clearResultCache();
     await providerNetwork.reset(id);
@@ -2733,6 +2815,27 @@ export function setupIpcHandlers(window: BrowserWindow): void {
     await providerNetwork.reset(id, true);
   }));
   ipcMain.handle('search:resolveSource', wrapHandler('search:resolveSource', async (_e, refs) => getSearchService().resolveSource(refs)));
+  const previewControllers = new Map<string, AbortController>();
+  const previewKey = (event: Electron.IpcMainInvokeEvent, request: unknown) => {
+    if (typeof request !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(request)) throw new Error('Invalid preview request');
+    return `${event.sender.id}:${request}`;
+  };
+  const previewWork = async <T>(event: Electron.IpcMainInvokeEvent, request: unknown, work: (key: string, signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const key = previewKey(event, request), service = getSearchService();
+    if (previewControllers.has(key) || previewControllers.size >= 24) throw new Error('Too many preview requests');
+    const controller = new AbortController(); previewControllers.set(key, controller);
+    const cancel = () => { controller.abort(); service.cancelPreview(key); };
+    event.sender.once('destroyed', cancel);
+    try { return await work(key, controller.signal); }
+    finally { previewControllers.delete(key); event.sender.removeListener('destroyed', cancel); }
+  };
+  ipcMain.handle('search:releaseDetails', wrapHandler('search:releaseDetails', async (event, refs, request, selected, refresh) =>
+    previewWork(event, request, (key, signal) => getSearchService().releaseDetails(refs, key, selected, refresh === true, signal))));
+  ipcMain.handle('search:releaseImage', wrapHandler('search:releaseImage', async (event, assetId, request) =>
+    previewWork(event, request, key => getSearchService().releaseImage(assetId, key))));
+  ipcMain.handle('search:cancelPreview', wrapHandler('search:cancelPreview', async (event, request) => {
+    const key = previewKey(event, request); previewControllers.get(key)?.abort(); getSearchService().cancelPreview(key);
+  }));
 
   ipcMain.handle('search:getProviders', wrapHandler('search:getProviders',
     async () => (await db.getSearchProviders()).map(publicSearchProvider)
@@ -2743,6 +2846,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
   ipcMain.handle('search:addProvider', wrapHandler('search:addProvider',
     async (_event, provider) => {
       getSearchService().clearResultCache();
+      if (provider.type === 'rutracker') {
+        const { rutrackerBase } = await import('../../shared/rutracker.js');
+        provider = { name: 'RuTracker', url: rutrackerBase(provider.url), type: 'rutracker', enabled: true };
+        if ((await db.getSearchProviders()).some(p => p.type === 'rutracker' && p.url === provider.url)) throw new Error('RuTracker is already connected');
+      }
       const created = await db.addSearchProvider(provider);
       if (created.type !== 'script') setProviderAccess(created.id, { profileId: 'system', origins: [] });
       return publicSearchProvider(created);
@@ -2751,6 +2859,11 @@ export function setupIpcHandlers(window: BrowserWindow): void {
 
   ipcMain.handle('search:updateProvider', wrapHandler('search:updateProvider',
     async (_event, id: string, updates) => {
+      const previous = (await db.getSearchProviders()).find(p => p.id === id);
+      if (updates.type === 'rutracker' || previous?.type === 'rutracker') {
+        const { rutrackerBase } = await import('../../shared/rutracker.js');
+        updates = { ...updates, url: rutrackerBase(updates.url ?? previous?.url), type: 'rutracker' };
+      }
       getSearchService().clearResultCache();
       await providerNetwork.reset(id);
       return publicSearchProvider(await db.updateSearchProvider(id, updates));

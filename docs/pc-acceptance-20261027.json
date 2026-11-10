@@ -1,0 +1,958 @@
+{
+  "scope": "Windows single-PC acceptance",
+  "recordedAt": "2026-10-27T08:20:43.166Z",
+  "automatedLocalAcceptancePassed": true,
+  "releaseReady": false,
+  "physicalMachines": 1,
+  "collector": {
+    "path": "artifacts/pc-acceptance-20261027/collect.cjs",
+    "sha256": "9a54f8b465500dcee64c2c823bc21980379adb7006d2917c7652e4987ed216d6",
+    "bytes": 8953
+  },
+  "fullRegression": {
+    "passed": 4314,
+    "failed": 0,
+    "files": 331,
+    "defaultTimeoutMs": 5000,
+    "maxWorkers": 2,
+    "productSourcesChangedAfterStart": []
+  },
+  "node": {
+    "passed": 32,
+    "failed": 0
+  },
+  "storageRegression": {
+    "before": 37,
+    "fullSuite": "passed",
+    "after": 37,
+    "oldTimeoutsUnchanged": true,
+    "preciseOldLoadCauseProven": false
+  },
+  "phases": {
+    "local": {
+      "status": "passed-current",
+      "receipt": {
+        "path": "artifacts/pc-acceptance-20261027/fun01/local-run.json",
+        "sha256": "791edc63f0dd2641a3b8490a68b8de53096ed9c2b28bda91bd5d74f9aecc1986",
+        "bytes": 9355
+      }
+    },
+    "package": {
+      "status": "passed-current",
+      "receipt": {
+        "path": "artifacts/pc-acceptance-20261027/fun01/package-run.json",
+        "sha256": "ecbe2d8a0503023dcfe4c6cdca652b30553088436700a260a96bc869fa3effba",
+        "bytes": 5694
+      }
+    },
+    "installer": {
+      "status": "passed-current",
+      "receipt": {
+        "path": "artifacts/pc-acceptance-20261027/fun01/installer-run.json",
+        "sha256": "53513c85ba2554705dea87f676c34b69a9ed0350a96e97ae4f1393e8579a50b2",
+        "bytes": 2431
+      }
+    }
+  },
+  "sourceSha256": "7e49cf9553086217c6f802695960d411eb91e32823106a27bfea7e5dac1c26b1",
+  "installer": {
+    "checks": 9,
+    "privateNamespace": "HavvnAcceptance605d7c",
+    "updatedAsar": "576131afa4f989ca5e9b7b19b6ecd5f53b6833873a850d5fb39af97c1c09cce3",
+    "baselineAsar": "a388fcd9bab670792fad4b8e44565410ff762186b69722a7bb49dc544c62dc15",
+    "checksPassed": [
+      "fresh-nsis-install-private-shortcuts-and-associations",
+      "packaging-includes-runtime-excludes-test-profiles",
+      "installed-baseline-real-engine-room-document-snapshot",
+      "same-guid-nsis-replacement-preserves-shortcut-choice",
+      "updated-app-retains-settings-paused-download-room-identity-document-history",
+      "updated-packaged-crdt-worker-edits-and-restores-pre-update-snapshot",
+      "updater-mode-keeps-deleted-desktop-and-menu-shortcuts-deleted",
+      "private-uninstall-removes-registrations-keeps-profile-and-download-bytes",
+      "primary-havvn-executable-and-file-handlers-unchanged"
+    ],
+    "installers": {
+      "baseline": "c9032e5ca105b7b4ae44ccf5d184a7c24d41a9897b151264ce1a3089a84477ce",
+      "updated": "0175a70475dac0c7f35185912ce9aef089e77251feec7570e0b3ab5ac8d53274"
+    },
+    "sameCodeVersionLabels": true
+  },
+  "ui": {
+    "automation": {
+      "passed": true,
+      "checks": 20
+    },
+    "preflight": {
+      "passed": true,
+      "checks": 9
+    },
+    "accessibility": {
+      "passed": true,
+      "checks": 36
+    },
+    "settings-transfer": {
+      "passed": true,
+      "checks": 13
+    }
+  },
+  "additionalUi": {
+    "playerBuffer": "passed",
+    "mediaLibrary": "passed",
+    "evidenceLogs": [
+      "player-buffer-ui.log",
+      "media-library-ui.log"
+    ]
+  },
+  "performance": {
+    "gpu": {
+      "renderer": "ANGLE (NVIDIA, NVIDIA GeForce RTX 2060 (0x00001E89) Direct3D11 vs_5_0 ps_5_0, D3D11-32.0.16.1664)",
+      "realCounterRowsObserved": true,
+      "visibleSeries": 3,
+      "visibleScenarios": 5,
+      "hiddenSeries": 3,
+      "hardware": {
+        "recordedAt": "2026-10-27T07:34:28.8733590Z",
+        "gpu": [
+          {
+            "Name": "NVIDIA GeForce RTX 2060",
+            "DriverVersion": "32.0.16.1664"
+          }
+        ],
+        "cpu": [
+          {
+            "Name": "AMD Ryzen 5 3600 6-Core Processor              ",
+            "NumberOfLogicalProcessors": 12
+          }
+        ],
+        "memory": [
+          {
+            "TotalPhysicalMemory": 17128763392
+          }
+        ],
+        "battery": [],
+        "powerScheme": "GUID схемы питания: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (Высокая производительность)"
+      },
+      "collectorRegression": "PowerShell 5.1 @() nested PID array reproduced; direct assignment and nonempty-row validation tested",
+      "originalEmptyCaptures": "diagnostic only"
+    },
+    "reactCommits1000": {
+      "visible": 10,
+      "hidden": 1
+    },
+    "heavy": {
+      "runs": 3,
+      "cyclesPerSection": 8,
+      "measuredCycles": 96,
+      "maximumGrowthMiB": 0.58551025390625,
+      "concurrentVideo": [
+        {
+          "frames": 18,
+          "dropped": 0,
+          "snapshots": 4,
+          "peakReaders": 1,
+          "peakCopies": 1
+        },
+        {
+          "frames": 15,
+          "dropped": 0,
+          "snapshots": 4,
+          "peakReaders": 1,
+          "peakCopies": 1
+        },
+        {
+          "frames": 18,
+          "dropped": 0,
+          "snapshots": 4,
+          "peakReaders": 1,
+          "peakCopies": 1
+        }
+      ],
+      "harnessCurrent": true
+    },
+    "limitations": [
+      "Synthetic data/API for UI profiling; no personal library or real internet backend load",
+      "Six-second sampling and short video/snapshot overlap; not long-term leak or every-codec certification",
+      "Minimal effects; power scheme unchanged; no battery on this PC"
+    ]
+  },
+  "pending": {
+    "manualAccessibility": {
+      "status": "deferred-by-user",
+      "speechListeningPassed": false,
+      "physicalWindowsContrastThemePassed": false,
+      "automatedChromiumTreePassed": true
+    },
+    "external": [
+      "physical-device-and-network-protocol-not-reviewed",
+      "real-older-client-not-reviewed"
+    ],
+    "laptop": "Windows ↔ Linux, physical routes, keyring and battery; DP-05/FUN-01"
+  },
+  "changes": [
+    "Bounded default test workers without increasing timeouts",
+    "Guest client included in release fingerprint",
+    "Atomic replacement polling race fixed in native test harness",
+    "Devices API supported by unrelated UI fixtures",
+    "Actual visible/hidden windows and video plus file preparation in performance harness",
+    "PowerShell GPU PID decoding fixed and tested; complete GPUInfo collected"
+  ],
+  "sourceManifest": {
+    "path": "artifacts/pc-acceptance-20261027/source-final.json",
+    "sha256": "0dcbbdf2ffadfcea967678994bb2109b91ebe1d271f34423f99ac1470545716f",
+    "bytes": 129495
+  },
+  "evidence": [
+    {
+      "path": "artifacts/pc-acceptance-20261027/accessibility-ui.log",
+      "sha256": "350e47a541f765532f37a668c14637649f46eac6917f83392f347022b8946508",
+      "bytes": 2164
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/automation-ui.log",
+      "sha256": "560608d30374231bef2dadeaa646517b8fcb846e8c45f6a1686344f160e9dc7b",
+      "bytes": 2121
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/installer-run.json",
+      "sha256": "53513c85ba2554705dea87f676c34b69a9ed0350a96e97ae4f1393e8579a50b2",
+      "bytes": 2431
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/local-run.json",
+      "sha256": "791edc63f0dd2641a3b8490a68b8de53096ed9c2b28bda91bd5d74f9aecc1986",
+      "bytes": 9355
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/overview.json",
+      "sha256": "f93f8063a3e6937eb8058e40b9a2f73f2e077e8e6ae8de34c175ed6f3a08b6a5",
+      "bytes": 26306
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/package-run.json",
+      "sha256": "ecbe2d8a0503023dcfe4c6cdca652b30553088436700a260a96bc869fa3effba",
+      "bytes": 5694
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/build-sync-ui.log",
+      "sha256": "9ea5f0005cb873e9cc045ad5f6091661b749438e83cd6229e784e647ccd1463f",
+      "bytes": 1949
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/compile-electron.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/copy-engine.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/documents.json",
+      "sha256": "f240f79edab3332d5eac499bf34c2c86c8975ec81611b970f6d7f14855421f58",
+      "bytes": 1809
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/documents.log",
+      "sha256": "1a72149057aa63c5e8ffb4de5328ec43f9db7e3c7016073bd01230416a4f45a7",
+      "bytes": 246
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/editor.log",
+      "sha256": "f8d7c21ede2b69094112d5e6803b537a36455f38455891471ad6efbea18d93af",
+      "bytes": 11978
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/policy-tests.log",
+      "sha256": "564184d590b560ca47fe39c431a5cb3d43b76a126ebe68ebe12e09d7a78e3157",
+      "bytes": 871
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/receipt.json",
+      "sha256": "8e5afab63f37ac2cab37826c5632b1eec4448de33e027a16a2095222e55b9ddc",
+      "bytes": 8036
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/typecheck-renderer.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/unit.json",
+      "sha256": "b6552770e615c980a3480df8f45f20a8ca778854f70c3a5c80ae7d84a87090d4",
+      "bytes": 57775
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-33-02-842Z-local/units.log",
+      "sha256": "702fd564eeba4923bb0ca36ed45a2fbd81ffb668bccad3a7e7051c76873286f9",
+      "bytes": 3406
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/build-sync-ui.log",
+      "sha256": "5e3e7f7e98c23d66ce14325c17df80b304f1ad35b9eaa51100a975e9ba3a314c",
+      "bytes": 2233
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/compile-electron.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/copy-engine.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/documents.json",
+      "sha256": "3412ef0f3554f8d7ceed3d758f27b6106568f013405f4505b4302565a2dccba2",
+      "bytes": 1809
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/documents.log",
+      "sha256": "1a72149057aa63c5e8ffb4de5328ec43f9db7e3c7016073bd01230416a4f45a7",
+      "bytes": 246
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/editor.log",
+      "sha256": "4f7ac7e100093999a1eb6c31554845ad7aed94488b5f79d7a381a749c7ca204d",
+      "bytes": 211
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/faults.json",
+      "sha256": "6689812ab30e6b75ef4ef8878dd1b68182d826e98a6c2d22a81c8998118fb364",
+      "bytes": 1324
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/faults.log",
+      "sha256": "cccec8e90df463986f21c083f9c3691ae02748f633c90acff385dc71fa46c45f",
+      "bytes": 300
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/policy-tests.log",
+      "sha256": "29efa785836f2efc90bc085e2f3727d9576f51c4474fcd47d2c10f316940a538",
+      "bytes": 870
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/receipt.json",
+      "sha256": "791edc63f0dd2641a3b8490a68b8de53096ed9c2b28bda91bd5d74f9aecc1986",
+      "bytes": 9355
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/typecheck-renderer.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/unit.json",
+      "sha256": "57309c04701f771e5c19004f2cef04052c5c8cf58bb63e8ccb946b7107a4fda0",
+      "bytes": 57769
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/units.log",
+      "sha256": "73a0938b949cb3e4e0851be84627ee0240ecb29db86a320a82e5173fbc1ba913",
+      "bytes": 3541
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-37-17-454Z-local/writers.log",
+      "sha256": "b993cb6cf5e870fe91349ce8c5c0c9d8a51de4acdea494748743d401d97c1f4b",
+      "bytes": 165
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/build-guest.log",
+      "sha256": "6567819eae9d3183fcb66f0b5660b561e97d2a2c95875f5854b0fe3f8037f4e7",
+      "bytes": 223
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/build-private-0.log",
+      "sha256": "163a70dc2ec0640eda9fadc34e03eb3b010c2d215f6af1928cd214a9d388ab83",
+      "bytes": 9112
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/build-private-1.log",
+      "sha256": "11ef8010dc6b27e8d08f1beefbd4ae9747509e84a5673e26a4cea92bf465b9a2",
+      "bytes": 9103
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/build-renderer.log",
+      "sha256": "92876e30885049eadde5d7c8c005d3baa7d09e027b514657c2d04684a4caa9f6",
+      "bytes": 3852
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/packaged-smoke.log",
+      "sha256": "078cd5f038a962bed3959fb24c7d3b212b8c276e9722185babf2cb39a9a43b9a",
+      "bytes": 55
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/packaged.json",
+      "sha256": "bd1a3c90b49853332753b0eab2c7497edffdda078d081f7971227d66bc0756f6",
+      "bytes": 2802
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/prepare-private-installers.log",
+      "sha256": "2c6c7ba61aad11d08bf9d89102323285b9c4dca83fa8fe234e89e081f5552635",
+      "bytes": 1292
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-39-51-326Z-package/receipt.json",
+      "sha256": "ecbe2d8a0503023dcfe4c6cdca652b30553088436700a260a96bc869fa3effba",
+      "bytes": 5694
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-45-26-218Z-installer/installer.json",
+      "sha256": "4d96a8195c65158edbd70913f8c0eb9a3d55155d3e90f567fd6676a292a0aede",
+      "bytes": 1834
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-45-26-218Z-installer/isolated-installer.log",
+      "sha256": "11979a156e87940345aa0d3906ef267654c4828cbf91c912864c900ca646e2f4",
+      "bytes": 670
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/fun01/runs/2026-10-27T07-45-26-218Z-installer/receipt.json",
+      "sha256": "53513c85ba2554705dea87f676c34b69a9ed0350a96e97ae4f1393e8579a50b2",
+      "bytes": 2431
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/gpu-array-check.json",
+      "sha256": "9a7b20dec12a03a663563e05e495fea9192c53bb783c979124e8eb536271737c",
+      "bytes": 127
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/gpu-collector-tests.log",
+      "sha256": "64e70b74d0e2255df4becd77c25951bd30c46c0a46bd514a9295b60201834364",
+      "bytes": 1070
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/hardware.json",
+      "sha256": "27ec3d3db06046c3bf9233d3ac26c198daf55b2a4900c93082b563b8c9712a5c",
+      "bytes": 544
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/installer-phase.log",
+      "sha256": "cc490bf145c095a2531c634ac21005f4fa43db45e358c86881efc3a137ee70a2",
+      "bytes": 155
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/local-phase-final.log",
+      "sha256": "05f353edaf94004e5ca1276c58e1f82bc8709c974a51d312597cd9f350c3b8f8",
+      "bytes": 376
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/local-phase.log",
+      "sha256": "5b19a0e14102fae0595c5c4ad0eecf16fdee2a8972ea68f71513616758efcf11",
+      "bytes": 348
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/media-library-ui.log",
+      "sha256": "0c469727474c3a0ef32143b5380bf19dfea25cd90b3d6c3c90d0a61e4ad825fa",
+      "bytes": 1629
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/node-tests-final.log",
+      "sha256": "263140dee2d22f27f4fa5dc78bab1e34ceb6296a78fc8d9473dca5eee8343485",
+      "bytes": 3003
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/node-tests.log",
+      "sha256": "d860e1a224e8bbcda0659ae46e8606d3cad73eb69b599aba582810c39b110231",
+      "bytes": 2927
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/package-phase.log",
+      "sha256": "8c7bd889130d483eaf1e0e8e89f45e73fb2a1d00d29c5cbd9de1f0adebe75d19",
+      "bytes": 318
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/run-1.json",
+      "sha256": "c68fd9077f177fc326c77024fc91e295018bede662d33c7c4f5da2e5a1d30edc",
+      "bytes": 52432
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/run-2.json",
+      "sha256": "2252706b9be71fcbeae840c9733197926b9aacd88e2851f60ca19ad99b55758b",
+      "bytes": 53529
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/run-3.json",
+      "sha256": "18bfdb38e75878321b6dd12cb37a323b0396036331218152177b26a20ca287f7",
+      "bytes": 52529
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/source-manifest.json",
+      "sha256": "668bcda59778dc37d8655962bfc364dd4b1f4f4c5005a8d5c696d656fed68b2c",
+      "bytes": 153531
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/summary.json",
+      "sha256": "84b2a2490ffbd99600829d5af4ed8bcb66ece5a05aa8245133ca42e005a79b4d",
+      "bytes": 34353
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/trace-1-downloads-1000.json.gz",
+      "sha256": "b27e2274d2b0787028bb4161b5ad8d99d2c4799bc0816ddb001075df0c3b1558",
+      "bytes": 33362
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/trace-2-downloads-1000.json.gz",
+      "sha256": "6ddbf65d1b467dde758a9adad7fcfa9c5281fa851a6e8069f6fbc9a671209e18",
+      "bytes": 34249
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden/trace-3-downloads-1000.json.gz",
+      "sha256": "c92e8e25af705885f5d0960e6afdfbc3b17a97432120f3ff5abb9e93be476d84",
+      "bytes": 32991
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-hidden.log",
+      "sha256": "cdbedbf85a2c71f0c6b14d7c16ede914f249e5f645d4eab49cac42048ac5c4d5",
+      "bytes": 577
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/run-1.json",
+      "sha256": "c676c12698e394dd53c4334505f69b02660b335dc665a5e6b19625a812c6e545",
+      "bytes": 254221
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/run-2.json",
+      "sha256": "28453823a6fb728dfbfd5f06929fb5045b0bb3a653a13d2bbe3b4c5826e962ee",
+      "bytes": 266095
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/run-3.json",
+      "sha256": "fd129b6d67d7259793047bab0d9412692a9cda79f317f9aeecc7b1cf4d8a68ba",
+      "bytes": 265296
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/source-manifest.json",
+      "sha256": "668bcda59778dc37d8655962bfc364dd4b1f4f4c5005a8d5c696d656fed68b2c",
+      "bytes": 153531
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/summary.json",
+      "sha256": "72a9273ee2aa7b289b5df826fcf1a8ddc1f430194396352a9659ec4d6f8cc899",
+      "bytes": 60296
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-1-downloads-100.json.gz",
+      "sha256": "962e35fad6064d549a86fc50d2e4985788ad12a48f036848faa89bcdbbf86cee",
+      "bytes": 38573
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-1-downloads-1000.json.gz",
+      "sha256": "05445a76c6811b335bc4d750612994b768d412fd67725f75d53ab389251771f8",
+      "bytes": 39729
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-1-empty-start.json.gz",
+      "sha256": "bb9028ba3144572676af3faf9a11b98de1c9bb714858270418dfedfa13189088",
+      "bytes": 27391
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-1-heavy-remount.json.gz",
+      "sha256": "a329d63ec24df2551b1f15e580a1e4099cc10dd35849023e7256b2e491421716",
+      "bytes": 205363
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-1-room-history.json.gz",
+      "sha256": "485967d93132bbfa21e64018ffb33434ddb645ad97a2652d8e75b21bcffaeb5d",
+      "bytes": 33143
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-2-downloads-100.json.gz",
+      "sha256": "1339d7ddb466fdd91c8bdb5ba43805e90826f083143802605acd300f422609ae",
+      "bytes": 38959
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-2-downloads-1000.json.gz",
+      "sha256": "6f182c9d41562156cfc66f000d6f8d30acab725f7264df61ee5e79d96508d06b",
+      "bytes": 41303
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-2-empty-start.json.gz",
+      "sha256": "2fcde0416d942c80cf14a6c7ef1f8242d9c2e965f3c7a6f81aad7dcbb5c449e8",
+      "bytes": 27393
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-2-heavy-remount.json.gz",
+      "sha256": "ea7df4cc35d9a711886a5546b111986727e555ddfde5283fe0ce720bf91e3023",
+      "bytes": 193373
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-2-room-history.json.gz",
+      "sha256": "030a94cdfcf3aff2685bb6a9e8473f1d0466bda6eee305b0ad1f743c917782a2",
+      "bytes": 43463
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-3-downloads-100.json.gz",
+      "sha256": "4f6e1e6994cfaa461d7ffe116e3b77debdd0a53f1dfd411f7e2a178b10457d87",
+      "bytes": 39291
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-3-downloads-1000.json.gz",
+      "sha256": "9f669214b4565d08c6b489218b5957b79b768702e96f876934e6da0ec7ecc841",
+      "bytes": 39370
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-3-empty-start.json.gz",
+      "sha256": "51b5d86aa5f75e4bf2fa516da81d9d37cedd7c5bff3a5b90745b70e1fae1bc18",
+      "bytes": 27542
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-3-heavy-remount.json.gz",
+      "sha256": "20193baabd5a40c493e2729630264da5ba16319414419024643715eacd58c76e",
+      "bytes": 145614
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible/trace-3-room-history.json.gz",
+      "sha256": "9b723be1c3a12f6b96cd449316d36f8b799b2c1f83e1c2ed451975f0ef5c4129",
+      "bytes": 42912
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-gpu-visible.log",
+      "sha256": "cc05ca4bc1f47b313c31f0853e5317b1d89d7e228a7351ed05644ef1533d9598",
+      "bytes": 872
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/chunks.json",
+      "sha256": "bc7bdf9ad335f3fd50207ff68853d8bbdacda5cc1d26b89a62856913e846e9e2",
+      "bytes": 3151189
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/product-chunks.json",
+      "sha256": "561a142af560e4c7015db38c8337b418fd0d8281f125b7bb86a80590f90146b1",
+      "bytes": 3324168
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/run-1.json",
+      "sha256": "3a48e06cebce38feb82c824dc27e894518dfe44d89e5d4f0c5e1d3bf83b51066",
+      "bytes": 292736
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/run-2.json",
+      "sha256": "da9dd1e424e5466a8d933aabf7d44d08fbde1c940e689a93c1a8c76b7a0b2f1d",
+      "bytes": 293839
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/run-3.json",
+      "sha256": "90efa697483ca6dfed75832e63667be2c17ccada4dbe1266d577a3f11c407f02",
+      "bytes": 295700
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/source-manifest.json",
+      "sha256": "ff6818557721502c2269300a157f6717ba5ce23e5557fbf28858ddccec867bc5",
+      "bytes": 127975
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy/summary.json",
+      "sha256": "265852d49ad80d723a88023009b5d9e0eb7b2fccd1e67dce32d88ebf84280b27",
+      "bytes": 1010078
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-heavy.log",
+      "sha256": "76032307514fe45696c205d20d6001fe715163efc8fc231ffbcd319d487c355c",
+      "bytes": 498
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/run-1.json",
+      "sha256": "cd94e5d5e3c0fa89c03aca1a2612150cd2040565a7bfe02852a6388bc5baba92",
+      "bytes": 39873
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/run-2.json",
+      "sha256": "7ef120954dadcbfcd7a2b440be7750af9d5b50670f8334925fe59474f7080f79",
+      "bytes": 39976
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/run-3.json",
+      "sha256": "2f5c5b33465e416d55f1498908f7b0fe7c84f8106ea77e4eed9ab2b45eb3639b",
+      "bytes": 40207
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/source-manifest.json",
+      "sha256": "15ac9917c0f14e03d8104a11a80a4d4fffbe96061703f83ce282ee79cb825615",
+      "bytes": 153388
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/summary.json",
+      "sha256": "47de88806c6bc10d7b7fab86df8afc98647a2c186d33d6f84dd03e6bfab83c33",
+      "bytes": 34388
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/trace-1-downloads-1000.json.gz",
+      "sha256": "757878d125ae35c8c21e6eb1e70bca6a2e01f7207323b05fcbcf1343f6620db1",
+      "bytes": 34419
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/trace-2-downloads-1000.json.gz",
+      "sha256": "ab0910a1b46ed2a538e84e892ad79769b7c51921804b400ada868667d25fd33f",
+      "bytes": 34401
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden/trace-3-downloads-1000.json.gz",
+      "sha256": "2edd261d0c9b1ecff636b571e2a15c2306b7bd3bd89822dead1f0bf46317d4dd",
+      "bytes": 34309
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-hidden.log",
+      "sha256": "acfbf531a066cac952228681f518fcbad1d330f43a7af6cf77839218907b2ae1",
+      "bytes": 561
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/run-1.json",
+      "sha256": "7bdc7b08c6b69535623bab7a6ee26102469fd68f780c184b335ed71c3bc0bd5d",
+      "bytes": 200630
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/run-2.json",
+      "sha256": "324d3f6f9d853e792e7c2445da83bbafc51745e91c8fa6649eb5e4cb0aa199c2",
+      "bytes": 202880
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/run-3.json",
+      "sha256": "36819dd1716f64dd864a0dbc16772929c6ec1209768a8bdedc8e11c9e441e02a",
+      "bytes": 203176
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/source-manifest.json",
+      "sha256": "15ac9917c0f14e03d8104a11a80a4d4fffbe96061703f83ce282ee79cb825615",
+      "bytes": 153388
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/summary.json",
+      "sha256": "886d338e8d7b91af793343b4c0bb6e2bffa9752930243f3fdf4e7c6e98f7845e",
+      "bytes": 60269
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-1-downloads-100.json.gz",
+      "sha256": "98f58fd72ee3c5adaabf27895eb27d52a79883868797f001049a09c9189dfb42",
+      "bytes": 38172
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-1-downloads-1000.json.gz",
+      "sha256": "475499e82353dba76f4afc1d7d8c00b2d5235c0ddd2520319ce2cb5a5f34f51e",
+      "bytes": 39233
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-1-empty-start.json.gz",
+      "sha256": "076dfb3dcbbbb928eb1e0d4ee936d748b32c31a19823e7b9c1c2dac0a0ee0642",
+      "bytes": 27454
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-1-heavy-remount.json.gz",
+      "sha256": "bdcd08d3db0d40d8b080c6d773da141a8cff68aa50fd93fc7ae538391d7a47d1",
+      "bytes": 157549
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-1-room-history.json.gz",
+      "sha256": "9ce59e3940ec4e35ef6ba071939a122e559516a35dcd12bdb986da2351f24036",
+      "bytes": 32221
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-2-downloads-100.json.gz",
+      "sha256": "d1608b244920590c847dcc56222c84e5435a9ecc8c5bce777800569d08ea4b11",
+      "bytes": 37877
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-2-downloads-1000.json.gz",
+      "sha256": "5d1bc5d614199b87edbdf3f41a5bc337f4297dd1733b3fa06591adae1a3fe637",
+      "bytes": 39306
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-2-empty-start.json.gz",
+      "sha256": "0581508441b9a9d26b53c584f000f1bcd91c5dffc27d22ec91161c648b1d0675",
+      "bytes": 27394
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-2-heavy-remount.json.gz",
+      "sha256": "27990a54ddce585b9c8c3172eeb747ee35304d60d2e3be69d59bec9716e20120",
+      "bytes": 150900
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-2-room-history.json.gz",
+      "sha256": "ce9675113f15af440f26937afa9f71de1194b9bf594cd377813f53d015a0d762",
+      "bytes": 33229
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-3-downloads-100.json.gz",
+      "sha256": "589353cc1a74a224c6e602490a5d01d645c2468a84c50f1ef5e87dd570ba9517",
+      "bytes": 38939
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-3-downloads-1000.json.gz",
+      "sha256": "6ad9643e0579515fd3ea8ed4847e47dd43793acce9b81420a2fd7c0368f31a84",
+      "bytes": 41142
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-3-empty-start.json.gz",
+      "sha256": "2f8dc3830a69ae6d626af7edd313aa7b832668563a603add6b1afae8e0f0199a",
+      "bytes": 27255
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-3-heavy-remount.json.gz",
+      "sha256": "f82013d1988a3b40253729d1d24db66e78dad66128b8010acf88f9ecf0b64316",
+      "bytes": 162028
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible/trace-3-room-history.json.gz",
+      "sha256": "4784fd4734d5a9eb26b9092544237e6039b42674a73db7fff90ae4c611280a99",
+      "bytes": 33102
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/performance-visible.log",
+      "sha256": "01c0cb2730cd51724dbfe084f752fa4a41e4f37eff46be839cf7d7dfc1cb7566",
+      "bytes": 856
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/player-buffer-ui.log",
+      "sha256": "17a611740f71d71fd8a8ea780546b7a74023a6b043a2c6f7bf8c69d1cf779e2c",
+      "bytes": 288
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/preflight-ui.log",
+      "sha256": "3796e7e3d6a4d3e70c9a0decaa49e49e4bb5a7ca1cd2b9a99a4fcb62a7cd52ac",
+      "bytes": 62
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/settings-transfer-ui.log",
+      "sha256": "5f4e5894c335665ba31b46e97ee3f337724308a515f5602cffe29cd1695ff2d8",
+      "bytes": 428
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/source-at-start.json",
+      "sha256": "fb2cf1f94c2ddba8967556d2ec3f296cc301a10afeab06d1b2061445f0c5d835",
+      "bytes": 128111
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/source-final.json",
+      "sha256": "0dcbbdf2ffadfcea967678994bb2109b91ebe1d271f34423f99ac1470545716f",
+      "bytes": 129495
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/storage-baseline.json",
+      "sha256": "fe7042ae4c7ce7718c9d34cb74f0ab5937095ddf886cb5eb16389e71dbdd0edc",
+      "bytes": 11200
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/storage-baseline.log",
+      "sha256": "22ac3b31432e87f702a31031bc206ef31da4529cbed5029a257f03c72ec48b7e",
+      "bytes": 2729
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/storage-final.json",
+      "sha256": "d9d1336993cfbe853a847a05f107763cb44c3b14fff11db6534806034d0f8f20",
+      "bytes": 11218
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/storage-final.log",
+      "sha256": "fc936cee37bd065e82840b70035b1998c22d47e9b6613eea482c9cea09331585",
+      "bytes": 2939
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b",
+      "bytes": 350
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/ui/accessibility.json",
+      "sha256": "b4d0ef52abf602d6cc21d2df213e7a6c35017245d9c134fc419ee77f1bec4e02",
+      "bytes": 2258
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/ui/automation.json",
+      "sha256": "7d152a4a10d4d17ef94416d93a67e722556908884ee1ca14a033b0cb033e3649",
+      "bytes": 1769
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/ui/preflight.json",
+      "sha256": "a454b12877099d76b4a0c31c89efd9a915567afdbad71f1078fd6ffbab7dc41a",
+      "bytes": 1024
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/ui/settings-transfer.json",
+      "sha256": "11bf37ae06a7a714598f892b88374901223e721caa65ef822ed95967cd21d476",
+      "bytes": 505
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/vitest-full.json",
+      "sha256": "7c0815b97931e4bc8d62713632d29d53e6987a964ff58b8d6618d3b8be16fa12",
+      "bytes": 1458635
+    },
+    {
+      "path": "artifacts/pc-acceptance-20261027/vitest-full.log",
+      "sha256": "6b646d3b9bf4299c73b0d613dd9e22ee0f63c1580f4efc7cf74e0a18e6edd596",
+      "bytes": 140610
+    }
+  ],
+  "changedFiles": [
+    {
+      "path": "vitest.config.ts",
+      "sha256": "a72338d2856fb37009ac25e003370c96d5b0bd3bc1c4a2175019fcc30e8d7d19",
+      "bytes": 878
+    },
+    {
+      "path": "scripts/room-release-acceptance.cjs",
+      "sha256": "8d6ce9e60b471d34e925721a4f33fb53261c3107af98d71640990edc7ffbfc68",
+      "bytes": 25137
+    },
+    {
+      "path": "scripts/room-release-acceptance.test.cjs",
+      "sha256": "42c301c1aaed5b5c61b4847b3a547ef7b40621f5dcf953ed95c412e5432a79bf",
+      "bytes": 6988
+    },
+    {
+      "path": "scripts/smoke-room-file-sync.cjs",
+      "sha256": "e65f4372852e8f40a92740d909d0c702f012b0be79d5c5e60fb987b6e7588e34",
+      "bytes": 175243
+    },
+    {
+      "path": "scripts/fixtures/command-palette-ui.cjs",
+      "sha256": "27e330ba685ccb8d7fd09c441e2767bee7555d2bc6c442e57aaff2f9eb0deff3",
+      "bytes": 13167
+    },
+    {
+      "path": "scripts/performance-renderer-entry.cjs",
+      "sha256": "595c8916a5f7c9ec7de7b0c4cd9a6744f678f2a71768d270b0211ed99e9479f5",
+      "bytes": 8509
+    },
+    {
+      "path": "scripts/performance-baseline.cjs",
+      "sha256": "ab67e3451405e3832fb9334b04f6171076d4dcc3ec77a806b87ae835832f3032",
+      "bytes": 18825
+    },
+    {
+      "path": "scripts/performance-gpu.cjs",
+      "sha256": "ecda0960db2762be505f382dc5d2eb4d4467c2a811b22d9e603b0b7fca897e2f",
+      "bytes": 455
+    },
+    {
+      "path": "scripts/performance-baseline.test.cjs",
+      "sha256": "c0d8c75fa9a5cb9459058d76531bf27e1ae117d483f8250c587dd9802e8658a9",
+      "bytes": 4838
+    },
+    {
+      "path": "scripts/performance-heavy.cjs",
+      "sha256": "8e739f20502d0d4fa011c2d6c048fc213acff40d64dd19872abb05045e653ec9",
+      "bytes": 17615
+    },
+    {
+      "path": "docs/pc-acceptance-20261027.md",
+      "sha256": "34b9b46351695debe2527356b9ce3e6d6caf404e552f76d0ae875c008523a2bd",
+      "bytes": 15479
+    },
+    {
+      "path": "docs/release-single-pc.md",
+      "sha256": "842848ae536f3c5e191340b7ae26860ec4eaa859b5adee4e2616c4457ef48699",
+      "bytes": 11236
+    },
+    {
+      "path": "docs/rooms-release-acceptance.md",
+      "sha256": "b8f04f8921b7a721580c7797b081f80926e0f72e213ef3e70ce3fb45563cb0b9",
+      "bytes": 18627
+    },
+    {
+      "path": "docs/havvn-implementation-plan.md",
+      "sha256": "11759b2faaa08cd8b8441f0275af3ec40ec7e57f2e4b6a484acf22b093c1394e",
+      "bytes": 91755
+    }
+  ]
+}

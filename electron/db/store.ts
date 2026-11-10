@@ -22,6 +22,9 @@ import type { RoomBanSnapshot } from '../../shared/room-bans';
  */
 
 import Store from 'electron-store';
+import { automationCommitted, captureAutomationCompletion } from './automation-hooks';
+import { validateCategory } from '../../shared/category-defaults';
+import { validateNotificationPolicy, validateNotificationRule, type NotificationContext, type NotificationEnvironment } from '../../shared/notification-policy';
 import { CachedJsonStore } from './cached-json-store';
 import { RoomTextCache } from './room-text-cache';
 import { sealRoom, openRoom, lockedRoom, type StoredRoom, type RoomStorageError } from './room-secrets';
@@ -35,18 +38,21 @@ import { v4 as uuidv4 } from 'uuid';
 import { app } from 'electron';
 import path from 'path';
 import crypto from 'crypto';
-import { matchesChatFilter, validateChatFilter, type RoomChatFilter, type RoomChatSearchPage } from '../../shared/room-chat-tools';
+import { matchesChatFilter, validateChatFilter, roomNotifyMode, type RoomChatFilter, type RoomChatSearchPage } from '../../shared/room-chat-tools';
 import { validChatPins } from '../../shared/room-chat-pins';
 import { normalizeLanPrefs, EMPTY_LAN_PREFS, type LanRoomPrefs } from '../../shared/lan-prefs';
 import { encryptSecret, decryptSecret } from './secrets';
 import { deriveMemberId } from '../sharing/room-crypto';
-import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg } from '../../shared/profile';
+import { sanitizeProfileColor, sanitizeProfileStatus, sanitizeProfileImg, publicRoomName } from '../../shared/profile';
 import { searchDownloadHistory } from '../services/search-download-history';
+import { planSettingsImport, type SettingsImportState } from '../../shared/settings-transfer';
+import { SettingsTransferState } from './settings-transfer-state';
 
 // === Per-file store schemas ===
 
 interface ConfigSchema {
   appearanceAcrylic?: boolean;
+  appearanceNativeMaterial?: 'acrylic' | 'mica';
   settings: AppSettings;
   categories: Category[];
   scheduler: SchedulerConfig;
@@ -138,6 +144,7 @@ export interface PersistedRoom {
   createdAt: number;
   ownerId?: string;  // memberId of the room owner (creator); learned via gossip for joiners
   ownerPin?: string; // owner memberId pinned from the invite — only this identity may be adopted as owner (absent = trust-on-first-use)
+  keyRotation?: import('../../shared/room-key-rotation').RoomKeyRotationState;
   nameAt?: number;   // last-writer-wins clock for the room name (owner rename); absent/0 = never renamed
   topic?: string;    // owner-set room topic ('' / absent = none)
   topicAt?: number;  // last-writer-wins clock for the topic
@@ -165,6 +172,7 @@ export interface PersistedRoom {
   downKbps?: number;   // per-room download ceiling, KB/s (0 = shared room budget)
   notifyMuted?: boolean; // OS notifications silenced for this room (absent = notify)
   notifyMode?: import('../../shared/room-chat-tools').RoomNotifyMode;
+  notificationRule?: import('../../shared/notification-policy').NotificationRule;
 }
 
 const defaultCategories: Category[] = [
@@ -192,6 +200,7 @@ const configStore = new Store<ConfigSchema>({
       // whatever defaultDownloadDir they had persisted (often .../TorrentHunt).
       defaultDownloadDir: path.join(app.getPath('downloads'), 'Havvn'),
       maxDownKbps: 0,
+      resourceMode: 'normal' as const,
       maxUpKbps: DEFAULT_MAX_UP_KBPS,
       altSpeedEnabled: false,
       altDownKbps: 0,
@@ -374,6 +383,22 @@ function migrateUtpDefaultOn(): void {
 }
 
 migrateUtpDefaultOn();
+
+const settingsTransferJournal = new Store<{ record: unknown }>({ name: 'settings-transfer', defaults: { record: null } });
+export const settingsTransfers = new SettingsTransferState({
+  read: () => settingsTransferJournal.get('record'),
+  write: record => settingsTransferJournal.set('record', record),
+  readMain: readSettingsImportState,
+  writeMain: writeSettingsImportState,
+  categoryReferences: () => new Set([
+    ...Object.values(downloadsStore.get('downloads')).map(download => download.category),
+    ...rssStore.get('rssFeeds').map(feed => feed.categoryId),
+    ...rssStore.get('rssRules').map(rule => rule.categoryId),
+  ].filter((id): id is string => typeof id === 'string')),
+});
+// Restore an interrupted transaction before main services or native materials read config.
+// A failed recovery keeps the journal intact and is exposed by the transfer status.
+try { settingsTransfers.recoverMain(); } catch { /* Retain every recovery snapshot. */ }
 
 // === Room tombstones (deleted shared files — keep them from reappearing) ===
 //
@@ -1319,6 +1344,8 @@ export function savePopoutBounds(frameName: string, bounds: WindowBounds): void 
 // === Downloads ===
 
 export async function createDownload(data: {
+  infoHash?: string;
+  automation?: Download['automation'];
   name: string;
   sourceType: SourceType;
   sourceUri: string;
@@ -1328,16 +1355,22 @@ export async function createDownload(data: {
   selectedFiles?: number[];
   seedPaths?: string[];
   category?: string | null;
+  seedRatioLimit?: number;
+  seedTimeLimitMinutes?: number;
+  sequentialDownload?: boolean;
 }): Promise<Download> {
   const id = uuidv4();
   const now = new Date();
 
   const download: Download = {
+    automation: data.automation,
+    categoryOrigin: data.automation?.added?.plan.categoryId ? 'automation' : 'user',
     id,
     name: data.name,
     sourceType: data.sourceType,
     sourceUri: data.sourceUri,
     torrentFilePath: data.torrentFilePath || null,
+    infoHash: data.infoHash,
     savePath: data.savePath,
     status: data.status,
     progress: 0,
@@ -1353,6 +1386,9 @@ export async function createDownload(data: {
     category: data.category ?? null,
     selectedFiles: data.selectedFiles,
     seedPaths: data.seedPaths,
+    seedRatioLimit: data.seedRatioLimit,
+    seedTimeLimitMinutes: data.seedTimeLimitMinutes,
+    sequentialDownload: data.sequentialDownload,
     createdAt: now,
     updatedAt: now,
     lastError: null,
@@ -1362,12 +1398,23 @@ export async function createDownload(data: {
   downloads[id] = download;
   downloadsStore.set('downloads', downloads);
 
+  automationCommitted(id);
   return download;
 }
 
 export async function getAllDownloads(): Promise<Download[]> {
   const downloads = downloadsStore.get('downloads');
   return Object.values(downloads);
+}
+
+/** Undo owns the snapshot; identity/category checks and insertion share one store write. */
+export async function restoreDownload(download: Download): Promise<Download> {
+  const { restoreDownloadInMap } = await import('../../shared/download-removal.js');
+  const categories = await getCategories();
+  const records = downloadsStore.get('downloads');
+  const restored = restoreDownloadInMap(records, download, categories);
+  downloadsStore.set('downloads', records);
+  return restored;
 }
 
 export async function getDownloadById(id: string): Promise<Download | null> {
@@ -1555,14 +1602,39 @@ export async function updateDownloadFields(
   const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
   if (!download) throw new Error(`Download not found: ${id}`);
+  const firstCompletion = fields.automationCompletedAt !== undefined && download.automationCompletedAt === undefined;
   Object.assign(download, fields);
+  if (firstCompletion) captureAutomationCompletion(download);
   download.updatedAt = new Date();
   downloads[id] = download;
   downloadsStore.set('downloads', downloads);
+  if (fields.automationCompletedAt !== undefined) automationCommitted(id);
 }
 
 
 // === Settings ===
+
+/** Main-process only: retain the stored ciphertext, never a decrypt/re-encrypt round trip. */
+export function readSettingsImportState(): SettingsImportState {
+  const state = configStore.store;
+  return { settings: state.settings, categories: state.categories, scheduler: state.scheduler, privacyConfig: state.privacyConfig,
+    nativeAppearance: { acrylic: state.appearanceAcrylic === true, material: state.appearanceNativeMaterial === 'mica' ? 'mica' : 'acrylic' } };
+}
+
+export function writeSettingsImportState(next: SettingsImportState, expected: SettingsImportState): void {
+  const current = readSettingsImportState();
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new Error('Settings changed during the import preview. Open the file again to review the latest changes.');
+  }
+  const { nativeAppearance, ...core } = next;
+  configStore.set({ ...core, ...(nativeAppearance ? { appearanceAcrylic: nativeAppearance.acrylic, appearanceNativeMaterial: nativeAppearance.material } : {}) });
+}
+
+/** All four partitions live in config.json; one electron-store set writes them together. */
+export function applySettingsImport(value: unknown, expected: SettingsImportState): void {
+  const { next } = planSettingsImport(expected, value);
+  writeSettingsImportState({ ...next, settings: { ...next.settings, updatedAt: new Date() } }, expected);
+}
 
 export async function getSettings(): Promise<AppSettings> {
   const s = configStore.get('settings');
@@ -1584,6 +1656,8 @@ export function getEngineChoice(): 'native' | 'webtorrent' {
 export async function updateSettings(
   settings: Partial<AppSettings>
 ): Promise<AppSettings> {
+  if (settings.notificationPolicy !== undefined) settings = { ...settings, notificationPolicy: validateNotificationPolicy(settings.notificationPolicy) };
+  if (settings.resourceMode !== undefined && !['normal', 'economy', 'auto'].includes(settings.resourceMode)) throw new Error('Invalid resource mode');
   const current = configStore.get('settings');
   const updated = { ...current, ...settings };
   // Encrypt secrets at rest (only re-encrypt when they actually changed)
@@ -1599,6 +1673,24 @@ export async function updateSettings(
 }
 
 // === Cleanup ===
+
+/** One synchronous local snapshot for a whole notification batch. No room secrets leave this accessor. */
+export function readNotificationEnvironments(contexts: NotificationContext[]): NotificationEnvironment[] {
+  const all = configStore.get('settings'), categories = configStore.get('categories');
+  const settings = { enableNotifications: all.enableNotifications, enableSounds: all.enableSounds, notifyOnComplete: all.notifyOnComplete,
+    notifyOnError: all.notifyOnError, notificationPolicy: all.notificationPolicy };
+  const downloads = contexts.some(context => context.downloadId) ? downloadsStore.get('downloads') : {};
+  const rooms = contexts.some(context => context.roomId) ? roomsStore.get('rooms') ?? {} : {};
+  return contexts.map(context => {
+    const download = context.downloadId && Object.hasOwn(downloads, context.downloadId) ? downloads[context.downloadId] : undefined;
+    const categoryId = download?.category ?? context.categoryId;
+    const category = categoryId ? categories.find(item => item.id === categoryId) : undefined;
+    const room = context.roomId && Object.hasOwn(rooms, context.roomId) ? rooms[context.roomId] : undefined;
+    return { settings, categoryId: categoryId ?? undefined, categoryRule: category?.notificationRule, roomRule: room?.notificationRule,
+      ...(context.roomId ? { roomMode: roomNotifyMode(room ?? {}) } : {}),
+      available: !(context.downloadId && (!download || download.status === 'removed' || (context.kind === 'download-error' && download.status !== 'error'))) && !(context.roomId && !room) };
+  });
+}
 
 export async function cleanupOldDownloads(daysOld: number = 30): Promise<number> {
   const downloads = downloadsStore.get('downloads');
@@ -1625,13 +1717,13 @@ export async function cleanupOldDownloads(daysOld: number = 30): Promise<number>
 export async function getCategories(): Promise<Category[]> {
   return configStore.get('categories');
 }
+/** Same-owner snapshot used while atomically capturing a completion receipt. */
+export function getAutomationCategories(): Category[] { return configStore.get('categories'); }
 
 export async function addCategory(category: Omit<Category, 'id'>): Promise<Category> {
   const categories = configStore.get('categories');
-  const newCategory: Category = {
-    id: uuidv4(),
-    ...category,
-  };
+  const newCategory = validateCategory({ ...category, id: uuidv4() });
+  if (categories.length >= 2000) throw new Error('Category limit reached');
   categories.push(newCategory);
   configStore.set('categories', categories);
   return newCategory;
@@ -1643,7 +1735,7 @@ export async function updateCategory(id: string, updates: Partial<Category>): Pr
   if (index === -1) {
     throw new Error(`Category not found: ${id}`);
   }
-  categories[index] = { ...categories[index], ...updates };
+  categories[index] = validateCategory({ ...categories[index], ...updates, id });
   configStore.set('categories', categories);
   return categories[index];
 }
@@ -1663,15 +1755,21 @@ export async function deleteCategory(id: string): Promise<void> {
     }
   }
   if (changed) downloadsStore.set('downloads', downloads);
+  const feeds = rssStore.get('rssFeeds');
+  if (feeds.some(feed => feed.categoryId === id)) rssStore.set('rssFeeds', feeds.map(feed => feed.categoryId === id ? { ...feed, categoryId: undefined } : feed));
+  const rules = rssStore.get('rssRules');
+  if (rules.some(rule => rule.categoryId === id)) rssStore.set('rssRules', rules.map(rule => rule.categoryId === id ? { ...rule, categoryId: undefined } : rule));
 }
 
-export async function setDownloadCategory(id: string, category: string | null): Promise<void> {
+export async function setDownloadCategory(id: string, category: string | null, origin: 'user' | 'automation' = 'user'): Promise<void> {
+  if (category !== null && (typeof category !== 'string' || !configStore.get('categories').some(c => c.id === category))) throw new Error('Category no longer exists');
   const downloads = downloadsStore.get('downloads');
   const download = downloads[id];
   if (!download) {
     throw new Error(`Download not found: ${id}`);
   }
   download.category = category;
+  download.categoryOrigin = origin;
   download.updatedAt = new Date();
   downloads[id] = download;
   downloadsStore.set('downloads', downloads);
@@ -2223,6 +2321,19 @@ export function getPersistedRooms(): PersistedRoom[] {
   return readPersistedRooms(Object.values(roomsStore.get('rooms') ?? {}));
 }
 
+/** Inventory must not migrate legacy records or create sync services. */
+export function getStorageRoomRecords(): { rooms: Array<{ roomId: string; name: string; folder: string; locked: boolean }>; more: boolean } {
+  const records = Object.values(roomsStore.get('rooms') ?? {});
+  const rooms = records.slice(0, 128).map(record => {
+    try {
+      if (!isEncryptionAvailable()) throw Error('Room storage unavailable');
+      const room = openRoom(record);
+      return { roomId: room.roomId, name: room.name, folder: room.folder, locked: false };
+    } catch { return { roomId: record.roomId, name: record.name ?? '', folder: '', locked: true }; }
+  });
+  return { rooms, more: records.length > rooms.length };
+}
+
 export function hasPersistedRoom(roomId: string): boolean {
   return roomsStore.hasEntry('rooms', roomId);
 }
@@ -2296,6 +2407,14 @@ export function setRoomNotifyMode(roomId: string, notifyMode: import('../../shar
   roomsStore.set('rooms', { ...rooms, [roomId]: { ...room, notifyMode, notifyMuted: notifyMode === 'off' } });
 }
 
+/** Local-only preference: no room engine command or shared room state. */
+export function setRoomNotificationRule(roomId: string, rule: import('../../shared/notification-policy').NotificationRule, mode?: import('../../shared/room-chat-tools').RoomNotifyMode): void {
+  const validated = validateNotificationRule(rule), rooms = roomsStore.get('rooms') ?? {}, room = rooms[roomId];
+  if (!room || !Object.hasOwn(rooms, roomId)) throw new Error('Room not found');
+  if (mode !== undefined && !['all', 'mentions', 'off'].includes(mode)) throw new Error('Invalid room notification mode');
+  roomsStore.set('rooms', { ...rooms, [roomId]: { ...room, notificationRule: validated, ...(mode !== undefined ? { notifyMode: mode, notifyMuted: mode === 'off' } : {}) } });
+}
+
 export function getRoomChatPins(roomId: string): import('../../shared/room-chat-pins').RoomChatPins | undefined {
   const encoded = roomsStore.getEntry('roomChatPins', roomId);
   if (!encoded) return;
@@ -2326,7 +2445,10 @@ export function getRoomProfile(): RoomProfile {
   if (!profile || !profile.memberId) {
     const { pub } = getRoomIdentity(); // ensure the keypair exists, then bind id to it
     const memberId = deriveMemberId(pub);
-    profile = { memberId, name: '', avatarSeed: memberId };
+    profile = { memberId, name: publicRoomName('', memberId), avatarSeed: memberId };
+    roomsStore.set('roomProfile', profile);
+  } else if (profile.name !== publicRoomName(profile.name, profile.memberId)) {
+    profile = { ...profile, name: publicRoomName(profile.name, profile.memberId) };
     roomsStore.set('roomProfile', profile);
   }
   return profile;
@@ -2334,7 +2456,7 @@ export function getRoomProfile(): RoomProfile {
 
 export function updateRoomProfile(updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed' | 'color' | 'status' | 'avatarImg'>>): RoomProfile {
   const profile = getRoomProfile();
-  const next: RoomProfile = { ...profile, ...updates };
+  const next: RoomProfile = { ...profile, ...updates, name: publicRoomName(updates.name ?? profile.name, profile.memberId) };
   roomsStore.set('roomProfile', next);
   return next;
 }

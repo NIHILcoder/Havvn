@@ -2,7 +2,7 @@
  * Havvn Main App Component
  */
 
-import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { HostToaster } from './utils/hostToast';
 import { TitleBar, PageId, FilterMode, RoomPresence, VoiceCallInfo, OnlinePerson } from './layout';
 import { CompletionPending, RoomSummary, RoomState } from '../shared/types';
@@ -10,6 +10,8 @@ import { CompletionPending, RoomSummary, RoomState } from '../shared/types';
 // their own chunks so the initial bundle is smaller and the app (and the startup
 // splash) reaches interactive sooner.
 import DownloadsPage from './pages/DownloadsPage';
+import { DownloadUndoNotice } from './components/DownloadUndoNotice';
+import { playNotificationSound } from './utils/notification-sound';
 const CreateTorrentPage = lazy(() => import('./pages/CreateTorrentPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const SearchPage = lazy(() => import('./pages/SearchPage'));
@@ -18,11 +20,23 @@ const RoomsPage = lazy(() => import('./pages/RoomsPage'));
 const SwarmPage = lazy(() => import('./pages/SwarmPage'));
 const WatchHistoryPage = lazy(() => import('./pages/WatchHistoryPage'));
 import { formatBytes } from './utils/format-helpers';
-import { loadHotkeys, subscribeHotkeys } from './utils/hotkeys';
+import { useCommandShortcuts } from './commands/useCommandShortcuts';
+import { createAppCommands, type CommandContext, type NavigationTarget } from './commands/appCommands';
+import { createNavigationCommands } from './commands/navigationCommands';
+import { executeCommand } from './commands/registry';
+import { useHostToast } from './utils/hostToast';
+// Small shared styles are available before a detached editor copies the head.
+import './components/CommandPalette.css';
+const CommandPalette = lazy(() => import('./components/CommandPalette'));
+const EventCenter = lazy(() => import('./components/EventCenter'));
+import { useAppEventSummary } from './state/app-events';
+import { downloadViews } from './utils/download-views';
 import { restoreThemePrefs } from './utils/theme-prefs';
 import { bootApplyActiveTheme } from './utils/theme-library';
 import { bootAppearance } from './utils/appearance';
+import { bootResourceEffects } from './utils/resource-effects';
 import { I18nProvider, useTranslation } from './utils/i18nContext';
+import { DeviceConsentHost } from './components/DeviceConsentHost';
 import { ConfirmProvider, useConfirm } from './components/ConfirmDialog';
 import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorContext';
 // Lazy: the editor + its preview gallery pull in Rooms/Downloads CSS, so keep
@@ -30,10 +44,17 @@ import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorCon
 const ThemeEditor = lazy(() => import('./components/ThemeEditor'));
 import { CompletionCountdown } from './components/CompletionCountdown';
 import { Onboarding } from './components/Onboarding';
+import { FirstStepsGuide } from './components/FirstStepsGuide';
+import { FIRST_STEPS_OPEN, firstSteps, useFirstSteps } from './utils/first-steps';
+import { offerFirstSteps } from './state/first-steps-state';
 import { dismissSplash, setSplashStage } from './utils/splash';
 import { receiveExternalWatch } from './utils/externalWatch';
 import { downloadsModel } from './state/downloads';
 import { DownloadSidebar, DownloadStatusBar } from './layout/DownloadIndicators';
+import { useWorkingProfiles } from './utils/working-profiles';
+import { STORAGE_OPEN_PAGE } from '../shared/storage-overview';
+import { useDocumentVisible } from './utils/visible-work';
+import { pageLeave } from './state/page-leave';
 
 
 /** Dismissible warning strip above the page content (VPN / bind / disk guards). */
@@ -50,7 +71,19 @@ const AlertBanner: React.FC<{
 );
 
 const AppContent: React.FC = () => {
+  const { panels } = useWorkingProfiles();
+  const [settingsRecovery, setSettingsRecovery] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => {
+      const request = window.api.getSettingsTransferStatus?.();
+      void request?.then(status => { if (alive && status) setSettingsRecovery(status.recoveryNeeded); }).catch(() => {});
+    };
+    refresh(); window.addEventListener('havvn:settings-transfer', refresh);
+    return () => { alive = false; window.removeEventListener('havvn:settings-transfer', refresh); };
+  }, []);
   useEffect(bootAppearance, []);
+  useEffect(bootResourceEffects, []);
   useEffect(() => receiveExternalWatch(window.api.externalPlayer), []);
   const { t } = useTranslation();
   const { confirm } = useConfirm();
@@ -58,10 +91,14 @@ const AppContent: React.FC = () => {
   // beside every page — click Rooms/Downloads and watch them recolor live.
   const { open: themeEditorOpen, closeEditor, initialTab: themeEditorTab } = useThemeEditor();
   // Start page honors the Settings → Interface preference (downloads is the default).
-  const [currentPage, setCurrentPage] = useState<PageId>(() => {
+  const [currentPage, setCurrentPageNow] = useState<PageId>(() => {
     try { return localStorage.getItem('startPage') === 'rooms' ? 'rooms' : 'downloads'; }
     catch { return 'downloads'; }
   });
+  const pageRef = useRef(currentPage); pageRef.current = currentPage;
+  const setCurrentPage = useCallback((page: PageId) => {
+    if (pageRef.current !== page) void pageLeave.run(() => setCurrentPageNow(page));
+  }, []);
   const [filterMode, setFilterMode] = useState<FilterMode>('all');
   // Torrent/magnet handed to us by the OS — passed to DownloadsPage to open the add dialog
   const [openTorrentUri, setOpenTorrentUri] = useState<string | null>(null);
@@ -80,8 +117,6 @@ const AppContent: React.FC = () => {
   // The active voice call (at most one room can be in voice) — mirrored from
   // room pushes so the StatusBar can show call controls on every page.
   const [voiceCall, setVoiceCall] = useState<VoiceCallInfo | null>(null);
-  const voiceCallRef = useRef<VoiceCallInfo | null>(null);
-  voiceCallRef.current = voiceCall;
   // roomId → timestamp of the last watch-together sync with playing=true
   const lastPlayingSync = useRef<Map<string, number>>(new Map());
   // Rooms context for the sidebar's rooms pillar
@@ -95,6 +130,9 @@ const AppContent: React.FC = () => {
   const roomStates = useRef<Map<string, RoomState>>(new Map());
   // First-run onboarding: shown once, only when the app looks fresh
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showFirstGuide, setShowFirstGuide] = useState(false);
+  const firstStepsSnapshot = useFirstSteps();
+  const startupIntent = useRef(false);
   const onboardingChecked = useRef(false);
 
   // Apply theme on mount
@@ -150,6 +188,18 @@ const AppContent: React.FC = () => {
 
   // One window-wide subscription and coalesced metadata refresh.
   useEffect(() => {
+    const openStoragePage = (event: Event) => {
+      const page = (event as CustomEvent).detail;
+      if (page === 'downloads' || page === 'rooms') setCurrentPage(page);
+    };
+    window.addEventListener(STORAGE_OPEN_PAGE, openStoragePage);
+    return () => window.removeEventListener(STORAGE_OPEN_PAGE, openStoragePage);
+  }, []);
+  const documentVisible = useDocumentVisible();
+  useEffect(() => {
+    downloadsModel.setActivity(documentVisible, currentPage === 'downloads' || panels.statusBar);
+  }, [documentVisible, currentPage, panels.statusBar]);
+  useEffect(() => {
     setSplashStage('downloads');
     const release = downloadsModel.retain();
     void downloadsModel.refresh().finally(dismissSplash).catch(() => {});
@@ -162,16 +212,10 @@ const AppContent: React.FC = () => {
   useEffect(() => {
     if (onboardingChecked.current) return;
     onboardingChecked.current = true;
-    try {
-      if (localStorage.getItem('onboarded') === '1') return;
-    } catch { return; /* storage unavailable — can't persist dismissal, don't nag */ }
-    (async () => {
-      try {
-        await downloadsModel.refresh();
-        const list = downloadsModel.store.getState().downloads;
-        if (Array.isArray(list) && list.length === 0) setShowOnboarding(true);
-      } catch { /* engine unavailable — can't tell it's fresh, stay quiet */ }
-    })();
+    void offerFirstSteps(firstSteps, async () => {
+      const [, rooms] = await Promise.all([downloadsModel.refresh(), window.api.rooms.list()]);
+      return { downloads: downloadsModel.store.getState().downloads, rooms };
+    }).then(offer => { if (offer && !startupIntent.current) setShowOnboarding(true); });
   }, []);
 
   // Listen for opening torrent files/magnet links from OS.
@@ -179,14 +223,14 @@ const AppContent: React.FC = () => {
   // which opens the same confirmation/file-picker dialog as a manual add.
   useEffect(() => {
     const unsubscribe = window.api.onOpenTorrent((torrentUri) => {
-      setCurrentPage('downloads');
-      setOpenTorrentUri(torrentUri);
+      startupIntent.current = true; setShowOnboarding(false);
+      void pageLeave.run(() => { setCurrentPageNow('downloads'); setOpenTorrentUri(torrentUri); });
     });
     // A havvn://join/<invite> deep link → Rooms, prefilled Join dialog (RoomsPage
     // validates + confirms; a deep link is never auto-joined).
     const unsubscribeJoin = window.api.onJoinInvite((invite) => {
-      setCurrentPage('rooms');
-      setPendingJoinInvite(invite);
+      startupIntent.current = true; setShowOnboarding(false);
+      void pageLeave.run(() => { setCurrentPageNow('rooms'); setPendingJoinInvite(invite); });
     });
 
     // Tell main our listeners are attached so it can flush any URI/invite buffered
@@ -347,101 +391,87 @@ const AppContent: React.FC = () => {
   }, [activeRoomId, currentPage]);
 
   // A room notification was clicked — open that room.
+  useEffect(() => {
+    const off = window.api.onNotificationSound?.(() => { void playNotificationSound(); });
+    return typeof off === 'function' ? off : undefined;
+  }, []);
   useEffect(() => window.api.onRoomOpen((roomId) => { if (roomId) openRoom(roomId); }), []);
 
-  // Global shortcuts — user-editable in Settings → Hotkeys, layout-independent
-  // via event.code. Bindings live in utils/hotkeys.ts; edits apply live.
+  const toast = useHostToast();
+  const eventSummary = useAppEventSummary();
+  const [commandHost, setCommandHost] = useState<Window | null>(null);
+  const [downloadTarget, setDownloadTarget] = useState<{ id: string; requestId: number } | null>(null);
+  const [settingTarget, setSettingTarget] = useState<{ entry: Extract<NavigationTarget, { kind: 'setting' }>['entry']; requestId: number } | null>(null);
+  const [addTorrentRequest, setAddTorrentRequest] = useState(0);
+  const [streamRequest, setStreamRequest] = useState<{ id: string; requestId: number } | null>(null);
+  const [roomTaskRequest, setRoomTaskRequest] = useState<(Extract<NavigationTarget, { kind: 'room-task' }> & { requestId: number }) | null>(null);
+  const [navigationTarget, setNavigationTarget] = useState<NavigationTarget | null>(null);
+  const navigationSequence = useRef(0);
   useEffect(() => {
-    const hotkeysRef = { current: loadHotkeys() };
-    const unsubscribe = subscribeHotkeys(() => {
-      hotkeysRef.current = loadHotkeys();
-    });
-
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger hotkeys when typing in input fields
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-        return;
-      }
-
-      // Build current key combination using event.code for layout independence
-      const keys: string[] = [];
-      if (e.ctrlKey) keys.push('Ctrl');
-      if (e.shiftKey) keys.push('Shift');
-      if (e.altKey) keys.push('Alt');
-      if (e.metaKey) keys.push('Meta');
-
-      // Use event.code for physical key position
-      const code = e.code;
-      if (code && !['ControlLeft', 'ControlRight', 'ShiftLeft', 'ShiftRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight'].includes(code)) {
-        keys.push(code);
-      }
-
-      // Match hotkey
-      const keyString = keys.join('+');
-      for (const hotkey of hotkeysRef.current) {
-        if (hotkey.keys.length === 0 || keyString !== hotkey.keys.join('+')) continue;
-        e.preventDefault();
-
-        // Execute action — every id in defaultHotkeys must be handled here
-        switch (hotkey.id) {
-          case 'open-downloads':
-            setCurrentPage('downloads');
-            break;
-          case 'open-settings':
-            setCurrentPage('settings');
-            break;
-          case 'create-torrent':
-            setCurrentPage('create-torrent');
-            break;
-          case 'add-torrent':
-            // Navigate to downloads page where add torrent button is
-            setCurrentPage('downloads');
-            break;
-          case 'pause-all':
-            void window.api.pauseAll().catch(() => { /* engine unavailable */ });
-            break;
-          case 'resume-all':
-            void window.api.resumeAll().catch(() => { /* engine unavailable */ });
-            break;
-          case 'voice-mute': {
-            const call = voiceCallRef.current;
-            if (call) void window.api.rooms.voice.mute(call.roomId, !call.muted).catch(() => { /* ignore */ });
-            break;
-          }
-          case 'voice-deafen': {
-            const call = voiceCallRef.current;
-            if (call) void window.api.rooms.voice.deafen(call.roomId, !call.deafened).catch(() => { /* ignore */ });
-            break;
-          }
-        }
-        break;
-      }
-    };
-
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleGlobalKeyDown);
-      unsubscribe();
-    };
+    const open = () => { firstSteps.markSeen(); setShowOnboarding(true); };
+    window.addEventListener(FIRST_STEPS_OPEN, open);
+    return () => window.removeEventListener(FIRST_STEPS_OPEN, open);
   }, []);
+  useEffect(() => {
+    if (!navigationTarget || commandHost) return;
+    const target = navigationTarget;
+    setNavigationTarget(null);
+    const applyNavigation = () => {
+    const requestId = ++navigationSequence.current;
+    // Navigation belongs to the main shell, even when invoked from a detached panel.
+    window.focus();
+    if (target.kind === 'page') setCurrentPageNow(target.page);
+    else if (target.kind === 'first-steps') { firstSteps.markSeen(); setShowOnboarding(true); }
+    else if (target.kind === 'watch-download') { setStreamRequest({ id: target.id, requestId }); setCurrentPageNow('downloads'); }
+    else if (target.kind === 'room-task') {
+      setRoomTaskRequest({ ...target, requestId }); setCurrentPageNow('rooms');
+    }
+    else if (target.kind === 'download') {
+      try { downloadViews.select(null); } catch { /* Opening an object must not depend on writable preferences. */ }
+      setFilterMode('all'); setDownloadTarget({ id: target.id, requestId }); setCurrentPageNow('downloads');
+    } else if (target.kind === 'setting') {
+      setSettingTarget({ entry: target.entry, requestId }); setCurrentPageNow('settings');
+    } else if (target.kind === 'room') { setRoomFocusId(target.id); setCurrentPageNow('rooms'); }
+    else if (target.kind === 'download-view') {
+      try { downloadViews.select(target.id); setCurrentPageNow('downloads'); }
+      catch { toast.error(t('views.error.missing')); }
+    }
+    else { setAddTorrentRequest(requestId); setCurrentPageNow('downloads'); }
+    };
+    if (target.kind === 'first-steps' || target.kind === 'setting' && pageRef.current === 'settings' || target.kind === 'page' && target.page === pageRef.current) applyNavigation();
+    else void pageLeave.run(applyNavigation);
+  }, [navigationTarget, commandHost]);
+  const commandContext = useRef<CommandContext>(null!);
+  commandContext.current = { t, api: window.api, navigate: setNavigationTarget,
+    getDownloads: () => downloadsModel.store.getState().downloads,
+    getRooms: () => roomSummaries, getVoice: () => voiceCall,
+    getViews: () => downloadViews.getSnapshot().catalog.views };
+  const getCommandContext = useCallback(() => commandContext.current, []);
+  const getNavigationCommands = useCallback(() => createNavigationCommands(getCommandContext()), [getCommandContext]);
+  const closeCommands = useCallback(() => setCommandHost(null), []);
+  useCommandShortcuts(setCommandHost, id => {
+    void executeCommand(id, () => createAppCommands(getCommandContext()), t('commands.missing'))
+      .catch(cause => toast.error(cause instanceof Error ? cause.message : t('commands.failed')));
+  });
 
   // Open the rooms page focused on a specific room (rail click / status-bar Join)
   const openRoom = (roomId: string) => {
-    setRoomFocusId(roomId);
-    setCurrentPage('rooms');
+    const open = () => { setRoomFocusId(roomId); setCurrentPageNow('rooms'); };
+    void pageLeave.run(open);
   };
 
   const renderPage = () => {
     switch (currentPage) {
+      case 'events':
+        return <EventCenter onNavigate={target => setNavigationTarget(target.kind === 'settings' ? { kind: 'page', page: 'settings' } : target)} />;
       case 'create-torrent':
         return <CreateTorrentPage onNavigateBack={() => setCurrentPage('downloads')} />;
       case 'downloads':
-        return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
+        return <DownloadsPage onOpenEvents={() => setNavigationTarget({ kind: 'page', page: 'events' })} onOpenSetting={entry => setNavigationTarget({ kind: 'setting', entry })} streamRequest={streamRequest} onStreamHandled={() => setStreamRequest(null)} focusRequest={downloadTarget} onFocusHandled={() => setDownloadTarget(null)} addTorrentRequest={addTorrentRequest} onAddTorrentHandled={() => setAddTorrentRequest(0)} filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
       case 'watch-history':
         return <WatchHistoryPage />;
       case 'settings':
-        return <SettingsPage />;
+        return <SettingsPage getNavigationCommands={getNavigationCommands} focusRequest={settingTarget} onFocusHandled={() => setSettingTarget(null)} />;
       case 'search':
         return <SearchPage />;
       case 'rss':
@@ -449,6 +479,7 @@ const AppContent: React.FC = () => {
       case 'rooms':
         return (
           <RoomsPage
+            taskRequest={roomTaskRequest} onTaskHandled={() => setRoomTaskRequest(null)}
             focusRoomId={roomFocusId}
             onFocusHandled={() => setRoomFocusId(null)}
             onRoomSelected={setActiveRoomId}
@@ -459,7 +490,7 @@ const AppContent: React.FC = () => {
       case 'swarm':
         return <SwarmPage />;
       default:
-        return <DownloadsPage filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
+        return <DownloadsPage onOpenEvents={() => setNavigationTarget({ kind: 'page', page: 'events' })} onOpenSetting={entry => setNavigationTarget({ kind: 'setting', entry })} streamRequest={streamRequest} onStreamHandled={() => setStreamRequest(null)} focusRequest={downloadTarget} onFocusHandled={() => setDownloadTarget(null)} addTorrentRequest={addTorrentRequest} onAddTorrentHandled={() => setAddTorrentRequest(0)} filterMode={filterMode} onFilterChange={setFilterMode} openTorrentUri={openTorrentUri} onOpenHandled={() => setOpenTorrentUri(null)} />;
     }
   };
 
@@ -470,21 +501,28 @@ const AppContent: React.FC = () => {
           bare `toast()` dispatches; a torn-off dock window mounts its own with
           its frame name as the id (utils/hostToast.tsx). */}
       <HostToaster />
+      <DownloadUndoNotice />
       <div className="app-shell">
-        <TitleBar />
+        <TitleBar onOpenCommands={() => setCommandHost(window)} onOpenEvents={() => setCurrentPage('events')} activeProblems={eventSummary.active} />
         <div className="app-container">
-        <DownloadSidebar
+        {panels.sidebar && <DownloadSidebar
+          getCommands={getNavigationCommands}
           currentPage={currentPage}
           onNavigate={setCurrentPage}
           filterMode={filterMode}
-          onFilterChange={setFilterMode}
+          onFilterChange={filter => { try { downloadViews.select(null); } catch { /* Quick filters remain available. */ } setFilterMode(filter); }}
+          onOpenView={id => setNavigationTarget({ kind: 'download-view', id })}
           rooms={roomSummaries}
           onlinePeople={onlinePeople}
           onOpenRoom={openRoom}
           activeRoomId={currentPage === 'rooms' ? activeRoomId : null}
-        />
+        />}
 
         <main className="main-content">
+          {settingsRecovery && <AlertBanner onDismiss={() => setSettingsRecovery(false)} dismissLabel={t('app.banner.dismiss')}>
+            {t('settings.transfer.recoveryDesc')}{' '}
+            <button type="button" onClick={() => setCurrentPage('settings')}>{t('settings.transfer.openSettings')}</button>
+          </AlertBanner>}
           {vpnAlert && (
             <AlertBanner onDismiss={() => setVpnAlert(null)} dismissLabel={t('app.banner.dismiss')}>
               <strong>{t('app.banner.vpnLostTitle')}</strong>{' '}
@@ -520,29 +558,35 @@ const AppContent: React.FC = () => {
               {' '}{t('app.banner.diskResume')}
             </AlertBanner>
           )}
+          {showFirstGuide && <FirstStepsGuide key={firstStepsSnapshot.data.active} rooms={roomSummaries} navigate={setNavigationTarget}
+            onChoose={() => setShowOnboarding(true)} onClose={() => setShowFirstGuide(false)} />}
           <Suspense fallback={<div className="page-loading" />}>
             {renderPage()}
           </Suspense>
 
           {showOnboarding && (
             <Onboarding
+              rooms={roomSummaries}
               onClose={() => setShowOnboarding(false)}
-              onCreateRoom={() => { setShowOnboarding(false); setCurrentPage('rooms'); }}
+              onSelect={route => { firstSteps.begin(route); setShowOnboarding(false); setShowFirstGuide(true); }}
             />
           )}
 
-          <DownloadStatusBar
+          {panels.statusBar && <DownloadStatusBar
             roomPresence={roomPresence}
+            roomCount={roomSummaries.length}
             onJoinRoom={() => (roomPresence ? openRoom(roomPresence.roomId) : setCurrentPage('rooms'))}
             voiceCall={voiceCall}
             onOpenVoiceRoom={() => { if (voiceCall) openRoom(voiceCall.roomId); }}
             onVoiceMute={() => { if (voiceCall) void window.api.rooms.voice.mute(voiceCall.roomId, !voiceCall.muted).catch(() => { /* ignore */ }); }}
             onVoiceDeafen={() => { if (voiceCall) void window.api.rooms.voice.deafen(voiceCall.roomId, !voiceCall.deafened).catch(() => { /* ignore */ }); }}
             onVoiceLeave={() => { if (voiceCall) void window.api.rooms.voice.leave(voiceCall.roomId).catch(() => { /* ignore */ }); }}
-          />
+          />}
         </main>
         </div>
       </div>
+
+      {commandHost && <Suspense fallback={null}><CommandPalette host={commandHost} getContext={getCommandContext} onClose={closeCommands} /></Suspense>}
 
       {/* Dock the theme editor at the shell level (outside .app-container) so its
           fixed panel composes with the container's push-layout reservation, and
@@ -562,6 +606,7 @@ const App: React.FC = () => {
       <ConfirmProvider>
         <ThemeEditorProvider>
           <AppContent />
+          <DeviceConsentHost />
         </ThemeEditorProvider>
       </ConfirmProvider>
     </I18nProvider>

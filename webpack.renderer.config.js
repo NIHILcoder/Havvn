@@ -22,6 +22,7 @@ module.exports = (env, argv) => ({
   },
   module: {
     rules: [
+      { test: /\.svg$/, type: 'asset/resource', generator: { filename: 'assets/scenes/[name].[contenthash:8][ext]' } },
       {
         test: /\.tsx?$/,
         use: {
