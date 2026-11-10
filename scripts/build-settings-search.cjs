@@ -16,6 +16,8 @@ function buildSettingsSearch() {
   const readProps = node => Object.fromEntries(node.attributes.properties.filter(ts.isJsxAttribute).map(attr => [attr.name.getText(), readKeys(attr.initializer)]));
   const add = entry => { const id = entry.section + ':' + entry.labelKey; if (!known.has(id)) { known.add(id); entries.push(entry); } };
   const sources = fs.readdirSync(folder).filter(file => /(?:Section|AppearancePanel)\.tsx$/.test(file)).sort().map(file => ({ file: path.join(folder, file), section: file === 'AppearancePanel.tsx' ? 'interface' : file.replace('Section.tsx', '').toLowerCase() }));
+  sources.push({ file: path.join(folder, 'NavigationPanel.tsx'), section: 'interface', parentKey: 'navigation.title' });
+  sources.push({ file: path.join(folder, 'WorkingProfilesPanel.tsx'), section: 'interface', parentKey: 'working.title' });
   sources.push({ file: path.join(root, 'renderer/components/ExternalPlayerPreferences.tsx'), section: 'general', parentKey: 'external.player', descriptionKey: 'external.saved' });
   for (const { file, section, parentKey: defaultParent, descriptionKey } of sources) {
     const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

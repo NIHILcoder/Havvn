@@ -60,6 +60,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     Voice: t('hotkeys.categoryVoice'),
   };
   const hotkeyLabels: Record<string, string> = {
+    'open-command-palette': t('commands.title'),
     'open-downloads': t('hotkeys.openDownloads'),
     'open-settings': t('hotkeys.openSettings'),
     'add-torrent': t('btn.addTorrent'),
@@ -70,6 +71,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     'voice-deafen': t('hotkeys.voiceDeafen'),
   };
   const hotkeyDescriptions: Record<string, string> = {
+    'open-command-palette': t('commands.placeholder'),
     'open-downloads': t('hotkeys.openDownloadsDesc'),
     'open-settings': t('hotkeys.openSettingsDesc'),
     'add-torrent': t('hotkeys.addTorrentDesc'),

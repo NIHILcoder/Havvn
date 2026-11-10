@@ -2,7 +2,7 @@
  * Settings navigation rail — grouped sections with a live search that filters by
  * label + keywords, so you can find a setting without knowing its tab.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Icon, LogoMark } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { SETTINGS_GROUPS, SETTINGS_NAV } from './nav';
@@ -20,6 +20,7 @@ export const SettingsNav: React.FC<{
 }> = ({ active, onSelect, onSelectSetting }) => {
   const { t } = useTranslation();
   const [q, setQ] = useState('');
+  const navigation = useRef<HTMLElement>(null);
   const query = normalizeSettingsSearch(q);
   const results = searchSettings(SETTINGS_SEARCH_ENTRIES, query, t);
 
@@ -29,9 +30,12 @@ export const SettingsNav: React.FC<{
     return query.split(' ').every(term => text.includes(term)) || results.some(result => result.section === id);
   };
   const visible = SETTINGS_NAV.filter((i) => matches(i.id, i.keywords));
+  useEffect(() => {
+    navigation.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [active]);
 
   return (
-    <aside className="stg-nav">
+    <aside className={`stg-nav${query ? ' stg-nav--searching' : ''}`}>
       <div className="stg-nav-head">
         <LogoMark size={24} />
         <h2>{t('nav.settings')}</h2>
@@ -50,13 +54,13 @@ export const SettingsNav: React.FC<{
           aria-label={t('settings.searchPlaceholder')}
         />
         {q && (
-          <button className="stg-nav-clear" onClick={() => setQ('')} aria-label={t('common.close')}>
+          <button className="stg-nav-clear" onClick={() => setQ('')} aria-label={t('settings.clearSearch')}>
             <Icon name="x" size={13} />
           </button>
         )}
       </div>
 
-      <nav className="stg-nav-list">
+      <nav className="stg-nav-list" aria-label={t('nav.settings')} ref={navigation}>
         {!visible.length && <p className="stg-nav-empty">{t('settings.searchEmpty')}</p>}
         {SETTINGS_GROUPS.map((g) => {
           const items = visible.filter((i) => i.group === g);
@@ -68,6 +72,7 @@ export const SettingsNav: React.FC<{
                 <div key={item.id} className="stg-nav-section">
                   <button
                     className={`stg-nav-item${active === item.id ? ' on' : ''}`}
+                    aria-current={active === item.id ? 'page' : undefined}
                     onClick={() => onSelect(item.id)}
                   >
                     <Icon name={item.icon} size={16} />

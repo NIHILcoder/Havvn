@@ -1,7 +1,7 @@
 /**
  * Settings → About — the app's identity page, rebuilt on the stg system.
  *
- * Deliberately action-free: updates and default-client live ONLY in the System
+ * Updates and default-client live ONLY in the System
  * section. Here: a centered identity block (mark, wordmark, version, tagline,
  * stack chips, GitHub), a Details card (version / session engine / license /
  * source), and the statistics card. External links go through target="_blank",
@@ -12,6 +12,8 @@ import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, StatusPill } from '../controls';
 import { Icon, AppStatistics, LogoMark } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
+import Button from '../../../components/Button';
+import { openFirstSteps } from '../../../utils/first-steps';
 
 const GITHUB_URL = 'https://github.com/NIHILcoder/Havvn';
 
@@ -73,6 +75,11 @@ export const AboutSection: React.FC = () => {
             </a>
           }
         />
+      </SettingsCard>
+
+      <SettingsCard title={t('first.title')} icon="info">
+        <SettingRow label={t('first.title')} description={t('first.reopen')}
+          control={<Button onClick={openFirstSteps}>{t('first.open')}</Button>} />
       </SettingsCard>
 
       <SettingsCard title={t('settings.about.statsTitle')} icon="activity">
