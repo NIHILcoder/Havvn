@@ -4,6 +4,8 @@ import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
 import { useServerError } from './serverErrors';
 import { formatBytes } from '../../utils/format-helpers';
+import { useVisibleWork } from '../../utils/visible-work';
+import { useHostWindow } from '../../utils/hostWindow';
 import type { RoomServerInstance } from '../../../shared/types';
 import type { ServerHealthSample, ServerHealthState } from '../../../shared/server-health';
 
@@ -18,6 +20,8 @@ function trend(history: ServerHealthSample[], key: 'cpuPercent' | 'rssBytes'): s
 }
 export const ServerHealthPanel: React.FC<{ instance: RoomServerInstance; roomId: string }> = ({ instance, roomId }) => {
   const { t } = useTranslation(), toast = useHostToast(), errorText = useServerError();
+  const visible = useVisibleWork();
+  const host = useHostWindow();
   const [state, setState] = useState<ServerHealthState | null>(null);
   const [error, setError] = useState('');
   const [querying, setQuerying] = useState(false);
@@ -25,25 +29,30 @@ export const ServerHealthPanel: React.FC<{ instance: RoomServerInstance; roomId:
   const generation = useRef(0);
   const queryPending = useRef(false);
   const invalidate = useCallback(() => { generation.current++; queryPending.current = false; }, []);
-  const reload = useCallback(async () => {
+  const reload = useCallback(async (isCurrent: () => boolean = () => true) => {
     const epoch = generation.current;
     try {
       const next = await window.api.rooms.servers.health(instance.instanceId, roomId);
-      if (epoch !== generation.current) return;
+      if (epoch !== generation.current || !isCurrent()) return;
       setState(previous => {
         const merged = next.remote && previous?.remote && next.current && previous.current?.at !== next.current.at
           ? [...previous.history, next.current].slice(-60) : next.remote && previous?.remote ? previous.history : next.history;
         return { ...next, history: merged };
       });
       setError('');
-    } catch (e) { if (epoch === generation.current) setError(errorText(e)); }
+    } catch (e) { if (epoch === generation.current && isCurrent()) setError(errorText(e)); }
   }, [instance.instanceId, roomId, errorText]);
   useEffect(() => {
     invalidate(); setState(null); setError(''); setQuerying(false); setTickMissing(false);
-    void reload();
-    const timer = setInterval(() => void reload(), 5000);
-    return () => { invalidate(); clearInterval(timer); };
+    return invalidate;
   }, [reload, invalidate]);
+  useEffect(() => {
+    if (!visible) return;
+    let alive = true, timer: number;
+    const poll = async () => { await reload(() => alive); if (alive) timer = host.window.setTimeout(poll, 5000); };
+    void poll();
+    return () => { alive = false; host.window.clearTimeout(timer); };
+  }, [reload, visible, host]);
   const query = async () => {
     if (queryPending.current) return;
     queryPending.current = true;

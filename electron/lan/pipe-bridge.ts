@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 /**
  * Virtual-LAN Phase-1 transport: the named-pipe byte-bridge between the elevated
  * helper (server) and the engine window (client). Plan §1.1 / §5, must-fix #3/#4.
@@ -601,7 +601,8 @@ export class LanPipeServer {
         if (settled) return;
         settled = true;
         this.onHelloSettled = null;
-        err ? reject(err) : resolve();
+        if (err) reject(err);
+        else resolve();
       };
       // handleControl / close paths signal via onHelloSettled.
       this.onHelloSettled = done;
