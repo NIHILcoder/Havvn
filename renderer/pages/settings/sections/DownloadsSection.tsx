@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { CategoriesPanel } from './CategoriesPanel';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, NumberField, TextField } from '../controls';
 import { Button, Icon, Toggle } from '../../../components';
@@ -21,15 +22,15 @@ export const DownloadsSection: React.FC = () => {
     defaultDownloadDir, setDefaultDownloadDir, handleSelectDirectory,
     maxActiveDownloads, setMaxActiveDownloads,
     applyToggle, applyWatchFolder,
-    watchFolderEnabled, setWatchFolderEnabled,
+    watchFolderEnabled,
     watchFolderPath, setWatchFolderPath,
-    watchFolderDeleteAfterAdd, setWatchFolderDeleteAfterAdd,
+    watchFolderDeleteAfterAdd,
     clipboardWatchEnabled, setClipboardWatchEnabled,
     autoMoveEnabled, setAutoMoveEnabled,
     autoMovePath, setAutoMovePath,
     diskGuardEnabled, setDiskGuardEnabled,
     diskGuardMinFreeMB, setDiskGuardMinFreeMB,
-    engine, runningEngine,
+    engineCapabilities,
   } = useSettings();
 
   // Auto-move-on-completion exists only in the webtorrent manager; the native
@@ -37,7 +38,7 @@ export const DownloadsSection: React.FC = () => {
   // Gated on the engine actually RUNNING, like the speed note and the VPN bind:
   // "configured" would promise the feature the moment the picker moved, before
   // the restart that makes it true.
-  const autoMoveSupported = (runningEngine ?? engine) === 'webtorrent';
+  const autoMoveSupported = engineCapabilities?.features.autoMoveCompleted.supported === true;
 
   return (
     <>
@@ -82,22 +83,21 @@ export const DownloadsSection: React.FC = () => {
       </SettingsCard>
 
       {/* Watch folder */}
+      <CategoriesPanel />
       <SettingsCard title={t('settings.grp.watchFolder')} icon="eye">
         <SettingRow
           label={t('settings.watchEnable')}
-          description={t('settings.watchEnable.desc')}
+          description={t(watchFolderPath.trim() ? 'settings.watchEnable.desc' : 'settings.watchChooseFirst')}
           control={
             <Toggle
               checked={watchFolderEnabled}
-              onChange={(v) =>
-                applyToggle(v, setWatchFolderEnabled, { watchFolderEnabled: v },
-                  (on) => applyWatchFolder(on, watchFolderDeleteAfterAdd))
-              }
+              disabled={!watchFolderEnabled && !watchFolderPath.trim()}
+              onChange={(v) => { void applyWatchFolder(v, watchFolderDeleteAfterAdd); }}
               ariaLabel={t('settings.watchEnable')}
             />
           }
         />
-        {watchFolderEnabled && (
+        {(
           <>
             <SettingRow
               label={t('settings.watchPath')}
@@ -116,6 +116,7 @@ export const DownloadsSection: React.FC = () => {
                     variant="ghost"
                     size="sm"
                     icon={<Icon name="folder-open" size={14} />}
+                    aria-label={t('settings.watchPath') + ': ' + t('settings.choose')}
                     onClick={async () => {
                       const p = await window.api.selectDirectory();
                       if (p) setWatchFolderPath(p);
@@ -124,20 +125,17 @@ export const DownloadsSection: React.FC = () => {
                 </div>
               }
             />
-            <SettingRow
+            {watchFolderEnabled && <SettingRow
               label={t('settings.watchDelete')}
               description={t('settings.watchDelete.desc')}
               control={
                 <Toggle
                   checked={watchFolderDeleteAfterAdd}
-                  onChange={(v) =>
-                    applyToggle(v, setWatchFolderDeleteAfterAdd, { watchFolderDeleteAfterAdd: v },
-                      (on) => applyWatchFolder(watchFolderEnabled, on))
-                  }
+                  onChange={(v) => { void applyWatchFolder(watchFolderEnabled, v); }}
                   ariaLabel={t('settings.watchDelete')}
                 />
               }
-            />
+            />}
           </>
         )}
       </SettingsCard>
@@ -165,7 +163,7 @@ export const DownloadsSection: React.FC = () => {
             native-only VPN bind gets in Privacy, inverted. */}
         <SettingRow
           label={t('settings.autoMove')}
-          description={autoMoveSupported ? t('settings.autoMove.desc') : t('settings.autoMove.engineOnly')}
+          description={autoMoveSupported ? t('settings.autoMove.desc') : t(engineCapabilities ? 'settings.autoMove.engineOnly' : 'engineFeatures.unknown')}
           control={
             <Toggle
               checked={autoMoveEnabled && autoMoveSupported}
@@ -196,6 +194,7 @@ export const DownloadsSection: React.FC = () => {
                   variant="ghost"
                   size="sm"
                   icon={<Icon name="folder-open" size={14} />}
+                  aria-label={t('settings.autoMovePath') + ': ' + t('settings.choose')}
                   onClick={async () => {
                     const p = await window.api.selectDirectory();
                     if (p) setAutoMovePath(p);

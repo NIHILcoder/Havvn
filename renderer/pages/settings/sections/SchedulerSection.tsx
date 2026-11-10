@@ -1,13 +1,8 @@
 /**
  * Settings → Scheduler section, reworked to be actually useful.
  *
- * The scheduler engine (electron/scheduler/scheduler-engine.ts) applies
- * ScheduleEntry.speedLimit (KB/s, down + up) inside each window and restores
- * the user's defaults outside it — but the old UI never exposed speedLimit,
- * so every schedule users created was a silent no-op. This rewrite adds:
- *   - a per-entry speed-limit field with a "no effect" warning when unset,
- *   - a live "right now" status row (same day/midnight-wrap logic as the engine),
- *   - a 7-row week-at-a-glance strip showing every window as a mini-bar.
+ * Schedule limits are combined with the other policies by effective-settings.
+ * The live status and week strip use the same start-day convention as the engine.
  *
  * Day mapping: ScheduleEntry.days uses JS getDay() numbering (0=Sunday), which
  * is what the engine checks against. dayNames from context is Monday-first, so
@@ -21,6 +16,7 @@ import { SettingsCard, SettingRow, NumberField, StatusPill } from '../controls';
 import { Button, Icon, Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { ScheduleEntry } from '../../../../shared/types';
+import { scheduleMatches } from '../../../../shared/effective-settings';
 
 /** "HH:MM" → minutes since midnight (bad input → 0, matching engine leniency). */
 const toMinutes = (hhmm: string): number => {
@@ -29,25 +25,18 @@ const toMinutes = (hhmm: string): number => {
 };
 
 /**
- * The [start, end) minute segments a schedule paints on ONE of its days.
- * Mirrors the engine: start < end is a same-day window; start > end wraps past
- * midnight, so each selected day gets both the evening and the morning piece;
- * start == end is an empty window (the engine's `>= start && < end` never hits).
+ * Days identify the start of a window. Its morning segment belongs to the next day.
  */
-const segmentsFor = (s: ScheduleEntry): Array<[number, number]> => {
+const segmentsFor = (s: ScheduleEntry, day: number): Array<[number, number]> => {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.endTime)) return [];
   const a = toMinutes(s.startTime);
   const b = toMinutes(s.endTime);
   if (a === b) return [];
-  return a < b ? [[a, b]] : [[a, 1440], [0, b]];
-};
-
-/** Exact client-side replica of the engine's "does this window match now?". */
-const matchesNow = (s: ScheduleEntry, now: Date): boolean => {
-  if (!s.days.includes(now.getDay())) return false;
-  const cur = now.getHours() * 60 + now.getMinutes();
-  const a = toMinutes(s.startTime);
-  const b = toMinutes(s.endTime);
-  return a <= b ? cur >= a && cur < b : cur >= a || cur < b;
+  if (a < b) return s.days.includes(day) ? [[a, b]] : [];
+  const segments: Array<[number, number]> = [];
+  if (b > 0 && s.days.includes((day + 6) % 7)) segments.push([0, b]);
+  if (s.days.includes(day)) segments.push([a, 1440]);
+  return segments;
 };
 
 export const SchedulerSection: React.FC = () => {
@@ -71,11 +60,12 @@ export const SchedulerSection: React.FC = () => {
     return () => clearInterval(id);
   }, []);
 
-  const activeWindow = schedules.find((s) => matchesNow(s, now));
-  const activeLimit = activeWindow?.speedLimit ?? 0;
+  const activeWindows = schedules.filter(s => scheduleMatches(s, now));
+  const limits = activeWindows.map(s => s.speedLimit ?? 0).filter(limit => limit > 0);
+  const activeLimit = limits.length ? Math.min(...limits) : 0;
 
   const renderStatusPill = () => {
-    if (!activeWindow) return <StatusPill tone="muted">{t('settings.sched.idleNow')}</StatusPill>;
+    if (!activeWindows.length) return <StatusPill tone="muted">{t('settings.sched.idleNow')}</StatusPill>;
     if (activeLimit > 0) {
       return <StatusPill tone="ok">{`${t('settings.sched.limitedNow')} · ${activeLimit} KB/s`}</StatusPill>;
     }
@@ -87,9 +77,8 @@ export const SchedulerSection: React.FC = () => {
     // Gather every segment any schedule paints on this day, tagging no-op
     // (limitless) windows so they render dimmed.
     const segs = schedules
-      .filter((s) => s.days.includes(engineDay))
       .flatMap((s) =>
-        segmentsFor(s).map(([a, b]) => ({ a, b, noop: !(s.speedLimit && s.speedLimit > 0) })),
+        segmentsFor(s, engineDay).map(([a, b]) => ({ a, b, noop: !(s.speedLimit && s.speedLimit > 0) })),
       )
       .sort((x, y) => x.a - y.a);
 
@@ -126,6 +115,7 @@ export const SchedulerSection: React.FC = () => {
           control={
             <Toggle
               checked={schedulerEnabled}
+              disabled={ctx.schedulerSaving}
               onChange={() => handleSchedulerToggle()}
               ariaLabel={t('settings.schedEnable')}
             />

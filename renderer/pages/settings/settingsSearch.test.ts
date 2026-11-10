@@ -5,6 +5,20 @@ import { SETTINGS_SEARCH_ENTRIES } from './settingsSearchCatalog';
 import { normalizeSettingsSearch, searchSettings } from './settingsSearch';
 
 describe('search individual settings', () => {
+  it('finds the resource mode in System in both languages', () => {
+    for (const dictionary of [en, ru]) expect(searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['resources.mode'], key => dictionary[key]))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ section: 'system', labelKey: 'resources.mode' })]));
+  });
+  it('indexes first steps in About for both supported languages', () => {
+    for (const dictionary of [en, ru]) expect(searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['first.title'], key => dictionary[key]))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ section: 'about', labelKey: 'first.title' })]));
+  });
+  it('indexes navigation customization in the Interface section in both languages', () => {
+    for (const dictionary of [en, ru]) {
+      const results = searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['navigation.title'], key => dictionary[key]);
+      expect(results.some(item => item.labelKey === 'navigation.title' && item.section === 'interface')).toBe(true);
+    }
+  });
   it('finds a parameter by its name even when the category has no matching words', () => {
     const result = searchSettings(SETTINGS_SEARCH_ENTRIES, 'автозапуск', key => ru[key]);
     expect(result.some(item => item.section === 'general' && item.labelKey === 'settings.autoLaunch' && item.kind === 'row')).toBe(true);

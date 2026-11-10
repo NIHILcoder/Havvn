@@ -10,6 +10,7 @@ import { Icon, Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { ExternalPlayerSessions } from '../../../components/ExternalPlayerSessions';
 import { ExternalPlayerPreferences } from '../../../components/ExternalPlayerPreferences';
+import { EngineCapabilitiesSummary } from '../../../components/EngineCapabilitiesSummary';
 
 export const GeneralSection: React.FC = () => {
   const ctx = useSettings();
@@ -52,6 +53,7 @@ export const GeneralSection: React.FC = () => {
             <span>{t('settings.engine.restartNote')}</span>
           </div>
         )}
+        <EngineCapabilitiesSummary capabilities={ctx.engineCapabilities} failed={ctx.engineCapabilitiesFailed} />
       </SettingsCard>
 
       <SettingsCard title={t('external.player')} icon="monitor">

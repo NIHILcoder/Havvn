@@ -986,3 +986,18 @@
   border-color: rgba(var(--color-warning-rgb), 0.4);
   color: var(--color-warning);
 }
+.stg-save-state { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--color-text-secondary); }
+.stg-save-state > span { padding: 4px 8px; border: 1px solid var(--color-border-default); }
+.stg-change-review { flex: none; padding: 0; border: 1px solid var(--color-border-default); font-size: 12px; }
+.stg-change-review summary { cursor: pointer; padding: 12px; }
+.stg-change-review-body { max-height: min(200px, 25vh); overflow: auto; padding: 0 12px 12px; scrollbar-gutter: stable; }
+.stg-change-review-body > p, .stg-change-review small { color: var(--color-text-secondary); line-height: 1.5; }
+.stg-change-review ul { padding: 0; margin: 0; list-style: none; }
+.stg-change-review li { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-top: 1px solid var(--color-border-default); }
+.stg-change-review li > div { flex: 1; min-width: 180px; overflow-wrap: anywhere; }
+.stg-change-review li p { margin: 5px 0; }
+.stg-change-values { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px; align-items: start; line-height: 1.5; }
+.stg-change-value { min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+@container stg (max-width: 600px) {
+  .stg-change-review li > div { flex-basis: 100%; min-width: 0; }
+}

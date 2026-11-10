@@ -8,14 +8,14 @@ import React, { useState } from 'react';
 import { HotkeySettings } from '../../../components';
 import { SettingsCard } from '../controls';
 import { useTranslation } from '../../../utils/i18nContext';
-import { loadHotkeys, saveHotkeys, resetHotkeys } from '../../../utils/hotkeys';
+import { loadHotkeys, saveHotkeys, resetHotkeys, rebindHotkey } from '../../../utils/hotkeys';
 
 export const HotkeysSection: React.FC = () => {
   const { t } = useTranslation();
   const [hotkeys, setHotkeys] = useState(loadHotkeys);
 
   const handleHotkeyChange = (hotkeyId: string, keys: string[]) => {
-    const next = hotkeys.map((h) => (h.id === hotkeyId ? { ...h, keys } : h));
+    const next = rebindHotkey(hotkeys, hotkeyId, keys);
     setHotkeys(next);
     saveHotkeys(next);
   };
@@ -26,6 +26,7 @@ export const HotkeysSection: React.FC = () => {
 
   return (
     <SettingsCard title={t('hotkeys.title')} icon="keyboard" description={t('hotkeys.subtitle')}>
+      <p>{t('hotkeys.conflictHint')}</p>
       <HotkeySettings
         hotkeys={hotkeys}
         onHotkeyChange={handleHotkeyChange}
