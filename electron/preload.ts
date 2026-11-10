@@ -1,5 +1,28 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent, webFrame } from 'electron';
 import { RoomStateDecoder, type RoomStatePacket } from '../shared/room-state-ipc';
+import { createSettingsTransferClient } from './settings-transfer-client';
+import { attachDeviceDataClient } from './device-data-client';
+import type { SettingsTransferOptions, SettingsTransferStatus } from '../shared/interface-preferences';
+
+const settingsTransferClient = createSettingsTransferClient(ipcRenderer, {
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: key => localStorage.removeItem(key),
+});
+attachDeviceDataClient(ipcRenderer, {
+  getItem: key => localStorage.getItem(key),
+  setItem: (key, value) => localStorage.setItem(key, value),
+  removeItem: key => localStorage.removeItem(key),
+}, keys => {
+  for (const key of keys) window.dispatchEvent(new StorageEvent('storage', { key, newValue: localStorage.getItem(key) }));
+  window.dispatchEvent(new Event('havvn:settings-transfer'));
+  window.dispatchEvent(new Event('havvn:watchHistory'));
+});
+let settingsRecovery: Promise<unknown> = Promise.resolve();
+if (process.argv.includes('--havvn-settings-recovery')) {
+  try { settingsRecovery = settingsTransferClient.recoverSettingsTransfer(); void settingsRecovery.catch(() => { /* App shows the retained recovery status. */ }); }
+  catch { /* Local storage may be temporarily unavailable. */ }
+}
 
 // webUtils was added in Electron 30; the bundled type defs for older versions
 // don't declare it, so access it defensively without a typed named import.
@@ -61,6 +84,14 @@ ipcRenderer.on('rooms:state', (_event: IpcRendererEvent, packet: RoomStatePacket
 ipcRenderer.on('rooms:state-drop', (_event: IpcRendererEvent, roomId: string) => roomStates.delete(roomId));
 
 const api: IpcApi = {
+  devices: {
+    state: () => ipcRenderer.invoke('devices:state'),
+    start: async () => { await settingsRecovery; return ipcRenderer.invoke('devices:start'); },
+    command: request => ipcRenderer.invoke('devices:command', request),
+    changed: callback => { const listener = () => callback(); ipcRenderer.on('devices:changed', listener); return () => ipcRenderer.off('devices:changed', listener); },
+    localChanged: () => ipcRenderer.send('devices:localChanged'),
+    activeMedia: selectors => ipcRenderer.send('devices:activeMedia', selectors),
+  },
   externalPlayer: {
     getConfig: () => ipcRenderer.invoke('externalPlayer:getConfig'),
     inspect: (id, rel) => ipcRenderer.invoke('externalPlayer:inspect', id, rel),
@@ -74,6 +105,11 @@ const api: IpcApi = {
     acknowledgeWatch: ids => ipcRenderer.invoke('externalPlayer:acknowledgeWatch', ids),
   },
   historyPlayback: {
+    relocations: () => ipcRenderer.invoke('historyPlayback:relocations'),
+    chooseRelocation: (target, folder) => ipcRenderer.invoke('historyPlayback:chooseRelocation', target, folder),
+    confirmRelocation: token => ipcRenderer.invoke('historyPlayback:confirmRelocation', token),
+    cancelRelocation: token => ipcRenderer.invoke('historyPlayback:cancelRelocation', token),
+    libraryFiles: (id, limit) => ipcRenderer.invoke('historyPlayback:libraryFiles', id, limit),
     files: id => ipcRenderer.invoke('historyPlayback:files', id),
     stream: (id, index, opts) => ipcRenderer.invoke('historyPlayback:stream', id, index, opts),
     audio: (id, index) => ipcRenderer.invoke('historyPlayback:audio', id, index),
@@ -83,6 +119,23 @@ const api: IpcApi = {
     stop: id => ipcRenderer.invoke('historyPlayback:stop', id),
   },
   // Downloads
+  automation: {
+    get: () => ipcRenderer.invoke('automation:get'),
+    save: config => ipcRenderer.invoke('automation:save', config),
+    preview: (input, rules) => ipcRenderer.invoke('automation:preview', input, rules),
+    retry: (id, event) => ipcRenderer.invoke('automation:retry', id, event),
+  },
+  events: {
+    list: query => ipcRenderer.invoke('events:list', query),
+    summary: () => ipcRenderer.invoke('events:summary'),
+    read: id => ipcRenderer.invoke('events:read', id),
+    run: (id, action) => ipcRenderer.invoke('events:run', id, action),
+    onChanged: callback => {
+      const listener = () => callback();
+      ipcRenderer.on('events:changed', listener);
+      return () => { ipcRenderer.removeListener('events:changed', listener); };
+    },
+  },
   addDownload: (request: AddDownloadRequest): Promise<Download> => {
     return ipcRenderer.invoke('downloads:add', request);
   },
@@ -95,8 +148,20 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:resume', id);
   },
 
-  removeDownload: (id: string, deleteFiles: boolean): Promise<void> => {
-    return ipcRenderer.invoke('downloads:remove', id, deleteFiles);
+  removeDownload: (id: string, deleteFiles: boolean, previewToken?: string) => {
+    return ipcRenderer.invoke('downloads:remove', id, deleteFiles, previewToken);
+  },
+  previewDownloadDeletion: (id: string) => ipcRenderer.invoke('downloads:deletePreview', id),
+  getDownloadUndo: () => ipcRenderer.invoke('downloads:undo:list'),
+  onNotificationSound: (callback: () => void): (() => void) => {
+    const handler = () => callback(); ipcRenderer.on('app:notificationSound', handler);
+    return () => ipcRenderer.removeListener('app:notificationSound', handler);
+  },
+  undoDownloadRemoval: (token: string) => ipcRenderer.invoke('downloads:undo', token),
+  onDownloadUndoChanged: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('downloads:undo:changed', handler);
+    return () => ipcRenderer.removeListener('downloads:undo:changed', handler);
   },
 
   stopSeeding: (id: string): Promise<void> => {
@@ -115,6 +180,7 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:getAll');
   },
 
+  inspectDownloadHelp: (id: string) => ipcRenderer.invoke('downloads:inspectHelp', id),
   getTorrentFiles: (id: string): Promise<any[]> => {
     return ipcRenderer.invoke('downloads:getFiles', id);
   },
@@ -127,6 +193,7 @@ const api: IpcApi = {
     return ipcRenderer.invoke('downloads:stopStream', id, fileIndex);
   },
   getEpisodePrefetchSupport: () => ipcRenderer.invoke('downloads:prefetchSupport'),
+  getEngineCapabilities: () => ipcRenderer.invoke('downloads:engineCapabilities'),
   prefetchEpisode: (id: string, request: import('../shared/episode-prefetch').EpisodePrefetchRequest) => ipcRenderer.invoke('downloads:prefetchEpisode', id, request),
   stopEpisodePrefetch: (id: string, lease: string) => ipcRenderer.invoke('downloads:stopEpisodePrefetch', id, lease),
 
@@ -159,6 +226,17 @@ const api: IpcApi = {
   getSettings: (): Promise<AppSettings> => {
     return ipcRenderer.invoke('settings:get');
   },
+  getEffectiveSettings: () => ipcRenderer.invoke('settings:effective'),
+  resourceMode: {
+    get: () => ipcRenderer.invoke('resources:get'),
+    set: mode => ipcRenderer.invoke('resources:set', mode),
+    onChanged: listener => {
+      const handler = (_event: unknown, snapshot: import('../shared/resource-mode').ResourceModeSnapshot) => listener(snapshot);
+      ipcRenderer.on('resources:changed', handler);
+      return () => { ipcRenderer.removeListener('resources:changed', handler); };
+    },
+  },
+  applyWorkingProfile: request => settingsTransferClient.applyWorkingProfile(request),
 
   updateSettings: (settings: Partial<AppSettings>): Promise<AppSettings> => {
     return ipcRenderer.invoke('settings:update', settings);
@@ -198,6 +276,7 @@ const api: IpcApi = {
   selectTorrentFile: (): Promise<{ path: string; content: string } | null> => {
     return ipcRenderer.invoke('dialog:selectTorrentFile');
   },
+  selectTorrentFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:selectTorrentFiles'),
 
   selectFilesForTorrent: (): Promise<string[] | null> => {
     return ipcRenderer.invoke('dialog:selectFilesForTorrent');
@@ -235,6 +314,15 @@ const api: IpcApi = {
   },
 
   // Cache management
+  storage: {
+    scan: (id: string) => ipcRenderer.invoke('storage:scan', id),
+    cancel: (id: string) => ipcRenderer.invoke('storage:cancel', id),
+    onProgress: (callback: (progress: import('../shared/storage-overview').StorageProgress) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: import('../shared/storage-overview').StorageProgress) => callback(progress);
+      ipcRenderer.on('storage:progress', listener);
+      return () => { ipcRenderer.removeListener('storage:progress', listener); };
+    },
+  },
   clearCache: (): Promise<{ success: boolean }> => {
     return ipcRenderer.invoke('cache:clear');
   },
@@ -243,6 +331,8 @@ const api: IpcApi = {
   createTorrent: (request: CreateTorrentRequest): Promise<CreateTorrentResult> => {
     return ipcRenderer.invoke('torrent:create', request);
   },
+  cancelCreateTorrent: (requestId: string): Promise<boolean> => ipcRenderer.invoke('torrent:cancelCreate', requestId),
+  retryCreatedTorrentSeed: (seedRetryId: string): Promise<CreateTorrentResult> => ipcRenderer.invoke('torrent:retryCreatedSeed', seedRetryId),
 
   getDefaultTrackers: (): Promise<string[][]> => {
     return ipcRenderer.invoke('torrent:getDefaultTrackers');
@@ -451,12 +541,22 @@ const api: IpcApi = {
   },
 
   // Settings export/import
-  exportSettings: (): Promise<{ success: boolean; path?: string }> => {
-    return ipcRenderer.invoke('settings:export');
+  exportSettings: (options?: SettingsTransferOptions) => settingsTransferClient.exportSettings(options),
+  importSettings: (options?: SettingsTransferOptions) => settingsTransferClient.importSettings(options),
+  restoreSettings: (options?: SettingsTransferOptions) => settingsTransferClient.restoreSettings(options),
+  recoverSettingsTransfer: () => settingsTransferClient.recoverSettingsTransfer(),
+  getSettingsTransferStatus: (): Promise<SettingsTransferStatus> => ipcRenderer.invoke('settings:transfer:status'),
+  getSettingsExportOperation: () => ipcRenderer.invoke('settings:export:operation'),
+  onSettingsExportOperation: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('settings:export:changed', handler);
+    return () => ipcRenderer.removeListener('settings:export:changed', handler);
   },
 
-  importSettings: (): Promise<{ success: boolean }> => {
-    return ipcRenderer.invoke('settings:import');
+  onCategoriesChanged: (callback: () => void): (() => void) => {
+    const handler = () => callback();
+    ipcRenderer.on('categories:changed', handler);
+    return () => ipcRenderer.removeListener('categories:changed', handler);
   },
 
   // App events
@@ -558,7 +658,7 @@ const api: IpcApi = {
   },
   appearance: {
     getAcrylic: () => ipcRenderer.invoke('appearance:acrylic:get'),
-    setAcrylic: (enabled: boolean) => ipcRenderer.invoke('appearance:acrylic:set', enabled),
+    setAcrylic: (enabled, material) => ipcRenderer.invoke('appearance:acrylic:set', enabled, material),
     onAcrylicChanged: (callback) => {
       const listener = (_event: IpcRendererEvent, status: Parameters<typeof callback>[0]) => callback(status);
       ipcRenderer.on('appearance:acrylic:changed', listener);
@@ -716,6 +816,7 @@ const api: IpcApi = {
     updateRule: (id: string, updates: any) => ipcRenderer.invoke('rss:updateRule', id, updates),
     removeRule: (id: string) => ipcRenderer.invoke('rss:removeRule', id),
     previewRule: (rule: any) => ipcRenderer.invoke('rss:previewRule', rule),
+    forecastRule: (rule: import('../shared/types').RSSRule) => ipcRenderer.invoke('rss:forecastRule', rule),
     runRule: (id: string) => ipcRenderer.invoke('rss:runRule', id),
   },
 
@@ -725,6 +826,7 @@ const api: IpcApi = {
     clearDownloadHistory: () => ipcRenderer.invoke('search:clearDownloadHistory'),
     start: (query: string, category?: string, refresh?: boolean, providerId?: string) =>
       ipcRenderer.invoke('search:start', query, category, refresh, providerId),
+    more: (page: string) => ipcRenderer.invoke('search:more', page),
     cancel: (searchId: string) => ipcRenderer.invoke('search:cancel', searchId),
     onProgress: (callback: (progress: SearchProgress) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, progress: SearchProgress) => callback(progress);
@@ -737,6 +839,9 @@ const api: IpcApi = {
     saveNetworkProfile: (profile: any) => ipcRenderer.invoke('search:saveNetworkProfile', profile),
     setNetworkAccess: (id: string, access: any) => ipcRenderer.invoke('search:setNetworkAccess', id, access),
     resolveSource: (refs: string[]) => ipcRenderer.invoke('search:resolveSource', refs),
+    releaseDetails: (refs: string[], requestId: string, selected?: string, refresh?: boolean) => ipcRenderer.invoke('search:releaseDetails', refs, requestId, selected, refresh),
+    releaseImage: (assetId: string, requestId: string) => ipcRenderer.invoke('search:releaseImage', assetId, requestId),
+    cancelPreview: (requestId: string) => ipcRenderer.invoke('search:cancelPreview', requestId),
     getProviders: () => ipcRenderer.invoke('search:getProviders'),
     addProvider: (provider: any) => ipcRenderer.invoke('search:addProvider', provider),
     updateProvider: (id: string, updates: any) => ipcRenderer.invoke('search:updateProvider', id, updates),
@@ -781,6 +886,71 @@ const api: IpcApi = {
 
   // Friend swarms / private rooms (Phase 3)
   rooms: {
+    documents: {
+      requestAccess: (roomId, id, expected) => ipcRenderer.invoke('rooms:docsRequestAccess', roomId, id, expected),
+      dismissAccess: (roomId, id, requestId) => ipcRenderer.invoke('rooms:docsDismissAccess', roomId, id, requestId),
+      view: roomId => ipcRenderer.invoke('rooms:docsView', roomId),
+      create: (roomId, title, language, text, writers) => ipcRenderer.invoke('rooms:docsCreate', roomId, title, language, text, writers),
+      open: (roomId, id) => ipcRenderer.invoke('rooms:docsOpen', roomId, id),
+      poll: (roomId, token, version) => ipcRenderer.invoke('rooms:docsPoll', roomId, token, version),
+      update: (roomId, token, data) => ipcRenderer.invoke('rooms:docsUpdate', roomId, token, data),
+      close: (roomId, token) => ipcRenderer.invoke('rooms:docsClose', roomId, token),
+      presence: (roomId, token, value) => ipcRenderer.invoke('rooms:docsPresence', roomId, token, value),
+      policy: (roomId, id, expected, title, writers, archived) => ipcRenderer.invoke('rooms:docsPolicy', roomId, id, expected, title, writers, archived),
+      history: (roomId, token) => ipcRenderer.invoke('rooms:docsHistory', roomId, token),
+      snapshot: (roomId, token, label) => ipcRenderer.invoke('rooms:docsSnapshot', roomId, token, label),
+      keepDraft: (roomId, token, text) => ipcRenderer.invoke('rooms:docsKeepDraft', roomId, token, text),
+      restore: (roomId, token, id) => ipcRenderer.invoke('rooms:docsRestore', roomId, token, id),
+      review: (roomId, token, choice) => ipcRenderer.invoke('rooms:docsReview', roomId, token, choice),
+      export: (roomId, token) => ipcRenderer.invoke('rooms:docsExport', roomId, token),
+    },
+    fileSync: {
+      openEditor: (roomId, rootId, entryId) => ipcRenderer.invoke('rooms:syncEditorOpen', roomId, rootId, entryId),
+      saveEditor: (roomId, token, text) => ipcRenderer.invoke('rooms:syncEditorSave', roomId, token, text),
+      closeEditor: (roomId, token) => ipcRenderer.invoke('rooms:syncEditorClose', roomId, token),
+      rights: (roomId, rootId, writers, moves, deletes) => ipcRenderer.invoke('rooms:syncRights', roomId, rootId, writers, moves, deletes),
+      prepareDelete: (roomId, rootId, entryId, resolve) => ipcRenderer.invoke('rooms:syncDeletePreview', roomId, rootId, entryId, resolve),
+      missing: (roomId, rootId) => ipcRenderer.invoke('rooms:syncMissing', roomId, rootId),
+      prepareMissingDelete: (roomId, rootId, entryId, stamp, acknowledgeMass) => ipcRenderer.invoke('rooms:syncMissingDeletePreview', roomId, rootId, entryId, stamp, acknowledgeMass),
+      confirmDelete: (roomId, previewId, keepBoth) => ipcRenderer.invoke('rooms:syncDeleteConfirm', roomId, previewId, keepBoth),
+      logPreview: (roomId, rootId) => ipcRenderer.invoke('rooms:syncLogPreview', roomId, rootId),
+      checkpointPreview: (roomId, rootId) => ipcRenderer.invoke('rooms:syncCheckpointPreview', roomId, rootId),
+      fetchHistory: (roomId, rootId, entryId) => ipcRenderer.invoke('rooms:syncHistoryFetch', roomId, rootId, entryId),
+      checkpointConfirm: (roomId, previewId) => ipcRenderer.invoke('rooms:syncCheckpointConfirm', roomId, previewId),
+      compactLog: (roomId, previewId) => ipcRenderer.invoke('rooms:syncLogConfirm', roomId, previewId),
+      prepareMove: (roomId, rootId, entryId, toPath) => ipcRenderer.invoke('rooms:syncMovePreview', roomId, rootId, entryId, toPath),
+      confirmMove: (roomId, previewId) => ipcRenderer.invoke('rooms:syncMoveConfirm', roomId, previewId),
+      pathConflict: (roomId, rootId, entryId) => ipcRenderer.invoke('rooms:syncPathConflict', roomId, rootId, entryId),
+      preparePathResolution: (roomId, rootId, entryId, revisionId, toPath) => ipcRenderer.invoke('rooms:syncPathPreview', roomId, rootId, entryId, revisionId, toPath),
+      confirmPathResolution: (roomId, previewId) => ipcRenderer.invoke('rooms:syncPathConfirm', roomId, previewId),
+      metadata: (roomId, rootId, keep) => ipcRenderer.invoke('rooms:syncMetadata', roomId, rootId, keep),
+      metadataExport: (roomId, rootId, password) => ipcRenderer.invoke('rooms:syncMetadataExport', roomId, rootId, password),
+      metadataImport: (roomId, rootId, password) => ipcRenderer.invoke('rooms:syncMetadataImport', roomId, rootId, password),
+      metadataConfirm: (roomId, previewId) => ipcRenderer.invoke('rooms:syncMetadataConfirm', roomId, previewId),
+      confirmRights: (roomId, previewId) => ipcRenderer.invoke('rooms:syncRightsConfirm', roomId, previewId),
+      filters: (roomId, rootId, rules) => ipcRenderer.invoke('rooms:syncFilters', roomId, rootId, rules),
+      filterPage: (roomId, previewId, offset) => ipcRenderer.invoke('rooms:syncFilterPage', roomId, previewId, offset),
+      confirmFilters: (roomId, previewId) => ipcRenderer.invoke('rooms:syncFilterConfirm', roomId, previewId),
+      conflict: (roomId, rootId, entryId) => ipcRenderer.invoke('rooms:syncConflictPreview', roomId, rootId, entryId),
+      resolveConflict: (roomId, previewId, choice) => ipcRenderer.invoke('rooms:syncConflictConfirm', roomId, previewId, choice),
+      deferConflict: (roomId, rootId, entryId) => ipcRenderer.invoke('rooms:syncConflictDefer', roomId, rootId, entryId),
+      history: (roomId, rootId, entryId, offset) => ipcRenderer.invoke('rooms:syncHistory', roomId, rootId, entryId, offset),
+      prepareRestore: (roomId, rootId, revisionId) => ipcRenderer.invoke('rooms:syncRestorePreview', roomId, rootId, revisionId),
+      restore: (roomId, previewId) => ipcRenderer.invoke('rooms:syncRestoreConfirm', roomId, previewId),
+      cache: (roomId, rootId, limitBytes) => ipcRenderer.invoke('rooms:syncCache', roomId, rootId, limitBytes),
+      backups: (roomId, rootId, policy) => ipcRenderer.invoke('rooms:syncBackups', roomId, rootId, policy),
+      backupPage: (roomId, previewId, offset) => ipcRenderer.invoke('rooms:syncBackupPage', roomId, previewId, offset),
+      confirmBackups: (roomId, previewId) => ipcRenderer.invoke('rooms:syncBackupConfirm', roomId, previewId),
+      trashPreview: (roomId, rootId, selected) => ipcRenderer.invoke('rooms:syncTrashPreview', roomId, rootId, selected),
+      trashPage: (roomId, previewId, offset) => ipcRenderer.invoke('rooms:syncTrashPage', roomId, previewId, offset),
+      trashConfirm: (roomId, previewId) => ipcRenderer.invoke('rooms:syncTrashConfirm', roomId, previewId),
+      trashExport: (roomId, previewId, operationId) => ipcRenderer.invoke('rooms:syncTrashExport', roomId, previewId, operationId),
+      state: roomId => ipcRenderer.invoke('rooms:syncState', roomId),
+      files: (roomId, rootId, offset, trash) => ipcRenderer.invoke('rooms:syncFiles', roomId, rootId, offset, trash),
+      choose: (roomId, choice) => ipcRenderer.invoke('rooms:syncChoose', roomId, choice),
+      confirm: (roomId, previewId) => ipcRenderer.invoke('rooms:syncConfirm', roomId, previewId),
+      action: (roomId, rootId, action, enabled) => ipcRenderer.invoke('rooms:syncAction', roomId, rootId, action, enabled),
+    },
     getProfile: (): Promise<RoomProfile> => ipcRenderer.invoke('rooms:getProfile'),
     setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed' | 'color' | 'status' | 'avatarImg'>>): Promise<RoomProfile> =>
       ipcRenderer.invoke('rooms:setProfile', updates),
@@ -791,7 +961,9 @@ const api: IpcApi = {
     get: (roomId: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:get', roomId),
     engineStatus: (): Promise<RoomEngineStatus> => ipcRenderer.invoke('rooms:engineStatus'),
     diagnose: (roomId: string): Promise<import('../shared/room-diagnostics').RoomDiagnosticReport> => ipcRenderer.invoke('rooms:diagnose', roomId),
+    preflight: (roomId, action, targetId) => ipcRenderer.invoke('rooms:preflight', roomId, action, targetId),
     retryConnection: (roomId: string): Promise<import('../shared/room-diagnostics').RoomDiagnosticReport> => ipcRenderer.invoke('rooms:retryConnection', roomId),
+    probeConnection: (roomId: string): Promise<import('../shared/room-connection-help').RoomNetworkProbe> => ipcRenderer.invoke('rooms:probeConnection', roomId),
     exportDiagnostics: (roomId: string): Promise<{ success: boolean }> => ipcRenderer.invoke('rooms:exportDiagnostics', roomId),
     addFiles: (roomId: string, paths: string[], folderId?: string): Promise<RoomState> => ipcRenderer.invoke('rooms:addFiles', roomId, paths, folderId),
     pickAndAddFiles: (roomId: string, folderId?: string): Promise<RoomState | null> => ipcRenderer.invoke('rooms:pickAndAddFiles', roomId, folderId),
@@ -848,11 +1020,15 @@ const api: IpcApi = {
       devices: (): Promise<VoiceDeviceInfo[]> => ipcRenderer.invoke('rooms:voiceDevices'),
       micTestStart: (settings: VoiceSettings, monitor?: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMicTestStart', settings, monitor),
       micTestStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceMicTestStop'),
+      speakerTestStart: (settings: VoiceSettings): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceSpeakerTestStart', settings),
+      speakerTestStop: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:voiceSpeakerTestStop'),
     },
     screen: {
       sources: (): Promise<ScreenSourceInfo[]> => ipcRenderer.invoke('rooms:screenSources'),
-      shareStart: (roomId: string, sourceId: string, withAudio?: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenShareStart', roomId, sourceId, withAudio),
+      shareStart: (roomId: string, sourceId: string, withAudio?: boolean, settings?: import('../shared/screen-share').ScreenShareSettings): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenShareStart', roomId, sourceId, withAudio, settings),
       shareStop: (roomId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenShareStop', roomId),
+      configure: (roomId: string, settings: import('../shared/screen-share').ScreenShareSettings): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenConfigure', roomId, settings),
+      playback: (roomId: string, memberId: string, volume: number, muted: boolean): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenPlayback', roomId, memberId, volume, muted),
       watchStart: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenWatchStart', roomId, memberId),
       watchStop: (roomId: string, memberId: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:screenWatchStop', roomId, memberId),
       signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown): Promise<{ ok: boolean }> =>
@@ -876,6 +1052,7 @@ const api: IpcApi = {
     },
     // Game servers hosted inside a room (Minecraft and friends).
     servers: {
+      preparation: (roomId, input) => ipcRenderer.invoke('rooms:srvPreparation', roomId, input),
       state: (roomId: string): Promise<RoomServerState> => ipcRenderer.invoke('rooms:srvState', roomId),
       versions: (moduleId: string): Promise<GameVersionRef[]> => ipcRenderer.invoke('rooms:srvVersions', moduleId),
       legalGate: (moduleId: string): Promise<{ id: string; labelKey: string; url: string; accepted: boolean } | null> =>
@@ -998,6 +1175,7 @@ const api: IpcApi = {
     setNotifyMuted: (roomId: string, muted: boolean): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:setNotifyMuted', roomId, muted),
     setNotifyMode: (roomId: string, mode: import('../shared/room-chat-tools').RoomNotifyMode): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:setNotifyMode', roomId, mode),
+    setNotificationRule: (roomId: string, rule: import('../shared/notification-policy').NotificationRule, mode?: import('../shared/room-chat-tools').RoomNotifyMode): Promise<{ ok: boolean }> => ipcRenderer.invoke('rooms:setNotificationRule', roomId, rule, mode),
     fetchFile: (roomId: string, fileId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:fetchFile', roomId, fileId),
     pauseReceive: (roomId: string, fileId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:pauseReceive', roomId, fileId),
@@ -1009,6 +1187,9 @@ const api: IpcApi = {
       ipcRenderer.invoke('rooms:setLimits', roomId, upKbps, downKbps),
     kick: (roomId: string, memberId: string): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('rooms:kick', roomId, memberId),
+    rotateKey: (roomId: string): Promise<RoomState> => ipcRenderer.invoke('rooms:rotateKey', roomId),
+    setKeyRotation: (roomId: string, plan: import('../shared/room-key-rotation').RoomKeyRotationPlan | null): Promise<RoomState> =>
+      ipcRenderer.invoke('rooms:setKeyRotation', roomId, plan),
     transferOwner: (roomId: string, memberId: string): Promise<RoomState> =>
       ipcRenderer.invoke('rooms:transferOwner', roomId, memberId),
     sendChat: (roomId: string, text: string, replyTo?: string, messageId?: string): Promise<import('../shared/types').RoomChatAck> =>

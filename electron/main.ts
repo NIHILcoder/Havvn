@@ -1,18 +1,21 @@
 // MUST be first: sets an isolated userData dir for `TH_INSTANCE` test copies
 // before electron-store / the logger read the path at module load.
 import { isSecondaryInstance, isLanHelper } from './app-instance';
-import { app, BrowserWindow, Tray, Menu, nativeImage, Notification, shell, session, ipcMain, screen, dialog, safeStorage, powerMonitor } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme, shell, session, ipcMain, screen, dialog, safeStorage, powerMonitor } from 'electron';
 import path from 'path';
 import os from 'os';
 import { supportsAcrylic } from '../shared/appearance';
 import { WindowMaterial } from './utils/window-material';
+import { loadDevelopmentRenderer } from './utils/load-renderer';
 import { setAutoLaunch } from './utils/auto-launch';
 import { pathToFileURL } from 'url';
 import { RoomNetworkMonitor, roomNetworkFingerprint } from './sharing/room-network-monitor';
 import { installUiPermissionPolicy } from './sharing/room-engine-policy';
+import { assertAppUiSender, isAppUiSender, installAppNavigationPolicy } from './utils/app-ui-security';
 import dotenv from 'dotenv';
 import { getTorrentManager } from './torrent';
 import { getSchedulerEngine } from './scheduler/scheduler-engine';
+import { initResourceMode, stopResourceMode } from './services/resource-mode';
 import { setupIpcHandlers } from './ipc';
 import { logger, detectVPN, getAppIconPath } from './utils';
 import { store, seedDefaultsIfNeeded, getWindowBounds, saveWindowBounds, getPopoutBounds, savePopoutBounds, getVpnWarningDismissed, setVpnWarningDismissed, migrateMemberIdToKeyDerived } from './db/store';
@@ -25,12 +28,13 @@ import {
 } from './utils/completion-action';
 import { isHavvnUrl, parseHavvnInvite } from './utils/deep-link';
 import { t, initMainI18n, setMainLanguage } from './i18n';
+import { showOsNotification } from './utils/os-notify';
 import {
   DOCK_WINDOW_FRAME_NAMES, LEGACY_CHAT_FRAME_NAME, isPopoutFrameName,
   wantsCursorPlacement, dockWindowBoundsAtCursor,
   type PopoutDenyReason,
 } from '../shared/dock-windows';
-import { PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME } from '../shared/player-windows';
+import { PLAYER_VIDEO_FRAME, PLAYER_AUDIO_FRAME, PLAYER_ROOM_FRAME, SCREEN_VIEW_FRAME } from '../shared/player-windows';
 
 
 // Load environment variables
@@ -39,22 +43,41 @@ if (process.platform === 'linux') app.setDesktopName('havvn.desktop');
 
 let mainWindow: BrowserWindow | null = null;
 const windowMaterial = new WindowMaterial(supportsAcrylic(process.platform, os.release()));
-windowMaterial.setEnabled(store.get('appearanceAcrylic') === true);
+windowMaterial.setEnabled(store.get('appearanceAcrylic') === true, store.get('appearanceNativeMaterial') === 'mica' ? 'mica' : 'acrylic');
+const syncStoredMaterial = () => {
+  const status = windowMaterial.setEnabled(store.get('appearanceAcrylic') === true, store.get('appearanceNativeMaterial') === 'mica' ? 'mica' : 'acrylic');
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('appearance:acrylic:changed', status);
+};
+// Profile/transfer transactions write the stored material through the same journal.
+store.onDidChange('appearanceAcrylic', syncStoredMaterial);
+store.onDidChange('appearanceNativeMaterial', syncStoredMaterial);
 ipcMain.handle('appearance:acrylic:get', (event) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents) throw new Error('Only the app shell may read appearance');
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) throw new Error('Only the app shell may read appearance');
   return windowMaterial.status();
 });
-ipcMain.handle('appearance:acrylic:set', (event, enabled: unknown) => {
-  if (!mainWindow || event.sender !== mainWindow.webContents || typeof enabled !== 'boolean') {
+ipcMain.handle('appearance:acrylic:set', (event, enabled: unknown, material: unknown = 'acrylic') => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame || typeof enabled !== 'boolean' || (material !== 'acrylic' && material !== 'mica')) {
     throw new Error('Invalid appearance request');
   }
-  store.set('appearanceAcrylic', enabled);
-  const status = windowMaterial.setEnabled(enabled);
+  store.set({ appearanceAcrylic: enabled, appearanceNativeMaterial: material });
+  const status = windowMaterial.setEnabled(enabled, material);
   mainWindow.webContents.send('appearance:acrylic:changed', status);
   return status;
 });
+app.whenReady().then(() => {
+  const updateMaterial = () => {
+    const status = windowMaterial.setTransparencyAllowed(!nativeTheme.prefersReducedTransparency && !nativeTheme.shouldUseHighContrastColors && !nativeTheme.inForcedColorsMode);
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('appearance:acrylic:changed', status);
+  };
+  updateMaterial(); nativeTheme.on('updated', updateMaterial);
+  powerMonitor.on('resume', () => {
+    updateMaterial(); const status = windowMaterial.refresh();
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('appearance:acrylic:changed', status);
+  });
+});
 let tray: Tray | null = null;
 let isQuitting = false;
+let quitExitCode = 0;
 
 // Refreshes the tray tooltip with live speeds while the tray exists;
 // cleared in cleanup() alongside tray.destroy().
@@ -115,7 +138,8 @@ function deliverJoinInvite(url: string): void {
 }
 
 // Renderer tells us its IPC listeners are attached; flush any buffered open.
-ipcMain.on('app:rendererReady', () => {
+ipcMain.on('app:rendererReady', event => {
+  if (!isAppUiSender(event, mainWindow)) return;
   rendererReady = true;
   if (pendingOpenUri) {
     const uri = pendingOpenUri;
@@ -131,13 +155,15 @@ ipcMain.on('app:rendererReady', () => {
 
 // "Don't show again" on the startup VPN warning dialog — persist the opt-out
 // so the check stops nagging on every launch.
-ipcMain.on('app:vpnWarningDismissed', () => {
+ipcMain.on('app:vpnWarningDismissed', event => {
+  if (!isAppUiSender(event, mainWindow)) return;
   setVpnWarningDismissed();
 });
 
 // Renderer mirrors its selected UI language here so the tray menu, native
 // dialogs, and OS notifications (which React can't reach) localize too.
-ipcMain.on('app:setLanguage', (_event, lang) => {
+ipcMain.on('app:setLanguage', (event, lang) => {
+  if (!isAppUiSender(event, mainWindow)) return;
   setMainLanguage(lang);
   refreshTrayLanguage?.();
   Menu.setApplicationMenu(buildAppMenu());
@@ -145,13 +171,14 @@ ipcMain.on('app:setLanguage', (_event, lang) => {
 
 // Custom HUD title-bar controls (the window is frameless) — the renderer's title
 // bar drives these in place of the native caption buttons.
-ipcMain.on('win:minimize', () => mainWindow?.minimize());
-ipcMain.on('win:toggleMaximize', () => {
+ipcMain.on('win:minimize', event => { if (isAppUiSender(event, mainWindow)) mainWindow?.minimize(); });
+ipcMain.on('win:toggleMaximize', event => {
+  if (!isAppUiSender(event, mainWindow)) return;
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) mainWindow.unmaximize(); else mainWindow.maximize();
 });
-ipcMain.on('win:close', () => mainWindow?.close());
-ipcMain.handle('win:isMaximized', () => !!(mainWindow && !mainWindow.isDestroyed() && mainWindow.isMaximized()));
+ipcMain.on('win:close', event => { if (isAppUiSender(event, mainWindow)) mainWindow?.close(); });
+ipcMain.handle('win:isMaximized', event => { assertAppUiSender(event, mainWindow); return mainWindow!.isMaximized(); });
 
 // === The SAME controls, for a frameless dock pop-out ===
 //
@@ -178,13 +205,14 @@ const popoutWin = (frameName: unknown): BrowserWindow | null => {
   const w = dockPopouts.get(frameName);
   return w && !w.isDestroyed() ? w : null;
 };
-ipcMain.on('win:popoutMinimize', (_e, frameName) => popoutWin(frameName)?.minimize());
-ipcMain.on('win:popoutToggleMaximize', (_e, frameName) => {
+ipcMain.on('win:popoutMinimize', (event, frameName) => { if (isAppUiSender(event, mainWindow)) popoutWin(frameName)?.minimize(); });
+ipcMain.on('win:popoutToggleMaximize', (event, frameName) => {
+  if (!isAppUiSender(event, mainWindow)) return;
   const w = popoutWin(frameName);
   if (!w) return;
   if (w.isMaximized()) w.unmaximize(); else w.maximize();
 });
-ipcMain.handle('win:popoutIsMaximized', (_e, frameName) => !!popoutWin(frameName)?.isMaximized());
+ipcMain.handle('win:popoutIsMaximized', (event, frameName) => { assertAppUiSender(event, mainWindow); return !!popoutWin(frameName)?.isMaximized(); });
 
 // Is the pointer inside ANY window of this app right now?
 //
@@ -201,7 +229,8 @@ ipcMain.handle('win:popoutIsMaximized', (_e, frameName) => !!popoutWin(frameName
 // point and every window's bounds are DIP in one process.
 //
 // Returns a bare boolean — the cursor position itself never leaves main.
-ipcMain.handle('win:pointerOverApp', () => {
+ipcMain.handle('win:pointerOverApp', event => {
+  assertAppUiSender(event, mainWindow);
   try {
     const p = screen.getCursorScreenPoint();
     return BrowserWindow.getAllWindows().some((w) => {
@@ -253,7 +282,8 @@ app.on('open-url', (event, url) => {
 // === Register magnet: and havvn: protocol handlers ===
 // In dev (process.defaultApp) the exe is electron itself, so the app path must
 // ride along as an explicit argv or the OS would relaunch bare electron.
-if (!isLanHelper) {
+// Isolated test copies must not replace the primary app's OS protocol handlers.
+if (!isLanHelper && !isSecondaryInstance) {
   if (process.defaultApp) {
     if (process.argv.length >= 2) {
       const devArgs = [path.resolve(process.argv[1])];
@@ -276,22 +306,7 @@ function showTrayHintOnce(): void {
     const title = 'Havvn продолжает работать в фоне';
     const body = 'Загрузки активны. Откройте окно или выйдите через значок в системном трее.';
 
-    if (Notification.isSupported()) {
-      const iconPath = getAppIconPath();
-      const notification = new Notification({
-        title,
-        body,
-        ...(iconPath ? { icon: iconPath } : {}),
-        silent: true,
-      });
-      notification.on('click', () => {
-        showMainWindow();
-      });
-      notification.show();
-    } else {
-      // Fallback for older Windows: balloon from the tray icon
-      tray?.displayBalloon({ title, content: body });
-    }
+    showOsNotification(title, body, { silent: true, onClick: () => showMainWindow(), context: { kind: 'system', group: 'tray-hint' } });
   } catch {
     // Notifications are best-effort — never block hiding to tray
   }
@@ -431,7 +446,7 @@ function createTray(): void {
   // tray.tooltip.running) and appends a speeds line while anything transfers.
   const updateTrayTooltip = (): void => {
     if (!tray || tray.isDestroyed()) return;
-    const base = mainWindow?.isVisible() ? t('tray.tooltip') : t('tray.tooltip.running');
+    const base = mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() ? t('tray.tooltip') : t('tray.tooltip.running');
     const stats = readTrayStats();
     const { down, up } = stats;
     tray.setToolTip(
@@ -642,6 +657,7 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: ['--havvn-settings-recovery'],
     },
     // Test copies (TH_INSTANCE) get a labelled title so two windows on one
     // machine are tellable apart while verifying rooms/share links.
@@ -699,7 +715,6 @@ async function createWindow(): Promise<void> {
   // the UI. Prevent the window from ever navigating away from the app, and route
   // any external link to the user's default browser instead of opening it in-app.
   const isDev = process.env.NODE_ENV === 'development';
-  const allowedOrigin = isDev ? 'http://127.0.0.1:3000' : 'file://';
 
   // Pop-out panels: about:blank child windows the renderer scripts directly
   // (same-origin DOM portal — no navigation, no remote content), so the user can
@@ -739,6 +754,7 @@ async function createWindow(): Promise<void> {
     // Removing the name here is what stops a stale renderer from reopening the old
     // window; its saved BOUNDS live on as the seed for dock slot 1 below.
     'havvn-voice-settings': { width: 540, height: 760, minWidth: 420, minHeight: 520 },
+    'havvn-room-workspace': { width: 1200, height: 820, minWidth: 400, minHeight: 500 },
     // The player, detached. NOT a dock slot: it is about a file, not about a place
     // in the room's layout, and as a seventh dock panel it would trip the pool
     // invariant (`POOL_SIZE >= PANELS.length - 1`) for no benefit.
@@ -757,6 +773,7 @@ async function createWindow(): Promise<void> {
     // and because watching together is the case where a second monitor earns its
     // keep. Never alwaysOnTop: this one is what the user is looking AT.
     [PLAYER_ROOM_FRAME]: { width: 1040, height: 660, minWidth: 520, minHeight: 340, ...PLAYER_CHROME },
+    [SCREEN_VIEW_FRAME]: { width: 1040, height: 640, minWidth: 420, minHeight: 280, ...PLAYER_CHROME },
     ...Object.fromEntries(DOCK_WINDOW_FRAME_NAMES.map((n) => [n, DOCK_WINDOW_OPTS])),
   };
   // Saved pop-out bounds, clamped: reject undersized ones, keep the position
@@ -924,7 +941,7 @@ async function createWindow(): Promise<void> {
       return { action: 'deny' };
     });
     // A file/link drag-dropped onto the child would otherwise navigate it.
-    child.webContents.on('will-navigate', (event) => event.preventDefault());
+    installAppNavigationPolicy(child.webContents, url => { void shell.openExternal(url); });
     const closeChild = () => { if (!child.isDestroyed()) child.close(); };
     ownerWindow.on('closed', closeChild);
     ownerWindow.on('hide', closeChild); // close-to-tray must not leave it floating
@@ -934,42 +951,14 @@ async function createWindow(): Promise<void> {
     });
   });
 
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(allowedOrigin)) {
-      event.preventDefault();
-      if (url.startsWith('https://') || url.startsWith('http://')) {
-        void shell.openExternal(url);
-      }
-    }
+  installAppNavigationPolicy(mainWindow.webContents, url => { void shell.openExternal(url); });
+
+  ownerWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, url, isMainFrame) => {
+    if (isMainFrame && !isQuitting) logger.warn('App', 'Main window load failed', { errorCode, errorDescription, url });
   });
-
-  // Register before load: ready-to-show can fire before loadFile/loadURL resolves.
-  // Capture this window so a late fallback cannot reveal a replacement window.
-  if (!startHidden) {
-    const openingWindow = mainWindow;
-    let shown = false;
-    const reveal = () => {
-      if (shown || openingWindow.isDestroyed()) return;
-      shown = true;
-      openingWindow.show();
-    };
-    openingWindow.once('ready-to-show', reveal);
-    const revealTimer = setTimeout(reveal, 3000);
-    openingWindow.once('closed', () => clearTimeout(revealTimer));
-  }
-
-  // In development, load from webpack dev server
-  
-  if (isDev) {
-    await mainWindow.loadURL('http://127.0.0.1:3000');
-    // DevTools no longer auto-open — use View → Toggle Developer Tools, or set
-    // HAVVN_DEVTOOLS=1 when you want them from the start.
-    if (process.env.HAVVN_DEVTOOLS === '1') mainWindow.webContents.openDevTools();
-  } else {
-    // __dirname is dist/electron/electron/ due to tsconfig rootDir
-    await mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
-    // No DevTools in production
-  }
+  ownerWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (!isQuitting) logger.error('App', 'Main renderer stopped', details);
+  });
 
   // === Tray behavior: Minimize to Tray ===
   // Electron no longer passes a preventable event to 'minimize' (and
@@ -1023,6 +1012,41 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('did-start-loading', () => {
     rendererReady = false;
   });
+
+  // Register before load: ready-to-show can fire before loadFile/loadURL resolves.
+  // Capture this window so a late fallback cannot reveal a replacement window.
+  if (!startHidden) {
+    const openingWindow = mainWindow;
+    let shown = false;
+    const reveal = () => {
+      if (shown || openingWindow.isDestroyed()) return;
+      shown = true;
+      openingWindow.show();
+    };
+    openingWindow.once('ready-to-show', reveal);
+    const revealTimer = setTimeout(reveal, 3000);
+    openingWindow.once('closed', () => clearTimeout(revealTimer));
+  }
+
+  // In development, load from webpack dev server.
+
+  if (isDev) {
+    try {
+      await loadDevelopmentRenderer(ownerWindow.webContents, (error, attempt) => {
+        logger.warn('App', 'Development renderer load failed; retrying', { error: String(error), attempt });
+      });
+    } catch (error) {
+      if (ownerWindow.isDestroyed() || isQuitting) return;
+      throw error;
+    }
+    // DevTools no longer auto-open — use View → Toggle Developer Tools, or set
+    // HAVVN_DEVTOOLS=1 when you want them from the start.
+    if (process.env.HAVVN_DEVTOOLS === '1' && !ownerWindow.isDestroyed()) ownerWindow.webContents.openDevTools();
+  } else {
+    // __dirname is dist/electron/electron/ due to tsconfig rootDir
+    await mainWindow.loadFile(path.join(__dirname, '../../renderer/index.html'));
+    // No DevTools in production
+  }
 
   // Handle startup arguments (magnet links, .torrent files, havvn:// deep links).
   // Buffered until the renderer signals readiness — avoids losing the first
@@ -1082,21 +1106,18 @@ function applyContentSecurityPolicy(): void {
 }
 
 async function initializeApp(): Promise<void> {
+  // Startup errors also use the persisted interface language.
+  initMainI18n();
   // SECURITY CHECK: Verify encryption is available before proceeding
   // Without encryption, we cannot safely store room keys, passwords, or tokens
   if (!safeStorage.isEncryptionAvailable()) {
     const { dialog } = await import('electron');
     await dialog.showMessageBox({
       type: 'error',
-      title: 'Security Error',
-      message: 'System Encryption Unavailable',
-      detail:
-        'Havvn requires OS-level encryption to protect your data:\n\n' +
-        '• Windows: DPAPI (enabled by default)\n' +
-        '• macOS: Keychain (enabled by default)\n' +
-        '• Linux: libsecret (install via package manager)\n\n' +
-        'Please ensure your system has encryption support enabled.',
-      buttons: ['Exit'],
+      title: t('startup.security.title'),
+      message: t('startup.security.message'),
+      detail: t('startup.security.detail'),
+      buttons: [t('common.exit')],
     });
     logger.error('App', 'Cannot start: safeStorage encryption unavailable');
     app.exit(1);
@@ -1166,9 +1187,8 @@ async function initializeApp(): Promise<void> {
       && wc.getURL() === 'about:blank' && requestingUrl === 'about:blank';
   });
 
-  // Load the persisted UI language so the tray/menu built below is already in
-  // the right language, before the renderer loads and re-announces it.
-  initMainI18n();
+  try { await initResourceMode(() => mainWindow); }
+  catch (error) { logger.warn('App', 'Resource mode initialization failed', { error: String(error) }); }
 
   // Replace Electron's default File/Edit/View/Window menu with our localized one.
   Menu.setApplicationMenu(buildAppMenu());
@@ -1192,6 +1212,7 @@ async function initializeApp(): Promise<void> {
   });
 
   await createWindow();
+  if (isQuitting || !mainWindow || mainWindow.isDestroyed()) return;
   logger.info('App', 'Main window created.');
 
   // Initialize torrent manager (restores + verifies persisted torrents).
@@ -1402,7 +1423,20 @@ async function initializeApp(): Promise<void> {
 // the Wintun adapter under one UAC, and shovels ring↔pipe until main dies.
 app.whenReady().then(isLanHelper
   ? () => import('./lan/helper-main.js').then((m) => m.runLanHelper()).catch((e) => { console.error('[lan-helper] fatal:', e); app.exit(1); })
-  : initializeApp);
+  : initializeApp).catch(async error => {
+    if (isQuitting) return;
+    quitExitCode = 1;
+    logger.error('App', 'Startup failed', { error: String(error), stack: error instanceof Error ? error.stack : undefined });
+    if (process.env.NODE_ENV === 'development') {
+      console.error('[dev] Havvn startup failed. Check that http://127.0.0.1:3000/ is available.', error);
+    } else {
+      try {
+        await dialog.showMessageBox({ type: 'error', title: t('startup.failed.title'), message: t('startup.failed.message'),
+          detail: `${t('startup.failed.detail')}\n\n${String(error)}`, buttons: [t('common.exit')] });
+      } catch { /* Teardown must still run if the OS dialog cannot open. */ }
+    }
+    app.quit();
+  });
 
 app.on('window-all-closed', () => {
   // On macOS, keep app running until explicitly quit
@@ -1433,7 +1467,7 @@ app.on('before-quit', async (event) => {
   // Bound the teardown: if cleanup() stalls (e.g. an unresponsive engine host),
   // exit anyway so quitting can never hang the process in the background.
   await Promise.race([cleanup(), new Promise((r) => setTimeout(r, 5000))]);
-  app.exit(0);
+  app.exit(quitExitCode);
 });
 
 // Repeated quit requests share the same cleanup instead of tearing services
@@ -1441,6 +1475,7 @@ app.on('before-quit', async (event) => {
 let cleanupPromise: Promise<void> | null = null;
 
 async function cleanup(): Promise<void> {
+  try { await (await import('./ipc/devices.js')).closeDeviceUi(); } catch { /* Retain the protected journal for the next startup. */ }
   roomNetworkMonitor?.dispose();
   if (roomNetworkMonitor) {
     powerMonitor.off('suspend', roomNetworkMonitor.suspend);
@@ -1561,6 +1596,7 @@ async function cleanup(): Promise<void> {
   }
 
   // Stop scheduler
+  stopResourceMode();
   try {
     const scheduler = getSchedulerEngine();
     scheduler.destroy();
