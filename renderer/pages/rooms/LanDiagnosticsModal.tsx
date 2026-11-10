@@ -1,3 +1,4 @@
+import { ErrorMessage } from '../../components/ErrorMessage';
 /**
  * LanDiagnosticsModal — the "why isn't my LAN working?" report (Phase 2A).
  *
@@ -36,6 +37,8 @@ import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow } from '../../utils/hostWindow';
 import { useHostToast } from '../../utils/hostToast';
 import './RoomLanPanel.css';
+import { useClipboardCopy } from '../../utils/useClipboardCopy';
+import { writeClipboardText } from '../../utils/clipboard';
 
 /** Verdict of one check. `unknown` = we could not measure it (not a failure). */
 export type LanCheckLevel = 'ok' | 'warn' | 'fail' | 'unknown';
@@ -106,7 +109,7 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
   const [report, setReport] = useState<LanDiagReportView | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   // A pass started before Close must not setState on an unmounted modal.
   const alive = useRef(true);
@@ -120,7 +123,7 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
   const refresh = useCallback(async () => {
     setBusy(true);
     setError(null);
-    setCopied(false);
+    setCopyFailed(false);
     try {
       const r = await runRef.current();
       if (alive.current) setReport(r);
@@ -144,15 +147,11 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
     return lines.join('\n');
   };
 
-  const copy = () => {
-    if (!report) return;
-    const text = asText(report);
-    // The clipboard of the window this modal is actually displayed in — writing
-    // through an unfocused document rejects (see the REALM note in the header).
-    host.window.navigator.clipboard?.writeText(text)
-      .then(() => { setCopied(true); toast.success(t('rooms.lan.copied')); })
-      .catch(() => { /* clipboard blocked — the <pre> below is selectable */ });
-  };
+  const { copy, copied, copying } = useClipboardCopy(report && !busy ? asText(report) : '', {
+    writeText: text => writeClipboardText(text, host.window),
+    onSuccess: () => { setCopyFailed(false); toast.success(t('rooms.lan.copied')); },
+    onError: () => { setCopyFailed(true); toast.error(t('common.copyFailed')); },
+  });
 
   const verdict: LanCheckLevel = report?.verdict
     || (report?.checks.some((c) => c.level === 'fail') ? 'fail'
@@ -179,15 +178,16 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
           <Button
             variant="primary"
             onClick={copy}
-            disabled={busy || !report}
-            icon={<Icon name={copied ? 'check' : 'copy'} size={14} />}
+            disabled={busy || !report || copying}
+            icon={<Icon name="copy" size={14} />}
           >
-            {t('rooms.lan.diagCopy')}
+            {t(copied ? 'common.copied' : 'rooms.lan.diagCopy')}
           </Button>
         </div>
       }
     >
       <p className="lan-diag-desc">{t('rooms.lan.diagDesc')}</p>
+      {copyFailed && <p className="lan-diag-desc" role="alert">{t('common.copyFailed')}</p>}
 
       {busy && !report && <div className="lan-diag-empty">{t('rooms.lan.diagRunning')}</div>}
       {error && (
@@ -195,7 +195,7 @@ export const LanDiagnosticsModal: React.FC<LanDiagnosticsModalProps> = ({ run, o
           <Icon name="x-circle" size={15} />
           <span className="lan-diag-text">
             <span className="lan-diag-label">{t('rooms.lan.diagFailed')}</span>
-            <span className="lan-diag-detail">{error}</span>
+            <span className="lan-diag-detail"><ErrorMessage error={error} /></span>
           </span>
         </div>
       )}

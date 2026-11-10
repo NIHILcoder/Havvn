@@ -29,7 +29,7 @@
  *  - koffi is lazy-required (watchdog only) so a missing prebuild degrades to a
  *    tagged error, never an import-time crash (mirrors wintun.ts / global-ptt).
  */
-/* eslint-disable @typescript-eslint/no-var-requires */
+/* eslint-disable @typescript-eslint/no-require-imports */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -777,6 +777,7 @@ export async function runLanHelper(): Promise<void> {
     });
     hlog('pipe: creating + awaiting engine hello');
     await pipe.listen();
+    if (tornDown) return;
     hlog('pipe: engine connected + hello accepted');
   } catch (e) {
     hlog(`FATAL pipe listen failed: ${e instanceof Error ? e.message : e}`);
@@ -790,6 +791,7 @@ export async function runLanHelper(): Promise<void> {
     const swept = await orphanSweep({ prefix: LAN_NAME_PREFIX, elevated: true });
     if (swept.length) hlog(`orphan-sweep removed: ${swept.join(', ')}`);
   } catch (e) { hlog(`orphan-sweep failed (non-fatal): ${e instanceof Error ? e.message : e}`); }
+  if (tornDown) return;
 
   const sendError = (code: LanHelperErrorCode, message: string): void => {
     try { pipe?.sendControl({ t: 'error', code, message }); } catch { /* ignore */ }
@@ -930,6 +932,7 @@ export async function runLanHelper(): Promise<void> {
     hlog(`net-config: loading wintun (dll=${resolveDll(args.appPath) ?? 'auto'})`);
     const w = loadWintun(resolveDll(args.appPath));
     session = await applyNetConfig(w, req);
+    if (tornDown) return;
     hlog(`net-config ok: adapter='${req.adapterName}' vip=${vipToString(req.vip >>> 0)}/${req.prefix}`);
   } catch (e) {
     const code: LanHelperErrorCode = e instanceof LanHelperError ? e.code : 'driver';

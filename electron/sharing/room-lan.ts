@@ -238,6 +238,7 @@ class LanPeer {
   /** A turn:/turns: entry exists in this room's iceServers — decides whether a
    *  failure reads "add a TURN server" or "TURN is configured and it still failed". */
   private turnConfigured: boolean;
+  private lastOfferResentAt = -Infinity;
 
   constructor(
     private id: string,
@@ -262,17 +263,21 @@ class LanPeer {
       else if (ArrayBuffer.isView(d)) this.onFrame(Buffer.from(d.buffer, d.byteOffset, d.byteLength));
     };
 
-    // Creating the negotiated channel fires negotiationneeded on both sides; glare
-    // is resolved by perfect negotiation (impolite wins, polite rolls back).
+    // This is a fixed, negotiated data channel: only the lower memberId offers.
+    // Simultaneous offers used implicit rollback, which can leave Chromium with
+    // a stable description but no local ICE candidates after join/retry. Keep
+    // the glare handler below for older peers, but avoid that race between new
+    // peers. Unlike voice, LAN adds no tracks that need either side to re-offer.
     this.pc.onnegotiationneeded = async () => {
+      if (this.closed || this.polite || this.pc.signalingState !== 'stable') return;
       try {
         this.makingOffer = true;
         await this.pc.setLocalDescription();
-        this.a.sendSignal(this.id, 'offer', this.pc.localDescription);
+        if (!this.closed) this.a.sendSignal(this.id, 'offer', this.pc.localDescription);
       } catch (e) { this.a.log('lan negotiation failed: ' + String(e)); }
       finally { this.makingOffer = false; }
     };
-    this.pc.onicecandidate = ({ candidate }) => { if (candidate) this.a.sendSignal(this.id, 'ice', candidate); };
+    this.pc.onicecandidate = ({ candidate }) => { if (!this.closed && candidate) this.a.sendSignal(this.id, 'ice', candidate); };
     this.pc.onconnectionstatechange = () => {
       if (this.closed) return;
       const s = this.pc.connectionState;
@@ -294,6 +299,20 @@ class LanPeer {
   }
 
   status(): LanPeerStatus { return this.curStatus; }
+
+  /** The first offer can arrive while an admitted player is still choosing
+   * Accept / approving the helper. Passive sessions intentionally drop signals.
+   * Their fresh presence means they can receive it now. Resend the CURRENT local
+   * offer (including gathered ICE), without resetting a healthy/negotiating leg. */
+  resendPendingOffer(): void {
+    if (this.closed || this.makingOffer || this.pc.signalingState !== 'have-local-offer') return;
+    const description = this.pc.localDescription;
+    if (description?.type !== 'offer') return;
+    const at = this.now();
+    if (at - this.lastOfferResentAt < 1000) return;
+    this.lastOfferResentAt = at;
+    this.a.sendSignal(this.id, 'offer', description);
+  }
 
   /** True only while the link is up right now (else it is (re)connecting). */
   linkConnected(): boolean { return this.pc.connectionState === 'connected'; }
@@ -385,14 +404,15 @@ class LanPeer {
         this.ignoreOffer = !this.polite && collision;
         if (this.ignoreOffer) return; // impolite peer keeps its own offer
         this.settingRemoteAnswer = kind === 'answer';
-        await this.pc.setRemoteDescription(data as RTCSessionDescriptionInit); // polite: implicit rollback happens here
-        this.settingRemoteAnswer = false;
+        try { await this.pc.setRemoteDescription(data as RTCSessionDescriptionInit); }
+        finally { this.settingRemoteAnswer = false; }
+        if (this.closed) return;
         // Flush candidates buffered before this description landed.
         const pend = this.pendingIce; this.pendingIce = [];
         for (const c of pend) { try { await this.pc.addIceCandidate(c); } catch { /* ignore */ } }
         if (kind === 'offer') {
           await this.pc.setLocalDescription();
-          this.a.sendSignal(this.id, 'answer', this.pc.localDescription);
+          if (!this.closed) this.a.sendSignal(this.id, 'answer', this.pc.localDescription);
         }
       } else if (kind === 'ice') {
         if (!this.pc.remoteDescription) {
@@ -962,7 +982,7 @@ export class LanSession {
       this.a.reip(bump.vip, bump.gen);
       if (this.active) this.announceSelf();
     }
-    if (this.active && this.core.isAdmitted(c.memberId)) this.ensurePeer(c.memberId);
+    if (this.active && this.core.isAdmitted(c.memberId)) this.ensurePeer(c.memberId)?.resendPendingOffer();
     // Host: a peer announcing presence may have joined AFTER (or missed) our
     // one-shot genesis/admit flood — re-flood the durable authority so it can pin
     // us + open its leg, regardless of the initial gossip order.

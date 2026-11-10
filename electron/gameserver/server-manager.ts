@@ -1813,6 +1813,9 @@ export class ServerManager extends EventEmitter {
   }
 
   /** The room's game-server surface, as this install sees it. */
+  preparationMirror(roomId: string): ServerMirrorState {
+    return buildMirrorPayload(this.selfId, [...this.entries.values()].filter(entry => entry.persisted.roomId === roomId).map(entry => this.describe(entry)), {});
+  }
   stateForRoom(roomId: string): RoomServerState {
     const instances: RoomServerInstance[] = [];
     for (const entry of this.entries.values()) {

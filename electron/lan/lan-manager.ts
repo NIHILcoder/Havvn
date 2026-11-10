@@ -212,9 +212,9 @@ export class LanManager {
       result = { ok: false, reason: 'windows-only' };
     } else {
       try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         require('koffi');
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { resolveWintunDll } = require('./wintun') as typeof import('./wintun.js');
         resolveWintunDll(); // throws if the dll isn't shipped/fetched
         result = { ok: true };
@@ -464,7 +464,7 @@ export class LanManager {
   getInteractiveUserSid(): string {
     if (process.platform !== 'win32') return '';
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
       const out = execFileSync(systemToolPath('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
       return parseUserSid(out);
@@ -643,7 +643,7 @@ export class LanManager {
   // ── private: lazy electron ────────────────────────────────────────────────
 
   private electron(): typeof import('electron') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require('electron') as typeof import('electron');
   }
 }

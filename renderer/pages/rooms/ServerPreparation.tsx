@@ -5,6 +5,7 @@ import { useHostToast } from '../../utils/hostToast';
 import { useHostWindow } from '../../utils/hostWindow';
 import type { RoomServerInstance, RoomState } from '../../../shared/types';
 import { preparationAddress, preparationFiles, preparationNetwork } from '../../../shared/server-preparation';
+import { ServerGroupReadiness } from './ServerGroupReadiness';
 
 export const ServerPreparation: React.FC<{ instance: RoomServerInstance; roomId: string; onConsole: () => void; onContent: () => void }> = ({ instance, roomId, onConsole, onContent }) => {
   const { t } = useTranslation();
@@ -23,7 +24,7 @@ export const ServerPreparation: React.FC<{ instance: RoomServerInstance; roomId:
   useEffect(() => {
     setConfirmed(false); setReceiving(false);
     invalidateReceive();
-  }, [instance.instanceId, instance.version, contentSignature, fileSignature, invalidateReceive]);
+  }, [instance.instanceId, instance.hostId, instance.version, instance.since, instance.contentRev, contentSignature, fileSignature, invalidateReceive]);
   useEffect(() => {
     let alive = true, updated = false;
     setRoom(null); setError('');
@@ -38,7 +39,7 @@ export const ServerPreparation: React.FC<{ instance: RoomServerInstance; roomId:
   const missing = files.filter(f => !room?.transfers[f.fileId]?.haveLocally);
   const readyNetwork = network === 'local' || network === 'ready';
   const address = preparationAddress(instance);
-  const ready = instance.status === 'running' && readyNetwork && confirmed && !!address;
+  const ready = instance.status === 'running' && readyNetwork && confirmed && !!address && missing.length === 0 && (instance.local || instance.sharedContent !== undefined);
   const receive = async () => {
     if (receivingRef.current || !room) return;
     const current = epoch.current;
@@ -82,5 +83,6 @@ export const ServerPreparation: React.FC<{ instance: RoomServerInstance; roomId:
     <p className="server-preparation-result" role="status">{t(ready ? 'rooms.server.prepare.ready' : 'rooms.server.prepare.pending')}</p>
     <Button size="sm" variant="primary" disabled={!ready} onClick={() => { if (address) void host.window.navigator.clipboard.writeText(address).then(() => toast.success(t('rooms.server.prepare.copied'))).catch(() => toast.error(t('rooms.server.prepare.copyFailed'))); }}>{t('rooms.server.prepare.copy')}</Button>
     {address && <code>{address}</code>}
+    <ServerGroupReadiness instance={instance} room={room} confirmed={confirmed} />
   </section>;
 };

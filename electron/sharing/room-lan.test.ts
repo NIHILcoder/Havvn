@@ -141,6 +141,50 @@ describe('LanSession — host session opens legs only to admitted picks', () => 
 });
 
 describe('LanSession — THE ADMISSION GATE (must-fix #1)', () => {
+  it.each([['1', '2', 1], ['2', '1', 0]])('only one side initiates the fixed data channel (%s vs %s)', async (self, other, offers) => {
+    const selfId = String(self).repeat(32), peerId = String(other).repeat(32);
+    const { adapter, calls } = makeAdapter(selfId, selfId + '.abcdef0123456789', true);
+    const session = new LanSession(adapter as never);
+    session.startAsHost([peerId]);
+    await FakePC.last!.onnegotiationneeded?.();
+    expect(calls.signal.filter(signal => signal.kind === 'offer')).toHaveLength(Number(offers));
+    session.stop();
+  });
+
+  it('does not emit stale offers or ICE after the leg closes during negotiation', async () => {
+    const selfId = '1'.repeat(32), peerId = '2'.repeat(32);
+    const { adapter, calls } = makeAdapter(selfId, selfId + '.abcdef0123456789', true);
+    const session = new LanSession(adapter as never);
+    session.startAsHost([peerId]);
+    const pc = FakePC.last!;
+    let release!: () => void;
+    pc.setLocalDescription = () => new Promise<void>(resolve => { release = resolve; });
+    const negotiation = pc.onnegotiationneeded?.();
+    session.stop(); release(); await negotiation;
+    pc.onicecandidate?.({ candidate: { candidate: 'stale' } });
+    expect(calls.signal).toEqual([]);
+  });
+
+  it('resends a pending offer when an admitted player finally joins, without rebuilding or flooding', () => {
+    const { adapter, calls } = makeAdapter(HOST, SID, true);
+    let clock = 1000;
+    const session = new LanSession(adapter as never, () => clock);
+    session.startAsHost([A]);
+    const pc = FakePC.last!;
+    pc.signalingState = 'have-local-offer';
+    const before = FakePC.count;
+    session.onPeerState(stateClaim(SID, A, 0, 100));
+    expect(calls.signal.filter(signal => signal.kind === 'offer')).toHaveLength(1);
+    session.onPeerState(stateClaim(SID, A, 0, 101));
+    expect(calls.signal.filter(signal => signal.kind === 'offer')).toHaveLength(1);
+    clock += 1001;
+    pc.signalingState = 'stable'; pc.connect();
+    session.onPeerState(stateClaim(SID, A, 0, 102));
+    expect(calls.signal.filter(signal => signal.kind === 'offer')).toHaveLength(1);
+    expect(FakePC.count).toBe(before);
+    session.stop();
+  });
+
   it('a rostered-but-unadmitted member CANNOT force a LanPeer via signaling or presence', () => {
     const { adapter } = makeAdapter(HOST, SID, true);
     const s = new LanSession(adapter as never);

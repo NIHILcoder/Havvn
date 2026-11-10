@@ -359,7 +359,7 @@ describe('LanSessionCore — per-peer token bucket', () => {
   });
 
   it('drops when the byte budget is exhausted even if packets remain', () => {
-    let clock = 0;
+    const clock = 0;
     const c = new LanSessionCore(SID, SELF, () => clock, 0, {
       pps: 1000, bytesPerSec: 1000, burstPackets: 1000, burstBytes: 150,
     });
@@ -368,7 +368,7 @@ describe('LanSessionCore — per-peer token bucket', () => {
   });
 
   it('meters peers independently', () => {
-    let clock = 0;
+    const clock = 0;
     const c = new LanSessionCore(SID, SELF, () => clock, 0, {
       pps: 1, bytesPerSec: 1000, burstPackets: 1, burstBytes: 1000,
     });
