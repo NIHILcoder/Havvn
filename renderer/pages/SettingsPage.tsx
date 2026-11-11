@@ -7,7 +7,7 @@
  * (SettingsCard / SettingRow / …). The shell only wires the grouped nav with
  * search, the section header, the toast alert, and the sticky Save bar.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button, Icon, Alert } from '../components';
 import { useTranslation } from '../utils/i18nContext';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
@@ -43,12 +43,10 @@ const SECTIONS: Record<string, React.FC> = {
   automation: AutomationSection,
   general: GeneralSection,
   downloads: DownloadsSection,
-  connection: ConnectionSection,
   privacy: PrivacySection,
   sharing: SharingSection,
   seeding: SeedingSection,
   scheduler: SchedulerSection,
-  interface: InterfaceSection,
   hotkeys: HotkeysSection,
   notifications: NotificationsSection,
   system: SystemSection,
@@ -68,6 +66,7 @@ const SettingsShell: React.FC<SettingsPageProps> = ({ focusRequest, onFocusHandl
   const changes = useSettingChanges();
   const savingAny = ctx.saving || ctx.instantSaving > 0 || ctx.turnSaving || ctx.trackersSaving || ctx.schedulerSaving;
   const { activeCategory, setActiveCategory, loading, message, setMessage, hasChanges, saving, handleSave, handleReset } = ctx;
+  const scrollPane = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const [searchTarget, setSearchTarget] = useState<{ result: SettingSearchEntry } | null>(null);
   const unsaved = hasChanges || !!ctx.netDraft || !!ctx.settings && (
@@ -84,6 +83,9 @@ const SettingsShell: React.FC<SettingsPageProps> = ({ focusRequest, onFocusHandl
     setActiveCategory(focusRequest.entry.section);
     onFocusHandled?.();
   }, [focusRequest]);
+  useLayoutEffect(() => {
+    scrollPane.current?.scrollTo({ top: 0, behavior: 'instant' });
+  }, [activeCategory]);
   useEffect(() => {
     const root = content.current;
     if (!root || !searchTarget || searchTarget.result.section !== activeCategory) return;
@@ -132,6 +134,13 @@ const SettingsShell: React.FC<SettingsPageProps> = ({ focusRequest, onFocusHandl
   }
 
   const Section = SECTIONS[activeCategory] ?? GeneralSection;
+  const openSetting = (result: SettingSearchEntry) => {
+    setSearchTarget({ result });
+    setActiveCategory(result.section);
+  };
+  let section = <Section />;
+  if (activeCategory === 'connection') section = <ConnectionSection onOpenSetting={openSetting} />;
+  else if (activeCategory === 'interface') section = <InterfaceSection getCommands={getNavigationCommands} />;
 
   return (
     <div className="stg-page">
@@ -144,7 +153,7 @@ const SettingsShell: React.FC<SettingsPageProps> = ({ focusRequest, onFocusHandl
       )}
 
       <SettingsNav active={activeCategory} onSelect={id => { setSearchTarget(null); setActiveCategory(id); }}
-        onSelectSetting={result => { setSearchTarget({ result }); setActiveCategory(result.section); }} />
+        onSelectSetting={openSetting} />
 
       <div className="stg-main">
         <header className="stg-head">
@@ -155,11 +164,11 @@ const SettingsShell: React.FC<SettingsPageProps> = ({ focusRequest, onFocusHandl
             <div className="stg-save-state" role="status"><span>{t(savingAny ? 'settings.review.saving' : changes.length ? 'settings.review.pending' : 'settings.review.clean').replace('{count}', String(changes.length))}</span>{(ctx.engineRestartPending || ctx.proxyRestartPending || ctx.transportRestartPending) && <span>{t('settings.review.restart')}</span>}</div>
           </div>
         </header>
-        <div className="stg-scroll">
+        <div className="stg-scroll" ref={scrollPane}>
           <div className="stg-col" ref={content}>
             {activeCategory === 'general' && ctx.settings && <SettingsTasks settings={ctx.settings} locked={savingAny || unsaved} onNavigate={setActiveCategory} />}
             <SettingsChangeReview changes={changes} disabled={savingAny} navigate={setActiveCategory} />
-            {activeCategory === 'interface' ? <InterfaceSection getCommands={getNavigationCommands} /> : <Section />}
+            {section}
           </div>
         </div>
 

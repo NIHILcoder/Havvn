@@ -115,6 +115,25 @@ export const InterfaceSection: React.FC<{ getCommands?: () => readonly Command[]
     <>
       <SettingsCard title={t('settings.iface.appearance')} icon="sun">
         <SettingRow
+          label={t('settings.iface.scale')}
+          description={t('settings.iface.scale.desc')}
+          control={
+            <div className="iface-seg" role="group" aria-label={t('settings.iface.scale')}>
+              {SCALE_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={uiScale === s ? 'active' : ''}
+                  aria-pressed={uiScale === s}
+                  onClick={() => applyScale(s)}
+                >
+                  {s}%
+                </button>
+              ))}
+            </div>
+          }
+        />
+        <SettingRow
           label={t('settings.theme')}
           description={t('settings.theme.desc')}
           stack
@@ -180,38 +199,7 @@ export const InterfaceSection: React.FC<{ getCommands?: () => readonly Command[]
         />
       </SettingsCard>
 
-      <AppearancePanel profilesLocked={themeEditorOpen} onProfileApplied={mode => {
-        ctx.handleThemeChange(mode);
-        setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
-        setReduceMotion(readPref('reduceMotion') === '1'); setCompact(readPref('density') === 'compact');
-      }} />
-      {ctx.settings && <SettingsCard title={t('working.title')} icon="layers" description={t('working.description')}>
-        <WorkingProfilesPanel settings={ctx.settings} locked={themeEditorOpen || ctx.hasChanges || ctx.transferBusy || ctx.saving || ctx.transferStatus.recoveryNeeded}
-          lockReason={ctx.transferStatus.recoveryNeeded ? t('settings.transfer.recoveryDesc') : undefined} />
-      </SettingsCard>}
-      <SettingsCard title={t('navigation.title')} icon="sliders" description={t('navigation.description')}>
-        <NavigationPanel getCommands={getCommands} />
-      </SettingsCard>
       <SettingsCard title={t('settings.iface.behavior')} icon="monitor">
-        <SettingRow
-          label={t('settings.iface.scale')}
-          description={t('settings.iface.scale.desc')}
-          control={
-            <div className="iface-seg" role="group" aria-label={t('settings.iface.scale')}>
-              {SCALE_OPTIONS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  className={uiScale === s ? 'active' : ''}
-                  aria-pressed={uiScale === s}
-                  onClick={() => applyScale(s)}
-                >
-                  {s}%
-                </button>
-              ))}
-            </div>
-          }
-        />
         <SettingRow
           label={t('settings.iface.reduceMotion')}
           description={t('settings.iface.reduceMotion.desc')}
@@ -269,6 +257,18 @@ export const InterfaceSection: React.FC<{ getCommands?: () => readonly Command[]
             </div>
           }
         />
+      </SettingsCard>
+      <AppearancePanel profilesLocked={themeEditorOpen} onProfileApplied={mode => {
+        ctx.handleThemeChange(mode);
+        setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
+        setReduceMotion(readPref('reduceMotion') === '1'); setCompact(readPref('density') === 'compact');
+      }} />
+      {ctx.settings && <SettingsCard title={t('working.title')} icon="layers" description={t('working.description')}>
+        <WorkingProfilesPanel settings={ctx.settings} locked={themeEditorOpen || ctx.hasChanges || ctx.transferBusy || ctx.saving || ctx.transferStatus.recoveryNeeded}
+          lockReason={ctx.transferStatus.recoveryNeeded ? t('settings.transfer.recoveryDesc') : undefined} />
+      </SettingsCard>}
+      <SettingsCard title={t('navigation.title')} icon="sliders" description={t('navigation.description')}>
+        <NavigationPanel getCommands={getCommands} />
       </SettingsCard>
     </>
   );

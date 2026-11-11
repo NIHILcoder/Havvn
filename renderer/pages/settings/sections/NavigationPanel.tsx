@@ -54,7 +54,7 @@ export const NavigationPanel: React.FC<{ getCommands?: () => readonly Command[] 
     <SettingRow label={t('history.title')} description={t('navigation.historyHint')} control={<Toggle disabled={unreadable} ariaLabel={`${t('navigation.show')}: ${t('history.title')}`}
       checked={preferences.showHistory} onChange={visible => { attempt(() => navigation.showHistory(visible)); }} />} />
     <Button variant="secondary" onClick={() => { attempt(() => navigation.resetMenu()); }}>{t('navigation.resetMenu')}</Button>
-    <h4>{t('navigation.favorites')} · {preferences.favorites.length}/{FAVORITES_LIMIT}</h4>
+    <h3>{t('navigation.favorites')} · {preferences.favorites.length}/{FAVORITES_LIMIT}</h3>
     <p className="navigation-help">{t('navigation.favoritesHint')}</p>
     <div className="navigation-add">
       <Select ariaLabel={t('navigation.chooseFavorite')} disabled={unreadable || preferences.favorites.length >= FAVORITES_LIMIT} value={selection} onChange={setSelection}

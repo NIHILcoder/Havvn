@@ -27,9 +27,13 @@ export const SettingsNav: React.FC<{
   const matches = (id: string, keywords: string) => {
     if (!query) return true;
     const text = normalizeSettingsSearch(t(`settings.${id}` as TKey) + ' ' + keywords);
-    return query.split(' ').every(term => text.includes(term)) || results.some(result => result.section === id);
+    return query.split(' ').every(term => text.includes(term));
   };
   const visible = SETTINGS_NAV.filter((i) => matches(i.id, i.keywords));
+  const selectSetting = (result: SettingSearchResult) => {
+    if (onSelectSetting) onSelectSetting(result);
+    else onSelect(result.section);
+  };
   useEffect(() => {
     navigation.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [active]);
@@ -48,7 +52,15 @@ export const SettingsNav: React.FC<{
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={event => {
             if (event.key === 'Escape') { event.preventDefault(); setQ(''); }
-            else if (event.key === 'Enter' && results[0]) { event.preventDefault(); onSelectSetting?.(results[0]); }
+            else if (event.key === 'Enter' && query) {
+              if (results[0]) {
+                event.preventDefault();
+                selectSetting(results[0]);
+              } else if (visible[0]) {
+                event.preventDefault();
+                onSelect(visible[0].id);
+              }
+            }
           }}
           placeholder={t('settings.searchPlaceholder')}
           aria-label={t('settings.searchPlaceholder')}
@@ -61,7 +73,13 @@ export const SettingsNav: React.FC<{
       </div>
 
       <nav className="stg-nav-list" aria-label={t('nav.settings')} ref={navigation}>
-        {!visible.length && <p className="stg-nav-empty">{t('settings.searchEmpty')}</p>}
+        {!results.length && !visible.length && <p className="stg-nav-empty">{t('settings.searchEmpty')}</p>}
+        {results.map(result => (
+          <button type="button" key={`${result.section}:${result.labelKey}`} className="stg-nav-result" onClick={() => selectSetting(result)}>
+            <span>{result.label}</span>
+            <small title={result.description || undefined}>{t(`settings.${result.section}` as TKey)}</small>
+          </button>
+        ))}
         {SETTINGS_GROUPS.map((g) => {
           const items = visible.filter((i) => i.group === g);
           if (!items.length) return null;
@@ -79,12 +97,6 @@ export const SettingsNav: React.FC<{
                     <span className="stg-nav-item-label">{t(`settings.${item.id}` as TKey)}</span>
                     {active === item.id && <span className="stg-nav-dot" />}
                   </button>
-                  {query && results.filter(result => result.section === item.id).map(result => (
-                    <button type="button" key={result.labelKey} className="stg-nav-result" onClick={() => onSelectSetting ? onSelectSetting(result) : onSelect(result.section)}>
-                      <span>{result.label}</span>
-                      {result.description && <small title={result.description}>{result.description}</small>}
-                    </button>
-                  ))}
                 </div>
               ))}
             </div>
