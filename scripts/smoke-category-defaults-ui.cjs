@@ -53,7 +53,9 @@ if (!process.versions.electron) {
       for (let n = 0; n < 80; n++) { if (await predicate()) { checks.push(label); console.log('PASS ' + label); return; } await new Promise(resolve => setTimeout(resolve, 70)); }
       console.error(await run('document.body.innerText')); throw Error(label);
     };
-    await check('Category editor renders the inherited fields', () => run(`!!field('category.defaults.seedRatioLimit')&&field('category.defaults.seedRatioLimit').value===''`));
+    await check('Category editor starts collapsed', () => run(`document.querySelector('.category-editor')?.open === false`));
+    await run(`document.querySelector('.category-editor > summary').click();true;`);
+    await check('Expanding the category editor shows the inherited fields', () => run(`document.querySelector('.category-editor').open&&field('category.defaults.seedRatioLimit')?.value===''`));
     await run(`dom.flushSync(()=>input('category.defaults.name','UI category'));dom.flushSync(()=>input('category.defaults.savePath',${JSON.stringify(path.join(scratch, 'category'))}));dom.flushSync(()=>input('category.defaults.seedRatioLimit','0'));`);
     await run(`openSelect('category.defaults.paused')`); await run(`option(t('category.defaults.paused'))`);
     await run(`openSelect('category.defaults.sequentialDownload')`); await run(`option(t('common.yes'))`);
@@ -89,7 +91,7 @@ if (!process.versions.electron) {
     await check('RSS preview uses feed destination and explicit active state', () => run(`document.querySelector('[data-default-field="savePath"]')?.textContent.includes('D:/feed-a')&&document.querySelector('[data-default-field="paused"]').textContent.includes(t('category.defaults.active'))`));
     await run(`openSelect('category.defaults.previewFeed')`); await run(`option('Feed B')`);
     await check('Multi-feed rule preview follows the selected feed', () => run(`document.querySelector('[data-default-field="savePath"]')?.textContent.includes('D:/feed-b')`));
-    await run(`render(React.createElement(Panel));true;`);
+    await run(`render(React.createElement(Panel));document.querySelector('.category-editor > summary').click();true;`);
     await run(`openSelect('category.defaults.edit')`); await run(`option('UI category')`);
     await run(`button('category.defaults.reset').click();true;`);
     await run(`button('common.save').click();true;`);

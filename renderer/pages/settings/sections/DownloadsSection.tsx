@@ -83,7 +83,6 @@ export const DownloadsSection: React.FC = () => {
       </SettingsCard>
 
       {/* Watch folder */}
-      <CategoriesPanel />
       <SettingsCard title={t('settings.grp.watchFolder')} icon="eye">
         <SettingRow
           label={t('settings.watchEnable')}
@@ -156,6 +155,8 @@ export const DownloadsSection: React.FC = () => {
       </SettingsCard>
 
       {/* Auto-move completed */}
+      <CategoriesPanel />
+
       <SettingsCard title={t('settings.grp.autoMove')} icon="arrow-right">
         {/* Disabled WITH ITS REASON rather than hidden. A control that vanishes
             teaches nothing — a native-engine user would never learn the feature
