@@ -1,253 +1,135 @@
-/**
- * Hotkey Settings - Modern Design 2026
- */
-
 .hotkey-settings {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.hotkey-toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.btn-reset-hotkeys {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: rgba(var(--color-error-rgb), 0.1);
-  border: 1px solid rgba(var(--color-error-rgb), 0.3);
-  border-radius: var(--radius-sm); /* squared HUD */
-  color: var(--color-error);
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  white-space: nowrap;
-}
-
-.btn-reset-hotkeys:hover {
-  background: rgba(var(--color-error-rgb), 0.18);
-  border-color: var(--color-error);
-  /* flat HUD hover — dropped translateY lift + float shadow */
-}
-
-.hotkey-category {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
+  display: grid;
+  gap: 16px;
 }
 
 .hotkey-category-title {
-  font-size: 1.125rem;
-  font-weight: 700;
+  margin: 0;
+  padding: 10px 0 6px;
   color: var(--color-text-primary);
-  padding: 1rem 1.5rem;
-  background: linear-gradient(135deg, rgba(var(--color-accent-rgb), 0.15) 0%, rgba(var(--color-accent-rgb), 0.1) 100%);
-  border-left: 4px solid var(--color-accent-primary);
-  border-radius: var(--radius-md); /* squared HUD (keep border-left accent) */
-  letter-spacing: 0.02em;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
 }
 
 .hotkey-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  border-top: 1px solid var(--color-border-subtle);
 }
 
 .hotkey-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
   align-items: center;
-  justify-content: space-between;
-  padding: 1.75rem 2rem;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md); /* squared HUD */
-  gap: 1rem 3rem;
-  flex-wrap: wrap;
-  transition: all 0.2s ease;
-}
-
-/* The settings column (container `stg`, see pages/settings/shell.css) can be far
-   narrower than the window — the dock squeezes it without moving the viewport.
-   Stack the row rather than let the 3rem gap + the recorder crush the label. */
-@container stg (max-width: 560px) {
-  .hotkey-item {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
-    padding: 1.25rem;
-  }
-}
-
-.hotkey-item:hover {
-  background: var(--color-bg-hover);
-  border-color: var(--color-border-strong);
-  /* flat HUD hover — dropped translateY lift + float shadow */
-}
-
-.hotkey-info {
-  flex: 1;
-  min-width: 0;
+  gap: 10px 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
 .hotkey-label {
-  font-size: 1.125rem;
-  font-weight: 600;
   color: var(--color-text-primary);
-  margin-bottom: 0.5rem;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
 }
 
 .hotkey-description {
-  font-size: 0.9375rem;
+  margin-top: 3px;
   color: var(--color-text-secondary);
-  line-height: 1.6;
+  font-size: var(--font-size-xs);
+  line-height: 1.45;
 }
 
-.hotkey-control {
-  flex-shrink: 0;
-  min-width: 200px;
+.hotkey-display,
+.hotkey-recorder {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-primary);
 }
 
 .hotkey-display {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
   background: var(--color-bg-tertiary);
-  border: 2px solid var(--color-border-default);
-  border-radius: var(--radius-sm); /* squared HUD */
   cursor: pointer;
-  transition: all 0.2s ease;
-  min-height: 50px;
+  text-align: start;
 }
 
 .hotkey-display:hover {
   background: var(--color-bg-hover);
-  border-color: var(--color-accent-primary);
-  box-shadow: 0 4px 12px rgba(var(--color-accent-rgb), 0.2);
+  border-color: var(--color-border-strong);
+}
+
+.hotkey-keys,
+.hotkey-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .hotkey-keys {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.hotkey-edit {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .hotkey-key {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 1rem;
-  min-width: 38px;
-  min-height: 36px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 2px 5px;
   background: var(--color-bg-primary);
-  border: 2px solid var(--color-border-default);
-  border-radius: var(--radius-sm); /* squared HUD keycap */
-  font-family: var(--font-family-mono);
-  font-size: 0.9375rem;
-  font-weight: 700;
-  color: var(--color-text-primary);
-  box-shadow: 0 2px 0 var(--color-border-default),
-              0 4px 8px rgba(0, 0, 0, 0.1);
-  text-transform: uppercase;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-weight: var(--font-weight-semibold);
 }
 
-.hotkey-plus {
-  color: var(--color-text-tertiary);
-  font-size: 1rem;
-  font-weight: 700;
-  margin: 0 0.125rem;
-}
-
+.hotkey-plus,
 .hotkey-empty {
-  font-size: 0.9375rem;
-  color: var(--color-text-tertiary);
-  font-style: italic;
+  color: var(--color-text-secondary);
 }
 
 .hotkey-recorder {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
-  background: linear-gradient(135deg, rgba(var(--color-accent-rgb), 0.15) 0%, rgba(var(--color-accent-rgb), 0.1) 100%);
-  border: 2px solid var(--color-accent-primary);
-  border-radius: var(--radius-sm); /* squared HUD */
-  min-height: 50px;
-  animation: pulseGlow 2s infinite;
-  outline: none;
-}
-
-@keyframes pulseGlow {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(var(--color-accent-rgb), 0.5);
-  }
-  50% {
-    box-shadow: 0 0 0 8px rgba(var(--color-accent-rgb), 0);
-  }
-}
-
-.hotkey-recorder-text {
-  font-family: var(--font-family-mono);
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--color-accent-primary);
-  /* A hard 160px floor made the recorder wider than a squeezed column; cap it
-     against the available width so it shrinks instead of overflowing. */
-  min-width: min(160px, 100%);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  background: var(--color-accent-bg);
+  border-color: var(--color-border-focus);
 }
 
 .btn-cancel-recording {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
-  background: rgba(var(--color-error-rgb), 0.1);
-  border: 2px solid rgba(var(--color-error-rgb), 0.3);
-  border-radius: var(--radius-sm); /* squared HUD */
-  color: var(--color-error);
+  background: transparent;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
 }
 
 .btn-cancel-recording:hover {
-  background: rgba(var(--color-error-rgb), 0.2);
-  border-color: var(--color-error);
-  /* flat HUD hover — dropped scale(1.1) grow */
+  background: var(--color-bg-hover);
 }
 
-/* Responsive */
-@media (max-width: 900px) {
-  .hotkey-item {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1.5rem;
-    padding: 1.5rem;
-  }
-  
-  .hotkey-control {
-    width: 100%;
-    justify-content: flex-start;
-  }
-  
-  .btn-reset-hotkeys {
-    width: 100%;
-    justify-content: center;
-  }
+.hotkey-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 10px;
 }
 
-@media (max-width: 600px) {
+@container stg (max-width: 470px) {
   .hotkey-item {
-    padding: 1.25rem;
+    grid-template-columns: minmax(0, 1fr);
   }
 }

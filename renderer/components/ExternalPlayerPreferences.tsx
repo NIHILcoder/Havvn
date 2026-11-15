@@ -27,7 +27,7 @@ export function ExternalPlayerPreferences({ onChange, onBusy }: Props) {
   };
   return <div className="external-player-preferences">
     <div className="external-player-choice" role="group" aria-label={t('external.player')}>
-      <button type="button" data-setting-label={t('external.default')} className={`btn ${config?.kind === 'default' ? 'btn-primary' : 'btn-secondary'}`} disabled={busy} aria-pressed={config?.kind === 'default'} onClick={() => void change(false)}>{t('external.default')}</button>
+      <button type="button" data-setting-label={t('external.useDefault')} className={`btn ${config?.kind === 'default' ? 'btn-primary' : 'btn-secondary'}`} disabled={busy} aria-pressed={config?.kind === 'default'} onClick={() => void change(false)}>{t('external.useDefault')}</button>
       <button type="button" data-setting-label={t('external.choose')} className="btn btn-secondary" disabled={busy} onClick={() => void change(true)}><Icon name="folder-open" size={14} />{t('external.choose')}</button>
     </div>
     <div className="external-player-selected">
