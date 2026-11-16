@@ -131,6 +131,14 @@ if (!process.versions.electron) {
       console.error(await run('document.body.innerText')); throw Error(label);
     };
     await check('Actual settings panel renders separate popup/sound/content preview', () => run(`!!document.querySelector('[data-notification-popup]')&&!!document.querySelector('[role=switch][aria-label="'+t('notifications.showContent')+'"]')`));
+    await check('Both preview actions focus the draft preview', () => run(`(() => {
+      const buttons = [...document.querySelectorAll('button')].filter(button => button.textContent.trim() === t('notifications.openPreview'));
+      return buttons.length === 2 && buttons.every(button => {
+        button.click();
+        const preview = document.getElementById(button.getAttribute('aria-controls'));
+        return preview === document.activeElement && !!preview.querySelector('.notification-preview');
+      });
+    })()`));
     await run(`toggle('notifications.showContent')`);
     await check('Privacy draft removes sample content from the preview', () => run(`document.querySelector('[data-notification-content]').dataset.notificationContent==='false'&&document.querySelector('.notification-preview').textContent.includes(t('notifications.privateBody'))`));
     await run(`button('notifications.savePolicy').click()`);
