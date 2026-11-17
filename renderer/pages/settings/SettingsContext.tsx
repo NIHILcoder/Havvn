@@ -183,7 +183,8 @@ function useSettingsController() {
     totalDownloaded: '0 GB',
     cacheSize: '0 MB',
     diskUsage: '0 GB',
-    uptime: '0h 0m',
+    activeDownloads: 0,
+    completedDownloads: 0,
   });
 
   const dayNames = language === 'ru'
@@ -425,7 +426,8 @@ function useSettingsController() {
         totalDownloaded: realStats.totalDownloaded,
         cacheSize: '-',
         diskUsage: realStats.diskUsage,
-        uptime: `${realStats.activeDownloads} ${t('settings.stats.active')}, ${realStats.completedDownloads} ${t('settings.stats.done')}`,
+        activeDownloads: realStats.activeDownloads,
+        completedDownloads: realStats.completedDownloads,
       });
     } catch (error) {
       console.error('Failed to load stats:', error);

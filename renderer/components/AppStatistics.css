@@ -1,6 +1,6 @@
 /* AppStatistics — flat Ember stat tiles, sits inside a SettingsCard body.
    Vocabulary matches settings/controls.css: hairline borders, tertiary ground,
-   11.5px tertiary labels, tabular-nums values. No boxed icons, no caps. */
+   small labels with tabular-nums values. No boxed icons, no caps. */
 
 .app-statistics {
   display: grid;
@@ -26,7 +26,7 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   margin-bottom: 6px;
 }
 .app-stat-head svg { flex: none; }
@@ -34,7 +34,7 @@
 .app-stat-label {
   font-size: 11.5px;
   line-height: 1.4;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -50,6 +50,12 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.app-stat-value--status {
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 @media (max-width: 480px) {

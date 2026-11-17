@@ -1,11 +1,8 @@
 /**
  * Settings → About — the app's identity page, rebuilt on the stg system.
  *
- * Updates and default-client live ONLY in the System
- * section. Here: a centered identity block (mark, wordmark, version, tagline,
- * stack chips, GitHub), a Details card (version / session engine / license /
- * source), and the statistics card. External links go through target="_blank",
- * which main.ts redirects to shell.openExternal.
+ * Identity, version, engine, license and statistics. The source link goes
+ * through target="_blank", which main.ts redirects to shell.openExternal.
  */
 import React from 'react';
 import { useSettings } from '../SettingsContext';
@@ -21,8 +18,6 @@ export const AboutSection: React.FC = () => {
   const { t } = useTranslation();
   const { appVersion, runningEngine, stats } = useSettings();
 
-  const isBeta = /(alpha|beta|rc)/i.test(appVersion);
-
   return (
     <>
       {/* Identity — centered, calm, no card chrome fighting the shell header. */}
@@ -31,16 +26,7 @@ export const AboutSection: React.FC = () => {
         <h2 className="abt-name">
           Ha<b>vv</b>n
         </h2>
-        <div className="abt-pills">
-          <span className="stg-pill stg-pill-accent">v{appVersion || '—'}</span>
-          {isBeta && <span className="stg-pill stg-pill-muted">beta</span>}
-        </div>
         <p className="abt-tagline">{t('settings.appDesc')}</p>
-        <div className="abt-stack">Electron · React · WebTorrent</div>
-        <a className="abt-github" href={GITHUB_URL} target="_blank" rel="noreferrer">
-          <Icon name="external-link" size={14} />
-          GitHub
-        </a>
       </div>
 
       <SettingsCard title={t('settings.about.infoTitle')} icon="info">
@@ -89,7 +75,8 @@ export const AboutSection: React.FC = () => {
           totalDownloaded={stats?.totalDownloaded}
           cacheSize={stats?.cacheSize}
           diskUsage={stats?.diskUsage}
-          uptime={stats?.uptime}
+          activeDownloads={stats.activeDownloads}
+          completedDownloads={stats.completedDownloads}
         />
       </SettingsCard>
     </>
