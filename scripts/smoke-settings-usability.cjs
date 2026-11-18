@@ -26,7 +26,7 @@ if (!process.versions.electron) {
     const css = require('./smoke-ui-fonts.cjs')(root) + [
       'renderer/styles/variables.css','renderer/styles/base.css','renderer/styles/components.css','renderer/styles/layout.css','renderer/styles/appearance.css',
       'renderer/pages/SettingsPage.css','renderer/pages/settings/shell.css','renderer/pages/settings/controls.css','renderer/pages/settings/SettingsNav.css','renderer/pages/settings/SpeedLimitField.css','renderer/pages/settings/EffectiveLimits.css',
-      'renderer/components/Modal.css','renderer/components/Select.css','renderer/components/Toggle.css','renderer/components/NumberInput.css',
+      'renderer/components/Modal.css','renderer/components/Select.css','renderer/components/Toggle.css','renderer/components/NumberInput.css','renderer/components/HotkeySettings.css',
     ].map(file => fs.readFileSync(path.join(root, file), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const file = path.join(scratch, 'ui.html');
     fs.writeFileSync(file, '<html lang="ru" data-theme="dark"><meta charset="utf-8"><style>' + css + '#root{height:100vh}*{animation:none!important;transition:none!important}</style><div id="root"></div></html>');
@@ -145,6 +145,46 @@ if (!process.versions.electron) {
       await mount();await run(`input(document.querySelector('.stg-nav-search input'),t('settings.port'));true;`);await pause();
       await run(`document.querySelector('.stg-nav-search input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));true;`);await pause(200);
       assert.equal(await run('ctx.activeCategory'),'connection');assert.equal(await run('!!document.querySelector("[data-settings-search-target]")'),true);
+    });
+    await scenario('Russian search shows the best hit first and opens the matching setting',async()=>{
+      await mount();
+      await run(`input(document.querySelector('.stg-nav-search input'),'уведомления');true;`);
+      assert.equal(await run(`document.querySelector('.stg-nav-result > span').textContent`),await run(`t('settings.grp.notifications')`));
+      await run(`input(document.querySelector('.stg-nav-search input'),'папка загрузок');true;`);
+      assert.equal(await run(`document.querySelector('.stg-nav-result > span').textContent`),await run(`t('settings.defaultDir')`));
+      await run(`document.querySelector('.stg-nav-search input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));true;`);
+      await wait(`row('settings.defaultDir')?.hasAttribute('data-settings-search-target')`);
+      assert.equal(await run('ctx.activeCategory'),'downloads');
+    });
+    await scenario('Settings search opens the collapsed category editor at the matching field',async()=>{
+      await mount('downloads');
+      assert.equal(await run(`document.querySelector('.category-editor').open`),false);
+      await run(`input(document.querySelector('.stg-nav-search input'),t('category.defaults.name'));document.querySelector('.stg-nav-search input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));true;`);
+      await wait(`document.querySelector('.category-editor').open&&row('category.defaults.name')?.hasAttribute('data-settings-search-target')`);
+    });
+    await scenario('Connection links to the single DHT control in Privacy',async()=>{
+      await mount('connection');
+      assert.equal(await run(`!!row('settings.dht').querySelector('[role=switch]')`),false);
+      await run(`btn('settings.dht.openPrivacy').click();true;`);
+      await wait(`ctx.activeCategory==='privacy'&&row('privacy.dht')?.hasAttribute('data-settings-search-target')`);
+      assert.equal(await run(`!!row('privacy.dht').querySelector('[role=switch]')`),true);
+    });
+    await scenario('Switching settings sections starts at the top',async()=>{
+      await mount('sharing');
+      const before=await run(`(()=>{const pane=document.querySelector('.stg-scroll');pane.scrollTo({top:400,behavior:'instant'});return pane.scrollTop;})()`);
+      assert.ok(before>0);
+      await run(`nav('interface');true;`);
+      assert.equal(await run(`document.querySelector('.stg-scroll').scrollTop`),0);
+    });
+    await scenario('Editing a hotkey focuses the recorder and returns focus to the edited action',async()=>{
+      await mount('hotkeys');
+      await run(`localStorage.removeItem('hotkeys');document.querySelector('.hotkey-display').click();true;`);
+      await wait(`document.activeElement.classList.contains('hotkey-recorder')`);
+      await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'F10',code:'F10',bubbles:true}));true;`);
+      await wait(`document.activeElement.classList.contains('hotkey-display')`);
+      assert.equal(await run(`document.activeElement.querySelector('kbd').textContent`),'F10');
+      assert.deepEqual(await run(`JSON.parse(localStorage.getItem('hotkeys')).find(item=>item.id==='open-command-palette').keys`),['F10']);
+      await run(`localStorage.removeItem('hotkeys');true;`);
     });
     await scenario('Ctrl+S saves with the Russian keyboard layout and suppresses the browser dialog',async()=>{
       await mount('connection');await run(`input(row('settings.downSpeed').querySelector('input'),'321');true;`);await wait('ctx.hasChanges');

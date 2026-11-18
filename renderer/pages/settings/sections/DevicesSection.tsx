@@ -195,9 +195,12 @@ export function DevicesSection() {
             "Синхронизация между двумя устройствами",
             "Sync between two devices",
           )}
-          description={l(
-            "По умолчанию выключена. Прямое соединение в локальной сети, без облака. Выключение отзывает текущую пару.",
-            "Off by default. Direct local network connection, no cloud. Turning off revokes this pairing.",
+          description={s.enabled ? l(
+            "Прямое соединение в локальной сети. Выключение отзывает текущую пару.",
+            "Direct local network connection. Turning off revokes the current pairing.",
+          ) : l(
+            "Включите синхронизацию на обоих устройствах в одной локальной сети. Создайте приглашение на одном устройстве и введите его на другом.",
+            "Turn on sync on both devices on the same local network. Create an invitation on one device and enter it on the other.",
           )}
           control={
             <Toggle
@@ -654,6 +657,7 @@ export function DevicesSection() {
         </p>
         <div className="device-actions">
           <Button
+            variant="secondary"
             disabled={busy}
             onClick={() => {
               setPhrase("");

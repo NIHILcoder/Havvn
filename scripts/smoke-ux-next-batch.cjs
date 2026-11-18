@@ -69,7 +69,8 @@ if (!process.versions.electron) {
     await capture('automation-from-download'); await run(`document.querySelector('[data-automation-preview]').scrollIntoView({block:'center'});true;`); await capture('automation-preview'); await click('automation.save');
     await until('Explicit save keeps the new rule disabled', `automationSaves.length===1&&automationSaves[0].rules[0].enabled===false`);
     await run(`mount(Tasks,{settings:settingsFixture.settings,locked:false,onNavigate:id=>settingsRoutes.push(id)});true;`);
-    await click('settings.tasks.room'); await check('Task guide applies no settings implicitly', `settingsRoutes.length===0&&document.body.textContent.includes(t('settings.tasks.noImplicit'))`);
+    await run(`[...document.querySelectorAll('.settings-task-grid button')].find(button => button.querySelector('strong').textContent===t('settings.tasks.room')).click();true;`);
+    await until('Task guide applies no settings implicitly', `settingsRoutes.length===0&&document.body.textContent.includes(t('settings.tasks.noImplicit'))`);
     await capture('task-settings'); await click('settings.sharing'); await check('Task route reaches the existing section', `settingsRoutes[0]==='sharing'`);
     await run(`mount(Search);true;`); await until('Search form is ready', `!!document.querySelector('.search-form input')`);
     await run(`value(document.querySelector('.search-form input'),'Example query');btn('search.btn').click();true;`); await until('Search starts once', `searchStarts.length===1`);
