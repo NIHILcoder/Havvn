@@ -13,12 +13,13 @@
 import React from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, NumberField, RestartPendingNotice, TextField } from '../controls';
-import { Icon, Toggle, Select } from '../../../components';
+import { Button, Icon, Toggle, Select } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { SpeedLimitField } from '../SpeedLimitField';
 import { EffectiveLimits } from '../EffectiveLimits';
+import type { SettingSearchEntry } from '../settingsSearch';
 
-export const ConnectionSection: React.FC = () => {
+export const ConnectionSection: React.FC<{ onOpenSetting(result: SettingSearchEntry): void }> = ({ onOpenSetting }) => {
   const { t } = useTranslation();
   const {
     applyToggle,
@@ -27,7 +28,7 @@ export const ConnectionSection: React.FC = () => {
     adaptiveUpload, setAdaptiveUpload, netHealth,
     altSpeedEnabled, setAltSpeedEnabled,
     altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
-    enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
+    enableUtp, setEnableUtp, transportRestartPending,
     encryption, selectEncryption,
     maxConnections, setMaxConnections,
     maxConnectionsGlobal, setMaxConnectionsGlobal,
@@ -115,6 +116,8 @@ export const ConnectionSection: React.FC = () => {
 
   return (
     <>
+      <EffectiveLimits />
+
       <SettingsCard title={t('settings.grp.speedLimits')} icon="gauge">
         <SettingRow
           label={t('settings.downSpeed')}
@@ -209,18 +212,14 @@ export const ConnectionSection: React.FC = () => {
         </div>
       </SettingsCard>
 
-      <EffectiveLimits />
-
       <SettingsCard title={t('settings.grp.connections')} icon="network">
         <SettingRow
           label={t('settings.dht')}
           description={t('settings.dht.desc')}
           control={
-            <Toggle
-              checked={enableDHT}
-              onChange={(v) => applyToggle(v, setEnableDHT, { enableDHT: v })}
-              ariaLabel={t('settings.dht')}
-            />
+            <Button variant="secondary" size="sm" onClick={() => onOpenSetting({ section: 'privacy', labelKey: 'privacy.dht', kind: 'row' })}>
+              {t('settings.dht.openPrivacy')}
+            </Button>
           }
         />
         <SettingRow

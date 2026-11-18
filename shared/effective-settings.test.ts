@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveEffectiveSettings, resolveRuntimeFeatures, scheduleMatches, type SpeedBase } from './effective-settings';
+import { resolveEffectiveSettings, resolveRuntimeFeatures, scheduleDayTimeline, scheduleMatches, type SpeedBase } from './effective-settings';
 import type { NetworkProfile, SchedulerConfig } from './types';
 
 const base = (patch: Partial<SpeedBase> = {}): SpeedBase => ({ maxDownKbps: 500, maxUpKbps: 100, altDownKbps: 80, altUpKbps: 0,
@@ -28,6 +28,22 @@ describe('effective settings contract', () => {
     const config = { enabled: true, schedules: [...schedule.schedules, { ...schedule.schedules[0], id: 'other', speedLimit: 50 }] };
     expect(resolveEffectiveSettings(base(), { scheduler: config, now }).download.value).toBe(50);
     expect(resolveEffectiveSettings(base(), { scheduler: { ...config, schedules: [...config.schedules].reverse() }, now }).download.value).toBe(50);
+  });
+  it('shows the tightest scheduled limit through unlimited and overnight overlaps in either rule order', () => {
+    const windows = [
+      { id: 'unlimited', days: [2], startTime: '00:00', endTime: '23:59', speedLimit: 0 },
+      schedule.schedules[0],
+      { id: 'inner', days: [2], startTime: '01:00', endTime: '03:00', speedLimit: 50 },
+    ];
+    const expected = [
+      { start: 0, end: 60, limit: 300 },
+      { start: 60, end: 180, limit: 50 },
+      { start: 180, end: 1439, limit: 0 },
+    ];
+    expect(scheduleDayTimeline(windows, 2)).toEqual(expected);
+    expect(scheduleDayTimeline([...windows].reverse(), 2)).toEqual(expected);
+    expect(scheduleDayTimeline(windows, 1)).toEqual([{ start: 1380, end: 1440, limit: 300 }]);
+    expect(scheduleDayTimeline(windows, 3)).toEqual([]);
   });
   it('a matching unlimited/empty schedule does not leave a previous limit latched', () => {
     for (const speedLimit of [undefined, 0]) expect(resolveEffectiveSettings(base(), { scheduler: { enabled: true, schedules: [{ ...schedule.schedules[0], speedLimit }] }, network, now }).download.value).toBe(150);

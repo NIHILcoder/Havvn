@@ -18,6 +18,9 @@ function buildSettingsSearch() {
   const sources = fs.readdirSync(folder).filter(file => /(?:Section|AppearancePanel)\.tsx$/.test(file)).sort().map(file => ({ file: path.join(folder, file), section: file === 'AppearancePanel.tsx' ? 'interface' : file.replace('Section.tsx', '').toLowerCase() }));
   sources.push({ file: path.join(folder, 'NavigationPanel.tsx'), section: 'interface', parentKey: 'navigation.title' });
   sources.push({ file: path.join(folder, 'WorkingProfilesPanel.tsx'), section: 'interface', parentKey: 'working.title' });
+  sources.push({ file: path.join(folder, 'NotificationPolicyPanel.tsx'), section: 'notifications' });
+  sources.push({ file: path.join(folder, 'CategoriesPanel.tsx'), section: 'downloads' });
+  sources.push({ file: path.join(folder, '../EffectiveLimits.tsx'), section: 'connection' });
   sources.push({ file: path.join(root, 'renderer/components/ExternalPlayerPreferences.tsx'), section: 'general', parentKey: 'external.player', descriptionKey: 'external.saved' });
   for (const { file, section, parentKey: defaultParent, descriptionKey } of sources) {
     const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);

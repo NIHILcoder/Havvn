@@ -745,7 +745,7 @@
   margin-bottom: 10px;
 }
 .web-remote-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.web-remote-warn { color: var(--color-warning); }
+.web-remote-warn { color: var(--color-text-primary); }
 .web-remote-warn svg { color: var(--color-warning); }
 
 /* ── Adaptive upload throttle: live indicator ──────────────────────────── */
@@ -959,7 +959,7 @@
 .engine-opt-desc {
   font-size: 12px;
   line-height: 1.45;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
 }
 
 /* "Restart to apply" strip once the choice diverges from the running engine */
@@ -974,7 +974,7 @@
   border: 1px solid rgba(var(--color-warning-rgb), 0.4);
   border-radius: var(--radius-md);
   font-size: 12px;
-  color: var(--color-warning);
+  color: var(--color-text-primary);
 }
 
 .engine-restart span { flex: 1; }
@@ -984,10 +984,28 @@
 .settings-notice-compact.warn {
   background: var(--color-warning-bg);
   border-color: rgba(var(--color-warning-rgb), 0.4);
-  color: var(--color-warning);
+  color: var(--color-text-primary);
 }
+.engine-restart > svg,
+.settings-notice-compact.warn > svg { color: var(--color-warning); }
 .stg-save-state { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--color-text-secondary); }
 .stg-save-state > span { padding: 4px 8px; border: 1px solid var(--color-border-default); }
+
+/* Settings actions use theme tokens on solid surfaces so labels remain legible. */
+.stg-page .btn-primary { background: var(--color-accent-primary); }
+.stg-page .btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-primary-hover, var(--color-accent-primary));
+  filter: none;
+}
+.stg-page .btn-danger {
+  background: var(--color-error-bg);
+  border: 1px solid rgba(var(--color-error-rgb), 0.5);
+  color: var(--color-text-primary);
+}
+.stg-page .btn-danger:hover:not(:disabled) {
+  border-color: var(--color-error);
+  filter: none;
+}
 .stg-change-review { flex: none; padding: 0; border: 1px solid var(--color-border-default); font-size: 12px; }
 .stg-change-review summary { cursor: pointer; padding: 12px; }
 .stg-change-review-body { max-height: min(200px, 25vh); overflow: auto; padding: 0 12px 12px; scrollbar-gutter: stable; }

@@ -47,7 +47,7 @@ export function AutomationSection({ initialDraft, onDirtyChange, onBusyChange }:
         {draft && <p className="automation-note" data-automation-draft>{t('automation.from.scope')}</p>}
         {snapshot.storage !== 'ready' && <p role="alert">{t('automation.unavailable')}</p>}
         <fieldset disabled={busy || snapshot.storage !== 'ready'}>
-          <div className="automation-actions"><Button variant="secondary" disabled={config.rules.length >= 100} onClick={() => update([...config.rules, { id: crypto.randomUUID(), version: 1, name: t('automation.newName'), enabled: false, event: 'added', conditions: {}, actions: { notify: true }, overrideExplicit: false }])}>{t('automation.add')}</Button></div>
+          <div className="automation-actions"><Button variant={config.rules.length ? 'secondary' : 'primary'} disabled={config.rules.length >= 100} onClick={() => update([...config.rules, { id: crypto.randomUUID(), version: 1, name: t('automation.newName'), enabled: false, event: 'added', conditions: {}, actions: { notify: true }, overrideExplicit: false }])}>{t('automation.add')}</Button></div>
           {config.rules.map((rule, index) => <details key={rule.id} className="automation-rule" data-rule-id={rule.id} open={config.rules.length === 1 ? true : undefined}>
             <summary><span>{index + 1}. {rule.name}</span><small>{t(rule.enabled ? 'automation.enabled' : 'automation.disabled')} · {t(`automation.event.${rule.event}`)}</small></summary>
             <div className="automation-grid">

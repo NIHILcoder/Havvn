@@ -108,7 +108,7 @@ if (!process.versions.electron) {
     await wait(`document.body.textContent.includes(translate('external.error.missing-player'))`); assert.equal(await run(`button('external.open').disabled`), true);
     fs.renameSync(vlc + '.saved', vlc); await run(`button('common.cancel').click()`); await wait(`!button('external.open')`);
     await run(`mount()`); await wait(`!button('external.open').disabled`);
-    await run(`button('external.default').click()`); await wait(`document.querySelector('.external-player-selected strong')?.textContent===translate('external.default')`);
+    await run(`button('external.useDefault').click()`); await wait(`document.querySelector('.external-player-selected strong')?.textContent===translate('external.default')`);
     systemError = 'No association'; await run(`button('external.open').click()`);
     await wait(`document.body.textContent.includes(translate('external.error.launch-failed'))`);
     assert.equal(await run(`externalLaunched`), 1); assert.equal(systemCalls.at(-1), disk);

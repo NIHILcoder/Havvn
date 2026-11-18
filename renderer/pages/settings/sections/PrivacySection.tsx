@@ -384,6 +384,16 @@ export const PrivacySection: React.FC = () => {
           {configState === 'failed' && <Button size="sm" onClick={() => { void loadConfig(); }}>{t('common.retry')}</Button>}
         </div>}
         <SettingRow
+          icon="zap"
+          label={t('privacy.preset.title')}
+          description={t('privacy.preset.desc')}
+          control={
+            <Button variant="primary" onClick={applyRecommended} loading={busyPreset} disabled={busyPreset || configState !== 'ready'}>
+              {t('privacy.preset.apply')}
+            </Button>
+          }
+        />
+        <SettingRow
           icon="refresh-cw"
           label={t('privacy.ephemeralId')}
           description={t('privacy.ephemeralId.desc')}
@@ -483,16 +493,6 @@ export const PrivacySection: React.FC = () => {
             ) : (
               <StatusPill tone="accent"><Icon name="alert-triangle" size={11} /> {t('privacy.unavailable')}</StatusPill>
             )
-          }
-        />
-        <SettingRow
-          icon="zap"
-          label={t('privacy.preset.title')}
-          description={t('privacy.preset.desc')}
-          control={
-            <Button variant="primary" onClick={applyRecommended} loading={busyPreset} disabled={busyPreset || configState !== 'ready'}>
-              {t('privacy.preset.apply')}
-            </Button>
           }
         />
         <div className="settings-notice-compact">

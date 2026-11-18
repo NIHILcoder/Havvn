@@ -1,5 +1,5 @@
 import { ErrorMessage } from '../../../components/ErrorMessage';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import type { AppSettings, RoomSummary } from '../../../../shared/types';
 import { DEFAULT_NOTIFICATION_POLICY, resolveNotificationPolicy, validateNotificationPolicy, type NotificationKind, type NotificationRule } from '../../../../shared/notification-policy';
 import { Button, Select, Toggle } from '../../../components';
@@ -12,6 +12,17 @@ import './NotificationPolicyPanel.css';
 
 export const NotificationPolicyPanel: React.FC<{ settings: AppSettings; onSaved(settings: AppSettings): void }> = ({ settings, onSaved }) => {
   const { t } = useTranslation(), categories = useCategories();
+  const previewId = useId();
+  const preview = useRef<HTMLDivElement>(null);
+  const openPreview = () => {
+    preview.current?.focus({ preventScroll: true });
+    preview.current?.scrollIntoView({ block: 'start', behavior: 'instant' });
+  };
+  const previewButton = (
+    <Button variant="secondary" aria-controls={previewId} onClick={openPreview}>
+      {t('notifications.openPreview')}
+    </Button>
+  );
   const [policy, setPolicy] = useState(() => structuredClone(settings.notificationPolicy ?? DEFAULT_NOTIFICATION_POLICY));
   const [rooms, setRooms] = useState<RoomSummary[]>([]), [roomsFailed, setRoomsFailed] = useState(false);
   const [scope, setScope] = useState('global'), [categoryId, setCategoryId] = useState(''), [roomId, setRoomId] = useState('');
@@ -74,7 +85,10 @@ export const NotificationPolicyPanel: React.FC<{ settings: AppSettings; onSaved(
           onChange={enabled => { setPolicy({ ...policy, summaries: { ...policy.summaries, enabled } }); dirty(); }} />} />
         <SettingRow label={t('notifications.window')} control={<NumberField ariaLabel={t('notifications.window')} value={policy.summaries.windowSeconds} min={2} max={30} unit={t('notifications.seconds')}
           onChange={windowSeconds => { setPolicy({ ...policy, summaries: { ...policy.summaries, windowSeconds } }); dirty(); }} />} />
-        <div className="category-defaults-actions"><Button variant="primary" disabled={!validPolicy} loading={busy} onClick={save}>{t('notifications.savePolicy')}</Button></div>
+        <div className="category-defaults-actions">
+          <Button variant="primary" disabled={!validPolicy} loading={busy} onClick={save}>{t('notifications.savePolicy')}</Button>
+          {previewButton}
+        </div>
         {policyDirty && <p role="status">{t('notifications.unsavedPolicy')}</p>}
       </fieldset>
     </SettingsCard>
@@ -94,26 +108,33 @@ export const NotificationPolicyPanel: React.FC<{ settings: AppSettings; onSaved(
         {scope !== 'global' && <>
           {(['popups', 'sound', 'showContent'] as const).map(key => <SettingRow key={key} label={t(`notifications.rule.${key}`)} control={<InheritedBooleanSelect label={t(`notifications.rule.${key}`)} value={rule[key]}
             onChange={value => { setRule({ ...rule, [key]: value }); dirty(); }} yes={t('common.yes')} no={t('common.no')} />} />)}
-          <div className="category-defaults-actions"><Button variant="primary" loading={busy} disabled={scope === 'category' ? !category : !room} onClick={saveRule}>{t('notifications.saveRule')}</Button>
-            <Button variant="secondary" onClick={() => { setRule({}); dirty(); }}>{t('notifications.resetRule')}</Button></div>
         </>}
+        <div className="category-defaults-actions">
+          {scope !== 'global' && <>
+            <Button variant="primary" loading={busy} disabled={scope === 'category' ? !category : !room} onClick={saveRule}>{t('notifications.saveRule')}</Button>
+            <Button variant="secondary" onClick={() => { setRule({}); dirty(); }}>{t('notifications.resetRule')}</Button>
+          </>}
+          {previewButton}
+        </div>
       </fieldset>
     </SettingsCard>
-    <SettingsCard title={t('notifications.previewTitle')} icon="eye" description={t('notifications.previewHint')}>
-      {scope !== 'room' && <SettingRow label={t('notifications.sample')} control={<Select ariaLabel={t('notifications.sample')} value={sample} onChange={value => setSample(value as NotificationKind)}
-        options={(['download-complete', 'download-error', 'rss', 'system'] as const).map(value => ({ value, label: t(`notifications.kind.${value}`) }))} />} />}
-      <p>{t('notifications.localTime')}: {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-      {decision ? <>
-        <p role="status" data-notification-popup={decision.popups} data-notification-sound={decision.sound} data-notification-content={decision.showContent}>
-          {t('notifications.rule.popups')}: {t(decision.popups ? 'common.yes' : 'common.no')} · {t('notifications.rule.sound')}: {t(decision.sound ? 'common.yes' : 'common.no')}
-          {decision.reason ? ` · ${t(`notifications.reason.${decision.reason}`)}` : ''}
-        </p>
-        <div className="notification-preview" aria-label={t('notifications.previewTitle')}>
-          <strong>{decision.showContent ? t(`notifications.kind.${kind}`) : 'Havvn'}</strong>
-          <p>{decision.showContent ? policy.summaries.enabled ? t('notifications.sampleSummary') : t('notifications.sampleBody') : t('notifications.privateBody')}</p>
-        </div>
-      </> : <p role="alert">{t('notifications.invalid')}</p>}
-    </SettingsCard>
+    <div ref={preview} id={previewId} tabIndex={-1} role="region" aria-label={t('notifications.previewTitle')}>
+      <SettingsCard title={t('notifications.previewTitle')} icon="eye" description={t('notifications.previewHint')}>
+        {scope !== 'room' && <SettingRow label={t('notifications.sample')} control={<Select ariaLabel={t('notifications.sample')} value={sample} onChange={value => setSample(value as NotificationKind)}
+          options={(['download-complete', 'download-error', 'rss', 'system'] as const).map(value => ({ value, label: t(`notifications.kind.${value}`) }))} />} />}
+        <p>{t('notifications.localTime')}: {now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+        {decision ? <>
+          <p role="status" data-notification-popup={decision.popups} data-notification-sound={decision.sound} data-notification-content={decision.showContent}>
+            {t('notifications.rule.popups')}: {t(decision.popups ? 'common.yes' : 'common.no')} · {t('notifications.rule.sound')}: {t(decision.sound ? 'common.yes' : 'common.no')}
+            {decision.reason ? ` · ${t(`notifications.reason.${decision.reason}`)}` : ''}
+          </p>
+          <div className="notification-preview">
+            <strong>{decision.showContent ? t(`notifications.kind.${kind}`) : 'Havvn'}</strong>
+            <p>{decision.showContent ? policy.summaries.enabled ? t('notifications.sampleSummary') : t('notifications.sampleBody') : t('notifications.privateBody')}</p>
+          </div>
+        </> : <p role="alert">{t('notifications.invalid')}</p>}
+      </SettingsCard>
+    </div>
     {error && <p role="alert"><ErrorMessage error={error} /></p>}{saved && <p role="status">{t(saved === 'policy' ? 'notifications.policySaved' : 'notifications.ruleSaved')}</p>}
   </>;
 };

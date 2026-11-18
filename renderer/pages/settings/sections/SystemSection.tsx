@@ -90,6 +90,45 @@ export const SystemSection: React.FC = () => {
     <>
       <ResourceModePanel />
       <StorageOverviewPanel />
+      <SettingsCard title={t('settings.grp.backup')} icon="archive">
+        {exportObservation.operation && <OperationStatus operation={exportObservation.operation} />}
+        {exportObservation.unavailable && <p role="status">{t('operation.observationUnavailable')}</p>}
+        <fieldset className="stg-transfer-sections" data-setting-label={t('settings.transfer.sections')} disabled={transferBusy}>
+          <legend>{t('settings.transfer.sections')}</legend>
+          <div className="stg-transfer-section-options">
+            {TRANSFER_SECTIONS.map(section => <label key={section}>
+              <input type="checkbox" checked={selectedTransferSections.includes(section)} onChange={event => {
+                const checked = event.currentTarget.checked;
+                setSelectedTransferSections(current => checked ? [...current, section] : current.filter(value => value !== section));
+              }} />
+              {t(`settings.transfer.section.${section}`)}
+            </label>)}
+          </div>
+        </fieldset>
+        <SettingRow
+          label={t('settings.exportSettings')}
+          description={t('settings.exportSettings.desc')}
+          control={
+            <Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || transferStatus.recoveryNeeded} onClick={handleExportSettings}>
+              {t('settings.export')}
+            </Button>
+          }
+        />
+        <SettingRow
+          label={t('settings.importSettings')}
+          description={t('settings.importSettings.desc')}
+          control={
+            <Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || transferStatus.recoveryNeeded} onClick={handleImportSettings}>
+              {t('settings.import')}
+            </Button>
+          }
+        />
+        <SettingRow label={t('settings.transfer.restore')} description={t('settings.transfer.restoreDesc')}
+          control={<Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || !transferStatus.backupAt || transferStatus.recoveryNeeded} onClick={handleRestoreSettings}>{t('settings.transfer.restore')}</Button>} />
+        {transferStatus.recoveryNeeded && <SettingRow label={t('settings.transfer.recoveryTitle')} description={t('settings.transfer.recoveryDesc')}
+          control={<Button variant="secondary" disabled={transferBusy} onClick={handleRecoverSettings}>{t('settings.transfer.recover')}</Button>} />}
+      </SettingsCard>
+
       <SettingsCard title={t('settings.grp.osIntegration')} icon="monitor">
         <SettingRow
           label={t('settings.defaultClient')}
@@ -168,45 +207,6 @@ export const SystemSection: React.FC = () => {
             </Button>
           }
         />
-      </SettingsCard>
-
-      <SettingsCard title={t('settings.grp.backup')} icon="archive">
-        {exportObservation.operation && <OperationStatus operation={exportObservation.operation} />}
-        {exportObservation.unavailable && <p role="status">{t('operation.observationUnavailable')}</p>}
-        <fieldset className="stg-transfer-sections" data-setting-label={t('settings.transfer.sections')} disabled={transferBusy}>
-          <legend>{t('settings.transfer.sections')}</legend>
-          <div className="stg-transfer-section-options">
-            {TRANSFER_SECTIONS.map(section => <label key={section}>
-              <input type="checkbox" checked={selectedTransferSections.includes(section)} onChange={event => {
-                const checked = event.currentTarget.checked;
-                setSelectedTransferSections(current => checked ? [...current, section] : current.filter(value => value !== section));
-              }} />
-              {t(`settings.transfer.section.${section}`)}
-            </label>)}
-          </div>
-        </fieldset>
-        <SettingRow
-          label={t('settings.exportSettings')}
-          description={t('settings.exportSettings.desc')}
-          control={
-            <Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || transferStatus.recoveryNeeded} onClick={handleExportSettings}>
-              {t('settings.export')}
-            </Button>
-          }
-        />
-        <SettingRow
-          label={t('settings.importSettings')}
-          description={t('settings.importSettings.desc')}
-          control={
-            <Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || transferStatus.recoveryNeeded} onClick={handleImportSettings}>
-              {t('settings.import')}
-            </Button>
-          }
-        />
-        <SettingRow label={t('settings.transfer.restore')} description={t('settings.transfer.restoreDesc')}
-          control={<Button variant="secondary" disabled={transferBusy || !selectedTransferSections.length || !transferStatus.backupAt || transferStatus.recoveryNeeded} onClick={handleRestoreSettings}>{t('settings.transfer.restore')}</Button>} />
-        {transferStatus.recoveryNeeded && <SettingRow label={t('settings.transfer.recoveryTitle')} description={t('settings.transfer.recoveryDesc')}
-          control={<Button variant="secondary" disabled={transferBusy} onClick={handleRecoverSettings}>{t('settings.transfer.recover')}</Button>} />}
       </SettingsCard>
     </>
   );

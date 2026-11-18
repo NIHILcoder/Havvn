@@ -9,7 +9,7 @@
 .device-invitation-qr .qr-code-container { min-width: 0; max-width: 100%; }
 .device-invitation-qr canvas { max-width: 100%; height: auto !important; }
 .devices-content .stg-card-ht,
-.devices-content .stg-card-ht h3 {
+.devices-content .stg-card-ht h2 {
   min-width: 0;
   overflow-wrap: anywhere;
 }

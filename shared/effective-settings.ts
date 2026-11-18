@@ -23,22 +23,58 @@ export interface EffectiveSettings {
 }
 export interface EffectiveSettingsSnapshot extends EffectiveSettings { applied: boolean }
 
+const validLimit = (value: number): number => Number.isFinite(value) && value > 0 ? value : 0;
+
 /** Zero is unlimited. A temporary policy can tighten a manual limit, never lift it. */
 export function resolveLimit(base: number, source: SettingSource, constraints: SpeedConstraint[]): EffectiveLimit {
-  const valid = (value: number): number => Number.isFinite(value) && value > 0 ? value : 0;
-  const active = constraints.filter(c => valid(c.value) > 0).map(c => ({ ...c, value: valid(c.value) }));
-  const candidates = [{ source, value: valid(base) }, ...active].filter(c => c.value > 0);
+  const active = constraints.filter(c => validLimit(c.value) > 0).map(c => ({ ...c, value: validLimit(c.value) }));
+  const candidates = [{ source, value: validLimit(base) }, ...active].filter(c => c.value > 0);
   const value = candidates.length ? Math.min(...candidates.map(c => c.value)) : 0;
-  return { base: valid(base), value, sources: candidates.length ? candidates.filter(c => c.value === value).map(c => c.source) : [source], constraints: active };
+  return { base: validLimit(base), value, sources: candidates.length ? candidates.filter(c => c.value === value).map(c => c.source) : [source], constraints: active };
+}
+
+const DAY_MINUTES = 24 * 60;
+const CLOCK_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const clockMinutes = (time: string): number => Number(time.slice(0, 2)) * 60 + Number(time.slice(3));
+
+function scheduleDayWindows(schedule: ScheduleEntry, day: number): Array<{ start: number; end: number }> {
+  if (!CLOCK_TIME.test(schedule.startTime) || !CLOCK_TIME.test(schedule.endTime)) return [];
+  const start = clockMinutes(schedule.startTime);
+  const end = clockMinutes(schedule.endTime);
+  if (start === end) return [];
+  if (start < end) return schedule.days.includes(day) ? [{ start, end }] : [];
+
+  const windows = [];
+  if (end > 0 && schedule.days.includes((day + 6) % 7)) windows.push({ start: 0, end });
+  if (schedule.days.includes(day)) windows.push({ start, end: DAY_MINUTES });
+  return windows;
 }
 
 /** Days identify the START of a window; after midnight belongs to yesterday's window. */
 export function scheduleMatches(schedule: ScheduleEntry, now: Date): boolean {
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(schedule.endTime)) return false;
-  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-  const day = now.getDay();
-  if (schedule.startTime <= schedule.endTime) return schedule.days.includes(day) && time >= schedule.startTime && time < schedule.endTime;
-  return time >= schedule.startTime ? schedule.days.includes(day) : time < schedule.endTime && schedule.days.includes((day + 6) % 7);
+  const minute = now.getHours() * 60 + now.getMinutes();
+  return scheduleDayWindows(schedule, now.getDay()).some(({ start, end }) => minute >= start && minute < end);
+}
+
+/** Disjoint windows for a weekday. Overlaps use the same smallest positive limit as the engine. */
+export function scheduleDayTimeline(schedules: readonly ScheduleEntry[], day: number) {
+  const windows = schedules.flatMap(schedule => scheduleDayWindows(schedule, day).map(window => ({
+    ...window, limit: validLimit(schedule.speedLimit ?? 0),
+  })));
+  const boundaries = [...new Set(windows.flatMap(({ start, end }) => [start, end]))].sort((a, b) => a - b);
+  const timeline: typeof windows = [];
+  for (let index = 1; index < boundaries.length; index++) {
+    const start = boundaries[index - 1];
+    const end = boundaries[index];
+    const active = windows.filter(window => window.start <= start && start < window.end);
+    if (!active.length) continue;
+    const limits = active.map(window => window.limit).filter(limit => limit > 0);
+    const limit = limits.length ? Math.min(...limits) : 0;
+    const previous = timeline[timeline.length - 1];
+    if (previous?.end === start && previous.limit === limit) previous.end = end;
+    else timeline.push({ start, end, limit });
+  }
+  return timeline;
 }
 
 export function resolveEffectiveSettings(base: SpeedBase, options: {

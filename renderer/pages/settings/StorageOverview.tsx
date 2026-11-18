@@ -75,7 +75,7 @@ export function StorageOverviewBody({ model, onCache }: { model: ReturnType<type
       {!report.uniqueReliable && <p role="status" className="storage-explanation">{t('storage.identityUncertain')}</p>}
       <div className="storage-groups">
         {report.groups.map(group => <section className="storage-group" key={group.kind} data-storage-kind={group.kind}>
-          <div className="storage-group-main"><h4>{t(`storage.kind.${group.kind}`)}</h4>
+          <div className="storage-group-main"><h3>{t(`storage.kind.${group.kind}`)}</h3>
             <p>{t('storage.logical')}: <strong>{group.logicalBytes === null ? t('storage.unknown') : `${group.issues.length ? '≈ ' : ''}${formatBytes(group.logicalBytes)}`}</strong></p>
             {group.sharedBytes > 0 && <p>{t('storage.shared').replace('{size}', formatBytes(group.sharedBytes))}</p>}
             {group.mixedData && <p>{t('storage.mixed')}</p>}

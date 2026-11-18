@@ -23,7 +23,7 @@ export const SettingsCard: React.FC<{
     <header className="stg-card-h">
       {icon && <span className="stg-card-ic"><Icon name={icon} size={16} /></span>}
       <div className="stg-card-ht">
-        <h3>{title}</h3>
+        <h2>{title}</h2>
         {description && <p>{description}</p>}
       </div>
     </header>

@@ -199,92 +199,7 @@ export const SharingSection: React.FC = () => {
         </div>
       </SettingsCard>
 
-      {/* ── TURN relay for share links ───────────────────────────────────── */}
-      <SettingsCard title={t('settings.card.turnRelay')} icon="server">
-        <SettingRow
-          label={t('settings.shareTurn')}
-          description={t('settings.shareTurn.desc')}
-          control={
-            <Toggle
-              checked={shareUseTurn}
-              onChange={() => applyToggle(!shareUseTurn, setShareUseTurn, { shareUseTurn: !shareUseTurn })}
-            />
-          }
-        />
-        <div className="settings-notice-compact">
-          <Icon name="info" size={14} />
-          <span>{t('settings.shareTurn.note')}</span>
-        </div>
-
-        {/* Optional user-supplied TURN relay (zero-cost ladder, last resort).
-            Three inputs + a button never fit the row's control column — this is
-            a stacked full-width block: label/description on top, fields below. */}
-        <div className="stg-sub">
-          <div className="stg-row-label">{t('settings.customTurn.title')}</div>
-          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTurn.note')}</p>
-          <div className="stg-fields">
-            <TextField
-              mono
-              value={turnUrl}
-              onChange={setTurnUrl}
-              placeholder="turn:relay.example.com:3478"
-            />
-            <TextField
-              value={turnUser}
-              onChange={setTurnUser}
-              placeholder={t('settings.customTurn.user')}
-            />
-            <input
-              className="stg-text"
-              type="password"
-              value={turnCred}
-              placeholder={t('settings.customTurn.pass')}
-              aria-label={t('settings.customTurn.pass')}
-              onChange={(e) => setTurnCred(e.target.value)}
-            />
-            <Button variant="secondary" size="sm" onClick={saveTurn} loading={turnSaving} icon={<Icon name="check" size={14} />}>
-              {t('common.save')}
-            </Button>
-          </div>
-        </div>
-
-        {/* Own rendezvous trackers. Same stacked full-width shape as the TURN
-            block. The live count matters here: invalid entries are dropped on
-            save, so without it a typo would look like it took effect while
-            rooms silently kept announcing to the public defaults. */}
-        <div className="stg-sub">
-          <div className="stg-row-label">{t('settings.customTrackers.title')}</div>
-          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTrackers.note')}</p>
-          <div className="stg-fields">
-            <TextField
-              mono
-              value={customTrackers}
-              onChange={setCustomTrackers}
-              placeholder="wss://tracker.example.com, wss://tracker2.example.com"
-            />
-            <Button variant="secondary" size="sm" onClick={saveCustomTrackers} loading={trackersSaving} icon={<Icon name="check" size={14} />}>
-              {t('common.save')}
-            </Button>
-          </div>
-          {hasOnlyInvalidTrackers(customTrackers) ? (
-            <div className="settings-notice-compact">
-              <Icon name="info" size={14} />
-              <span>{t('settings.customTrackers.invalid')}</span>
-            </div>
-          ) : parseTrackers(customTrackers).length > 0 ? (
-            <div className="settings-notice-compact">
-              <Icon name="info" size={14} />
-              <span>
-                {t('settings.customTrackers.count')
-                  .replace('{n}', String(parseTrackers(customTrackers).length))
-                  .replace('{max}', String(MAX_CUSTOM_TRACKERS))}
-              </span>
-            </div>
-          ) : null}
-        </div>
-      </SettingsCard>
-
-      {/* ── Room identity backup ─────────────────────────────────────────── */}
+      {/* ── Room traffic and identity ─────────────────────────────────────────── */}
       <SettingsCard title={t('settings.roomResources.title')} icon="download" description={t('settings.roomResources.scope')}>
         <SettingRow label={t('settings.roomResources.upload')} description={t('settings.roomResources.shared')}
           control={<NumberField value={resources.maxUpKbps} min={0} max={1000000} unit="KB/s" ariaLabel={t('settings.roomResources.upload')}
@@ -298,7 +213,7 @@ export const SharingSection: React.FC = () => {
         <SettingRow label={t('settings.roomResources.screen')} description={t('settings.roomResources.screenHint')}
           control={<NumberField value={resources.screenBitrateKbps} min={250} max={20000} step={250} unit="kbit/s" ariaLabel={t('settings.roomResources.screen')}
             onChange={value => setResources(prev => ({ ...prev, screenBitrateKbps: value }))} />} />
-        <div className="stg-sub"><Button variant="primary" size="sm" loading={resourceSaving} onClick={saveResources}>{t('common.save')}</Button></div>
+        <div className="stg-sub"><Button variant="primary" size="sm" loading={resourceSaving} onClick={saveResources}>{t('settings.roomResources.save')}</Button></div>
       </SettingsCard>
 
       {identityMode && <RoomBackupModal mode={identityMode} onClose={() => setIdentityMode(null)} onDone={rooms => setMessage({ type: 'success', text: t(rooms === undefined ? 'settings.roomIdentity.exported' : 'settings.roomIdentity.imported') })} />}
@@ -326,6 +241,94 @@ export const SharingSection: React.FC = () => {
         <div className="settings-notice-compact web-remote-warn">
           <Icon name="alert-triangle" size={14} />
           <span>{t('settings.roomIdentity.warn')}</span>
+        </div>
+      </SettingsCard>
+
+      {/* ── TURN relay for share links ───────────────────────────────────── */}
+      <SettingsCard title={t('settings.card.turnRelay')} icon="server">
+        <SettingRow
+          label={t('settings.shareTurn')}
+          description={t('settings.shareTurn.desc')}
+          control={
+            <Toggle
+              checked={shareUseTurn}
+              onChange={() => applyToggle(!shareUseTurn, setShareUseTurn, { shareUseTurn: !shareUseTurn })}
+            />
+          }
+        />
+        <div className="settings-notice-compact">
+          <Icon name="info" size={14} />
+          <span>{t('settings.shareTurn.note')}</span>
+        </div>
+
+        {/* Optional user-supplied TURN relay (zero-cost ladder, last resort).
+            Three inputs + a button never fit the row's control column — this is
+            a stacked full-width block: label/description on top, fields below. */}
+        <div className="stg-sub">
+          <div className="stg-row-label" data-setting-label={t('settings.customTurn.title')}>{t('settings.customTurn.title')}</div>
+          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTurn.note')}</p>
+          <div className="stg-fields">
+            <TextField
+              mono
+              value={turnUrl}
+              onChange={setTurnUrl}
+              placeholder="turn:relay.example.com:3478"
+              ariaLabel={t('settings.customTurn.url')}
+            />
+            <TextField
+              value={turnUser}
+              onChange={setTurnUser}
+              placeholder={t('settings.customTurn.user')}
+              ariaLabel={t('settings.customTurn.user')}
+            />
+            <input
+              className="stg-text"
+              type="password"
+              value={turnCred}
+              placeholder={t('settings.customTurn.pass')}
+              aria-label={t('settings.customTurn.pass')}
+              onChange={(e) => setTurnCred(e.target.value)}
+            />
+            <Button variant="secondary" size="sm" onClick={saveTurn} loading={turnSaving} icon={<Icon name="check" size={14} />}>
+              {t('settings.customTurn.save')}
+            </Button>
+          </div>
+        </div>
+
+        {/* Own rendezvous trackers. Same stacked full-width shape as the TURN
+            block. The live count matters here: invalid entries are dropped on
+            save, so without it a typo would look like it took effect while
+            rooms silently kept announcing to the public defaults. */}
+        <div className="stg-sub">
+          <div className="stg-row-label" data-setting-label={t('settings.customTrackers.title')}>{t('settings.customTrackers.title')}</div>
+          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTrackers.note')}</p>
+          <div className="stg-fields">
+            <TextField
+              mono
+              value={customTrackers}
+              onChange={setCustomTrackers}
+              placeholder="wss://tracker.example.com, wss://tracker2.example.com"
+              ariaLabel={t('settings.customTrackers.addresses')}
+            />
+            <Button variant="secondary" size="sm" onClick={saveCustomTrackers} loading={trackersSaving} icon={<Icon name="check" size={14} />}>
+              {t('settings.customTrackers.save')}
+            </Button>
+          </div>
+          {hasOnlyInvalidTrackers(customTrackers) ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>{t('settings.customTrackers.invalid')}</span>
+            </div>
+          ) : parseTrackers(customTrackers).length > 0 ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>
+                {t('settings.customTrackers.count')
+                  .replace('{n}', String(parseTrackers(customTrackers).length))
+                  .replace('{max}', String(MAX_CUSTOM_TRACKERS))}
+              </span>
+            </div>
+          ) : null}
         </div>
       </SettingsCard>
 

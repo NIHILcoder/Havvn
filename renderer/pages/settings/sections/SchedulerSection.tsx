@@ -6,38 +6,17 @@
  *
  * Day mapping: ScheduleEntry.days uses JS getDay() numbering (0=Sunday), which
  * is what the engine checks against. dayNames from context is Monday-first, so
- * chip index i maps to engine day (i + 1) % 7. (The old UI passed the chip
- * index straight through — off by one vs the engine — but since no schedule
- * ever had a speedLimit, nothing observable breaks by fixing it.)
+ * chip index i maps to engine day (i + 1) % 7.
  */
 import React, { useEffect, useState } from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, NumberField, StatusPill } from '../controls';
 import { Button, Icon, Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
-import { ScheduleEntry } from '../../../../shared/types';
-import { scheduleMatches } from '../../../../shared/effective-settings';
+import { scheduleDayTimeline, scheduleMatches } from '../../../../shared/effective-settings';
 
-/** "HH:MM" → minutes since midnight (bad input → 0, matching engine leniency). */
-const toMinutes = (hhmm: string): number => {
-  const [h, m] = (hhmm || '').split(':').map((n) => parseInt(n, 10));
-  return (Number.isFinite(h) ? h : 0) * 60 + (Number.isFinite(m) ? m : 0);
-};
-
-/**
- * Days identify the start of a window. Its morning segment belongs to the next day.
- */
-const segmentsFor = (s: ScheduleEntry, day: number): Array<[number, number]> => {
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(s.startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(s.endTime)) return [];
-  const a = toMinutes(s.startTime);
-  const b = toMinutes(s.endTime);
-  if (a === b) return [];
-  if (a < b) return s.days.includes(day) ? [[a, b]] : [];
-  const segments: Array<[number, number]> = [];
-  if (b > 0 && s.days.includes((day + 6) % 7)) segments.push([0, b]);
-  if (s.days.includes(day)) segments.push([a, 1440]);
-  return segments;
-};
+const showTime = (minute: number) =>
+  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
 export const SchedulerSection: React.FC = () => {
   const { t } = useTranslation();
@@ -61,45 +40,38 @@ export const SchedulerSection: React.FC = () => {
   }, []);
 
   const activeWindows = schedules.filter(s => scheduleMatches(s, now));
-  const limits = activeWindows.map(s => s.speedLimit ?? 0).filter(limit => limit > 0);
+  const limits = activeWindows.map(s => s.speedLimit ?? 0).filter(limit => Number.isFinite(limit) && limit > 0);
   const activeLimit = limits.length ? Math.min(...limits) : 0;
+  const limitLabel = (limit: number) => t('settings.sched.limitValue').replace('{limit}', String(limit));
 
   const renderStatusPill = () => {
     if (!activeWindows.length) return <StatusPill tone="muted">{t('settings.sched.idleNow')}</StatusPill>;
     if (activeLimit > 0) {
-      return <StatusPill tone="ok">{`${t('settings.sched.limitedNow')} · ${activeLimit} KB/s`}</StatusPill>;
+      return <StatusPill tone="ok">{`${t('settings.sched.limitedNow')} · ${limitLabel(activeLimit)}`}</StatusPill>;
     }
     return <StatusPill tone="accent">{t('settings.sched.windowNoLimit')}</StatusPill>;
   };
 
-  /** One horizontal mini-bar for a day: flex spacers + segments, no absolute pos. */
   const renderDayTrack = (engineDay: number) => {
-    // Gather every segment any schedule paints on this day, tagging no-op
-    // (limitless) windows so they render dimmed.
-    const segs = schedules
-      .flatMap((s) =>
-        segmentsFor(s, engineDay).map(([a, b]) => ({ a, b, noop: !(s.speedLimit && s.speedLimit > 0) })),
-      )
-      .sort((x, y) => x.a - y.a);
-
-    const parts: React.ReactNode[] = [];
-    let cursor = 0;
-    segs.forEach((seg, i) => {
-      const start = Math.max(seg.a, cursor); // clip overlaps instead of stacking
-      if (start >= seg.b) return;
-      if (start > cursor) {
-        parts.push(<span key={`sp${i}`} className="sched-week-sp" style={{ width: `${((start - cursor) / 1440) * 100}%` }} />);
-      }
-      parts.push(
-        <span
-          key={`sg${i}`}
-          className={`sched-week-seg${seg.noop ? ' noop' : ''}`}
-          style={{ width: `${((seg.b - start) / 1440) * 100}%` }}
-        />,
-      );
-      cursor = seg.b;
-    });
-    return <div className="sched-week-track">{parts}</div>;
+    const timeline = scheduleDayTimeline(schedules, engineDay);
+    return (
+      <div className="sched-week-track">
+        {timeline.map(({ start, end, limit }, index) => {
+          const gap = start - (timeline[index - 1]?.end ?? 0);
+          const label = `${showTime(start)}–${showTime(end)} · ${limit > 0 ? limitLabel(limit) : t('settings.sched.noEffect')}`;
+          return (
+            <span
+              key={start}
+              className={`sched-week-seg${limit === 0 ? ' noop' : ''}`}
+              style={{ marginInlineStart: `${gap / 14.4}%`, width: `${(end - start) / 14.4}%` }}
+              role="img"
+              aria-label={label}
+              title={label}
+            />
+          );
+        })}
+      </div>
+    );
   };
 
   return (
@@ -132,6 +104,37 @@ export const SchedulerSection: React.FC = () => {
 
       {schedulerEnabled && (
         <SettingsCard title={t('settings.card.schedules')} icon="calendar">
+          {schedules.length > 0 && (
+            <div className="stg-sub">
+              <div className="stg-row-label">
+                <Icon name="activity" size={15} />
+                <span>{t('settings.sched.week')}</span>
+              </div>
+              <div className="sched-week">
+                {dayNames.map((name, idx) => {
+                  const engineDay = (idx + 1) % 7;
+                  return (
+                    <div key={idx} className="sched-week-row">
+                      <span className={`sched-week-day${engineDay === now.getDay() ? ' today' : ''}`}>
+                        {name}
+                      </span>
+                      {renderDayTrack(engineDay)}
+                    </div>
+                  );
+                })}
+                <div className="sched-week-scale" aria-hidden="true">
+                  <span>00:00</span>
+                  <span>12:00</span>
+                  <span>24:00</span>
+                </div>
+                <div className="sched-week-legend">
+                  <span><i className="sched-week-seg" aria-hidden="true" />{t('settings.sched.limit')}</span>
+                  <span><i className="sched-week-seg noop" aria-hidden="true" />{t('settings.sched.noEffect')}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {schedules.length === 0 ? (
             <div className="empty-state-compact">
               <Icon name="calendar" size={24} />
@@ -220,33 +223,6 @@ export const SchedulerSection: React.FC = () => {
               {t('settings.add')}
             </Button>
           </div>
-
-          {schedules.length > 0 && (
-            <div className="stg-sub">
-              <div className="stg-row-label">
-                <Icon name="activity" size={15} />
-                <span>{t('settings.sched.week')}</span>
-              </div>
-              <div className="sched-week">
-                {dayNames.map((name, idx) => {
-                  const engineDay = (idx + 1) % 7;
-                  return (
-                    <div key={idx} className="sched-week-row">
-                      <span className={`sched-week-day${engineDay === now.getDay() ? ' today' : ''}`}>
-                        {name}
-                      </span>
-                      {renderDayTrack(engineDay)}
-                    </div>
-                  );
-                })}
-                <div className="sched-week-scale" aria-hidden="true">
-                  <span>00:00</span>
-                  <span>12:00</span>
-                  <span>24:00</span>
-                </div>
-              </div>
-            </div>
-          )}
 
           <div className="settings-notice-compact">
             <Icon name="info" size={14} />

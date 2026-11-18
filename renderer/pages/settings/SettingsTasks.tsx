@@ -12,7 +12,19 @@ const routes = { watch: ['general', 'connection', 'notifications'], download: ['
 export function SettingsTasks({ settings, locked, onNavigate }: { settings: AppSettings; locked: boolean; onNavigate(section: string): void }) {
   const { t } = useTranslation(), [task, setTask] = useState<Task | null>(null);
   return <section className="settings-tasks" aria-label={t('settings.tasks.title')}>
-    <h2>{t('settings.tasks.title')}</h2><div className="settings-task-grid">{tasks.map(id => <button type="button" key={id} aria-label={t(`settings.tasks.${id}`)} onClick={() => setTask(id)}><Icon name={id === 'watch' ? 'play' : id === 'download' ? 'download' : 'users'} size={20} /><span><strong>{t(`settings.tasks.${id}`)}</strong><small>{t(`settings.tasks.${id}Hint`)}</small></span><Icon name="chevron-right" size={15} /></button>)}</div>
+    <h2>{t('settings.tasks.title')}</h2>
+    <div className="settings-task-grid">
+      {tasks.map(id => (
+        <button type="button" key={id} onClick={() => setTask(id)}>
+          <Icon name={id === 'watch' ? 'play' : id === 'download' ? 'download' : 'users'} size={20} />
+          <span>
+            <strong>{t(`settings.tasks.${id}`)}</strong>
+            <small>{t(`settings.tasks.${id}Hint`)}</small>
+          </span>
+          <Icon name="chevron-right" size={15} />
+        </button>
+      ))}
+    </div>
     {task && <Modal title={t(`settings.tasks.${task}`)} icon="settings" size="lg" onClose={() => setTask(null)}>
       <p>{t(`settings.tasks.${task}Steps`)}</p><p className="settings-task-note">{t('settings.tasks.noImplicit')}</p>
       <div className="settings-task-routes">{routes[task].map(section => <Button key={section} variant="secondary" onClick={() => { setTask(null); onNavigate(section); }}>{t(`settings.${section}`)}</Button>)}</div>
