@@ -31,6 +31,7 @@ vi.mock('./host/db-bridge', () => ({
   updateDownloadProgress: vi.fn(async (id: string, fields: Partial<Download>) => { Object.assign(mocks.records[id], fields); }),
   updateDownloadsProgressBatch: vi.fn().mockResolvedValue(undefined),
 }));
+const tempParent = fs.realpathSync.native(os.tmpdir());
 const binary = path.resolve('vendor/transmission', process.platform === 'win32' ? 'win32-x64/transmission-daemon.exe' : 'linux-x64/transmission-daemon');
 const quiet = { dht: false, tracker: false, lsd: false, webSeeds: false, natUpnp: false, natPmp: false, utp: false };
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -48,7 +49,7 @@ const cases = (['webtorrent', 'native'] as const).flatMap(engine => [
 ]);
 
 it.skipIf(!fs.existsSync(binary))('native: deletes a dead magnet with no metadata without touching unrelated files', async () => {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-empty-magnet-removal-'));
+  const root = fs.mkdtempSync(path.join(tempParent, 'havvn-empty-magnet-removal-'));
   let sidecar: TransmissionSidecar | undefined, manager: NativeTorrentManager | undefined;
   try {
     mocks.records = {};
@@ -80,14 +81,14 @@ it.skipIf(!fs.existsSync(binary))('native: deletes a dead magnet with no metadat
     expect(fs.readFileSync(path.join(namedFolder, 'keep.bin'), 'utf8')).toBe('same display name does not establish ownership');
   } finally {
     await manager?.destroy(); await sidecar?.stop();
-    expect(path.dirname(root)).toBe(fs.realpathSync(os.tmpdir())); expect(path.basename(root)).toMatch(/^havvn-empty-magnet-removal-/);
+    expect(path.dirname(root)).toBe(tempParent); expect(path.basename(root)).toMatch(/^havvn-empty-magnet-removal-/);
     fs.rmSync(root, { recursive: true, force: true });
   }
 }, 30_000);
 
 for (const { engine, previous, seed } of cases) {
   it.skipIf(engine === 'native' && !fs.existsSync(binary))(`${engine}: undo ${previous}${seed ? ' from a custom seed directory' : ''} reuses verified files, original ID/options and retained metadata without a network download`, async () => {
-    const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-download-undo-'));
+    const root = fs.mkdtempSync(path.join(tempParent, 'havvn-download-undo-'));
     let client: WebTorrent | undefined, sidecar: TransmissionSidecar | undefined, native: NativeTorrentManager | undefined;
     try {
       mocks.records = {};
@@ -177,14 +178,14 @@ for (const { engine, previous, seed } of cases) {
     } finally {
       await native?.destroy(); await sidecar?.stop();
       if (client) await new Promise<void>(resolve => client!.destroy(() => resolve()));
-      expect(path.dirname(root)).toBe(fs.realpathSync(os.tmpdir())); expect(path.basename(root)).toMatch(/^havvn-download-undo-/);
+      expect(path.dirname(root)).toBe(tempParent); expect(path.basename(root)).toMatch(/^havvn-download-undo-/);
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 90_000);
 }
 
 it('does not create a directory, record or metadata copy when previous data disappeared', async () => {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-undo-missing-'));
+  const root = fs.mkdtempSync(path.join(tempParent, 'havvn-undo-missing-'));
   try {
     const d = { ...original('', root), sourceType: 'magnet' as const, sourceUri: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), totalSize: 0 };
     const snapshot = await captureRemovalSnapshot(d, null, []), insert = vi.fn();
@@ -192,13 +193,13 @@ it('does not create a directory, record or metadata copy when previous data disa
     await expect(persistRemovalSnapshot(snapshot, path.join(root, 'profile'), insert)).rejects.toMatchObject({ code: 'files-missing' });
     expect(insert).not.toHaveBeenCalled(); expect(fs.existsSync(path.join(root, 'profile'))).toBe(false);
   } finally {
-    expect(path.dirname(root)).toBe(fs.realpathSync(os.tmpdir())); expect(path.basename(root)).toMatch(/^havvn-undo-missing-/);
+    expect(path.dirname(root)).toBe(tempParent); expect(path.basename(root)).toMatch(/^havvn-undo-missing-/);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
 it('rejects corrupt metadata and cleans only its own new copy when the atomic insert fails', async () => {
-  const root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-undo-storage-'));
+  const root = fs.mkdtempSync(path.join(tempParent, 'havvn-undo-storage-'));
   try {
     const source = path.join(root, 'source.bin'); fs.writeFileSync(source, crypto.randomBytes(1024));
     const { default: createTorrent } = await import('create-torrent');
@@ -216,7 +217,7 @@ it('rejects corrupt metadata and cleans only its own new copy when the atomic in
     await expect(persistRemovalSnapshot({ ...snapshot, download: { ...snapshot.download, savePath: path.join(root, 'missing') } }, profile, insert)).rejects.toMatchObject({ code: 'directory-missing' });
     expect(fs.existsSync(path.join(root, 'missing'))).toBe(false);
   } finally {
-    expect(path.dirname(root)).toBe(fs.realpathSync(os.tmpdir())); expect(path.basename(root)).toMatch(/^havvn-undo-storage-/);
+    expect(path.dirname(root)).toBe(tempParent); expect(path.basename(root)).toMatch(/^havvn-undo-storage-/);
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
