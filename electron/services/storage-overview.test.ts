@@ -5,11 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { scanStorage, StorageOverviewController, type StorageRoot } from './storage-overview';
 import type { StorageKind, StorageReport } from '../../shared/storage-overview';
 
+const tempParent = fs.realpathSync.native(os.tmpdir());
 let base: string;
-beforeEach(() => { base = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-storage-census-')); });
+beforeEach(() => { base = fs.mkdtempSync(path.join(tempParent, 'havvn-storage-census-')); });
 afterEach(async () => {
   vi.restoreAllMocks(); const resolved = path.resolve(base);
-  if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('havvn-storage-census-')) throw Error('Unexpected fixture directory');
+  if (path.dirname(resolved) !== tempParent || !path.basename(resolved).startsWith('havvn-storage-census-')) throw Error('Unexpected fixture directory');
   await fs.promises.rm(resolved, { recursive: true, force: true });
 });
 const root = (candidate: string, kind: StorageKind, key?: string): StorageRoot => ({ path: candidate, kinds: [kind], key, locate: () => ({ kind }) });
