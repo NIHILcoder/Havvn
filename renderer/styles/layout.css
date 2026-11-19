@@ -40,6 +40,11 @@
 .titlebar-brand .logo-mark { display: block; }
 .titlebar-wm { opacity: 0.92; }
 .titlebar-drag { flex: 1; align-self: stretch; }
+.titlebar-actions { display: flex; align-items: center; gap: 2px; padding-right: 8px; -webkit-app-region: no-drag; }
+.titlebar-commands { display: grid; place-items: center; position: relative; width: 32px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--color-text-secondary); cursor: pointer; -webkit-app-region: no-drag; }
+.titlebar-commands:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+.titlebar-commands:focus-visible { outline: 1px solid var(--color-accent-primary); outline-offset: -2px; color: var(--color-text-primary); }
+.titlebar-event-dot { position: absolute; top: 5px; right: 5px; width: 5px; height: 5px; border-radius: 50%; background: var(--color-error); box-shadow: 0 0 0 2px var(--color-bg-secondary); pointer-events: none; }
 .titlebar-controls { display: flex; align-items: stretch; -webkit-app-region: no-drag; }
 .tb-ctrl {
   width: 46px; height: var(--titlebar-h);
@@ -622,6 +627,9 @@ body.te-resizing .app-container { transition: none; }
   background-color: var(--color-status-connected);
   box-shadow: 0 0 6px rgba(var(--color-success-rgb), 0.4);
 }
+.status-service-loading { background: var(--color-text-secondary); box-shadow: none; }
+.status-service-unavailable { background: var(--color-error); box-shadow: none; }
+.status-service-ready { background: var(--color-success); box-shadow: none; }
 
 .status-item-download {
   color: var(--color-status-download);

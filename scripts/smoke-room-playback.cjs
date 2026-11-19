@@ -60,6 +60,7 @@ if (!process.versions.electron) {
         const js=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
         new Function('require','module','exports',js)(s=>{if(s.endsWith('.css'))return{};
           if(s.includes('i18nContext'))return{useTranslation:()=>({t:translate,language:'ru'})};
+          if(s==='../../components')return Object.assign({},load(path.join(root,'renderer/components/Button.tsx')),load(path.join(root,'renderer/components/Icon.tsx')));
           if(s==='./Icon')return load(path.join(root,'renderer/components/Icon.tsx'));
           if(s.startsWith('.')){const q=path.resolve(path.dirname(p),s);for(const ext of ['.ts','.tsx'])if(fs.existsSync(q+ext))return load(q+ext);throw Error(q);}
           return require(path.join(root,'node_modules',s));},m,m.exports);return m.exports;}
@@ -72,8 +73,8 @@ if (!process.versions.electron) {
         action,position:12,rate:2,playing:true,together:true,emoji:'',sessionId:'a'.repeat(32),startedAt:sessionStarted,seq:++seq,at:Date.now(),...patch};
         for(const cb of subscribers)cb(ev);return ev;};
       var prefs=load(path.join(root,'renderer/utils/audioPrefs.ts'));
-      var deps={React,...React,...prefs,...load(path.join(root,'shared/room-playback.ts')),...load(path.join(root,'shared/room-watch-host.ts')),...load(path.join(root,'shared/media.ts')),
-        Hls:require(path.join(root,'node_modules/hls.js')),
+      var deps={React,...React,...prefs,...load(path.join(root,'shared/profile.ts')),...load(path.join(root,'shared/room-preflight.ts')),...load(path.join(root,'renderer/utils/useRoomPlaybackSender.ts')),...load(path.join(root,'renderer/pages/rooms/RoomActionHint.tsx')),...load(path.join(root,'renderer/components/ErrorMessage.tsx')),...load(path.join(root,'shared/room-playback.ts')),...load(path.join(root,'shared/room-watch-host.ts')),...load(path.join(root,'shared/media.ts')),
+        ...load(path.join(root,'renderer/pages/rooms/WatchReadyGate.tsx')),Hls:require(path.join(root,'node_modules/hls.js')),
         PlayerControls:load(path.join(root,'renderer/components/PlayerControls.tsx')).PlayerControls,
         Select:load(path.join(root,'renderer/components/Select.tsx')).Select,Button:load(path.join(root,'renderer/components/Button.tsx')).Button,cleanError:e=>String(e),
         Icon:load(path.join(root,'renderer/components/Icon.tsx')).default,Identicon:()=>null,AudioSettings:()=>null,WindowControls:()=>null,
@@ -85,7 +86,7 @@ if (!process.versions.electron) {
       var body=ts.transpileModule(playerSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
       var exports={};new Function('deps','exports','const {'+Object.keys(deps).join(',')+'}=deps;'+body)(deps,exports);
       var view=ReactDOM.createRoot(document.getElementById('root'));
-      var room={files,transfers:Object.fromEntries(files.map(f=>[f.fileId,{haveLocally:true}])),members:[]};
+      var room={files,transfers:Object.fromEntries(files.map(f=>[f.fileId,{haveLocally:true}])),members:[{memberId:'Z',name:'Self',isSelf:true,online:true,capabilities:['watch-v2','watch-host-v1']},{memberId:'A',name:'Peer',online:true,capabilities:['watch-v2','watch-host-v1']}]};
       window.renderPlayer=()=>view.render(React.createElement(exports.RoomPlayer,{room,roomId:'smoke',file:files[0],self:{memberId:'Z',name:'Self',avatarSeed:'Z'},initialTogether:true,onClose:()=>{},theater:false,onToggleTheater:()=>{}}));renderPlayer();
       void 0;
     `);
@@ -123,7 +124,7 @@ if (!process.versions.electron) {
     assert.equal(await run(`calls.filter(c=>c.action==='track').length`), 2);
     assert.equal(await run(`calls.filter(c=>['play','pause','seek','rate'].includes(c.action)).length`), 0);
     // Host selection and viewer readiness in the actual desktop player.
-    await run(`room={...room,canManage:true,members:[{memberId:'Z',name:'Self',isSelf:true,online:true,capabilities:['watch-host-v1']},{memberId:'A',name:'Peer',online:true,capabilities:['watch-host-v1']}]};renderPlayer();void 0`);
+    await run(`room={...room,canManage:true,members:[{memberId:'Z',name:'Self',isSelf:true,online:true,capabilities:['watch-v2','watch-host-v1']},{memberId:'A',name:'Peer',online:true,capabilities:['watch-v2','watch-host-v1']}]};renderPlayer();void 0`);
     await wait(`!!document.querySelector('.room-watch-host-choice .custom-select-trigger')`);
     await run(`document.querySelector('.room-watch-host-choice .custom-select-trigger').click();void 0`);
     await wait(`document.querySelector('.custom-select-dropdown')?.matches(':popover-open')`);

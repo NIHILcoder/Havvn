@@ -1,0 +1,27 @@
+/* Shared CodeMirror surface. Keep search, gutters and selection in the app theme. */
+.room-text-editor .cm-editor { height: 100%; background: var(--color-bg-primary); color: var(--color-text-primary); font-weight: 400; }
+.room-text-editor .cm-editor.cm-focused { outline: none; }
+.room-text-editor .cm-scroller { overflow: auto; font-family: var(--font-family-mono); line-height: 1.7; }
+.room-text-editor .cm-content { padding: 16px 16px 64px 8px; caret-color: var(--color-accent-primary); }
+.room-text-editor .cm-content:focus { outline: none; box-shadow: none; }
+.room-text-editor .cm-line { padding: 0 6px; }
+.room-text-editor .cm-gutters { background: var(--color-bg-primary); border-right: 1px solid var(--color-border-subtle); color: var(--color-text-tertiary); padding: 0 8px; font-size: 11px; }
+.room-text-editor .cm-activeLine, .room-text-editor .cm-activeLineGutter { background: var(--color-bg-hover); }
+.room-text-editor .cm-cursor { border-left-color: var(--color-text-primary); }
+.room-text-editor .cm-selectionBackground, .room-text-editor .cm-focused .cm-selectionBackground { background: color-mix(in srgb, var(--color-accent-primary) 25%, transparent); }
+.room-text-editor .cm-panels { background: var(--color-bg-secondary); border-color: var(--color-border-default); color: var(--color-text-primary); font: 12px/1.5 var(--font-family); }
+.room-text-editor .cm-search { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 10px 36px 10px 12px; }
+.room-text-editor .cm-search label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.room-text-editor .cm-panels input.cm-textfield { width: 160px; max-width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-primary); color: var(--color-text-primary); font: inherit; box-shadow: none; }
+.room-text-editor .cm-panels button.cm-button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: var(--color-bg-tertiary); color: var(--color-text-secondary); font: inherit; cursor: pointer; }
+.room-text-editor .cm-panels button:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-text-editor .cm-search button[name=close] { top: 6px; right: 6px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font: 18px/1 var(--font-family); cursor: pointer; }
+.room-text-editor .cm-search button[name=close]:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.room-text-editor .cm-panels input:focus { outline: none; box-shadow: none; border-color: var(--color-accent-primary); }
+.room-text-editor .cm-panels button:focus-visible { outline: 1px solid var(--color-accent-primary); outline-offset: 1px; box-shadow: none; }
+.room-text-editor .cm-panel input[type=checkbox] { accent-color: var(--color-accent-primary); }
+.room-text-editor .cm-searchMatch { background: var(--color-warning-bg); outline: 1px solid var(--color-warning); }
+.room-text-editor .cm-searchMatch-selected { background: var(--color-accent-bg); outline-color: var(--color-accent-primary); }
+.room-editor-mode { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; padding: 9px 12px; background: var(--color-bg-secondary); border-bottom: 1px solid var(--color-border-default); color: var(--color-text-secondary); font-size: 11px; line-height: 1.5; flex-shrink: 0; }
+.room-editor-mode strong { font-weight: 600; color: var(--color-text-primary); }
+.room-editor-mode span { overflow-wrap: anywhere; }

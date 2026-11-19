@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 import React, { useEffect, useState } from 'react';
 import type { SearchProvider } from '../../shared/types';
 import type { SearchNetworkSettings } from '../../shared/provider-network';
@@ -5,6 +6,7 @@ import { useTranslation } from '../utils/i18nContext';
 import { NumberInput } from './NumberInput';
 import { Select } from './Select';
 import './ProviderConnectionSettings.css';
+import { rutrackerBase } from '../../shared/rutracker';
 
 export function ProviderConnectionSettings({ provider, onConnectionChange }: { provider: SearchProvider; onConnectionChange?: () => void }) {
   const { t } = useTranslation();
@@ -46,6 +48,9 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
     setBusy(true); setMessage(''); setError('');
     try {
       if (profileId !== 'legacy') {
+        if (provider.type === 'rutracker') {
+          try { lines(mirrors).forEach(rutrackerBase); } catch { throw new Error(t('search.connection.invalidAddress')); }
+        }
         if (provider.type === 'script' && !lines(mirrors).length && !lines(origins).length) {
           throw new Error(t('search.connection.addressRequired'));
         }
@@ -106,7 +111,7 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
     <label className="connection-field">{t('search.connection.route')}
       <Select value={profileId} onChange={setProfileId} disabled={busy} ariaLabel={t('search.connection.route')}
         options={[
-          ...(['legacy', 'system', 'direct'] as const).map(value => ({ value, label: t(`search.connection.${value}`) })),
+          ...(['legacy', 'system', 'direct'] as const).filter(value => provider.type !== 'rutracker' || value !== 'legacy').map(value => ({ value, label: t(`search.connection.${value}`) })),
           ...settings.profiles.map(p => ({ value: p.id, label: p.name })),
           { value: 'new', label: t('search.connection.new') },
         ]} />
@@ -123,8 +128,8 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
       <p className="connection-hint">{t('search.connection.noAuth')}</p>
     </div>}
     {profileId !== 'legacy' && <label className="connection-field">{t('search.connection.mirrors')}
-      <textarea name="mirrors" className="form-input" disabled={busy} value={mirrors} onChange={e => setMirrors(e.target.value)} placeholder={provider.type === 'script' ? 'https://rutracker.org/forum' : 'https://mirror.example.org'} rows={3} />
-      <span className="connection-hint">{t(provider.type === 'script' ? 'search.connection.mirrorsHelp' : provider.type === 'custom' ? 'search.connection.customMirrorsHelp' : 'search.connection.apiMirrorsHelp')}</span>
+      <textarea name="mirrors" className="form-input" disabled={busy} value={mirrors} onChange={e => setMirrors(e.target.value)} placeholder={['script', 'rutracker'].includes(provider.type) ? 'https://rutracker.org/forum' : 'https://mirror.example.org'} rows={3} />
+      <span className="connection-hint">{t(['script', 'rutracker'].includes(provider.type) ? 'search.connection.mirrorsHelp' : provider.type === 'custom' ? 'search.connection.customMirrorsHelp' : 'search.connection.apiMirrorsHelp')}</span>
     </label>}
     {profileId !== 'legacy' && <details className="connection-advanced"><summary>{t('search.connection.advanced')}</summary><label className="connection-field">{t('search.connection.origins')}
       <textarea className="form-input" value={origins} onChange={e => setOrigins(e.target.value)} placeholder="https://example.org" rows={3} />
@@ -147,7 +152,7 @@ export function ProviderConnectionSettings({ provider, onConnectionChange }: { p
       </div>
     </div>}
     {message && <p className="connection-feedback success" role="status">{message}</p>}
-    {error && <p className="connection-feedback error" role="alert">{error}</p>}
+    {error && <p className="connection-feedback error" role="alert"><ErrorMessage error={error} /></p>}
     </fieldset>
   </details>;
 }

@@ -30,7 +30,8 @@ if (!process.versions.electron) {
       window.fileList=[{name:'A long video filename in a torrent with spaces and Cyrillic — серия 01.mkv',path:'Series/episode01.mkv',length:1024**3,priority:'normal'},{name:'Very long optional document.txt',path:'document.txt',length:1024,priority:'skip'}];
       window.trackerList=[{url:'https://tracker.example.org/a-very-long-path/announce',status:'connected',peers:8,lastAnnounce:Date.now()}];
       var read=async kind=>{calls.push(['read',kind]);if(fail===kind)throw Error('Test '+kind+' failure');if(replies[kind])return await new Promise(resolve=>{pending=resolve});return kind==='files'?structuredClone(fileList):kind==='trackers'?structuredClone(trackerList):kind==='peers'?[{address:'192.0.2.1:6881',client:'A long client name',country:'DE',connType:'tcp-out',progress:.5,downSpeed:1000000,upSpeed:10000,flagStr:'DU'}]:{pieceCount:100,haveCount:25,buckets:[1,0,.5]};};
-      window.api={historyPlayback:{files:()=>read('files')},getTrackers:()=>read('trackers'),getPeers:()=>read('peers'),getPieces:()=>read('pieces'),
+      window.fixtureEngine='native';
+      window.api={getEngineCapabilities:async()=>load(path.join(root,'shared/engine-capabilities.ts')).engineCapabilities(fixtureEngine),historyPlayback:{files:()=>read('files')},getTrackers:()=>read('trackers'),getPeers:()=>read('peers'),getPieces:()=>read('pieces'),
         setSequentialDownload:async(id,value)=>{calls.push(['sequential',id,value])},
         setSeedRatioLimit:async(id,value)=>{calls.push(['ratio',id,value])},
         setSeedTimeLimit:async(id,value)=>{calls.push(['time',id,value]);if(failTime){failTime=false;throw Error('Time limit failed')}},
@@ -52,6 +53,8 @@ if (!process.versions.electron) {
           return require(s.startsWith('node:')?s:path.join(root,'node_modules',s));
         },m,m.exports);return m.exports;
       }
+      var errorTranslations=load(path.join(root,'renderer/utils/error-messages.ts'));
+      for(var errorLanguage of ['ru','en'])errorTranslations.registerErrorTranslations(errorLanguage,JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/'+errorLanguage+'.json'),'utf8')));
       window.mount=(overrides={})=>{window.controlRoot=ReactDOM.createRoot(document.getElementById('root'));flush(()=>controlRoot.render(React.createElement(load(path.join(root,'renderer/components/TorrentControlModal.tsx')).default,{download:{id:'fixture',name:'Very long torrent name — фильм с кириллицей и пробелами',savePath:'D:/Downloads/Folder with a very long name',...overrides},onClose:()=>{closed++},onUpdate:()=>{updates++}})));};
       window.switchTab=id=>document.getElementById('tcm-tab-'+id).click();
       window.setNumber=(index,value)=>{const input=document.querySelectorAll('.tcm-input')[index];Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
@@ -121,7 +124,7 @@ if (!process.versions.electron) {
     for (const kind of ['files', 'trackers', 'peers', 'pieces']) {
       await run(`switchTab('download');fail=${JSON.stringify(kind)}`); await wait();
       await run(`switchTab(${JSON.stringify(kind)})`); await wait();
-      assert.ok((await run(`document.querySelector('.tcm-error').textContent`)).includes('failure'));
+      assert.equal(await run(`document.querySelector('.tcm-error').textContent.includes(load(path.join(root,'shared/user-errors.ts')).USER_ERRORS.unexpected[0])`), true);
       await run(`fail=null;document.querySelector('.tcm-error button').click()`); await wait();
       assert.equal(await run(`document.querySelector('.tcm-error')===null`), true);
     }
@@ -155,6 +158,13 @@ if (!process.versions.electron) {
     const ratioCalls = await run(`calls.filter(c=>c[0]==='ratio').length`);
     await run(`document.querySelector('.tcm-actions button').click()`); await wait();
     assert.equal(await run(`calls.filter(c=>c[0]==='ratio').length`), ratioCalls);
+    await run(`flush(()=>controlRoot.unmount())`);
+    await run(`fixtureEngine='webtorrent';mount();`); await wait();
+    assert.equal(await run(`document.querySelector('.tcm-field .btn').disabled`), true);
+    assert.equal(await run(`document.body.textContent.includes(dict['tcm.moveNativeOnly'])`), true);
+    await run(`flush(()=>controlRoot.unmount());fixtureEngine='native';mount({seedPaths:['D:/original/video.mkv']});`); await wait();
+    assert.equal(await run(`document.querySelector('.tcm-field .btn').disabled`), true);
+    assert.equal(await run(`document.body.textContent.includes(dict['tcm.moveSeedUnsupported'])`), true);
     await run(`flush(()=>controlRoot.unmount())`);
     console.log('Torrent controls passed: six tabs, 1000/620/400 px, dark/light/Aero, numeric validation, untouched limits, partial save retry, priorities, tracker double-submit, errors/retry, polling and keyboard. Screenshots:', out);
     clearTimeout(deadline); win.destroy(); app.exit(0);

@@ -35,6 +35,22 @@ function fixture() {
   const exe = (kind: 'vlc' | 'mpv') => { const p = path.join(root, kind + (process.platform === 'win32' ? '.exe' : '')); fs.writeFileSync(p, 'fixture'); fs.chmodSync(p, 0o700); return p; };
   return { root, name, disk, d, history, player, openPath, spawn, child, torrentStream, saveWatch, exe, setFiles: (f: TorrentFile[]) => { files = f; } };
 }
+it.each(['vlc', 'mpv'] as const)('keeps device playback protection for a possible VLC handoff but releases an owned mpv process (%s)', async kind => {
+  const f = fixture(); f.player.select(f.exe(kind));
+  try {
+    expect((await f.player.open('test', f.name)).ok).toBe(true);
+    expect(f.player.activeTargets()).toHaveLength(kind === 'vlc' ? 1 : 0);
+    f.player.close(); expect(f.player.activeTargets()).toEqual([]);
+  } finally { f.player.close(); f.history.close(); }
+});
+it('bounds unknown player tracking without preventing ordinary launches', async () => {
+  const f = fixture();
+  try {
+    for (let i = 0; i < 65; i++) expect((await f.player.open('test', f.name)).ok).toBe(true);
+    expect(f.player.activeTargets()).toEqual([{ downloadId: '*', path: '*' }]);
+    expect(f.openPath).toHaveBeenCalledTimes(65);
+  } finally { f.player.close(); f.history.close(); }
+});
 it('tracks the trusted torrent file through a private pipe, including seeks and completion, without altering downloads', async () => {
   const f = fixture(); f.player.select(f.exe('mpv'));
   const target = (await f.history.watchTarget('test', f.name))!, session = { key: watchKey(target), epoch: 1, revision: 2 };

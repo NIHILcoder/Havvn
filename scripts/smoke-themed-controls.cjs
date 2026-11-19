@@ -26,6 +26,8 @@ if (!process.versions.electron) {
       #root{height:100%;overflow:auto}#root.panels{padding:16px}*{animation:none!important;transition:none!important}
       </style><style id="page-style"></style><div id="root"></div></html>`);
     await win.loadFile(html);
+    win.webContents.debugger.attach('1.3');
+    await win.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
     const run = async code => { try { return await win.webContents.executeJavaScript(code); } catch (e) { console.error('UI step:', code.slice(0, 280)); throw e; } }, pause = ms => new Promise(r => setTimeout(r, ms));
     await run(`
       var root=${JSON.stringify(root)}, fs=require('node:fs'), path=require('node:path'), ts=require(path.join(root,'node_modules/typescript'));
@@ -33,7 +35,8 @@ if (!process.versions.electron) {
       var dict=JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/ru.json'),'utf8')), t=k=>dict[k]||k, cache={}, calls=[];
       var network={profiles:[{id:'office',name:'Основной прокси для поиска и подключения к провайдерам'}],access:{}}, busySave=false, finishSave;
       window.api={search:{getNetworkSettings:async()=>structuredClone(network),setNetworkAccess:async(id,access)=>{calls.push({kind:'access',id,access});if(busySave)await new Promise(r=>finishSave=r);network.access[id]=access;},saveNetworkProfile:async input=>{calls.push({kind:'proxy',...input});if(busySave)await new Promise(r=>finishSave=r);var p={id:'saved',...input};network.profiles.push(p);return p;},testProvider:async()=>({success:true}),getProviders:async()=>[],getDownloadHistory:async()=>[],start:async()=>({searchId:'fixture-search',providers:['Демо']}),onProgress:handler=>{window.searchProgress=handler;return()=>{};},checkPython:async()=>({found:false}),addProvider:async data=>calls.push({kind:'provider',...data})},
-        getEpisodePrefetchSupport:async()=>({supported:true}),stopEpisodePrefetch:async()=>{},getDefaultTrackers:async()=>[],onCreateTorrentProgress:()=>()=>{},getCategories:async()=>[],rss:{getFeeds:async()=>[],getItems:async()=>[],getRules:async()=>[],previewRule:async()=>[],addRule:async data=>calls.push({kind:'rule',...data}),addFeed:async data=>calls.push({kind:'feed',...data})}};
+        getEpisodePrefetchSupport:async()=>({supported:true}),getEngineCapabilities:async()=>require(path.join(root,"dist/electron/shared/engine-capabilities.js")).engineCapabilities("webtorrent"),stopEpisodePrefetch:async()=>{},getDefaultTrackers:async()=>[],onCreateTorrentProgress:()=>()=>{},getCategories:async()=>[],rss:{getFeeds:async()=>[],getItems:async()=>[],getRules:async()=>[],previewRule:async()=>[],addRule:async data=>calls.push({kind:'rule',...data}),addFeed:async data=>calls.push({kind:'feed',...data})}};
+      window.api.getSettings=async()=>({defaultDownloadDir:'D:/fixture-downloads',seedRatioLimit:0,seedTimeLimitMinutes:0});
       var downloads={downloads:[],byId:{}};
       function load(p){if(cache[p])return cache[p].exports;var m={exports:{}};cache[p]=m;
         var js=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
@@ -99,7 +102,11 @@ if (!process.versions.electron) {
     await run('busySave=false;finishSave()'); await pause(150); await run(`openSelect('search.connection.route')`); await capture('provider-route-menu');
     await run(`dom.flushSync(()=>trigger('search.connection.route').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));choose('search.connection.route','Основной прокси для поиска и подключения к провайдерам')`);
     win.setSize(320,760); await pause(120); await fits('provider connection'); await capture('provider-route-320'); win.setSize(960,820);
-    await mount('search'); await run(`inputValue(document.querySelector('.search-input'),'Movie');document.querySelector('.search-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`);await pause(120);await run(`searchProgress({searchId:'fixture-search',results:[{title:'Movie.2160p.HEVC',size:20000000000,seeds:100,leechers:10,provider:'Демо',magnetUri:'magnet:?xt=urn:btih:0123456789012345678901234567890123456789'}],done:true})`);await pause(120);await run(`document.querySelector('.release-filters').open=true;choose('search.media.codec','HEVC')`);
+    await mount('search');
+    await run(`document.querySelector('.search-input').focus()`);
+    assert.deepEqual(await run(`(()=>{const e=document.querySelector('.search-input'),s=getComputedStyle(e);return {focused:e.matches(':focus-visible'),outline:s.outlineStyle,shadow:s.boxShadow}})()`), { focused: true, outline: 'none', shadow: 'none' });
+    await capture('search-single-focus-border');
+    await run(`inputValue(document.querySelector('.search-input'),'Movie');document.querySelector('.search-form').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))`);await pause(120);await run(`searchProgress({searchId:'fixture-search',results:[{title:'Movie.2160p.HEVC',size:20000000000,seeds:100,leechers:10,provider:'Демо',magnetUri:'magnet:?xt=urn:btih:0123456789012345678901234567890123456789'}],done:true})`);await pause(120);await run(`document.querySelector('.release-filters').open=true;choose('search.media.codec','HEVC')`);
     assert.equal(await run(`JSON.parse(localStorage.getItem('havvn.search.releaseFilters.v1')||'null')?.codec`), 'HEVC');
     await pause(200); await run(`openSelect('search.media.resolution')`); await capture('search-filter-menu');
     assert.equal(await run(`trigger('search.media.resolution').getAttribute('aria-expanded')`), 'true');
@@ -123,7 +130,36 @@ if (!process.versions.electron) {
       assert.equal(await run('document.querySelector(".custom-select-dropdown").matches(":popover-open")'), true);
       await run(`dom.flushSync(()=>trigger('search.connection.protocol').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})))`);
     }
-    assert.equal(await run('document.querySelectorAll("select").length'), 0); assert.deepEqual(errors, []);
+    assert.equal(await run('document.querySelectorAll("select").length'), 0);
+    // Exercise the shared CSS against the actual inner-input/wrapper shapes.
+    const focusSheets = ['renderer/pages/DownloadsPage.css', 'renderer/pages/RSSPage.css', 'renderer/pages/RoomsPage.css',
+      'renderer/pages/settings/controls.css', 'renderer/pages/settings/SettingsNav.css', 'renderer/components/TorrentSearchModal.css',
+      'renderer/pages/rooms/RoomServerPanel.css', 'renderer/components/CommandPalette.css'];
+    await run(`mounted.unmount();document.querySelector('#page-style').textContent=${JSON.stringify(focusSheets.map(p => fs.readFileSync(path.join(root,p),'utf8')).join('\n'))};
+      document.querySelector('#root').innerHTML='<div class="panels" style="display:grid;gap:16px;padding:20px">'+
+      '<div class="modern-search-box"><input class="modern-search-input" placeholder="Downloads"></div>'+
+      '<div class="search-box"><input placeholder="Files"></div>'+
+      '<div class="items-search"><input class="items-search-input" placeholder="RSS"></div>'+
+      '<div class="room-chat-search"><input placeholder="Room chat"></div>'+
+      '<div class="room-file-search"><input placeholder="Room files"></div>'+
+      '<div class="tsm-input-wrap"><input class="tsm-input" placeholder="Torrent search"></div>'+
+      '<div class="stg-num"><span class="number-input"><input type="number" value="10"></span></div>'+
+      '<div class="server-console-prompt"><div class="server-console-input"><input placeholder="Console"></div></div>'+
+      '<input class="input" placeholder="Shared input"><input class="command-palette-input" placeholder="Command palette">'+
+      '<div class="stg-nav-search"><input placeholder="Settings search"></div><button id="focus-check-button">Keyboard focus</button></div>';void 0;`);
+    const focusSelectors = ['.modern-search-input', '.search-box input', '.items-search-input', '.room-chat-search input',
+      '.room-file-search input', '.tsm-input', '.stg-num input', '.server-console-input input', 'input.input', '.command-palette-input', '.stg-nav-search input'];
+    for (const selector of focusSelectors) {
+      const actual = await run(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});e.focus();const s=getComputedStyle(e);return {focused:e.matches(':focus-visible'),outline:s.outlineStyle,shadow:s.boxShadow}})()`);
+      assert.deepEqual(actual, { focused: true, outline: 'none', shadow: 'none' }, selector + ' has no additional inner focus frame');
+    }
+    await capture('single-focus-borders');
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{ name: 'forced-colors', value: 'active' }] });
+    assert.notEqual(await run(`getComputedStyle(document.querySelector('.stg-nav-search input')).outlineStyle`), 'none', 'system contrast mode retains its focus outline');
+    await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [] });
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Tab' }); win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Tab' }); await pause(80);
+    assert.equal(await run(`document.activeElement.id==='focus-check-button' && getComputedStyle(document.activeElement).outlineStyle!=='none'`), true, 'keyboard focus remains visible on buttons');
+    assert.deepEqual(errors, []);
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify({ calls: await run('calls'), errors, passed: true }, null, 2));
     console.log('Themed controls passed:', out); clearTimeout(deadline); win.destroy(); app.exit(0);
   }).catch(error => { console.error(error); console.error('Fixture output:', out); clearTimeout(deadline); app.exit(1); });

@@ -9,7 +9,7 @@
  *
  * The one real malicious-theme vector is a *value* that phones home or breaks
  * out — e.g. `background-image: url(https://evil/beacon)` reached through a
- * tokenized `var(--…)`. None of the 122 whitelisted tokens legitimately needs
+ * tokenized `var(--…)`. None of the whitelisted tokens legitimately needs
  * `url()`, `@import`, `expression()`, `var()`, `javascript:` or CSS-breakout
  * punctuation, so every value is run through a global blocklist and then a
  * per-category shape check. Anything that does not match is dropped.
@@ -55,7 +55,7 @@ export type ValidateResult =
   | { ok: false; errors: string[] };
 
 /* ------------------------------------------------------------------ *
- * Token whitelist — the exact 122 custom properties defined in the
+ * Token whitelist — the themeable custom properties defined in the
  * `:root` block of renderer/styles/variables.css. Grouped only for
  * readability; membership is what matters. Keep in sync if variables.css
  * grows a new token that themes should be allowed to override.
@@ -73,7 +73,7 @@ const TOKEN_NAMES: readonly string[] = [
   '--color-border-focus',
   // text
   '--color-text-primary', '--color-text-secondary', '--color-text-tertiary',
-  '--color-text-disabled',
+  '--color-text-disabled', '--color-text-on-accent',
   // accent
   '--color-accent-primary', '--color-accent-primary-hover', '--color-accent-bg',
   '--color-accent-secondary', '--color-accent-secondary-hover',
@@ -376,8 +376,8 @@ export const FONT_OPTIONS: readonly FontOption[] = [
 ];
 
 /* ------------------------------------------------------------------ *
- * Editable groups — the curated subset the live editor exposes. Not all
- * 122 tokens: spacing / z-index / layout / shadows are intentionally left
+ * Editable groups — the curated subset the live editor exposes. Most
+ * spacing / z-index / layout / shadow tokens are intentionally left
  * out of the GUI (still overridable by a hand-authored import).
  * Label keys resolve against the i18n dictionaries.
  * ------------------------------------------------------------------ */
@@ -402,6 +402,7 @@ export const EDITABLE_TOKENS: readonly EditableGroup[] = [
     { token: '--color-text-secondary', labelKey: 'settings.theme.token.textSecondary' },
     { token: '--color-text-tertiary', labelKey: 'settings.theme.token.textTertiary' },
     { token: '--color-text-disabled', labelKey: 'settings.theme.token.textDisabled' },
+    { token: '--color-text-on-accent', labelKey: 'settings.theme.token.textOnAccent' },
   ] },
   { id: 'accent', labelKey: 'settings.theme.group.accent', kind: 'accent', tokens: [
     { token: '--color-accent-primary', labelKey: 'settings.theme.token.accentPrimary' },

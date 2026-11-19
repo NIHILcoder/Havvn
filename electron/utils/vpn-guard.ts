@@ -83,6 +83,8 @@ export async function restartGuardFromConfig(): Promise<void> {
   const bindChanged = bind !== bindOn;
   killSwitchOn = killSwitch;
   bindOn = bind;
+  if (!killSwitch) getTorrentManager().setTransferBlock('vpn', false);
+  else if (killSwitchChanged) getTorrentManager().setTransferBlock('vpn', true);
   // Kill-switch turned OFF: the user opted out of protection, so un-freeze any
   // rooms the switch had suspended — otherwise they stay dark forever (the guard
   // that would revive them on VPN-restore is now gone). Idempotent: no-op if
@@ -161,13 +163,19 @@ async function tickKillSwitch(revision: number): Promise<void> {
     d => d.status === 'downloading' || d.status === 'queued' || d.status === 'seeding'
   );
 
-  const result = await detectVPN();
+  let result: { state: import('../../shared/vpn-status').VpnState; isVPNActive: boolean };
+  try { result = await detectVPN(); }
+  catch (error) {
+    log.error('VPN route check failed — treating route as unconfirmed', { error: String(error) });
+    result = { state: 'unknown', isVPNActive: false };
+  }
   // The kill-switch could have been disabled WHILE this tick awaited detectVPN()
   // (restartGuardFromConfig runs on a settings change and already resumed rooms +
   // reset the latches). A stale tick must not act on that reset state and
   // re-suspend rooms with no timer left to ever revive them.
   if (!killSwitchOn || revision !== generation) return;
   const vpnActive = result.isVPNActive;
+  manager.setTransferBlock('vpn', result.state !== 'routed' || !vpnActive);
 
   // Tunnel route missing or unconfirmed, with activity to protect.
   // Rooms seed over their OWN WebTorrent clients in a separate engine window, so

@@ -16,6 +16,7 @@ if (!process.versions.electron) {
     });
     const { concurrently } = await import('concurrently');
     const env = { ...process.env, NODE_ENV: 'development', HAVVN_ENGINE: 'webtorrent' };
+    if (process.argv.includes('--fail-first-load')) env.HAVVN_SMOKE_DEV_FIRST_LOAD = '1';
     delete env.ELECTRON_RUN_AS_NODE;
     const { result } = concurrently([
       { command: 'npm run dev:renderer', name: 'renderer', env },
@@ -25,7 +26,8 @@ if (!process.versions.electron) {
   })().catch(error => { console.error(error); process.exitCode = 1; });
 } else {
   const os = require('node:os');
-  const { app, ipcMain } = require('electron');
+  const { app, ipcMain, session } = require('electron');
+  let failedFirstLoad = false;
   const profileBase = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-dev-smoke-'));
   process.env.TH_INSTANCE = 'smoke';
   const profile = `${profileBase}-smoke`;
@@ -62,7 +64,8 @@ if (!process.versions.electron) {
       const downloads = await getTorrentManager().getDownloads();
       if (downloads.length !== 0) throw new Error('Temporary profile unexpectedly contains downloads');
       await getTorrentManager().destroy();
-      finish(null, { renderer, downloads: downloads.length, electron: process.versions.electron });
+      if (process.env.HAVVN_SMOKE_DEV_FIRST_LOAD === '1' && !failedFirstLoad) throw new Error('Development load failure was not injected');
+      finish(null, { renderer, downloads: downloads.length, electron: process.versions.electron, recoveredFromLoadFailure: failedFirstLoad });
     } catch (error) { finish(error); }
   });
   (async () => {
@@ -77,6 +80,15 @@ if (!process.versions.electron) {
       await new Promise(resolve => setTimeout(resolve, 250));
     }
     if (!ready) throw new Error('Webpack dev server did not become ready');
+    if (process.env.HAVVN_SMOKE_DEV_FIRST_LOAD === '1') {
+      session.defaultSession.protocol.handle('http', request => {
+        if (!failedFirstLoad && request.url === 'http://127.0.0.1:3000/') {
+          failedFirstLoad = true;
+          return Response.error();
+        }
+        return session.defaultSession.fetch(request, { bypassCustomProtocolHandlers: true });
+      });
+    }
     require(path.join(root, 'dist/electron/electron/app-instance.js'));
     const db = require(path.join(root, 'dist/electron/electron/db/store.js'));
     await db.updateSettings({

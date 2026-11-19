@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <linearGradient id="sky" x2="100%" y2="100%"><stop stop-color="#211A16"/><stop offset="1" stop-color="#66482F"/></linearGradient>
+
+  </defs>
+  <path fill="url(#sky)" d="M0 0h1600v1000H0z"/>
+  <g stroke="#D0AA70">
+    <circle cx="1190" cy="415" r="220" stroke-width="2" opacity=".35"/>
+    <circle cx="1190" cy="415" r="192" stroke-width="5" opacity=".7"/>
+    <circle cx="1190" cy="415" r="171" stroke-width="1" opacity=".45"/>
+    <path transform="translate(1190 415) rotate(0)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(30)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(60)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(90)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(120)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(150)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(180)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(210)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(240)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(270)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(300)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path transform="translate(1190 415) rotate(330)" d="M0-150v17" stroke-width="3" opacity=".8"/>
+    <path d="M1190 415V305m0 110 83 48" stroke-width="5"/>
+    <circle cx="1190" cy="415" r="8" fill="#D0AA70"/>
+    <circle cx="926" cy="706" r="89" stroke-width="3" opacity=".45"/>
+    <circle cx="926" cy="706" r="65" stroke-width="1" opacity=".4"/>
+    <circle cx="926" cy="706" r="18" stroke-width="3" opacity=".6"/>
+    <path d="M926 641v47m0 36v47m-65-65h47m36 0h47" stroke-width="3" opacity=".45"/>
+  </g>
+  <g stroke="#C5985F" stroke-width="4" opacity=".32"><path d="M1515 0v720a75 75 0 0 1-75 75H755a55 55 0 0 0-55 55v150"/><path d="M1540 0v720a100 100 0 0 1-100 100H770a45 45 0 0 0-45 45v135"/></g>
+  <path d="M0 915h1600" stroke="#D0AA70" stroke-opacity=".18" stroke-width="2"/>
+</svg>

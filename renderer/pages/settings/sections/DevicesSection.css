@@ -1,0 +1,112 @@
+.devices-content {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+.device-invitation-card, .device-exchange-summary { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--color-border-default); min-width: 0; }
+.device-invitation-qr { display: grid; justify-items: center; gap: 12px; min-width: 0; }
+.device-invitation-qr .qr-code-container { min-width: 0; max-width: 100%; }
+.device-invitation-qr canvas { max-width: 100%; height: auto !important; }
+.devices-content .stg-card-ht,
+.devices-content .stg-card-ht h2 {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.devices-content p {
+  margin: 0;
+  line-height: 1.65;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.devices-content label {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  line-height: 1.5;
+}
+.device-fingerprint {
+  display: block;
+  padding: 14px 16px;
+  margin: 8px 0 18px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.9;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  user-select: all;
+  white-space: normal;
+}
+.device-status {
+  padding: 14px 0;
+  font-weight: 600;
+}
+.device-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 18px 0 20px;
+  border-top: 1px solid var(--color-border-default);
+}
+.device-actions .btn {
+  max-width: 100%;
+  height: auto;
+  min-height: 38px;
+  white-space: normal;
+  text-align: center;
+}
+.device-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(110px, 1fr);
+  gap: 18px;
+  margin: 18px 0;
+}
+.device-invitation {
+  width: 100%;
+  min-height: 104px;
+  resize: vertical;
+  line-height: 1.6;
+  padding: 12px 14px;
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  box-sizing: border-box;
+}
+.device-variant {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--color-border-default);
+}
+.devices-content pre {
+  padding: 14px 16px;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 280px;
+  overflow: auto;
+  background: var(--color-bg-tertiary);
+  border-radius: 8px;
+  line-height: 1.7;
+}
+.devices-content .device-warning {
+  color: var(--color-warning, var(--color-text-primary));
+}
+.devices-content details {
+  padding: 14px 0;
+  line-height: 1.7;
+}
+@media (max-width: 650px) {
+  .device-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .device-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

@@ -4,7 +4,7 @@
  * purely client-side: applied to <html> immediately and persisted in
  * localStorage; App.tsx re-applies them on boot.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow } from '../controls';
 import { Select, ThemeSelector, Toggle, Button, Icon } from '../../../components';
@@ -17,6 +17,10 @@ import {
 } from '../../../utils/theme-prefs';
 import { FONT_OPTIONS } from '../../../../shared/theme';
 import { AppearancePanel } from './AppearancePanel';
+import { NavigationPanel } from './NavigationPanel';
+import { WORKING_PROFILE_EVENT } from '../../../utils/working-profiles';
+import { WorkingProfilesPanel } from './WorkingProfilesPanel';
+import type { Command } from '../../../commands/registry';
 
 const SCALE_OPTIONS = [90, 100, 110, 125] as const;
 
@@ -25,7 +29,7 @@ const readPref = (key: string): string | null => {
   try { return localStorage.getItem(key); } catch { return null; }
 };
 const writePref = (key: string, value: string): void => {
-  try { localStorage.setItem(key, value); } catch { /* cosmetic */ }
+  try { localStorage.setItem(key, value); window.dispatchEvent(new Event('havvn:device-local')); } catch { /* cosmetic */ }
 };
 
 const readScale = (): number => {
@@ -33,7 +37,7 @@ const readScale = (): number => {
   return (SCALE_OPTIONS as readonly number[]).includes(v) ? v : 100;
 };
 
-export const InterfaceSection: React.FC = () => {
+export const InterfaceSection: React.FC<{ getCommands?: () => readonly Command[] }> = ({ getCommands }) => {
   const ctx = useSettings();
   const { t, language, setLanguage } = useTranslation();
 
@@ -46,6 +50,17 @@ export const InterfaceSection: React.FC = () => {
   const [accentOn, setAccentOn] = useState<boolean>(hasAccentOverride);
   const [fontId, setFontId] = useState<string>(currentFontId);
   const { openEditor, open: themeEditorOpen } = useThemeEditor();
+  useEffect(() => {
+    const sync = () => {
+      setUiScale(readScale()); setSpeedUnitsState(getSpeedUnits());
+      setStartPage(readPref('startPage') === 'rooms' ? 'rooms' : 'downloads');
+      setCompact(readPref('density') === 'compact'); setReduceMotion(readPref('reduceMotion') === '1');
+      setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
+    };
+    window.addEventListener(WORKING_PROFILE_EVENT, sync);
+    window.addEventListener('storage', sync);
+    return () => { window.removeEventListener(WORKING_PROFILE_EVENT, sync); window.removeEventListener('storage', sync); };
+  }, []);
 
   const applyScale = (scale: number) => {
     setUiScale(scale);
@@ -99,6 +114,25 @@ export const InterfaceSection: React.FC = () => {
   return (
     <>
       <SettingsCard title={t('settings.iface.appearance')} icon="sun">
+        <SettingRow
+          label={t('settings.iface.scale')}
+          description={t('settings.iface.scale.desc')}
+          control={
+            <div className="iface-seg" role="group" aria-label={t('settings.iface.scale')}>
+              {SCALE_OPTIONS.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className={uiScale === s ? 'active' : ''}
+                  aria-pressed={uiScale === s}
+                  onClick={() => applyScale(s)}
+                >
+                  {s}%
+                </button>
+              ))}
+            </div>
+          }
+        />
         <SettingRow
           label={t('settings.theme')}
           description={t('settings.theme.desc')}
@@ -165,31 +199,7 @@ export const InterfaceSection: React.FC = () => {
         />
       </SettingsCard>
 
-      <AppearancePanel profilesLocked={themeEditorOpen} onProfileApplied={mode => {
-        ctx.handleThemeChange(mode);
-        setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
-        setReduceMotion(readPref('reduceMotion') === '1'); setCompact(readPref('density') === 'compact');
-      }} />
       <SettingsCard title={t('settings.iface.behavior')} icon="monitor">
-        <SettingRow
-          label={t('settings.iface.scale')}
-          description={t('settings.iface.scale.desc')}
-          control={
-            <div className="iface-seg" role="group" aria-label={t('settings.iface.scale')}>
-              {SCALE_OPTIONS.map((s) => (
-                <button
-                  key={s}
-                  type="button"
-                  className={uiScale === s ? 'active' : ''}
-                  aria-pressed={uiScale === s}
-                  onClick={() => applyScale(s)}
-                >
-                  {s}%
-                </button>
-              ))}
-            </div>
-          }
-        />
         <SettingRow
           label={t('settings.iface.reduceMotion')}
           description={t('settings.iface.reduceMotion.desc')}
@@ -247,6 +257,18 @@ export const InterfaceSection: React.FC = () => {
             </div>
           }
         />
+      </SettingsCard>
+      <AppearancePanel profilesLocked={themeEditorOpen} onProfileApplied={mode => {
+        ctx.handleThemeChange(mode);
+        setAccent(currentAccent()); setAccentOn(hasAccentOverride()); setFontId(currentFontId());
+        setReduceMotion(readPref('reduceMotion') === '1'); setCompact(readPref('density') === 'compact');
+      }} />
+      {ctx.settings && <SettingsCard title={t('working.title')} icon="layers" description={t('working.description')}>
+        <WorkingProfilesPanel settings={ctx.settings} locked={themeEditorOpen || ctx.hasChanges || ctx.transferBusy || ctx.saving || ctx.transferStatus.recoveryNeeded}
+          lockReason={ctx.transferStatus.recoveryNeeded ? t('settings.transfer.recoveryDesc') : undefined} />
+      </SettingsCard>}
+      <SettingsCard title={t('navigation.title')} icon="sliders" description={t('navigation.description')}>
+        <NavigationPanel getCommands={getCommands} />
       </SettingsCard>
     </>
   );

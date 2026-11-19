@@ -19,6 +19,7 @@ import { chatCanonical, chatContextCanonical, editCanonical, voiceStateCanonical
 import { decrypt } from './room-crypto';
 import { GuestRoom } from '../../guest/mesh';
 import { generateIdentityWeb } from '../../shared/room-web-crypto';
+import { defaultRoomName } from '../../shared/profile';
 vi.mock('../../guest/voice', () => ({ GuestVoice: class { participants() { return []; } reannounce() {} leave() {} } }));
 
 // Stable Ed25519 identity per simulated member — a member's key is persistent
@@ -762,4 +763,56 @@ describe('desktop and browser authority convergence', () => {
     expect((await cmd(A, { type: 'snapshot', roomId: ROOM_ID })).voice.participants).toEqual([]);
     await cmd(A, { type: 'leave', roomId: ROOM_ID });
   }, 20000);
+});
+
+it('advertises stable names for blank profiles to peers, chat and files, and updates them live', async () => {
+  const A = await makeEngine(), B = await makeEngine();
+  const roomId = 'room-public-names';
+  const payload = (label: string, folder: string) => {
+    const message = joinPayload(label, folder);
+    message.payload.roomId = roomId; message.payload.ownerId = idFor('UnnamedA'); message.payload.self.name = '';
+    return message;
+  };
+  const first = payload('UnnamedA', path.join(dir, 'unnamed-a')), second = payload('UnnamedB', path.join(dir, 'unnamed-b'));
+  fs.mkdirSync(first.payload.folder, { recursive: true }); fs.mkdirSync(second.payload.folder, { recursive: true });
+  try {
+    const own = await cmd(A, first); await cmd(B, second);
+    expect(own.members.find((member: any) => member.isSelf).name).toBe(defaultRoomName(idFor('UnnamedA')));
+    A.tracker = H.trackers.at(-2); B.tracker = H.trackers.at(-1); connect(A, B); await flush();
+    let remote = await cmd(B, second);
+    expect(remote.members.find((member: any) => member.memberId === idFor('UnnamedA')).name).toBe(defaultRoomName(idFor('UnnamedA')));
+    await cmd(A, { type: 'chat', roomId, payload: { text: 'Public nickname' } }); await flush();
+    remote = await cmd(B, second);
+    expect(remote.chat.find((message: any) => message.text === 'Public nickname').name).toBe(defaultRoomName(idFor('UnnamedA')));
+    const files = await cmd(A, { type: 'addFiles', roomId, paths: [sourceFile] });
+    expect(files.files[0].addedByName).toBe(defaultRoomName(idFor('UnnamedA')));
+    await cmd(A, { type: 'profile', payload: { name: 'Алиса' } }); await flush();
+    remote = await cmd(B, second);
+    expect(remote.members.find((member: any) => member.memberId === idFor('UnnamedA')).name).toBe('Алиса');
+    await cmd(A, { type: 'profile', payload: { name: ' ' } }); await flush();
+    remote = await cmd(B, second);
+    expect(remote.members.find((member: any) => member.memberId === idFor('UnnamedA')).name).toBe(defaultRoomName(idFor('UnnamedA')));
+  } finally { await cmd(A, { type: 'leave', roomId }); await cmd(B, { type: 'leave', roomId }); }
+});
+
+it('confirms watch requests only after sending to a peer and reports disconnected or failing channels', async () => {
+  const A = await makeEngine(), B = await makeEngine(), roomId = 'watch-request-receipt';
+  const first = joinPayload('A', path.join(dir, 'receipt-a')), second = joinPayload('B', path.join(dir, 'receipt-b'));
+  first.payload.roomId = roomId; second.payload.roomId = roomId;
+  fs.mkdirSync(first.payload.folder, { recursive: true }); fs.mkdirSync(second.payload.folder, { recursive: true });
+  try {
+    await cmd(A, first); await cmd(B, second);
+    A.tracker = H.trackers.at(-2); B.tracker = H.trackers.at(-1); const [, followerWire] = connect(A, B); await flush();
+    const shared = await cmd(A, { type: 'addFiles', roomId, paths: [sourceFile] }); await flush();
+    await cmd(A, { type: 'watchPolicy', roomId, hostId: idFor('A') }); await flush();
+    const input = { type: 'sync', roomId, payload: { action: 'request', requested: 'play', fileId: shared.files[0].fileId,
+      position: 0, rate: 1, playing: true, together: true, readiness: 'ready' } };
+    await expect(cmd(B, input)).resolves.toEqual({ ok: true }); await flush();
+    expect(A.sent.some(message => message.channel === 'room-sync' && message.payload.action === 'request')).toBe(true);
+    const send = followerWire.send;
+    followerWire.send = () => { throw Error('channel closed'); };
+    await expect(cmd(B, input)).rejects.toThrow(/No connected peers/);
+    followerWire.send = send; followerWire.connected = false;
+    await expect(cmd(B, input)).rejects.toThrow(/No connected peers/);
+  } finally { await cmd(A, { type: 'leave', roomId }); await cmd(B, { type: 'leave', roomId }); }
 });

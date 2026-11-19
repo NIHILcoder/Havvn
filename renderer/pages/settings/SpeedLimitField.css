@@ -1,0 +1,4 @@
+.speed-limit-field { display: grid; gap: 5px; min-width: 0; max-width: 100%; }
+.speed-limit-field-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.speed-limit-field-controls > .btn { min-height: 34px; white-space: nowrap; }
+.speed-limit-field-hint { color: var(--color-text-secondary); font-size: 11px; line-height: 1.4; }

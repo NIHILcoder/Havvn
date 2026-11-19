@@ -1,0 +1,5 @@
+.recovery-error { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.recovery-error-object { display: block; margin-bottom: 8px; }
+.recovery-error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.recovery-error > p { margin: 8px 0 0; font-size: 12px; }
+.recovery-error-actions > .btn { min-height: 32px; }

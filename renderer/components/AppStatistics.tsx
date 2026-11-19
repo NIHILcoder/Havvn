@@ -9,7 +9,8 @@ interface AppStatisticsProps {
   totalDownloaded: string;
   cacheSize: string;
   diskUsage: string;
-  uptime: string;
+  activeDownloads: number;
+  completedDownloads: number;
 }
 
 // Split a formatted stat ("14.9 GB", "7", "0 B") into an animatable number and
@@ -72,9 +73,12 @@ export const AppStatistics: React.FC<AppStatisticsProps> = ({
   totalDownloaded,
   cacheSize,
   diskUsage,
-  uptime,
+  activeDownloads,
+  completedDownloads,
 }) => {
   const { t } = useTranslation();
+  const active = t('settings.stats.active').replace('{count}', String(activeDownloads));
+  const completed = t('settings.stats.done').replace('{count}', String(completedDownloads));
 
   const stats: StatDef[] = [
     { key: 'total', icon: 'download', label: t('stats.totalDownloads'), value: totalDownloads ?? 0 },
@@ -82,7 +86,10 @@ export const AppStatistics: React.FC<AppStatisticsProps> = ({
     { key: 'up', icon: 'arrow-up', label: t('stats.uploaded'), value: totalUploaded },
     { key: 'cache', icon: 'database', label: t('stats.cache'), value: cacheSize },
     { key: 'disk', icon: 'hard-drive', label: t('stats.diskUsage'), value: diskUsage },
-    { key: 'uptime', icon: 'clock', label: t('stats.uptime'), value: uptime },
+    {
+      key: 'status', icon: 'activity', label: t('stats.downloadStatus'),
+      value: `${active} · ${completed}`,
+    },
   ];
 
   return (
@@ -93,8 +100,8 @@ export const AppStatistics: React.FC<AppStatisticsProps> = ({
             <Icon name={s.icon} size={13} />
             <span className="app-stat-label" title={s.label}>{s.label}</span>
           </div>
-          <div className="app-stat-value" title={s.value !== undefined ? String(s.value) : undefined}>
-            <StatValue value={s.value} />
+          <div className={`app-stat-value${s.key === 'status' ? ' app-stat-value--status' : ''}`} title={s.value !== undefined ? String(s.value) : undefined}>
+            {s.key === 'status' ? s.value : <StatValue value={s.value} />}
           </div>
         </div>
       ))}

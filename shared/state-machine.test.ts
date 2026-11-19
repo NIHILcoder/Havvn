@@ -29,6 +29,7 @@ describe('state-machine transitions', () => {
       expect(isValidTransition(s, 'removed')).toBe(true);
     }
     expect(isValidTransition('downloading', 'error')).toBe(true);
+    expect(isValidTransition('completed', 'error')).toBe(true);
     expect(isValidTransition('removed', 'error')).toBe(false);
   });
 });

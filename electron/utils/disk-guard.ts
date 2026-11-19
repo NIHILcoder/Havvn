@@ -12,17 +12,22 @@
  * Enabled via AppSettings.diskGuardEnabled / diskGuardMinFreeMB.
  */
 
-import { BrowserWindow, Notification } from 'electron';
-import { logger, checkDiskSpace, formatBytes, getAppIconPath } from './index';
+import { BrowserWindow } from 'electron';
+import { logger, checkDiskSpace, formatBytes } from './index';
+import { showOsNotification } from './os-notify';
 import * as db from '../db/store';
 import { getTorrentManager } from '../torrent';
 import { t } from '../i18n';
+import { getAppEvents, recordAppEvent, resolveAppEvent } from '../services/app-events';
 
 const log = logger.child('DiskGuard');
 
 const CHECK_INTERVAL_MS = 30_000; // re-check every 30s
 
 let timer: NodeJS.Timeout | null = null;
+let initialTimer: NodeJS.Timeout | null = null;
+let generation = 0;
+let ticking = false;
 let tripped = false; // already auto-paused this low-space episode
 let mainWindowRef: BrowserWindow | null = null;
 
@@ -33,40 +38,49 @@ export function initDiskGuard(mainWindow: BrowserWindow): void {
 
 /** (Re)start or stop the guard loop based on persisted settings. */
 export async function restartGuardFromConfig(): Promise<void> {
-  let enabled = false;
+  stopDiskGuard();
+  const revision = generation;
+  let enabled = true;
   try {
     const settings = await db.getSettings();
     enabled = settings.diskGuardEnabled !== false; // default on
   } catch {
-    enabled = false;
+    log.warn('Disk guard config unavailable — retaining protection');
   }
 
-  stopDiskGuard();
+  if (revision !== generation) return;
   if (!enabled) {
+    getTorrentManager().setTransferBlock('disk', false);
     log.info('Disk-space guard disabled');
     return;
   }
 
   log.info('Disk-space guard enabled — monitoring');
-  tripped = false;
-  timer = setInterval(() => { void tick(); }, CHECK_INTERVAL_MS);
-  setTimeout(() => { void tick(); }, 3_000);
+  tripped = tripped || getAppEvents().isActive('disk-low', { kind: 'system' });
+  getTorrentManager().setTransferBlock('disk', tripped);
+  const run = async () => { if (ticking) return; ticking = true; try { await tick(revision); } finally { ticking = false; } };
+  timer = setInterval(() => { void run(); }, CHECK_INTERVAL_MS);
+  initialTimer = setTimeout(() => { initialTimer = null; void run(); }, 3_000);
 }
 
 export function stopDiskGuard(): void {
+  generation++;
+  if (initialTimer) { clearTimeout(initialTimer); initialTimer = null; }
   if (timer) {
     clearInterval(timer);
     timer = null;
   }
 }
 
-async function tick(): Promise<void> {
+async function tick(revision: number): Promise<void> {
   try {
     const settings = await db.getSettings();
+    if (revision !== generation) return;
     const thresholdBytes = Math.max(0, (settings.diskGuardMinFreeMB ?? 2048)) * 1024 * 1024;
 
     const manager = getTorrentManager();
     const downloads = await manager.getDownloads();
+    if (revision !== generation) return;
     const active = downloads.filter(d => d.status === 'downloading' || d.status === 'queued');
 
     // Idle and not in a low-space episode → nothing to guard.
@@ -88,6 +102,7 @@ async function tick(): Promise<void> {
     let minPath = settings.defaultDownloadDir;
     for (const p of paths) {
       const free = await checkDiskSpace(p);
+      if (revision !== generation) return;
       if (free === null) continue; // couldn't determine this one — skip it
       if (minFree === null || free < minFree) { minFree = free; minPath = p; }
     }
@@ -95,7 +110,9 @@ async function tick(): Promise<void> {
 
     if (minFree < thresholdBytes && !tripped && active.length > 0) {
       tripped = true;
+      manager.setTransferBlock('disk', true);
       const count = await manager.pauseAllActive();
+      if (revision !== generation) return;
       log.warn('Low disk space — auto-paused all torrents', {
         free: formatBytes(minFree),
         path: minPath,
@@ -103,12 +120,15 @@ async function tick(): Promise<void> {
         paused: count,
       });
       notifyLowSpace(minFree, count);
+      recordAppEvent('disk-low', { kind: 'system' }, { paused: count });
       sendToRenderer('app:diskLow', { paused: count, freeBytes: minFree, thresholdBytes });
     } else if (minFree >= thresholdBytes && tripped) {
       // Genuine recovery — signal the renderer to clear its banner, THEN re-arm.
       // (Previously the latch was cleared the moment `active` emptied after the
       // auto-pause, so this recovery branch could never fire and the banner stuck.)
       tripped = false;
+      manager.setTransferBlock('disk', false);
+      resolveAppEvent('disk-low', { kind: 'system' });
       log.info('Disk space recovered — guard re-armed (resume is manual)', { free: formatBytes(minFree), path: minPath });
       sendToRenderer('app:diskRecovered', { freeBytes: minFree });
     }
@@ -118,21 +138,9 @@ async function tick(): Promise<void> {
 }
 
 function notifyLowSpace(free: number, count: number): void {
-  try {
-    if (!Notification.isSupported()) return;
-    const iconPath = getAppIconPath();
-    const n = new Notification({
-      title: t('notify.lowDisk.title'),
-      body: count > 0
+  showOsNotification(t('notify.lowDisk.title'), count > 0
         ? t(count === 1 ? 'notify.lowDisk.bodyOne' : 'notify.lowDisk.bodyMany', { free: formatBytes(free), count })
-        : t('notify.lowDisk.bodyNone', { free: formatBytes(free) }),
-      ...(iconPath ? { icon: iconPath } : {}),
-      urgency: 'critical',
-    });
-    n.show();
-  } catch {
-    /* best-effort */
-  }
+        : t('notify.lowDisk.bodyNone', { free: formatBytes(free) }), { critical: true, context: { kind: 'system', group: 'disk-low' } });
 }
 
 function sendToRenderer(channel: string, payload: unknown): void {

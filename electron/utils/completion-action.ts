@@ -24,6 +24,7 @@ import { logger } from './logger';
 import { showOsNotification } from './os-notify';
 import { getTorrentManager } from '../torrent';
 import { t } from '../i18n';
+import { assertAppUiSender } from './app-ui-security';
 import {
   CompletionAction, CompletionActionState, availableCompletionActions, evaluateTick,
 } from '../../shared/completion-action';
@@ -42,8 +43,9 @@ let quitApp: (() => void) | null = null;
 export function initCompletionAction(opts: { getMainWindow: () => BrowserWindow | null; quitApp: () => void }): void {
   getWindow = opts.getMainWindow;
   quitApp = opts.quitApp;
-  ipcMain.handle('app:getCompletionAction', async () => getCompletionActionState());
-  ipcMain.handle('app:setCompletionAction', async (_e, next: CompletionAction) => {
+  ipcMain.handle('app:getCompletionAction', async event => { assertAppUiSender(event, getWindow?.()); return getCompletionActionState(); });
+  ipcMain.handle('app:setCompletionAction', async (event, next: CompletionAction) => {
+    assertAppUiSender(event, getWindow?.());
     setCompletionAction(next);
     return { ok: true };
   });
@@ -187,7 +189,7 @@ function fire(): void {
     showOsNotification(
       t(act === 'sleep' ? 'notify.onDone.sleepTitle' : 'notify.onDone.quitTitle'),
       t(act === 'sleep' ? 'notify.onDone.sleepBody' : 'notify.onDone.quitBody'),
-      { onClick: showWindow },
+      { critical: true, onClick: showWindow },
     );
     broadcastPending();
   }

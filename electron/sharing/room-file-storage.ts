@@ -78,7 +78,8 @@ export async function matchingRoomPlaintext(candidate: string, authenticated: st
 }
 
 /** Stream pieces against their original torrent hashes; never trust size alone. */
-export async function verifyRoomFile(candidate: string, file: RoomFile, metadata?: Uint8Array): Promise<Buffer> {
+export async function verifyRoomFile(candidate: string, file: RoomFile, metadata?: Uint8Array, signal?: AbortSignal): Promise<Buffer> {
+  signal?.throwIfAborted();
   const before = await fs.promises.lstat(candidate, { bigint: true });
   if (!before.isFile() || before.size !== BigInt(file.size + (file.enc ? 28 : 0))) throw new Error('Room file is missing or has changed');
   let raw: Buffer;
@@ -97,7 +98,7 @@ export async function verifyRoomFile(candidate: string, file: RoomFile, metadata
     if (hash.digest('hex') !== meta.pieces[index++]) throw new Error('Room file contents have changed');
     hash = crypto.createHash('sha1'); inPiece = 0;
   };
-  for await (const chunk of fs.createReadStream(candidate)) {
+  for await (const chunk of fs.createReadStream(candidate, { signal })) {
     let offset = 0;
     while (offset < chunk.length) {
       const count = Math.min(meta.pieceLength - inPiece, chunk.length - offset);

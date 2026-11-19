@@ -38,6 +38,7 @@ export const CategorySelect: React.FC<CategorySelectProps> = ({
   return (
     <Select
       options={options}
+      ariaLabel={t('rss.form.category')}
       value={value}
       onChange={onChange}
       className={className}

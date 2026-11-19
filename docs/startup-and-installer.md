@@ -1,8 +1,11 @@
 # Startup screen and Windows setup
 
-The standard startup screen uses the compact Havvn lockup, the active palette
-and an actual startup milestone: settings, interface, downloads or ready. It
-does not report an estimated percentage. Version text comes from package.json.
+The startup screen fills the main window with the Havvn lockup, a readable
+tagline and a separate panel showing actual milestones: settings, interface,
+downloads or ready. Completed milestones receive checkmarks; a moving activity
+line does not report an estimated percentage. Version text comes from
+package.json. The draggable header provides the existing minimize, maximize
+and close actions before React mounts; macOS retains its native controls.
 
 A small, shared webpack entry restores the built-in mode, saved custom theme,
 accent/font overrides and validated appearance before the React entry runs.
@@ -10,7 +13,9 @@ Splash CSS is inlined in the generated HTML; startup JavaScript is a local
 script allowed by the production CSP. Glass follows the theme's dialog scope,
 material, intensity, blur, quality, motion and corner settings. The glass layout
 can show the saved local wallpaper or background gradient. Without dialog glass,
-the compact layout stays solid for readable text. Reduced-motion and
+the launch screen stays solid for readable text. On narrow surfaces the brand
+and milestone panel stack vertically, with scrolling for recovery controls.
+Reduced-motion and
 reduced-transparency preferences also apply. No desktop capture is used.
 
 Successful initial download loading dismisses the splash with a short fade;

@@ -12,7 +12,8 @@ import { setHostEnv } from './env';
 import { wireDbBridge, resolveDbResponse, failAllDbRequests } from './db-bridge';
 import { ToHost, FromHost } from './protocol';
 import { setCastManager, getCastServer } from '../cast-server';
-import { createTorrentFile } from '../creator';
+import { createTorrentFile, cancelTorrentCreation } from '../creator';
+import { assertTransferCommandAllowed, setTransferBlocks } from '../transfer-policy';
 import type { CreateTorrentProgress, DownloadStats } from '../../../shared/types';
 
 /**
@@ -24,6 +25,7 @@ import type { CreateTorrentProgress, DownloadStats } from '../../../shared/types
  */
 interface EngineManager {
   initialize(): Promise<void>;
+  setResourceEconomy?(economy: boolean): void;
   ffmpegBinary: string | null;
   getListeningPort(): number;
   isAltSpeedEnabled(): boolean;
@@ -37,11 +39,11 @@ interface EngineManager {
 
 function createEngine(engine: 'native' | 'webtorrent'): EngineManager {
   if (engine === 'native') {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { NativeTorrentManager } = require('../native/native-manager') as typeof import('../native/native-manager.js');
     return new NativeTorrentManager();
   }
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { TorrentManager } = require('../manager') as typeof import('../manager.js');
   return new TorrentManager();
 }
@@ -92,6 +94,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let manager: EngineManager | null = null;
+let economy = false;
 
 // cast* method names are served by the cast server, not the manager.
 const CAST_METHODS: Record<string, 'publish' | 'unpublish' | 'tvMedia' | 'publishDiskFile' | 'publishImage'> = {
@@ -126,9 +129,12 @@ port.on('message', async (e) => {
       // no error. Exit instead so the proxy's 'exit' handler rejects and can respawn.
       try {
         setHostEnv(msg.env);
+        setTransferBlocks(msg.blocks ?? []);
+        economy = msg.economy === true;
         wireDbBridge((req) => post(req));
         console.log(`[host] engine: ${msg.env.engine}`);
         manager = createEngine(msg.env.engine);
+        manager.setResourceEconomy?.(economy);
         setCastManager(manager as Parameters<typeof setCastManager>[0]);
         manager.onStats((stats) => post({ kind: 'event', event: 'stats', payload: stats }));
         manager.onComplete((info) => post({ kind: 'event', event: 'complete', payload: info }));
@@ -145,8 +151,18 @@ port.on('message', async (e) => {
       return;
     }
 
+    if (msg.kind === 'resource-policy') {
+      economy = msg.economy;
+      manager?.setResourceEconomy?.(economy);
+      return;
+    }
+    if (msg.kind === 'transfer-policy') {
+      setTransferBlocks(msg.blocks);
+      return;
+    }
+
     if (msg.kind === 'db-res') {
-      resolveDbResponse(msg.id, msg.ok, msg.result, msg.error);
+      resolveDbResponse(msg.id, msg.ok, msg.result, msg.error, msg.code);
       return;
     }
 
@@ -154,9 +170,14 @@ port.on('message', async (e) => {
       const { id, method, args } = msg;
       if (!manager) { post({ kind: 'rpc-res', id, ok: false, error: 'host not initialized' }); return; }
       try {
+        assertTransferCommandAllowed(method);
         let result: unknown;
         const cast = CAST_METHODS[method];
-        if (method === 'createTorrentFile') {
+        if (method === 'prefetchEpisode' && economy) {
+          result = { state: 'inactive', bytes: 0 };
+        } else if (method === 'cancelTorrentCreation') {
+          result = cancelTorrentCreation(args[0] as string);
+        } else if (method === 'createTorrentFile') {
           // Standalone creator fn — relay its hashing progress as an event.
           result = await createTorrentFile(args[0] as Parameters<typeof createTorrentFile>[0], (p: CreateTorrentProgress) => {
             post({ kind: 'event', event: 'create-progress', payload: p });

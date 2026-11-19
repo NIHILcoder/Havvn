@@ -1,4 +1,6 @@
+import { ErrorMessage } from '../../components/ErrorMessage';
 import { ServerPanelStatus, useServerPanelData } from './useServerPanelData';
+import { firstSteps } from '../../utils/first-steps';
 /**
  * RoomServerPanel — the room's game servers: create one, run it, watch its
  * console, edit its settings.
@@ -40,6 +42,8 @@ import type {
   RoomServerInstance, RoomServerState,
 } from '../../../shared/types';
 import { IMPORT_JAVA_MAJORS } from '../../../shared/gameserver-types';
+import { serverOperation } from '../../../shared/connection-operation';
+import { OperationStatus } from '../../components/OperationStatus';
 import { GamePicker } from './GamePicker';
 import { ServerConsole } from './ServerConsole';
 import { ServerConfigForm } from './ServerConfigForm';
@@ -130,7 +134,11 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
   const errorText = useServerError();
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  const load = useCallback(() => window.api.rooms.servers.state(roomId), [roomId]);
+  const load = useCallback(async () => {
+    const next = await window.api.rooms.servers.state(roomId);
+    if (roomId) firstSteps.observeServers(roomId, next.instances);
+    return next;
+  }, [roomId]);
   const { data, setData: setState, loading, error, reload, ready } = useServerPanelData(load);
   const state = data ?? EMPTY_STATE;
   const [viewState, setViewState] = useState(() => ({ roomId, view: loadServerView(roomId) }));
@@ -171,7 +179,10 @@ export const RoomServerPanel: React.FC<RoomServerPanelProps> = ({ roomId, showTi
 
   useEffect(() => {
     const off = window.api.rooms.servers.onUpdate((payload) => {
-      if (payload.roomId === roomId) setState(payload.state);
+      if (payload.roomId === roomId) {
+        setState(payload.state);
+        if (roomId) firstSteps.observeServers(roomId, payload.state.instances);
+      }
     });
     const offAlert = window.api.onServerAlert?.((payload) => {
       if (payload.roomId !== roomId) return;
@@ -485,6 +496,7 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
    * form in which it is useful.
    */
   const failDetail = instance.failDetail ? errorParts(instance.failDetail) : null;
+  const operation = serverOperation(instance);
 
   // What a person would paste into the game. `address` is the virtual-LAN one
   // everybody can reach; the loopback fallback is still worth offering, because
@@ -511,12 +523,9 @@ const ServerDetail: React.FC<ServerDetailProps> = ({ roomId, instance, tab, onTa
           <span className="room-server-chip">{instance.version}</span>
         </div>
 
+        {operation && (status === 'installing' || status === 'starting' || status === 'stopping') && <OperationStatus operation={operation} />}
         {status === 'installing' && (
           <div className="room-server-install">
-            <div className="room-server-progress">
-              <div className="room-server-progress-fill" style={{ width: `${instance.installPct ?? 0}%` }} />
-            </div>
-            <span className="room-server-install-pct">{instance.installPct ?? 0}%</span>
             <Button size="sm" type="button" className="room-server-link" onClick={() => void api.cancelInstall(instanceId)}>
               {t('rooms.server.cancelInstall')}
             </Button>
@@ -1358,7 +1367,7 @@ const CreateServerForm: React.FC<CreateServerFormProps> = ({ roomId, moduleId, m
         {error && (
           <div className="room-server-failure" role="alert">
             <Icon name="alert-triangle" size={14} />
-            <span className="room-server-failure-body">{error}</span>
+            <span className="room-server-failure-body"><ErrorMessage error={error} /></span>
           </div>
         )}
       </div>

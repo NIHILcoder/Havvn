@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useId, useLayoutEffect, useRef, useState } from 'react';
+import { Button } from './Button';
 import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import type { Hotkey } from '../utils/hotkeys';
@@ -48,9 +49,17 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
   onResetHotkeys,
 }) => {
   const { t } = useTranslation();
+  const labelPrefix = useId();
   const [editingHotkey, setEditingHotkey] = useState<string | null>(null);
   const [recordedKeys, setRecordedKeys] = useState<string[]>([]);
-  const [isRecording, setIsRecording] = useState(false);
+  const recorder = useRef<HTMLDivElement>(null);
+  const lastEdit = useRef<string | null>(null);
+  const editButton = useRef<HTMLButtonElement>(null);
+
+  useLayoutEffect(() => {
+    if (editingHotkey) recorder.current?.focus();
+    else editButton.current?.focus();
+  }, [editingHotkey]);
 
   const categories = Array.from(new Set(hotkeys.map((h) => h.category)));
 
@@ -60,6 +69,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     Voice: t('hotkeys.categoryVoice'),
   };
   const hotkeyLabels: Record<string, string> = {
+    'open-command-palette': t('commands.title'),
     'open-downloads': t('hotkeys.openDownloads'),
     'open-settings': t('hotkeys.openSettings'),
     'add-torrent': t('btn.addTorrent'),
@@ -70,6 +80,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
     'voice-deafen': t('hotkeys.voiceDeafen'),
   };
   const hotkeyDescriptions: Record<string, string> = {
+    'open-command-palette': t('commands.placeholder'),
     'open-downloads': t('hotkeys.openDownloadsDesc'),
     'open-settings': t('hotkeys.openSettingsDesc'),
     'add-torrent': t('hotkeys.addTorrentDesc'),
@@ -81,13 +92,13 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
   };
 
   const handleStartRecording = (hotkeyId: string) => {
+    lastEdit.current = hotkeyId;
     setEditingHotkey(hotkeyId);
     setRecordedKeys([]);
-    setIsRecording(true);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!isRecording) return;
+    if (!editingHotkey || e.target !== e.currentTarget) return;
     e.preventDefault();
     e.stopPropagation();
 
@@ -110,9 +121,8 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
       
       // Save immediately if there's at least one non-modifier key
       const hasMainKey = keys.some(k => !['Ctrl', 'Shift', 'Alt', 'Meta'].includes(k));
-      if (hasMainKey && editingHotkey) {
+      if (hasMainKey) {
         onHotkeyChange(editingHotkey, keys);
-        setIsRecording(false);
         setEditingHotkey(null);
         setRecordedKeys([]);
       }
@@ -120,59 +130,56 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
   };
 
   const handleKeyUp = (e: React.KeyboardEvent) => {
-    // No longer needed since we save in handleKeyDown
+    if (e.target !== e.currentTarget) return;
     e.preventDefault();
     e.stopPropagation();
   };
 
   const handleCancel = () => {
-    setIsRecording(false);
     setEditingHotkey(null);
     setRecordedKeys([]);
   };
 
   return (
     <div className="hotkey-settings">
-      <div className="hotkey-toolbar">
-        <button className="btn-reset-hotkeys" onClick={onResetHotkeys}>
-          <Icon name="rotate-ccw" size={16} />
-          {t('hotkeys.resetAll')}
-        </button>
-      </div>
-
       {categories.map((category) => (
         <div key={category} className="hotkey-category">
-          <div className="hotkey-category-title">{categoryLabels[category] ?? category}</div>
+          <h3 className="hotkey-category-title">{categoryLabels[category] ?? category}</h3>
           <div className="hotkey-list">
             {hotkeys
               .filter((h) => h.category === category)
               .map((hotkey) => (
                 <div key={hotkey.id} className="hotkey-item" data-setting-label={hotkeyLabels[hotkey.id] || hotkey.description}>
                   <div className="hotkey-info">
-                    <div className="hotkey-label">{hotkeyLabels[hotkey.id] ?? hotkey.label}</div>
+                    <div id={`${labelPrefix}-${hotkey.id}`} className="hotkey-label">{hotkeyLabels[hotkey.id] ?? hotkey.label}</div>
                     <div className="hotkey-description">{hotkeyDescriptions[hotkey.id] ?? hotkey.description}</div>
                   </div>
                   <div className="hotkey-control">
                     {editingHotkey === hotkey.id ? (
                       <div
                         className="hotkey-recorder"
+                        ref={recorder}
+                        role="group"
+                        aria-label={t('hotkeys.pressKeys')}
                         onKeyDown={handleKeyDown}
                         onKeyUp={handleKeyUp}
                         tabIndex={0}
-                        autoFocus
                       >
                         <span className="hotkey-recorder-text">
                           {recordedKeys.length > 0
                             ? recordedKeys.map(k => codeToDisplayName(k)).join(' + ')
                             : t('hotkeys.pressKeys')}
                         </span>
-                        <button className="btn-cancel-recording" onClick={handleCancel}>
+                        <button type="button" className="btn-cancel-recording" aria-label={t('common.cancel')} onClick={handleCancel}>
                           <Icon name="x" size={14} />
                         </button>
                       </div>
                     ) : (
                       <button
                         className="hotkey-display"
+                        type="button"
+                        ref={lastEdit.current === hotkey.id ? editButton : undefined}
+                        aria-describedby={`${labelPrefix}-${hotkey.id}`}
                         onClick={() => handleStartRecording(hotkey.id)}
                       >
                         {hotkey.keys.length > 0 ? (
@@ -187,7 +194,7 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
                         ) : (
                           <span className="hotkey-empty">{t('hotkeys.notAssigned')}</span>
                         )}
-                        <Icon name="edit-2" size={14} />
+                        <span className="hotkey-edit"><Icon name="edit-2" size={14} />{t('common.edit')}</span>
                       </button>
                     )}
                   </div>
@@ -196,6 +203,11 @@ export const HotkeySettings: React.FC<HotkeySettingsProps> = ({
           </div>
         </div>
       ))}
+      <div className="hotkey-toolbar">
+        <Button variant="secondary" size="sm" icon={<Icon name="rotate-ccw" size={14} />} onClick={onResetHotkeys}>
+          {t('hotkeys.resetAll')}
+        </Button>
+      </div>
     </div>
   );
 };

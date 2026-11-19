@@ -57,7 +57,7 @@
       var panel=load(path.join(root,'renderer/pages/rooms/RoomServerPanel.tsx')).RoomServerPanel;
       var consoleSubs=new Set(), serverSubs=new Set(), roomSubs=new Set(), sent=[], fetched=[], selectedWorkspace=null;
       var initial=[{seq:1,at:1,stream:'out',text:'[INFO] Server ready'},{seq:2,at:2,stream:'out',text:'[WARN] Slow chunk'},{seq:3,at:3,stream:'out',text:'[ERROR] Port unavailable'}];
-      var room={roomId:'r',files:[{fileId:'mod',name:'Example.jar',infoHash:'hash',folderId:'mods'}],transfers:{},lan:{available:true,active:true,isHost:false,selfVip:'100.88.0.2',participants:[{memberId:'host',vip:'100.88.0.1',admitted:true,status:'connected'}]}};
+      var room={roomId:'r',members:[{memberId:'self',isSelf:true,name:'Self',online:true,capabilities:['server-preparation-v1']},{memberId:'host',name:'Host',online:true,capabilities:['server-preparation-v1']}],files:[{fileId:'mod',name:'Example.jar',infoHash:'hash',folderId:'mods'}],transfers:{},lan:{available:true,active:true,isHost:false,selfVip:'100.88.0.2',participants:[{memberId:'host',vip:'100.88.0.1',admitted:true,status:'connected'}]}};
       var server={instanceId:'s',moduleId:'minecraft',name:'Друзья — Minecraft',version:'Fabric 1.21',hostId:'host',isHost:false,role:'viewer',remote:true,status:'running',since:Date.now(),address:'100.88.0.1:25565',port:25565,autoRestart:false,updatable:false,sharedContent:[{slotId:'mods',folderId:'mods',extensions:['.jar']}]};
       var state={available:true,modules:[],instances:[server,{...server,instanceId:'second',name:'Второй сервер'}]};
       var stateReply=null;

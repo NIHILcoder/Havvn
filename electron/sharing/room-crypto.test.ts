@@ -1,4 +1,5 @@
 import { isRoomInvite } from '../../shared/room-invite';
+import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { deriveKey, topicHash, rendezvousId, normalizeCode, buildInvite, parseInvite, deriveMemberId, generateRoomCode } from './room-crypto';
 
@@ -12,7 +13,7 @@ describe('room-crypto: topic / rendezvous split', () => {
     expect(topicHash(code)).toMatch(/^[0-9a-f]{40}$/);
     // Locked value — if this ever changes, existing rooms' signatures break.
     expect(topicHash('swift-amber-otter-comet-4821')).toBe(
-      require('crypto').createHash('sha1').update('th-room:v1:swift-amber-otter-comet-4821').digest('hex'),
+      createHash('sha1').update('th-room:v1:swift-amber-otter-comet-4821').digest('hex'),
     );
   });
 
@@ -24,9 +25,8 @@ describe('room-crypto: topic / rendezvous split', () => {
     // The rendezvous is NOT the old sha1(code) topic — that was the leak.
     expect(rv).not.toBe(topicHash(code));
     // And NOT any cheap hash of the code an operator could precompute.
-    const cryptoNode = require('crypto');
-    expect(rv).not.toBe(cryptoNode.createHash('sha1').update(code).digest('hex'));
-    expect(rv).not.toBe(cryptoNode.createHash('sha1').update(normalizeCode(code)).digest('hex'));
+    expect(rv).not.toBe(createHash('sha1').update(code).digest('hex'));
+    expect(rv).not.toBe(createHash('sha1').update(normalizeCode(code)).digest('hex'));
   });
 
   it('different codes → different rendezvous ids', () => {

@@ -1,0 +1,7 @@
+.tfs-folder-count { margin: 0; font-size: 12px; color: var(--color-text-secondary); }
+.tfs-folders { max-height: min(45vh, 360px); overflow: auto; }
+.tfs-folders.vfl--windowed { height: min(45vh, 360px); }
+.tfs-folder-option { display: flex; align-items: center; width: 100%; min-height: 56px; gap: 12px; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--color-border); color: var(--color-text-primary); background: var(--color-bg-secondary); text-align: left; cursor: pointer; }
+.tfs-folder-option:hover { background: var(--color-bg-hover); }
+.tfs-folder-option > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tfs-folder-option > small { flex: none; color: var(--color-text-secondary); }

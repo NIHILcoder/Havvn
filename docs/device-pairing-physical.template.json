@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "kind": "FUN-06-physical-research",
+  "status": "not-run",
+  "review": {"accepted": false, "operator": null, "at": null},
+  "candidate": {"productSha256": null, "installerASha256": null, "installerBSha256": null},
+  "devices": [],
+  "forbiddenEvidence": ["private keys", "invite tokens", "room secrets", "TURN credentials", "user file contents"],
+  "requiredCases": [
+    {"id":"independent-device-identities","status":"not-run","evidence":[]},
+    {"id":"explicit-confirmation-on-both-devices","status":"not-run","evidence":[]},
+    {"id":"real-lan-encrypted-transfer","status":"not-run","evidence":[]},
+    {"id":"offline-concurrent-edits-and-rewatch","status":"not-run","evidence":[]},
+    {"id":"delete-edit-conflict-without-resurrection","status":"not-run","evidence":[]},
+    {"id":"durable-ack-after-disk-and-renderer-failures","status":"not-run","evidence":[]},
+    {"id":"revoke-while-peer-offline-then-reconnect","status":"not-run","evidence":[]},
+    {"id":"revoke-open-session-and-selected-send","status":"not-run","evidence":[]},
+    {"id":"restart-after-revoke-no-future-data","status":"not-run","evidence":[]},
+    {"id":"re-pair-new-grant-rejects-old-messages","status":"not-run","evidence":[]},
+    {"id":"different-network-route-or-explicit-failure","status":"not-run","evidence":[]},
+    {"id":"real-older-build-incompatible-without-data-loss","status":"not-run","evidence":[]}
+  ],
+  "revocation": {"durableCommitAt": null, "newMutationIdsAfterCommit": [], "revokedPeerReceivedAny": null},
+  "limits": {"loopbackDoesNotCountAsPhysical": true, "oldCopiesCannotBeRemotelyErased": true, "globalMeshRevocationNotClaimed": true}
+}

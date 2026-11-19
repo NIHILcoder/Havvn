@@ -8,18 +8,29 @@ if (!process.versions.electron) {
   const { app, BrowserWindow, ipcMain } = require('electron');
   const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
   const root = path.resolve(__dirname, '..'), out = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-appearance-'));
+  const evidence = path.join(root, 'dist/windows11-glass'); fs.mkdirSync(evidence, { recursive: true });
   app.setPath('userData', path.join(out, 'profile'));
-  const deadline = setTimeout(() => { console.error('Appearance test deadline'); app.exit(1); }, 60000);
+  const deadline = setTimeout(() => { console.error('Appearance test deadline'); app.exit(1); }, 120000);
   app.whenReady().then(async () => {
     const { WindowMaterial } = require(path.join(root, 'dist/electron/electron/utils/window-material.js'));
     const { supportsAcrylic } = require(path.join(root, 'dist/electron/shared/appearance.js'));
     const supported = supportsAcrylic(process.platform, os.release()), material = new WindowMaterial(supported);
+    let readBackdrop;
+    if (supported) {
+      const dwm = require('koffi').load('dwmapi.dll');
+      const getAttribute = dwm.func('long __stdcall DwmGetWindowAttribute(uintptr_t hwnd, uint32_t attribute, _Out_ int *value, uint32_t size)');
+      readBackdrop = window => {
+        const handle = window.getNativeWindowHandle(), value = [0];
+        const hwnd = handle.length === 8 ? handle.readBigUInt64LE() : handle.readUInt32LE();
+        assert.equal(getAttribute(hwnd, 38, value, 4), 0, 'DWM backdrop query failed'); return value[0];
+      };
+    }
     const win = new BrowserWindow({ show: false, frame: false, width: 1100, height: 920,
       webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false } });
     material.register(win);
     ipcMain.handle('fixture:acrylic:get', () => material.status());
-    ipcMain.handle('fixture:acrylic:set', (_event, enabled) => { assert.equal(typeof enabled, 'boolean');
-      fs.writeFileSync(path.join(out, 'native.json'), JSON.stringify({ enabled })); return material.setEnabled(enabled); });
+    ipcMain.handle('fixture:acrylic:set', (_event, enabled, mode) => { assert.equal(typeof enabled, 'boolean');
+      fs.writeFileSync(path.join(out, 'native.json'), JSON.stringify({ enabled, material: mode })); return material.setEnabled(enabled, mode); });
     win.webContents.setWindowOpenHandler(({ url, frameName }) => url === 'about:blank' && frameName === 'appearance-fixture'
       ? { action: 'allow', overrideBrowserWindowOptions: { show: false, frame: false, width: 430, height: 600, webPreferences: { backgroundThrottling: false } } } : { action: 'deny' });
     let detached;
@@ -45,7 +56,8 @@ if (!process.versions.electron) {
           if(s.startsWith('.')){var q=path.resolve(path.dirname(p),s);for(var ext of ['.tsx','.ts'])if(fs.existsSync(q+ext))return load(q+ext);throw Error(q);}
           return require(s.startsWith('node:')?s:path.join(root,'node_modules',s));
         },m,m.exports);return m.exports;}
-      var ipc=require('electron').ipcRenderer;window.api={appearance:{getAcrylic:()=>ipc.invoke('fixture:acrylic:get'),setAcrylic:v=>ipc.invoke('fixture:acrylic:set',v),onAcrylicChanged:()=>()=>{}}};
+      localStorage.setItem('language','ru');load(path.join(root,'renderer/utils/error-messages.ts')).registerErrorTranslations('ru',dict);
+      var ipc=require('electron').ipcRenderer;window.api={appearance:{getAcrylic:()=>ipc.invoke('fixture:acrylic:get'),setAcrylic:(v,m)=>ipc.invoke('fixture:acrylic:set',v,m),onAcrylicChanged:()=>()=>{}}};
       var appearance=load(path.join(root,'renderer/utils/appearance.ts')),shared=load(path.join(root,'shared/appearance.ts'));
       var stop=appearance.bootAppearance(),Panel=load(path.join(root,'renderer/pages/settings/sections/AppearancePanel.tsx')).AppearancePanel;
       var ThemeContext=load(path.join(root,'renderer/components/ThemeEditorContext.tsx')),Glass=load(path.join(root,'renderer/components/GlassControls.tsx')).GlassControls;
@@ -63,6 +75,7 @@ if (!process.versions.electron) {
     `);
     const wait = () => new Promise(resolve => setTimeout(resolve, 180)); await wait();
     assert.equal(await run(`document.documentElement.dataset.material`),'solid');
+    assert.equal(await run(`switchFor('appearance.nativeMaterial')===null`),true,'material choice stays hidden while native glass is off');
     await run(`appearance.saveAppearance({...appearance.readAppearance(),background:'aurora'})`); await wait();
     await run(`button(t('appearance.preset.liquid')).click()`); await wait();
     assert.equal(await run(`document.documentElement.dataset.material`),'liquid');
@@ -78,8 +91,24 @@ if (!process.versions.electron) {
     assert.equal(material.status().enabled,true); assert.equal(material.status().active,supported);
     assert.equal(await run(`document.documentElement.dataset.acrylic`),supported?'active':'off');
     assert.equal(JSON.parse(fs.readFileSync(path.join(out,'native.json'))).enabled,true);
+    const dwmValues = {};
+    if (supported) { dwmValues.acrylic = readBackdrop(win); assert.equal(dwmValues.acrylic, 3); }
+    await run(`switchFor('appearance.nativeMaterial').click()`); await wait();
+    await run(`[...document.querySelectorAll('[role=option]')].find(el=>el.textContent.trim()===t('appearance.nativeMaterial.mica')).click()`); await wait();
+    assert.equal(material.status().material, 'mica');
+    assert.equal(await run(`appearance.readAppearance().nativeMaterial`), 'mica');
+    if (supported) { dwmValues.mica = readBackdrop(win); assert.equal(dwmValues.mica, 2); }
+    await run(`switchFor('appearance.acrylic').click()`); await wait();
+    assert.equal(await run(`switchFor('appearance.nativeMaterial')===null`),true);
+    assert.equal(await run(`appearance.readAppearance().nativeMaterial`),'mica','turning glass off preserves the chosen material');
+    await run(`switchFor('appearance.acrylic').click()`); await wait();
+    assert.equal(await run(`switchFor('appearance.nativeMaterial').textContent.includes(t('appearance.nativeMaterial.mica'))`),true,'the selected material returns when glass is enabled');
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),background:'none'})`); await wait();
+    if (supported) assert.equal(await run(`getComputedStyle(document.querySelector('.sidebar')).backdropFilter`),'none','native navigation must not blur DWM twice');
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),nativeMaterial:'acrylic',background:'aurora'})`); await wait();
     // Snapshots use synthetic gradients only, never the native desktop backdrop.
     await run(`switchFor('appearance.acrylic').click()`); await wait();
+    if (supported) { dwmValues.off = readBackdrop(win); assert.equal(dwmValues.off, 1); }
     await run(`document.querySelectorAll('.ap-advanced')[0].open=true;switchFor('appearance.scope.sidebar').click()`); await wait();
     assert.equal(await run(`getComputedStyle(document.querySelector('.sidebar')).backdropFilter`),'none');
     await run(`switchFor('appearance.scope.sidebar').click();appearance.saveAppearance({...appearance.readAppearance(),radii:{panels:16,cards:18,buttons:10,inputs:12}})`); await wait();
@@ -120,13 +149,31 @@ if (!process.versions.electron) {
     await run(`appearance.saveAppearance({...appearance.readAppearance(),quality:'light'})`); await wait();
     assert.equal(await run(`getComputedStyle(document.querySelector('.sidebar')).backdropFilter.includes('blur(8px)')`),true);
     await run(`appearance.saveAppearance({...appearance.readAppearance(),quality:'full'});document.querySelectorAll('.ap-advanced')[0].open=false;document.querySelectorAll('.ap-advanced')[1].open=false;document.querySelector('.fixture-main').scrollTop=0`); await wait();
-    const capture=async name=>{await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});await wait();const image=await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});assert.equal(image.isEmpty(),false);fs.writeFileSync(path.join(out,name+'.png'),image.toPNG());};
+    const capture=async name=>{await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});await wait();const image=await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});assert.equal(image.isEmpty(),false);fs.writeFileSync(path.join(out,name+'.png'),image.toPNG());fs.writeFileSync(path.join(evidence,name+'.png'),image.toPNG());};
+    // UI captures use an in-app gradient. DWM is verified independently above;
+    // a screenshot of Chromium cannot demonstrate the desktop compositor's pixels.
+    const captureNativeControls = async () => {
+      win.setSize(1100,920);
+      await run(`document.querySelector('.fixture-main').scrollTop=0;appearance.applyThemeGlass(shared.getThemeGlass(shared.APPEARANCE_PRESETS.liquid));appearance.saveAppearance({...appearance.readAppearance(),acrylic:false,nativeMaterial:'acrylic',background:'aurora'})`); await wait();
+      await capture('windows11-glass-settings-off');
+      await run(`document.querySelector('.fixture-main').scrollTop=0;appearance.applyThemeGlass(shared.getThemeGlass(shared.APPEARANCE_PRESETS.liquid));appearance.saveAppearance({...appearance.readAppearance(),acrylic:true,nativeMaterial:'acrylic',background:'aurora'})`); await wait();
+      await capture('windows11-glass-settings-wide');
+      win.setSize(520,860); await wait();
+      assert.equal(await run(`document.documentElement.scrollWidth<=innerWidth`),true);
+      await capture('windows11-glass-settings-narrow');
+    };
     await capture('liquid-dark');
     const theme=JSON.parse(fs.readFileSync(path.join(root,'themes/nihil-aero-midnight.havvn-theme.json'),'utf8'));
     await run(`load(path.join(root,'renderer/utils/theme-library.ts')).applyThemeObject(${JSON.stringify(theme)});button(t('appearance.preset.aero')).click()`); await wait();
     await capture('aero');
     await run(`localStorage.setItem('theme','light');load(path.join(root,'renderer/utils/theme-library.ts')).deactivateTheme()`); await wait(); await capture('liquid-light');
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),acrylic:true,nativeMaterial:'mica',background:'none'})`); await wait();
+    await capture('native-light-surface');
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),acrylic:false,background:'aurora'})`); await wait();
     await run(`popout.openPopout()`); await wait(); assert.ok(detached);
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),acrylic:true,nativeMaterial:'mica'})`); await wait();
+    if (supported) { dwmValues.detachedMica = readBackdrop(detached); assert.equal(dwmValues.detachedMica, 2); }
+    await run(`appearance.saveAppearance({...appearance.readAppearance(),acrylic:false})`); await wait();
     assert.equal(await detached.webContents.executeJavaScript(`document.documentElement.dataset.material`),'liquid');
     await run(`appearance.saveAppearance({...appearance.readAppearance(),material:'frosted',radii:{panels:null,cards:20,buttons:null,inputs:null}})`); await wait();
     assert.equal(await detached.webContents.executeJavaScript(`document.documentElement.dataset.material`),'frosted');
@@ -186,7 +233,9 @@ if (!process.versions.electron) {
     await run(`document.querySelector('.ted [aria-label='+JSON.stringify(t('common.close'))+']').click()`); await wait();
     await run(`var solid={id:'solid',name:'Solid',dark:{},light:{},glass:shared.getThemeGlass(shared.DEFAULT_APPEARANCE)};library.saveLibrary([...library.loadLibrary(),solid]);library.activateTheme(solid)`);
     assert.equal(await run(`document.documentElement.dataset.material`),'solid','switching themes changes glass');
+    await captureNativeControls();
     await run(`stop();flush(()=>mounted.unmount())`); assert.deepEqual(errors,[]); win.destroy(); clearTimeout(deadline);
+    fs.writeFileSync(path.join(evidence,'acceptance.json'),JSON.stringify({passed:true,os:os.release(),electron:process.versions.electron,nativeSupported:supported,dwmValues,screenshotsUseSyntheticBackgrounds:true,nativeCompositorPixelsCaptured:false},null,2));
     console.log(JSON.stringify({passed:true,nativeSupported:supported,checks:['native enable/disable','palette inheritance','scope controls','radii override/reset',
       'profile export/import/apply','invalid file errors','wallpaper import/removal','motion settings','quality','dark/light/Aero screenshots','real detached window mirroring','380px layout','theme editor shortcut and relocation','theme glass undo/redo/cancel','theme save/export/import','theme switch and boot','native/background isolation'],output:out})); app.quit();
   }).catch(error=>{console.error(error);clearTimeout(deadline);app.exit(1);});

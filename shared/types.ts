@@ -54,6 +54,10 @@ export type DownloadStatus =
 export type SourceType = 'magnet' | 'torrent_file' | 'catalog';
 
 export interface Download {
+  /** Durable rule receipts; retained across retries and engine restarts. */
+  automation?: import('./automation-rules').DownloadAutomation;
+  automationCompletedAt?: number;
+  categoryOrigin?: 'user' | 'automation';
   id: string;
   name: string;
   sourceType: SourceType;
@@ -88,6 +92,8 @@ export interface Download {
   maxDownloadSpeed?: number;         // Per-torrent KB/s (0 = unlimited)
   maxUploadSpeed?: number;           // Per-torrent KB/s (0 = unlimited)
   filePriorities?: FilePriority[];   // Per-file priorities, indexed by file index
+  /** Lifetime totals preceding a daemon re-add; Transmission resets its session counters. */
+  nativeSessionBase?: { downloaded: number; uploaded: number };
   customTrackers?: string[];         // User-added trackers, merged into the announce list on (re)start
   removedTrackers?: string[];        // User-removed trackers, pruned from the live tracker client after start
   createdAt: Date;
@@ -100,6 +106,17 @@ export interface Category {
   name: string;
   icon: string;
   color: string;
+  downloadDefaults?: DownloadDefaults;
+  notificationRule?: import('./notification-policy').NotificationRule;
+}
+
+/** Defaults copied to new downloads; undefined inherits the enclosing policy. */
+export interface DownloadDefaults {
+  savePath?: string;
+  seedRatioLimit?: number;
+  seedTimeLimitMinutes?: number;
+  paused?: boolean;
+  sequentialDownload?: boolean;
 }
 
 export interface TorrentFile {
@@ -321,6 +338,7 @@ export interface RoomState {
   ownerId: string;       // memberId of the room owner ('' until learned)
   watchPolicy?: import('./room-watch-host').WatchPolicy;
   canManage: boolean;    // this install is the owner (may kick/rekey)
+  keyRotation?: import('./room-key-rotation').RoomKeyRotationState;
   e2e: boolean;          // end-to-end encryption: file bytes seeded as ciphertext
   members: RoomMember[];
   files: RoomFile[];
@@ -352,6 +370,7 @@ export interface RoomState {
    *  instances in this room (never our own). Several members may host at once,
    *  so this is a list keyed by `hostId` — not a single slot they overwrite. */
   srvMirrors?: import('./gameserver-types').ServerMirrorState[];
+  serverPreparation?: import('./server-readiness').ServerPreparationReport[];
   /** Per-folder auto-fetch overrides (local pref): folderId → forced on/off;
    *  a folder with no entry inherits `autoFetch`. */
   folderFetch?: Record<string, boolean>;
@@ -385,6 +404,7 @@ export interface ScreenSourceInfo {
   name: string;
   thumbnail: string; // data URL
   display: boolean;  // true = a whole screen, false = a single window
+  systemAudioSupported?: boolean; // current engine capture supports loopback on Windows
 }
 
 /** The room's voice channel as this install sees it. `inVoice`/`muted` are OUR own
@@ -402,6 +422,7 @@ export interface RoomVoiceState {
   transmitting: boolean;  // mic is live right now (for the mic-live indicator)
   inputMode: VoiceInputMode;
   sharing: boolean;       // WE are sharing our screen
+  shareSettings?: import('./screen-share').ScreenShareSettings;
   participants: RoomVoiceParticipant[];
 }
 
@@ -453,6 +474,7 @@ export interface RoomSummary {
   /** OS notifications silenced for this room (per-install preference). */
   notifyMuted?: boolean;
   notifyMode?: import('./room-chat-tools').RoomNotifyMode;
+  notificationRule?: import('./notification-policy').NotificationRule;
 }
 
 /** This install's identity in rooms. */
@@ -520,6 +542,8 @@ export interface DownloadStats {
   peers: number;
   seeds: number;
   status: DownloadStatus;
+  /** Transient engine observation; not persisted as a download state. */
+  operation?: import('./operations').OperationState;
 }
 
 /** A DNS-over-HTTPS resolver the engine can route tracker/peer lookups through.
@@ -585,6 +609,7 @@ export interface NetworkInfo {
 
 export interface AppSettings {
   id: number;
+  resourceMode?: import('./resource-mode').ResourceMode;
   // Which download engine the torrent host runs. 'native' = the bundled
   // transmission-daemon sidecar (default); 'webtorrent' = the legacy in-process
   // engine, kept as a fallback until feature parity. Restart-only.
@@ -671,6 +696,7 @@ export interface AppSettings {
   enableSounds: boolean;
   notifyOnComplete: boolean;
   notifyOnError: boolean;
+  notificationPolicy?: import('./notification-policy').NotificationPolicy;
   // Disk-space guard
   diskGuardEnabled: boolean;       // Auto-pause all torrents when free space is low
   diskGuardMinFreeMB: number;      // Threshold in MB (default 2048)
@@ -883,6 +909,7 @@ export interface CreateTorrentOptions {
 }
 
 export interface CreateTorrentRequest {
+  requestId?: string; // Correlates progress and cancellation with this creation only.
   sourcePaths: string[]; // Files or folders to include
   outputPath: string; // Where to save .torrent file
   options: CreateTorrentOptions;
@@ -906,10 +933,16 @@ export interface CreateTorrentResult {
   totalSize: number;
   pieceCount: number;
   pieceLength: number;
+  /** Saving metadata succeeds independently of the optional seeding action. */
+  seedingStatus?: 'not-requested' | 'queued' | 'failed';
+  seedingError?: string;
+  /** Opaque main-process receipt for starting/retrying this saved result. */
+  seedRetryId?: string;
 }
 
 export interface CreateTorrentProgress {
-  stage: 'hashing' | 'writing' | 'complete';
+  requestId?: string;
+  stage: 'hashing' | 'writing' | 'verifying' | 'complete';
   progress: number; // 0-1
   message: string;
 }
@@ -980,7 +1013,9 @@ export interface Badge {
 }
 
 // IPC API types
-export interface AddDownloadRequest {
+export interface AddDownloadRequest extends DownloadDefaults {
+  /** Main-generated only. The proxy strips caller-supplied receipts. */
+  automation?: import('./automation-rules').DownloadAutomation;
   sourceType: SourceType;
   sourceUri: string;
   savePath?: string;
@@ -1088,7 +1123,7 @@ export interface SearchProvider {
   username?: string;
   password?: string;
   enabled: boolean;
-  type: 'jackett' | 'torznab' | 'custom' | 'archive' | 'script';
+  type: 'jackett' | 'torznab' | 'custom' | 'archive' | 'script' | 'rutracker';
   builtIn?: boolean;            // Pre-seeded provider (e.g. Internet Archive) — not user-removable
 }
 
@@ -1100,6 +1135,8 @@ export interface PythonStatus {
 }
 
 export interface SearchResult {
+  /** Stable source/topic identity until the user requests its actual torrent. */
+  deferredSource?: string;
   /** Time main received the provider response. A cache replay keeps this time. */
   checkedAt?: number;
   /** Optional source-reported track labels; not a file inspection. */
@@ -1147,6 +1184,8 @@ export interface SearchCaps {
 
 /** How one provider fared during a search — rendered as a status strip. */
 export interface ProviderStat {
+  nextPage?: string;
+  errorCode?: import('./provider-network').ProviderNetworkError['code'];
   providerId?: string;
   name: string;
   count: number;
@@ -1179,8 +1218,16 @@ export interface IPBlocklist {
 
 
 export interface IpcApi {
+  devices: import('./device-ui').DevicesApi;
+  automation: import('./automation-rules').AutomationApi;
+  events: import('./app-events').AppEventsApi;
   externalPlayer: import('./external-player').ExternalPlayerApi;
   historyPlayback: {
+    relocations: () => Promise<import('./media-relocation').MediaRelocationView[]>;
+    chooseRelocation: (target: import('./media-relocation').MediaRelocationTarget, folder?: boolean) => Promise<import('./media-relocation').MediaRelocationPreview | null>;
+    confirmRelocation: (token: string) => Promise<import('./media-relocation').MediaRelocationView>;
+    cancelRelocation: (token: string) => Promise<void>;
+    libraryFiles: (id: string, limit?: number) => Promise<import('./history-playback').HistoryLibraryFiles>;
     files: (id: string) => Promise<import('./history-playback').HistoryPlaybackFile[]>;
     stream: (id: string, index: number, opts?: import('./history-playback').HistoryPlaybackOptions) => ReturnType<IpcApi['getStreamUrl']>;
     audio: (id: string, index: number) => Promise<import('./player-preferences').AudioTrack[]>;
@@ -1193,15 +1240,22 @@ export interface IpcApi {
   addDownload: (request: AddDownloadRequest) => Promise<Download>;
   pauseDownload: (id: string) => Promise<void>;
   resumeDownload: (id: string) => Promise<void>;
-  removeDownload: (id: string, deleteFiles: boolean) => Promise<void>;
+  removeDownload: (id: string, deleteFiles: boolean, previewToken?: string) => Promise<import('./download-removal').DownloadRemovalResult>;
+  previewDownloadDeletion: (id: string) => Promise<import('./download-removal').DownloadDeletionPreview>;
+  getDownloadUndo: () => Promise<import('./download-removal').DownloadUndoState>;
+  onNotificationSound: (callback: () => void) => () => void;
+  undoDownloadRemoval: (token: string) => Promise<import('./download-removal').DownloadUndoResult>;
+  onDownloadUndoChanged: (callback: () => void) => () => void;
   stopSeeding: (id: string) => Promise<void>;
   retryDownload: (id: string) => Promise<void>;
   recheckDownload: (id: string) => Promise<void>;
   getDownloads: () => Promise<Download[]>;
+  inspectDownloadHelp: (id: string) => Promise<import('./download-help').DownloadHelpReport>;
   getTorrentFiles: (id: string) => Promise<TorrentFile[]>;
   getStreamUrl: (id: string, fileIndex: number, opts?: { transcode?: boolean; audioTrack?: number; startTime?: number }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }>;
   stopStream: (id: string, fileIndex?: number) => Promise<void>;
   getEpisodePrefetchSupport: () => Promise<{ supported: boolean }>;
+  getEngineCapabilities: () => Promise<import('./engine-capabilities').EngineCapabilities>;
   prefetchEpisode: (id: string, request: import('./episode-prefetch').EpisodePrefetchRequest) => Promise<import('./episode-prefetch').EpisodePrefetchResult>;
   stopEpisodePrefetch: (id: string, lease: string) => Promise<void>;
   shareStart: (downloadId: string) => Promise<ShareInfo>;
@@ -1239,9 +1293,22 @@ export interface IpcApi {
 
   // Settings
   getSettings: () => Promise<AppSettings>;
+  resourceMode: {
+    get: () => Promise<import('./resource-mode').ResourceModeSnapshot>;
+    set: (mode: import('./resource-mode').ResourceMode) => Promise<import('./resource-mode').ResourceModeSnapshot>;
+    onChanged: (listener: (snapshot: import('./resource-mode').ResourceModeSnapshot) => void) => () => void;
+  };
+  getEffectiveSettings: () => Promise<import('./effective-settings').EffectiveSettingsSnapshot>;
+  applyWorkingProfile: (request: import('./working-profiles').WorkingProfileRequest) => Promise<{ success: boolean }>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
-  exportSettings: () => Promise<{ success: boolean; path?: string }>;
-  importSettings: () => Promise<{ success: boolean }>;
+  exportSettings: (options?: import('./interface-preferences').SettingsTransferOptions) => Promise<{ success: boolean; path?: string }>;
+  importSettings: (options?: import('./interface-preferences').SettingsTransferOptions) => Promise<{ success: boolean }>;
+  restoreSettings: (options?: import('./interface-preferences').SettingsTransferOptions) => Promise<{ success: boolean }>;
+  recoverSettingsTransfer: () => Promise<{ success: boolean }>;
+  getSettingsTransferStatus: () => Promise<import('./interface-preferences').SettingsTransferStatus>;
+  getSettingsExportOperation: () => Promise<import('./operations').OwnedOperation | null>;
+  onSettingsExportOperation: (callback: () => void) => () => void;
+  onCategoriesChanged: (callback: () => void) => () => void;
   // Watch folder
   getWatchFolderStatus: () => Promise<{ active: boolean; path: string }>;
   setWatchFolder: (path: string, enabled: boolean, deleteAfterAdd: boolean) => Promise<void>;
@@ -1274,6 +1341,7 @@ export interface IpcApi {
   // File dialogs
   selectDirectory: () => Promise<string | null>;
   selectTorrentFile: () => Promise<{ path: string; content: string } | null>;
+  selectTorrentFiles: () => Promise<string[]>;
   selectFilesForTorrent: () => Promise<string[] | null>;
   selectFolderForTorrent: () => Promise<string | null>;
   selectSaveTorrentPath: (defaultName: string) => Promise<string | null>;
@@ -1293,9 +1361,16 @@ export interface IpcApi {
 
   // Cache management
   clearCache: () => Promise<{ success: boolean }>;
+  storage: {
+    scan(id: string): Promise<import('./storage-overview').StorageReport>;
+    cancel(id: string): Promise<void>;
+    onProgress(callback: (progress: import('./storage-overview').StorageProgress) => void): () => void;
+  };
 
   // Create torrent
   createTorrent: (request: CreateTorrentRequest) => Promise<CreateTorrentResult>;
+  cancelCreateTorrent: (requestId: string) => Promise<boolean>;
+  retryCreatedTorrentSeed: (seedRetryId: string) => Promise<CreateTorrentResult>;
   getDefaultTrackers: () => Promise<string[][]>;
 
   // Stats subscription
@@ -1372,7 +1447,7 @@ export interface IpcApi {
   setZoomFactor: (factor: number) => void;
   appearance: {
     getAcrylic: () => Promise<AcrylicStatus>;
-    setAcrylic: (enabled: boolean) => Promise<AcrylicStatus>;
+    setAcrylic: (enabled: boolean, material?: import('./appearance').NativeMaterial) => Promise<AcrylicStatus>;
     onAcrylicChanged: (callback: (status: AcrylicStatus) => void) => () => void;
   };
   // Resolve the absolute path of a dropped/selected File (webUtils.getPathForFile)
@@ -1431,6 +1506,7 @@ export interface IpcApi {
     removeRule: (id: string) => Promise<void>;
     /** What this rule (saved or not) matches among stored items. */
     previewRule: (rule: RSSRule) => Promise<RSSItem[]>;
+    forecastRule: (rule: RSSRule) => Promise<import('./rss-forecast').RssForecast>;
     /** Apply a saved rule to everything already stored. */
     runRule: (id: string) => Promise<{ grabbed: number; skipped: number }>;
   };
@@ -1443,7 +1519,8 @@ export interface IpcApi {
     // report; results arrive over onProgress until `done`. A recent identical
     // search is replayed from cache unless `refresh` is set.
     start: (query: string, category?: string, refresh?: boolean, providerId?: string)
-      => Promise<{ searchId: string; providers: string[]; cached?: boolean }>;
+      => Promise<{ searchId: string; providers: string[]; providerIds?: string[]; cached?: boolean }>;
+    more: (page: string) => Promise<{ searchId: string; providers: string[]; providerIds?: string[]; cached?: boolean }>;
     cancel: (searchId: string) => Promise<void>;
     onProgress: (callback: (progress: SearchProgress) => void) => () => void;
     getNetworkSettings: () => Promise<import('./provider-network').SearchNetworkSettings>;
@@ -1452,6 +1529,9 @@ export interface IpcApi {
     login: (id: string) => Promise<{ success: boolean; message: string }>;
     logout: (id: string) => Promise<void>;
     resolveSource: (refs: string[]) => Promise<{ sourceType: 'magnet' | 'torrent_file'; sourceUri: string }>;
+    releaseDetails: (refs: string[], requestId: string, selected?: string, refresh?: boolean) => Promise<import('./search-release-details').SearchReleaseDetails>;
+    releaseImage: (assetId: string, requestId: string) => Promise<string>;
+    cancelPreview: (requestId: string) => Promise<void>;
     getProviders: () => Promise<SearchProvider[]>;
     addProvider: (provider: Omit<SearchProvider, 'id'>) => Promise<SearchProvider>;
     updateProvider: (id: string, updates: Partial<SearchProvider>) => Promise<SearchProvider>;
@@ -1492,6 +1572,54 @@ export interface IpcApi {
 
   // Friend swarms / private rooms (Phase 3)
   rooms: {
+    documents: import('./room-documents').DocumentsApi;
+    fileSync: {
+      checkpointPreview(roomId: string, rootId: string): Promise<import('./room-file-sync-ui').SyncCheckpointPreview>;
+      checkpointConfirm(roomId: string, previewId: string): Promise<void>;
+      logPreview(roomId: string, rootId: string): Promise<import('./room-file-sync-ui').SyncLogPreview>;
+      compactLog(roomId: string, previewId: string): Promise<import('./room-file-sync-ui').SyncLogSummary>;
+      openEditor(roomId: string, rootId: string, entryId: string): Promise<import('./room-file-sync-editor').SyncEditorDraft>;
+      saveEditor(roomId: string, token: string, text: string): Promise<{ revisionId: string; draft: import('./room-file-sync-editor').SyncEditorDraft | null }>;
+      closeEditor(roomId: string, token: string): Promise<void>;
+      rights(roomId: string, rootId: string, writers?: string[], moves?: boolean, deletes?: boolean): Promise<import('./room-file-sync-ui').SyncRightsPreview>;
+      prepareDelete(roomId: string, rootId: string, entryId: string, resolve?: boolean): Promise<import('./room-file-sync-ui').SyncDeletePreview>;
+      missing(roomId: string, rootId: string): Promise<import('./room-file-sync-ui').SyncMissingView>;
+      prepareMissingDelete(roomId: string, rootId: string, entryId: string, stamp: string, acknowledgeMass: boolean): Promise<import('./room-file-sync-ui').SyncDeletePreview>;
+      confirmDelete(roomId: string, previewId: string, keepBoth?: boolean): Promise<{ copyPath: string | null }>;
+      prepareMove(roomId: string, rootId: string, entryId: string, toPath: string): Promise<import('./room-file-sync-ui').SyncMovePreview>;
+      confirmMove(roomId: string, previewId: string): Promise<void>;
+      pathConflict(roomId: string, rootId: string, entryId: string): Promise<import('./room-file-sync-ui').SyncPathConflict>;
+      preparePathResolution(roomId: string, rootId: string, entryId: string, revisionId: string, toPath: string): Promise<import('./room-file-sync-ui').SyncPathPreview>;
+      confirmPathResolution(roomId: string, previewId: string): Promise<void>;
+      metadata(roomId: string, rootId: string, keep?: number): Promise<import('./room-file-sync-ui').SyncMetadataView>;
+      metadataExport(roomId: string, rootId: string, password: string): Promise<import('./room-file-sync-ui').SyncMetadataExportResult | null>;
+      metadataImport(roomId: string, rootId: string, password: string): Promise<number | null>;
+      metadataConfirm(roomId: string, previewId: string): Promise<void>;
+      confirmRights(roomId: string, previewId: string): Promise<void>;
+      conflict(roomId: string, rootId: string, entryId: string): Promise<import('./room-file-sync-ui').SyncConflictPreview>;
+      resolveConflict(roomId: string, previewId: string, choice: import('./room-file-sync-ui').SyncConflictChoice): Promise<{ copyPath: string | null }>;
+      deferConflict(roomId: string, rootId: string, entryId: string): Promise<void>;
+      history(roomId: string, rootId: string, entryId: string, offset?: number): Promise<import('./room-file-sync-ui').SyncHistoryPage>;
+      fetchHistory(roomId: string, rootId: string, entryId: string): Promise<import('./room-file-sync-ui').SyncHistoryFetchResult>;
+      prepareRestore(roomId: string, rootId: string, revisionId: string): Promise<import('./room-file-sync-ui').SyncRestorePreview>;
+      restore(roomId: string, previewId: string): Promise<void>;
+      cache(roomId: string, rootId: string, limitBytes?: number): Promise<import('./room-file-sync-ui').SyncCacheView>;
+      filters(roomId: string, rootId: string, rules?: string[]): Promise<import('./room-file-sync-filters').SyncFilterPreview>;
+      filterPage(roomId: string, previewId: string, offset?: number): Promise<import('./room-file-sync-filters').SyncFilterPreview>;
+      confirmFilters(roomId: string, previewId: string): Promise<void>;
+      backups(roomId: string, rootId: string, policy?: import('./room-file-sync-backups').SyncBackupPolicy): Promise<import('./room-file-sync-backups').SyncBackupPreview>;
+      backupPage(roomId: string, previewId: string, offset?: number): Promise<import('./room-file-sync-backups').SyncBackupPreview>;
+      confirmBackups(roomId: string, previewId: string): Promise<import('./room-file-sync-backups').SyncBackupResult>;
+      trashPreview(roomId: string, rootId: string, selected?: string[]): Promise<import('./room-file-sync-ui').SyncTrashView>;
+      trashPage(roomId: string, previewId: string, offset?: number): Promise<import('./room-file-sync-ui').SyncTrashView>;
+      trashConfirm(roomId: string, previewId: string): Promise<import('./room-file-sync-ui').SyncTrashResult>;
+      trashExport(roomId: string, previewId: string, operationId: string): Promise<import('./room-file-sync-ui').SyncTrashExportResult | null>;
+      state(roomId: string): Promise<import('./room-file-sync-ui').SyncRoomView>;
+      files(roomId: string, rootId: string, offset?: number, trash?: boolean): Promise<import('./room-file-sync-ui').SyncFilesPage>;
+      choose(roomId: string, choice: import('./room-file-sync-ui').SyncFolderChoice): Promise<import('./room-file-sync-ui').SyncFolderPreview | null>;
+      confirm(roomId: string, previewId: string): Promise<import('./room-file-sync-ui').SyncRoomView>;
+      action(roomId: string, rootId: string, action: import('./room-file-sync-ui').SyncLocalAction, enabled?: boolean): Promise<import('./room-file-sync-ui').SyncRoomView>;
+    };
     getProfile: () => Promise<RoomProfile>;
     setProfile: (updates: Partial<Pick<RoomProfile, 'name' | 'avatarSeed' | 'color' | 'status' | 'avatarImg'>>) => Promise<RoomProfile>;
     create: (name: string, e2e?: boolean, autoFetch?: boolean) => Promise<RoomState>;
@@ -1501,6 +1629,8 @@ export interface IpcApi {
     get: (roomId: string) => Promise<RoomState | null>;
     engineStatus: () => Promise<RoomEngineStatus>;
     diagnose: (roomId: string) => Promise<import('./room-diagnostics').RoomDiagnosticReport>;
+    probeConnection: (roomId: string) => Promise<import('./room-connection-help').RoomNetworkProbe>;
+    preflight: (roomId: string, action: import('./room-preflight').RoomAction, targetId?: string) => Promise<import('./room-preflight').RoomActionCheck>;
     retryConnection: (roomId: string) => Promise<import('./room-diagnostics').RoomDiagnosticReport>;
     exportDiagnostics: (roomId: string) => Promise<{ success: boolean }>;
     addFiles: (roomId: string, paths: string[], folderId?: string) => Promise<RoomState>;
@@ -1538,6 +1668,7 @@ export interface IpcApi {
     setAutoFetch: (roomId: string, autoFetch: boolean) => Promise<RoomPreferenceResult>;
     setNotifyMuted: (roomId: string, muted: boolean) => Promise<{ ok: boolean }>;
     setNotifyMode: (roomId: string, mode: import('./room-chat-tools').RoomNotifyMode) => Promise<{ ok: boolean }>;
+    setNotificationRule: (roomId: string, rule: import('./notification-policy').NotificationRule, mode?: import('./room-chat-tools').RoomNotifyMode) => Promise<{ ok: boolean }>;
     fetchFile: (roomId: string, fileId: string) => Promise<RoomState>;
     pauseReceive: (roomId: string, fileId: string) => Promise<RoomState>;
     prioritizeReceive: (roomId: string, fileId: string) => Promise<RoomState>;
@@ -1545,6 +1676,8 @@ export interface IpcApi {
     setResources: (policy: import('./room-resources').RoomResourcePolicy) => Promise<import('./room-resources').RoomResourceResult>;
     setLimits: (roomId: string, upKbps: number, downKbps: number) => Promise<RoomPreferenceResult>;
     kick: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
+    rotateKey: (roomId: string) => Promise<RoomState>;
+    setKeyRotation: (roomId: string, plan: import('./room-key-rotation').RoomKeyRotationPlan | null) => Promise<RoomState>;
     transferOwner: (roomId: string, memberId: string) => Promise<RoomState>;
     sendChat: (roomId: string, text: string, replyTo?: string, messageId?: string) => Promise<RoomChatAck>;
     chatDraft: (roomId: string) => Promise<RoomChatDraft>;
@@ -1571,13 +1704,17 @@ export interface IpcApi {
       devices: () => Promise<VoiceDeviceInfo[]>;
       micTestStart: (settings: VoiceSettings, monitor?: boolean) => Promise<{ ok: boolean }>;
       micTestStop: () => Promise<{ ok: boolean }>;
+      speakerTestStart: (settings: VoiceSettings) => Promise<{ ok: boolean }>;
+      speakerTestStop: () => Promise<{ ok: boolean }>;
     };
     // Screenshare over the voice mesh (viewing rides a local loopback PC — see
     // onRoomScreenSignal for the renderer side of its signaling).
     screen: {
       sources: () => Promise<ScreenSourceInfo[]>;
-      shareStart: (roomId: string, sourceId: string, withAudio?: boolean) => Promise<{ ok: boolean }>;
+      shareStart: (roomId: string, sourceId: string, withAudio?: boolean, settings?: import('./screen-share').ScreenShareSettings) => Promise<{ ok: boolean }>;
       shareStop: (roomId: string) => Promise<{ ok: boolean }>;
+      configure: (roomId: string, settings: import('./screen-share').ScreenShareSettings) => Promise<{ ok: boolean }>;
+      playback: (roomId: string, memberId: string, volume: number, muted: boolean) => Promise<{ ok: boolean }>;
       watchStart: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
       watchStop: (roomId: string, memberId: string) => Promise<{ ok: boolean }>;
       signal: (roomId: string, memberId: string, kind: 'answer' | 'ice', data: unknown) => Promise<{ ok: boolean }>;
@@ -1619,6 +1756,7 @@ export interface IpcApi {
      * Reachability is the virtual LAN's job; this is what runs on top of it.
      */
     servers: {
+      preparation: (roomId: string, input: import('./server-readiness').ServerPreparationInput) => Promise<{ ok: boolean }>;
       state: (roomId: string) => Promise<RoomServerState>;
       /** Versions a module offers. A preset may only ever name one of these. */
       versions: (moduleId: string) => Promise<GameVersionRef[]>;

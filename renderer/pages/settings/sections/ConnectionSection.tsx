@@ -13,10 +13,13 @@
 import React from 'react';
 import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow, NumberField, RestartPendingNotice, TextField } from '../controls';
-import { Icon, Toggle, Select } from '../../../components';
+import { Button, Icon, Toggle, Select } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
+import { SpeedLimitField } from '../SpeedLimitField';
+import { EffectiveLimits } from '../EffectiveLimits';
+import type { SettingSearchEntry } from '../settingsSearch';
 
-export const ConnectionSection: React.FC = () => {
+export const ConnectionSection: React.FC<{ onOpenSetting(result: SettingSearchEntry): void }> = ({ onOpenSetting }) => {
   const { t } = useTranslation();
   const {
     applyToggle,
@@ -25,8 +28,8 @@ export const ConnectionSection: React.FC = () => {
     adaptiveUpload, setAdaptiveUpload, netHealth,
     altSpeedEnabled, setAltSpeedEnabled,
     altDownKbps, setAltDownKbps, altUpKbps, setAltUpKbps,
-    enableDHT, setEnableDHT, enableUtp, setEnableUtp, transportRestartPending,
-    encryption, setEncryption, setSettings, loadSettings,
+    enableUtp, setEnableUtp, transportRestartPending,
+    encryption, selectEncryption,
     maxConnections, setMaxConnections,
     maxConnectionsGlobal, setMaxConnectionsGlobal,
     portMin, setPortMin,
@@ -113,17 +116,17 @@ export const ConnectionSection: React.FC = () => {
 
   return (
     <>
+      <EffectiveLimits />
+
       <SettingsCard title={t('settings.grp.speedLimits')} icon="gauge">
         <SettingRow
           label={t('settings.downSpeed')}
           description={t('settings.downSpeed.desc')}
           control={
-            <NumberField
+            <SpeedLimitField
               value={maxDownKbps}
               onChange={(v) => setMaxDownKbps(Math.round(v))}
-              unit="KB/s"
-              min={0}
-              ariaLabel={t('settings.downSpeed')}
+              label={t('settings.downSpeed')}
             />
           }
         />
@@ -131,12 +134,10 @@ export const ConnectionSection: React.FC = () => {
           label={t('settings.upSpeed')}
           description={t('settings.upSpeed.desc')}
           control={
-            <NumberField
+            <SpeedLimitField
               value={maxUpKbps}
               onChange={(v) => setMaxUpKbps(Math.round(v))}
-              unit="KB/s"
-              min={0}
-              ariaLabel={t('settings.upSpeed')}
+              label={t('settings.upSpeed')}
             />
           }
         />
@@ -187,12 +188,10 @@ export const ConnectionSection: React.FC = () => {
           label={t('settings.altDown')}
           description={t('settings.altDown.desc')}
           control={
-            <NumberField
+            <SpeedLimitField
               value={altDownKbps}
               onChange={(v) => setAltDownKbps(Math.round(v))}
-              unit="KB/s"
-              min={0}
-              ariaLabel={t('settings.altDown')}
+              label={t('settings.altDown')}
             />
           }
         />
@@ -200,12 +199,10 @@ export const ConnectionSection: React.FC = () => {
           label={t('settings.altUp')}
           description={t('settings.altUp.desc')}
           control={
-            <NumberField
+            <SpeedLimitField
               value={altUpKbps}
               onChange={(v) => setAltUpKbps(Math.round(v))}
-              unit="KB/s"
-              min={0}
-              ariaLabel={t('settings.altUp')}
+              label={t('settings.altUp')}
             />
           }
         />
@@ -220,11 +217,9 @@ export const ConnectionSection: React.FC = () => {
           label={t('settings.dht')}
           description={t('settings.dht.desc')}
           control={
-            <Toggle
-              checked={enableDHT}
-              onChange={(v) => applyToggle(v, setEnableDHT, { enableDHT: v })}
-              ariaLabel={t('settings.dht')}
-            />
+            <Button variant="secondary" size="sm" onClick={() => onOpenSetting({ section: 'privacy', labelKey: 'privacy.dht', kind: 'row' })}>
+              {t('settings.dht.openPrivacy')}
+            </Button>
           }
         />
         <SettingRow
@@ -250,12 +245,9 @@ export const ConnectionSection: React.FC = () => {
                   { value: 'tolerated', label: t('settings.encryption.tolerated') },
                 ]}
                 value={encryption}
-                onChange={async (v) => {
+                onChange={(v) => {
                   const next = v === 'required' || v === 'tolerated' ? v : 'preferred';
-                  setEncryption(next);
-                  setSettings((prev) => (prev ? { ...prev, encryption: next } : prev));
-                  try { await window.api.updateSettings({ encryption: next }); }
-                  catch { await loadSettings(); }
+                  void selectEncryption(next);
                 }}
               />
             </div>

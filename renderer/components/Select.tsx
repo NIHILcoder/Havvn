@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, useId } from 'react';
 import { Icon } from './Icon';
+import { useFieldLabel } from '../utils/fieldLabel';
 import { useTranslation } from '../utils/i18nContext';
 import './Select.css';
 
@@ -33,13 +34,18 @@ export const Select: React.FC<SelectProps> = ({
   ariaDescribedBy,
 }) => {
   const { t } = useTranslation();
+  const field = useFieldLabel();
   const [isOpen, setIsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const listId = useId();
+  const search = useRef({ text: '', at: 0 });
   const selectRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const selectedOption = options.find((opt) => opt.value === value);
 
-  const openMenu = () => setIsOpen(true);
+  const active = Math.min(activeIndex, options.length - 1);
+  const openMenu = () => { setActiveIndex(Math.max(0, options.findIndex(option => option.value === value))); setIsOpen(true); };
 
   const positionMenu = useCallback(() => {
     const el = selectRef.current, menu = menuRef.current;
@@ -81,13 +87,13 @@ export const Select: React.FC<SelectProps> = ({
   useLayoutEffect(() => {
     if (!isOpen) return;
     const list = menuRef.current?.querySelector<HTMLElement>('.custom-select-list');
-    const selected = list?.querySelector<HTMLElement>('[aria-selected="true"]');
+    const selected = list?.querySelector<HTMLElement>('[data-active="true"]');
     if (list && selected) {
       if (selected.offsetTop < list.scrollTop) list.scrollTop = selected.offsetTop;
       else if (selected.offsetTop + selected.offsetHeight > list.scrollTop + list.clientHeight)
         list.scrollTop = selected.offsetTop + selected.offsetHeight - list.clientHeight;
     }
-  }, [isOpen, value]);
+  }, [isOpen, active]);
 
   useEffect(() => { if (disabled) setIsOpen(false); }, [disabled]);
 
@@ -110,20 +116,23 @@ export const Select: React.FC<SelectProps> = ({
   }, [isOpen]);
 
   const handleSelect = (optionValue: string) => {
+    search.current = { text: '', at: 0 };
     onChange(optionValue);
     setIsOpen(false);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (disabled) return;
+    if (disabled || e.nativeEvent.isComposing) return;
     
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      if (isOpen) setIsOpen(false); else openMenu();
+      if (isOpen && options[active]) handleSelect(options[active].value); else openMenu();
     } else if (e.key === 'Escape') {
+      search.current = { text: '', at: 0 };
       if (isOpen) { e.preventDefault(); e.stopPropagation(); }
       setIsOpen(false);
     } else if (e.key === 'Tab') {
+      if (isOpen && options[active]) onChange(options[active].value);
       setIsOpen(false);
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -133,16 +142,15 @@ export const Select: React.FC<SelectProps> = ({
         return;
       }
       
-      const currentIndex = options.findIndex((opt) => opt.value === value);
-      let nextIndex = currentIndex;
-      
-      if (e.key === 'ArrowDown') {
-        nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0;
-      } else {
-        nextIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1;
-      }
-      
-      onChange(options[nextIndex].value);
+      setActiveIndex(e.key === 'ArrowDown' ? (active + 1) % options.length : (active - 1 + options.length) % options.length);
+    } else if (e.key === 'Home' || e.key === 'End') {
+      e.preventDefault(); setIsOpen(true); setActiveIndex(e.key === 'Home' ? 0 : options.length - 1);
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const now = Date.now();
+      const query = (now - search.current.at < 700 ? search.current.text : '') + e.key.toLocaleLowerCase();
+      search.current = { text: query, at: now };
+      const match = options.findIndex(option => option.label.toLocaleLowerCase().startsWith(query));
+      if (match >= 0) { e.preventDefault(); setActiveIndex(match); setIsOpen(true); }
     }
   };
 
@@ -158,13 +166,17 @@ export const Select: React.FC<SelectProps> = ({
         className={`custom-select-trigger ${isOpen ? 'open' : ''}`}
         onClick={() => { if (!disabled) { if (isOpen) setIsOpen(false); else openMenu(); } }}
         onKeyDown={handleKeyDown}
+        onBlur={event => { if (!selectRef.current?.contains(event.relatedTarget as Node | null)) setIsOpen(false); }}
         tabIndex={disabled ? -1 : 0}
-        role="button"
+        role="combobox"
         aria-haspopup="listbox"
         aria-expanded={isOpen}
+        aria-controls={isOpen ? listId : undefined}
+        aria-activedescendant={isOpen && options[active] ? `${listId}-${active}` : undefined}
         aria-disabled={disabled}
-        aria-label={ariaLabel}
-        aria-describedby={ariaDescribedBy}
+        aria-label={ariaLabel ?? (field ? undefined : placeholder ?? t('select.placeholder'))}
+        aria-labelledby={ariaLabel ? undefined : field?.labelId}
+        aria-describedby={ariaDescribedBy ?? field?.descriptionId}
       >
         <span className="custom-select-value">
           {selectedOption ? (
@@ -183,11 +195,17 @@ export const Select: React.FC<SelectProps> = ({
 
       {isOpen && (
         <div ref={menuRef} className="custom-select-dropdown">
-          <ul role="listbox" className="custom-select-list">
-            {options.map((option) => (
+          <ul id={listId} role="listbox" aria-label={ariaLabel ?? (field ? undefined : placeholder ?? t('select.placeholder'))} aria-labelledby={ariaLabel ? undefined : field?.labelId} className="custom-select-list">
+            {options.map((option, index) => (
               <li
                 key={option.value}
+                id={`${listId}-${index}`}
+                data-active={index === active}
                 className={`custom-select-option ${option.value === value ? 'selected' : ''}`}
+                // Keep focus on the combobox until click commits the option.
+                // Native mousedown would otherwise blur the trigger and unmount
+                // this list before mouseup/click can deliver the selection.
+                onMouseDown={event => event.preventDefault()}
                 onClick={() => handleSelect(option.value)}
                 role="option"
                 aria-selected={option.value === value}
@@ -195,9 +213,7 @@ export const Select: React.FC<SelectProps> = ({
                 {option.icon && <Icon name={option.icon as any} size={16} />}
                 <span>{option.label}</span>
                 {option.value === value && (
-                  <div className="custom-select-check">
-                    <Icon name="check" size={14} />
-                  </div>
+                  <span className="custom-select-check" aria-hidden="true" />
                 )}
               </li>
             ))}

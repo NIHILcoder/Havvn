@@ -19,12 +19,13 @@ import { Toggle, Button, Icon, QRCode } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
 import { NetworkProfile } from '../../../../shared/types';
 import { parseTrackers, hasOnlyInvalidTrackers, MAX_CUSTOM_TRACKERS } from '../../../../shared/trackers';
+import { useClipboardCopy } from '../../../utils/useClipboardCopy';
 
 export const SharingSection: React.FC = () => {
   const { t } = useTranslation();
   const ctx = useSettings();
   const {
-    webRemote, setWebRemote, remoteCopied, setRemoteCopied,
+    webRemote, setWebRemote,
     shareUseTurn, setShareUseTurn, applyToggle,
     turnUrl, setTurnUrl, turnUser, setTurnUser, turnCred, setTurnCred, turnSaving, saveTurn,
     customTrackers, setCustomTrackers, trackersSaving, saveCustomTrackers,
@@ -33,6 +34,39 @@ export const SharingSection: React.FC = () => {
     removeNetProfile, toggleOverride, setOverrideValue,
     setMessage,
   } = ctx;
+  const [remoteBusy, setRemoteBusy] = React.useState<'toggle' | 'regen' | 'refresh' | null>(null);
+  const [remoteFailed, setRemoteFailed] = React.useState(false);
+  const [remoteUnknown, setRemoteUnknown] = React.useState(false);
+  const remotePending = React.useRef(false), remoteMounted = React.useRef(true);
+  React.useEffect(() => { remoteMounted.current = true; return () => { remoteMounted.current = false; }; }, []);
+  const changeRemote = async (kind: 'toggle' | 'regen' | 'refresh', enabled?: boolean) => {
+    if (remotePending.current) return;
+    remotePending.current = true; setRemoteBusy(kind); setRemoteFailed(false);
+    try {
+      const info = await (kind === 'toggle' ? window.api.webRemote.setEnabled(!!enabled)
+        : kind === 'regen' ? window.api.webRemote.regenToken() : window.api.webRemote.getInfo());
+      setWebRemote(info);
+      if (remoteMounted.current) setRemoteUnknown(false);
+    } catch {
+      // A token/settings write may have succeeded before restarting the server
+      // failed. Re-read reality instead of leaving an obsolete pairing URL.
+      try {
+        if (kind === 'refresh') throw new Error('Status unavailable');
+        const info = await window.api.webRemote.getInfo();
+        setWebRemote(info);
+        if (remoteMounted.current) setRemoteUnknown(false);
+      } catch { if (remoteMounted.current) setRemoteUnknown(true); }
+      if (remoteMounted.current) setRemoteFailed(true);
+    } finally {
+      remotePending.current = false;
+      if (remoteMounted.current) setRemoteBusy(null);
+    }
+  };
+  const [remoteCopyFailed, setRemoteCopyFailed] = React.useState(false);
+  const { copied: remoteCopied, copying: remoteCopying, copy: copyRemote } = useClipboardCopy(remoteUnknown ? '' : webRemote?.url ?? '', {
+    onSuccess: () => setRemoteCopyFailed(false), onError: () => setRemoteCopyFailed(true),
+  });
+  React.useEffect(() => { setRemoteCopyFailed(false); }, [webRemote?.url]);
 
   const [resources, setResources] = React.useState(() => readRoomResources(ctx.settings?.roomResources));
   const [resourceSaving, setResourceSaving] = React.useState(false);
@@ -121,37 +155,42 @@ export const SharingSection: React.FC = () => {
           control={
             <Toggle
               checked={webRemote.enabled}
-              onChange={async () => {
-                const info = await window.api.webRemote.setEnabled(!webRemote.enabled);
-                setWebRemote(info);
-              }}
+              disabled={!!remoteBusy || remoteUnknown}
+              onChange={enabled => { void changeRemote('toggle', enabled); }}
             />
           }
         />
 
-        {webRemote.enabled && webRemote.url && (
+        {remoteBusy && <p className="settings-notice-compact" role="status">{t('common.loading')}</p>}
+        {remoteFailed && <div className="settings-notice-compact web-remote-error" role="alert">
+          <Icon name="alert-triangle" size={14} />
+          <span>{t(remoteUnknown ? 'settings.webRemote.unknown' : 'settings.webRemote.failed')}</span>
+          {remoteUnknown && <Button size="sm" disabled={!!remoteBusy} onClick={() => { void changeRemote('refresh'); }}>{t('settings.webRemote.refresh')}</Button>}
+        </div>}
+        {!remoteUnknown && webRemote.enabled && webRemote.url && (
           <div className="web-remote-panel">
             <div className="web-remote-qr"><QRCode data={webRemote.url} size={168} /></div>
             <div className="web-remote-info">
               <p className="web-remote-hint">{t('settings.webRemote.scan')}</p>
               <div className="web-remote-url">{webRemote.url}</div>
               <div className="web-remote-actions">
-                <Button variant="secondary" size="sm" icon={<Icon name={remoteCopied ? 'check' : 'copy'} size={14} />}
-                  onClick={async () => { try { await navigator.clipboard.writeText(webRemote.url!); setRemoteCopied(true); setTimeout(() => setRemoteCopied(false), 1500); } catch { /* ignore */ } }}>
-                  {t('settings.webRemote.copy')}
+                <Button variant="secondary" size="sm" icon={<Icon name="copy" size={14} />} disabled={remoteCopying || !!remoteBusy} onClick={copyRemote}>
+                  {t(remoteCopied ? 'common.copied' : 'settings.webRemote.copy')}
                 </Button>
                 <Button variant="ghost" size="sm" icon={<Icon name="refresh-cw" size={14} />}
-                  onClick={async () => { const info = await window.api.webRemote.regenToken(); setWebRemote(info); }}>
+                  loading={remoteBusy === 'regen'} disabled={!!remoteBusy}
+                  onClick={() => { void changeRemote('regen'); }}>
                   {t('settings.webRemote.regen')}
                 </Button>
               </div>
+              {remoteCopyFailed && <p className="web-remote-hint" role="alert">{t('common.copyFailed')}</p>}
             </div>
           </div>
         )}
-        {webRemote.enabled && !webRemote.url && (
+        {!remoteUnknown && webRemote.enabled && !webRemote.url && (
           <div className="settings-notice-compact">
             <Icon name="alert-triangle" size={14} />
-            <span>{t('settings.webRemote.noLan')}</span>
+            <span>{t(webRemote.running ? 'settings.webRemote.noLan' : 'settings.webRemote.notRunning')}</span>
           </div>
         )}
         <div className="settings-notice-compact web-remote-warn">
@@ -160,92 +199,7 @@ export const SharingSection: React.FC = () => {
         </div>
       </SettingsCard>
 
-      {/* ── TURN relay for share links ───────────────────────────────────── */}
-      <SettingsCard title={t('settings.card.turnRelay')} icon="server">
-        <SettingRow
-          label={t('settings.shareTurn')}
-          description={t('settings.shareTurn.desc')}
-          control={
-            <Toggle
-              checked={shareUseTurn}
-              onChange={() => applyToggle(!shareUseTurn, setShareUseTurn, { shareUseTurn: !shareUseTurn })}
-            />
-          }
-        />
-        <div className="settings-notice-compact">
-          <Icon name="info" size={14} />
-          <span>{t('settings.shareTurn.note')}</span>
-        </div>
-
-        {/* Optional user-supplied TURN relay (zero-cost ladder, last resort).
-            Three inputs + a button never fit the row's control column — this is
-            a stacked full-width block: label/description on top, fields below. */}
-        <div className="stg-sub">
-          <div className="stg-row-label">{t('settings.customTurn.title')}</div>
-          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTurn.note')}</p>
-          <div className="stg-fields">
-            <TextField
-              mono
-              value={turnUrl}
-              onChange={setTurnUrl}
-              placeholder="turn:relay.example.com:3478"
-            />
-            <TextField
-              value={turnUser}
-              onChange={setTurnUser}
-              placeholder={t('settings.customTurn.user')}
-            />
-            <input
-              className="stg-text"
-              type="password"
-              value={turnCred}
-              placeholder={t('settings.customTurn.pass')}
-              aria-label={t('settings.customTurn.pass')}
-              onChange={(e) => setTurnCred(e.target.value)}
-            />
-            <Button variant="secondary" size="sm" onClick={saveTurn} loading={turnSaving} icon={<Icon name="check" size={14} />}>
-              {t('common.save')}
-            </Button>
-          </div>
-        </div>
-
-        {/* Own rendezvous trackers. Same stacked full-width shape as the TURN
-            block. The live count matters here: invalid entries are dropped on
-            save, so without it a typo would look like it took effect while
-            rooms silently kept announcing to the public defaults. */}
-        <div className="stg-sub">
-          <div className="stg-row-label">{t('settings.customTrackers.title')}</div>
-          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTrackers.note')}</p>
-          <div className="stg-fields">
-            <TextField
-              mono
-              value={customTrackers}
-              onChange={setCustomTrackers}
-              placeholder="wss://tracker.example.com, wss://tracker2.example.com"
-            />
-            <Button variant="secondary" size="sm" onClick={saveCustomTrackers} loading={trackersSaving} icon={<Icon name="check" size={14} />}>
-              {t('common.save')}
-            </Button>
-          </div>
-          {hasOnlyInvalidTrackers(customTrackers) ? (
-            <div className="settings-notice-compact">
-              <Icon name="info" size={14} />
-              <span>{t('settings.customTrackers.invalid')}</span>
-            </div>
-          ) : parseTrackers(customTrackers).length > 0 ? (
-            <div className="settings-notice-compact">
-              <Icon name="info" size={14} />
-              <span>
-                {t('settings.customTrackers.count')
-                  .replace('{n}', String(parseTrackers(customTrackers).length))
-                  .replace('{max}', String(MAX_CUSTOM_TRACKERS))}
-              </span>
-            </div>
-          ) : null}
-        </div>
-      </SettingsCard>
-
-      {/* ── Room identity backup ─────────────────────────────────────────── */}
+      {/* ── Room traffic and identity ─────────────────────────────────────────── */}
       <SettingsCard title={t('settings.roomResources.title')} icon="download" description={t('settings.roomResources.scope')}>
         <SettingRow label={t('settings.roomResources.upload')} description={t('settings.roomResources.shared')}
           control={<NumberField value={resources.maxUpKbps} min={0} max={1000000} unit="KB/s" ariaLabel={t('settings.roomResources.upload')}
@@ -259,7 +213,7 @@ export const SharingSection: React.FC = () => {
         <SettingRow label={t('settings.roomResources.screen')} description={t('settings.roomResources.screenHint')}
           control={<NumberField value={resources.screenBitrateKbps} min={250} max={20000} step={250} unit="kbit/s" ariaLabel={t('settings.roomResources.screen')}
             onChange={value => setResources(prev => ({ ...prev, screenBitrateKbps: value }))} />} />
-        <div className="stg-sub"><Button variant="primary" size="sm" loading={resourceSaving} onClick={saveResources}>{t('common.save')}</Button></div>
+        <div className="stg-sub"><Button variant="primary" size="sm" loading={resourceSaving} onClick={saveResources}>{t('settings.roomResources.save')}</Button></div>
       </SettingsCard>
 
       {identityMode && <RoomBackupModal mode={identityMode} onClose={() => setIdentityMode(null)} onDone={rooms => setMessage({ type: 'success', text: t(rooms === undefined ? 'settings.roomIdentity.exported' : 'settings.roomIdentity.imported') })} />}
@@ -287,6 +241,94 @@ export const SharingSection: React.FC = () => {
         <div className="settings-notice-compact web-remote-warn">
           <Icon name="alert-triangle" size={14} />
           <span>{t('settings.roomIdentity.warn')}</span>
+        </div>
+      </SettingsCard>
+
+      {/* ── TURN relay for share links ───────────────────────────────────── */}
+      <SettingsCard title={t('settings.card.turnRelay')} icon="server">
+        <SettingRow
+          label={t('settings.shareTurn')}
+          description={t('settings.shareTurn.desc')}
+          control={
+            <Toggle
+              checked={shareUseTurn}
+              onChange={() => applyToggle(!shareUseTurn, setShareUseTurn, { shareUseTurn: !shareUseTurn })}
+            />
+          }
+        />
+        <div className="settings-notice-compact">
+          <Icon name="info" size={14} />
+          <span>{t('settings.shareTurn.note')}</span>
+        </div>
+
+        {/* Optional user-supplied TURN relay (zero-cost ladder, last resort).
+            Three inputs + a button never fit the row's control column — this is
+            a stacked full-width block: label/description on top, fields below. */}
+        <div className="stg-sub">
+          <div className="stg-row-label" data-setting-label={t('settings.customTurn.title')}>{t('settings.customTurn.title')}</div>
+          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTurn.note')}</p>
+          <div className="stg-fields">
+            <TextField
+              mono
+              value={turnUrl}
+              onChange={setTurnUrl}
+              placeholder="turn:relay.example.com:3478"
+              ariaLabel={t('settings.customTurn.url')}
+            />
+            <TextField
+              value={turnUser}
+              onChange={setTurnUser}
+              placeholder={t('settings.customTurn.user')}
+              ariaLabel={t('settings.customTurn.user')}
+            />
+            <input
+              className="stg-text"
+              type="password"
+              value={turnCred}
+              placeholder={t('settings.customTurn.pass')}
+              aria-label={t('settings.customTurn.pass')}
+              onChange={(e) => setTurnCred(e.target.value)}
+            />
+            <Button variant="secondary" size="sm" onClick={saveTurn} loading={turnSaving} icon={<Icon name="check" size={14} />}>
+              {t('settings.customTurn.save')}
+            </Button>
+          </div>
+        </div>
+
+        {/* Own rendezvous trackers. Same stacked full-width shape as the TURN
+            block. The live count matters here: invalid entries are dropped on
+            save, so without it a typo would look like it took effect while
+            rooms silently kept announcing to the public defaults. */}
+        <div className="stg-sub">
+          <div className="stg-row-label" data-setting-label={t('settings.customTrackers.title')}>{t('settings.customTrackers.title')}</div>
+          <p className="stg-row-desc stg-row-desc-wide">{t('settings.customTrackers.note')}</p>
+          <div className="stg-fields">
+            <TextField
+              mono
+              value={customTrackers}
+              onChange={setCustomTrackers}
+              placeholder="wss://tracker.example.com, wss://tracker2.example.com"
+              ariaLabel={t('settings.customTrackers.addresses')}
+            />
+            <Button variant="secondary" size="sm" onClick={saveCustomTrackers} loading={trackersSaving} icon={<Icon name="check" size={14} />}>
+              {t('settings.customTrackers.save')}
+            </Button>
+          </div>
+          {hasOnlyInvalidTrackers(customTrackers) ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>{t('settings.customTrackers.invalid')}</span>
+            </div>
+          ) : parseTrackers(customTrackers).length > 0 ? (
+            <div className="settings-notice-compact">
+              <Icon name="info" size={14} />
+              <span>
+                {t('settings.customTrackers.count')
+                  .replace('{n}', String(parseTrackers(customTrackers).length))
+                  .replace('{max}', String(MAX_CUSTOM_TRACKERS))}
+              </span>
+            </div>
+          ) : null}
         </div>
       </SettingsCard>
 

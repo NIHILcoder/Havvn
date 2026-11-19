@@ -85,7 +85,8 @@ code, pre {
 
 /* === Focus States === */
 :focus-visible {
-  outline: none;
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
   box-shadow: var(--shadow-focus);
 }
 
@@ -235,7 +236,7 @@ svg {
 .iface-seg button {
   border: none;
   background: transparent;
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
   font-family: var(--font-family);
   font-size: 12px;
   font-weight: var(--font-weight-medium);
@@ -286,9 +287,25 @@ svg {
   transition-duration: 0.01ms !important;
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
 }
 
 /* Compact density (v1: settings surfaces) — tighter rows and card paddings. */
 [data-density="compact"] .stg-row { padding: 8px 0; min-height: 44px; }
 [data-density="compact"] .stg-card-b { padding: 0 14px; }
 [data-density="compact"] .stg-card-h { padding: 10px 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid Highlight !important; outline-offset: 2px !important; box-shadow: none !important; }
+  button, input, select, textarea, [role="combobox"], summary { forced-color-adjust: auto; }
+  button, input, select, textarea, [role="combobox"] { border: 1px solid ButtonText !important; clip-path: none !important; }
+  button:disabled { color: GrayText !important; border-color: GrayText !important; opacity: 1 !important; }
+  .custom-select-option[data-active="true"], [role="option"][aria-selected="true"] { outline: 2px solid Highlight !important; outline-offset: -2px; }
+  input[type="checkbox"]:checked::after, input[type="radio"]:checked::after { background: Highlight !important; }
+  .toggle-slider { background: ButtonText !important; border: 1px solid Canvas !important; }
+  .room-sync-diff-line.added { border-left: 3px solid CanvasText; }
+  .room-sync-diff-line.removed { border-left: 3px dashed CanvasText; }
+}

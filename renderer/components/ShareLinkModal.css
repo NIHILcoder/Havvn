@@ -148,3 +148,4 @@
   font-size: 0.74rem;
   line-height: 1.45;
 }
+.share-action-error { color: var(--color-warning); font-size: 13px; line-height: 1.6; margin: 0; overflow-wrap: anywhere; }

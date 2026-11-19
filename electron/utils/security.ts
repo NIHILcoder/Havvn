@@ -65,6 +65,11 @@ export function validateSeedLimit(value: unknown, wholeMinutes = false): asserts
 }
 
 /** Валидация URL трекера. */
+/** Removal only identifies an existing entry; it never contacts that address. */
+export function validateTrackerRemoval(url: unknown): asserts url is string {
+  if (typeof url !== 'string' || !url.trim() || url.length > 2048 || /[\0\r\n]/.test(url)) throw new Error('Invalid tracker reference');
+}
+
 export function validateTrackerUrl(url: unknown): asserts url is string {
   if (typeof url !== 'string') {
     throw new Error('Tracker URL must be a string');
@@ -237,6 +242,7 @@ export function validateFileName(fileName: unknown): asserts fileName is string 
   }
 
   // Проверка на недопустимые символы
+  // eslint-disable-next-line no-control-regex -- File names must reject the Windows control-character range.
   const invalidChars = /[<>:"|?*\x00-\x1F]/;
   if (invalidChars.test(fileName)) {
     throw new Error('File name contains invalid characters');

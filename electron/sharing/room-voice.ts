@@ -23,6 +23,7 @@ import { ScreenAec } from './voice/screen-aec';
 
 import { VoiceLinkRecovery, type VoiceLinkState } from '../../shared/room-voice-recovery';
 import { acceptVoiceStamp, ROOM_VOICE_PEERS, ROOM_VOICE_ROSTER, voiceMeshMembers } from '../../shared/room-voice-policy';
+import { DEFAULT_SCREEN_SHARE, effectiveScreenBitrate, validateScreenShareSettings, type ScreenShareSettings } from '../../shared/screen-share';
 
 export type SignalKind = 'offer' | 'answer' | 'ice';
 
@@ -135,6 +136,7 @@ export interface VoiceState {
   transmitting: boolean;   // the mic is LIVE right now (open + not gated) — drives the mic-live indicator
   inputMode: VoiceInputMode;
   sharing: boolean;        // WE are sharing our screen
+  shareSettings?: ScreenShareSettings;
   participants: VoiceParticipant[]; // includes self when inVoice
 }
 
@@ -149,16 +151,15 @@ const MAX_PENDING_ICE = 64;  // per-peer ICE buffer cap (real ICE is a few dozen
 // viewer); the loopback leg is host-local, so its cap only bounds encoder CPU.
 const SHARE_MESH_MAX_BITRATE = 2_500_000;
 const SHARE_LOOPBACK_MAX_BITRATE = 10_000_000;
-const SHARE_MAX_FRAMERATE = 15;
 
 /** Best-effort sender bitrate/framerate cap (screen video legs). */
-async function applyShareCaps(sender: RTCRtpSender, maxBitrate: number, failed?: () => void): Promise<void> {
+async function applyShareCaps(sender: RTCRtpSender, maxBitrate: number, maxFramerate: number, failed?: () => void): Promise<void> {
   try {
     const p = sender.getParameters();                       // reuse — carries transactionId
     (p as any).degradationPreference = 'maintain-resolution'; // pairs with contentHint 'detail' (text stays sharp)
     if (!p.encodings?.length) p.encodings = [{} as RTCRtpEncodingParameters];
     p.encodings[0].maxBitrate = maxBitrate;
-    (p.encodings[0] as any).maxFramerate = SHARE_MAX_FRAMERATE;
+    (p.encodings[0] as any).maxFramerate = maxFramerate;
     await sender.setParameters(p);
   } catch { failed?.(); /* encoder caps are best-effort, surface mesh failures */ }
 }
@@ -249,6 +250,9 @@ class MediaPeer {
   private micStreamId = '';                        // this peer's MIC audio stream id (the FIRST audio stream)
   private shareStreamId = '';                      // this peer's screen MediaStream id (from voice-share) — routes screen audio
   private shareAudioEl: HTMLAudioElement | null = null; // plays THEIR shared screen audio (separate from mic; deafen mutes it too)
+  private shareVolume = 1;
+  private shareMasterVolume = 1;
+  private shareMuted = false;
   volume = 1;           // EFFECTIVE volume (master × per-user) — the session computes it
 
   constructor(
@@ -319,14 +323,15 @@ class MediaPeer {
     };
   }
 
-  /** Play a peer's shared SCREEN audio (v1: no per-peer volume — deafen/local-mute
-   *  silence it like the mic; not gated by watch, so shared audio is heard even
-   *  without opening the screen view). */
+  /** Play a peer's shared SCREEN audio with independent playback controls.
+   *  Deafen/local-mute silence it like the mic; shared audio is heard even
+   *  without opening the screen view. */
   private playShareAudio(stream: MediaStream): void {
     if (this.closed) return;
     if (!this.shareAudioEl) { this.shareAudioEl = new Audio(); this.shareAudioEl.autoplay = true; }
     this.shareAudioEl.srcObject = stream;
-    this.shareAudioEl.muted = this.deafened || this.locallyMuted;
+    this.shareAudioEl.muted = this.deafened || this.locallyMuted || this.shareMuted;
+    this.shareAudioEl.volume = this.shareVolume * this.shareMasterVolume;
     const el = this.shareAudioEl as any;
     if (el.setSinkId) el.setSinkId(this.sinkId).catch(() => { /* device gone — default */ });
     this.shareAudioEl.play().catch(() => { /* permissive here */ });
@@ -391,6 +396,17 @@ class MediaPeer {
     if (this.audioEl) this.audioEl.volume = this.volume;
   }
 
+  setScreenPlayback(volume: number, muted: boolean): void {
+    this.shareVolume = volume; this.shareMuted = muted;
+    if (this.shareAudioEl) this.shareAudioEl.volume = volume * this.shareMasterVolume;
+    this.applyOutputMute();
+  }
+
+  setScreenMasterVolume(volume: number): void {
+    this.shareMasterVolume = volume;
+    if (this.shareAudioEl) this.shareAudioEl.volume = this.shareVolume * volume;
+  }
+
   /** Route this peer's audio to an output device ('' = system default). */
   setSink(deviceId: string): void {
     this.sinkId = deviceId || '';
@@ -398,14 +414,15 @@ class MediaPeer {
   }
 
   private applySink(): void {
-    const el = this.audioEl as any;
-    if (el?.setSinkId) el.setSinkId(this.sinkId).catch(() => { /* device gone — falls back to default */ });
+    for (const el of [this.audioEl, this.shareAudioEl] as any[]) {
+      if (el?.setSinkId) el.setSinkId(this.sinkId).catch(() => { /* device gone — falls back to default */ });
+    }
   }
 
   private applyOutputMute(): void {
     const mute = this.deafened || this.locallyMuted;
     if (this.audioEl) this.audioEl.muted = mute;
-    if (this.shareAudioEl) this.shareAudioEl.muted = mute; // deafen/ignore silences their screen audio too
+    if (this.shareAudioEl) this.shareAudioEl.muted = mute || this.shareMuted;
   }
 
   /** Deafen: mute output without renegotiating (keeps AEC reference alive-ish). */
@@ -444,13 +461,15 @@ class MediaPeer {
    *  'sendonly') would kill both shares on this leg. addTransceiver always makes a
    *  fresh m-line, leaving their incoming share untouched. */
   private screenBitrate = SHARE_MESH_MAX_BITRATE;
+  private screenFramerate: number = DEFAULT_SCREEN_SHARE.fps;
   private screenCapsChain: Promise<void> = Promise.resolve();
-  setScreenBitrate(kbps: number): void {
+  setScreenBitrate(kbps: number, fps = this.screenFramerate): void {
     this.screenBitrate = kbps * 1000;
+    this.screenFramerate = fps;
     const transceiver = this.shareTransceiver;
     if (transceiver) this.screenCapsChain = this.screenCapsChain.then(async () => {
       if (this.closed || this.shareTransceiver !== transceiver) return;
-      await applyShareCaps(transceiver.sender, this.screenBitrate, () => { if (this.pc.connectionState === 'connected') this.a.warn('Could not apply the screen video bitrate limit.'); });
+      await applyShareCaps(transceiver.sender, this.screenBitrate, this.screenFramerate, () => { if (this.pc.connectionState === 'connected') this.a.warn('Could not apply the screen video bitrate limit.'); });
     });
   }
 
@@ -563,6 +582,8 @@ class ScreenForwarder {
   private closed = false;
   private graceTimer: any = null;
   private connectTimer: any = null;
+  private signals: Promise<void> = Promise.resolve();
+  private earlyIce: RTCIceCandidateInit[] = [];
 
   constructor(
     private send: (kind: LoopbackKind, data?: unknown) => void,
@@ -572,13 +593,17 @@ class ScreenForwarder {
     this.pc = new RTCPeerConnection({ iceServers: [] });
     // Loopback signaling crosses ipcRenderer.send (STRUCTURED clone, which throws
     // on platform objects like RTCSessionDescription) — send plain JSON shapes.
-    this.pc.onicecandidate = ({ candidate }) => { if (candidate) this.send('ice', candidate.toJSON()); };
+    this.pc.onicecandidate = ({ candidate }) => { if (!this.closed && candidate) this.send('ice', candidate.toJSON()); };
     this.pc.onnegotiationneeded = async () => {
+      if (this.closed) return;
       try {
         await this.pc.setLocalDescription();
+        if (this.closed) return;
         const d = this.pc.localDescription;
         if (d) this.send('offer', { type: d.type, sdp: d.sdp });
-      } catch (e) { this.log('screen forward negotiation failed: ' + String(e)); }
+      } catch (e) {
+        if (!this.closed) { this.log('screen forward negotiation failed: ' + String(e)); this.die(); }
+      }
     };
     this.pc.onconnectionstatechange = () => {
       const s = this.pc.connectionState;
@@ -599,7 +624,9 @@ class ScreenForwarder {
     if (this.closed) return;
     if (this.sender) { void this.sender.replaceTrack(track).catch(() => { /* ignore */ }); return; }
     this.sender = this.pc.addTrack(track, stream); // fires negotiationneeded → offer to the renderer
-    void applyShareCaps(this.sender, SHARE_LOOPBACK_MAX_BITRATE);
+    // A watch may receive a 60 FPS remote stream, even if this install last
+    // shared at 15 FPS. The local forwarding leg must not impose that old cap.
+    void applyShareCaps(this.sender, SHARE_LOOPBACK_MAX_BITRATE, 60);
     // Arm the connect deadline HERE, not at construction: for a remote watch the
     // track (and thus the offer) arrives only after the mesh leg negotiates, which
     // can take >15s over TURN — reaping from construction would kill a valid watch.
@@ -612,24 +639,34 @@ class ScreenForwarder {
   }
 
   /** The renderer's answer/ICE, relayed back over IPC. */
-  async onSignal(kind: 'answer' | 'ice', data: any): Promise<void> {
-    if (this.closed) return;
-    try {
-      if (kind === 'answer') await this.pc.setRemoteDescription(data);
-      else await this.pc.addIceCandidate(data);
-    } catch (e) { this.log('screen forward signal error: ' + String(e)); }
+  onSignal(kind: 'answer' | 'ice', data: any): Promise<void> {
+    this.signals = this.signals.then(async () => {
+      if (this.closed) return;
+      if (kind === 'answer') {
+        await this.pc.setRemoteDescription(data);
+        while (!this.closed && this.earlyIce.length) await this.pc.addIceCandidate(this.earlyIce.shift()!);
+      } else if (this.pc.remoteDescription) await this.pc.addIceCandidate(data);
+      else {
+        if (this.earlyIce.length >= 256) throw new Error('Too many pending screen candidates');
+        this.earlyIce.push(data);
+      }
+    }).catch(e => {
+      if (!this.closed) { this.log('screen forward signal error: ' + String(e)); this.die(); }
+    });
+    return this.signals;
   }
 
   close(notifyRenderer: boolean): void {
     if (this.closed) return;
     this.closed = true;
+    this.earlyIce.length = 0;
     if (this.graceTimer) { clearTimeout(this.graceTimer); this.graceTimer = null; }
     if (this.connectTimer) { clearTimeout(this.connectTimer); this.connectTimer = null; }
     try { this.pc.close(); } catch { /* ignore */ }
     if (notifyRenderer) this.send('end');
   }
 
-  private die(): void { this.close(true); this.onDead(); }
+  private die(): void { if (!this.closed) { this.close(true); this.onDead(); } }
 }
 
 export class VoiceSession {
@@ -689,10 +726,17 @@ export class VoiceSession {
   ) {}
 
   private screenBitrateKbps = SHARE_MESH_MAX_BITRATE / 1000;
+  private shareSettings: ScreenShareSettings = { ...DEFAULT_SCREEN_SHARE };
+  private configuringShare = false;
+  private screenPlayback = new Map<string, { volume: number; muted: boolean }>();
   setScreenBitrate(kbps: number): void {
     if (!Number.isInteger(kbps) || kbps < 250 || kbps > 20_000) throw new Error('Invalid screen bitrate');
     this.screenBitrateKbps = kbps;
-    for (const peer of this.peers.values()) peer.setScreenBitrate(kbps);
+    for (const peer of this.peers.values()) peer.setScreenBitrate(this.effectiveScreenBitrate(), this.shareSettings.fps);
+  }
+
+  private effectiveScreenBitrate(): number {
+    return effectiveScreenBitrate(this.shareSettings, this.screenBitrateKbps);
   }
 
   isActive(): boolean { return this.active; }
@@ -911,6 +955,7 @@ export class VoiceSession {
     this.pendingShares.clear();
     for (const p of this.peers.values()) p.close();
     this.peers.clear();
+    this.screenPlayback.clear();
     if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
     this.quality.clear();
     this.localVad?.stop(); this.localVad = null;
@@ -951,6 +996,7 @@ export class VoiceSession {
     for (const [id, p] of this.peers) {
       p.setSink(s.outputDeviceId || '');
       p.setVolume(this.effectiveVolume(id));
+      p.setScreenMasterVolume(this.masterVolume);
     }
     if (this.active) {
       this.settingsChain = this.settingsChain.then(() => this.recaptureIfNeeded()).catch(() => { /* ignore */ });
@@ -1095,6 +1141,13 @@ export class VoiceSession {
     if (this.aec && ms) this.aec.setReference(memberId, ms, this.refGain(memberId)); // keep the echo reference in sync
   }
 
+  setScreenPlayback(memberId: string, volume: number, muted: boolean): void {
+    if (!Number.isFinite(volume) || volume < 0 || volume > 1 || typeof muted !== 'boolean') throw new Error('Invalid screen playback settings');
+    if (memberId === this.a.selfId || !this.roster.has(memberId)) return;
+    this.screenPlayback.set(memberId, { volume, muted });
+    this.peers.get(memberId)?.setScreenPlayback(volume, muted);
+  }
+
   /** Locally mute (ignore) a member: silence their audio without tearing the media
    *  connection down. `memberId==null` re-applies the whole set (after ensurePeer
    *  rebuilds a peer). */
@@ -1110,22 +1163,44 @@ export class VoiceSession {
 
   /** Start sharing an already-captured screen stream (the engine captured it via
    *  chromeMediaSource; we own it from here). Idempotent while a share is live. */
-  startShare(stream: MediaStream): void {
+  startShare(stream: MediaStream, requested?: ScreenShareSettings): void {
     if (!this.active) { stream.getTracks().forEach((t) => t.stop()); throw new Error('Join the voice channel before sharing your screen.'); }
     if (this.shareStream) { stream.getTracks().forEach((t) => t.stop()); return; }
     const track = stream.getVideoTracks()[0];
     if (!track) { stream.getTracks().forEach((t) => t.stop()); throw new Error('Screen capture produced no video track.'); }
+    try { this.shareSettings = validateScreenShareSettings(requested); }
+    catch (error) { stream.getTracks().forEach((t) => t.stop()); throw error; }
     try { track.contentHint = 'detail'; } catch { /* hint is best-effort */ }
     // The captured window/display can vanish (user closes the shared app) — auto-stop.
     track.onended = () => { if (this.shareStream) this.stopShare(); };
     this.shareStream = stream;
     this.shareTrack = track;
-    for (const p of this.peers.values()) p.addShareTrack(track, stream); // → renegotiate per peer
+    for (const p of this.peers.values()) {
+      p.setScreenBitrate(this.effectiveScreenBitrate(), this.shareSettings.fps);
+      p.addShareTrack(track, stream); // → renegotiate per peer
+    }
     this.a.announceShare(true, stream.id, this.nextAt());
     this.a.onChange();
     // M20: if the capture also carries system audio, echo-cancel it and share the
     // cleaned track (async — the AEC worklet loads, then the audio m-line adds).
     if (stream.getAudioTracks().length) void this.startShareAudio(stream);
+  }
+
+  /** Adjust the existing capture and senders; microphone and watch sessions survive. */
+  async configureShare(requested: ScreenShareSettings): Promise<void> {
+    const settings = validateScreenShareSettings(requested);
+    const stream = this.shareStream, track = this.shareTrack;
+    if (!this.active || !stream || !track || track.readyState === 'ended') throw new Error('Screen sharing is not active');
+    if (this.configuringShare) throw new Error('Screen share settings are already being applied');
+    this.configuringShare = true;
+    try {
+      await track.applyConstraints({ width: { max: Math.round(settings.height * 16 / 18) * 2 },
+        height: { max: settings.height }, frameRate: { max: settings.fps } });
+      if (this.shareStream !== stream || this.shareTrack !== track || !this.active) throw new Error('Screen sharing is not active');
+      this.shareSettings = settings;
+      for (const peer of this.peers.values()) peer.setScreenBitrate(this.effectiveScreenBitrate(), settings.fps);
+      this.a.onChange();
+    } finally { this.configuringShare = false; }
   }
 
   /** Echo-cancel the captured system audio (subtract the call mix we play) and fan
@@ -1291,7 +1366,7 @@ export class VoiceSession {
       const pend = this.pendingShares.get(memberId);
       if (pend) { this.pendingShares.delete(memberId); this.applyPeerShare(memberId, true, pend.streamId); }
     } else {
-      this.roster.delete(memberId); this.speaking.delete(memberId);
+      this.roster.delete(memberId); this.speaking.delete(memberId); this.screenPlayback.delete(memberId);
       // Leaving voice implies their share ended (no separate announce is sent).
       this.pendingShares.delete(memberId); this.pendingOffers.delete(memberId);
       if (this.remoteShares.has(memberId)) this.applyPeerShare(memberId, false, '');
@@ -1332,6 +1407,7 @@ export class VoiceSession {
     this.closeForwarder(memberId); // watching their now-dead share → overlay closes
     if (!this.roster.has(memberId) && !this.peers.has(memberId) && !hadShare) return;
     this.roster.delete(memberId);
+    this.screenPlayback.delete(memberId);
     this.speaking.delete(memberId);
     this.dropPeer(memberId);
     this.reconcilePeers();
@@ -1384,11 +1460,14 @@ export class VoiceSession {
       );
       p.setSink(this.getSettings().outputDeviceId || '');
       p.setVolume(this.effectiveVolume(memberId));
+      p.setScreenMasterVolume(this.masterVolume);
+      const playback = this.screenPlayback.get(memberId);
+      if (playback) p.setScreenPlayback(playback.volume, playback.muted);
       if (this.deafened) p.setDeafened(true);
       if (this.locallyMutedIds.has(memberId)) p.setLocallyMuted(true);
       // Mid-share join: attach the live screen track BEFORE the pending offer is
       // applied, so the fresh (stable) PC carries it in its very first negotiation.
-      p.setScreenBitrate(this.screenBitrateKbps);
+      p.setScreenBitrate(this.effectiveScreenBitrate(), this.shareSettings.fps);
       if (this.shareTrack && this.shareStream) p.addShareTrack(this.shareTrack, this.shareStream);
       if (this.shareAudioTrack && this.shareStream) p.addShareAudioTrack(this.shareAudioTrack, this.shareStream);
       // They already announced a share → route their screen audio by that streamId.
@@ -1501,7 +1580,8 @@ export class VoiceSession {
           reconnectAttempts: this.peers.get(id)!.recovery.attempts } : {}),
       });
     }
-    return { inVoice: this.active, muted: this.muted, deafened: this.deafened, transmitting: this.transmitting(), inputMode: this.inputMode, sharing: this.isSharing(), participants, ...(this.active && this.captureBroken ? { micUnavailable: true } : {}) };
+    return { inVoice: this.active, muted: this.muted, deafened: this.deafened, transmitting: this.transmitting(), inputMode: this.inputMode, sharing: this.isSharing(), participants,
+      ...(this.isSharing() ? { shareSettings: { ...this.shareSettings } } : {}), ...(this.active && this.captureBroken ? { micUnavailable: true } : {}) };
   }
 }
 

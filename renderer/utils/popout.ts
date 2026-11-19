@@ -25,6 +25,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { registerCommandWindow } from '../commands/windows';
 import { HostWindowProvider } from './hostWindow';
 import { APPEARANCE_MIRROR_ATTRS } from '../../shared/appearance';
 import { installAppearanceMotion } from './appearance';
@@ -124,6 +125,7 @@ export function usePopout(frameName: string, title: string, containerName?: stri
   const [root, setRoot] = useState<HTMLElement | null>(null);
   const popoutRef = useRef<Window | null>(null);
   useEffect(() => { popoutRef.current = popout; }, [popout]);
+  useEffect(() => popout ? registerCommandWindow(popout) : undefined, [popout]);
 
   // source <head> node → its clone in the child, so a REMOVED stylesheet can be
   // removed there too (and so the initial pass is not re-cloned by the observer).

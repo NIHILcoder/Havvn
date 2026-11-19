@@ -58,6 +58,14 @@ export function contrastRatio(fg: string, bg: string, base?: string): number | n
   return (lighter + 0.05) / (darker + 0.05);
 }
 
+/** Choose the stronger worst-case contrast for text over every gradient stop.
+ * Extreme mixed backgrounds can still fail AA; the readability checker reports
+ * that instead of claiming this choice guarantees a sufficient contrast. */
+export function contrastingTextColor(backgrounds: readonly string[], base?: string): string {
+  const score = (color: string) => Math.min(...backgrounds.map(bg => contrastRatio(color, bg, base) ?? 0));
+  return score('#000000') >= score('#ffffff') ? '#000000' : '#ffffff';
+}
+
 /** Classify a ratio against WCAG 2.1 thresholds (normal-weight body text). */
 export function wcagLevel(ratio: number): WcagLevel {
   if (ratio >= 7) return 'AAA';

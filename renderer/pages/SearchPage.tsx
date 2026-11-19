@@ -1,18 +1,23 @@
+import { ErrorMessage } from '../components/ErrorMessage';
+import { RecoveryError } from '../components/RecoveryError';
 import { downloadsModel, useDownloads } from '../state/downloads';
 /**
  * Search Page
  * Plugin-based torrent search using Jackett/Torznab/Custom providers.
  */
 
-import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { searchSession, type SearchSession } from '../state/search-session';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { SearchProvider, PythonStatus, ProviderStat, PluginManifest } from '../../shared/types';
+import { SearchProvider, PythonStatus, ProviderStat, PluginManifest, SearchProgress } from '../../shared/types';
+import { RUTRACKER_URL } from '../../shared/rutracker';
 import { downloadSearchState } from '../../shared/search-download-state';
 import { indexSearchDownloadHistory, matchSearchDownload, type SearchDownloadHistoryEntry, type SearchDownloadMatch } from '../../shared/search-download-history';
 import { ProviderConnectionSettings } from '../components/ProviderConnectionSettings';
 import { CODECS, RESOLUTIONS, VOICES, DEFAULT_RELEASE_FILTERS, matchesReleaseFilters, releaseChips, sanitizeReleaseFilters } from '../../shared/release-metadata';
 import { releaseComparison } from '../../shared/release-comparison';
 import { ReleaseComparison } from '../components/ReleaseComparison';
+import { ReleaseDetailsModal } from '../components/ReleaseDetailsModal';
 import { MergedResult, mergeResults } from '../../shared/search-dedupe';
 import { groupReleases, type ReleaseGroup } from '../../shared/release-groups';
 import { DEFAULT_SEARCH_PREFERENCES, evaluateSearchPreferences, sanitizeSearchPreferences } from '../../shared/search-preferences';
@@ -20,6 +25,7 @@ import { SearchPreferencesPanel } from '../components/SearchPreferencesPanel';
 import { SearchQueryInput } from '../components/SearchQueryInput';
 import { NumberInput } from '../components/NumberInput';
 import { Select } from '../components/Select';
+import { DownloadDefaultsPreview, InheritedBooleanSelect } from '../components/DownloadDefaultsPreview';
 import {
   Button,
   Icon,
@@ -30,8 +36,11 @@ import {
   useConfirm,
 } from '../components';
 import { cleanError } from '../utils/format-helpers';
+import { Modal } from '../components/Modal';
+import { readableError } from '../utils/error-messages';
 import { useTranslation } from '../utils/i18nContext';
 import './SearchPage.css';
+import { writeClipboardText } from '../utils/clipboard';
 
 const formatBytes = (bytes: number): string => {
   if (!bytes || bytes === 0) return '—';
@@ -58,7 +67,7 @@ const ageInDays = (iso: string | undefined): number | null => {
  * fixed dump of everything every provider returned.
  */
 const rowKey = (r: MergedResult): string =>
-  r.infoHash || r.magnetUri || r.torrentUrl || `${r.title}:${r.size}`;
+  r.deferredSource || r.infoHash || r.magnetUri || r.torrentUrl || `${r.title}:${r.size}`;
 
 /** Recent queries, kept per window like the other UI preferences. */
 const HISTORY_KEY = 'searchHistory';
@@ -103,11 +112,13 @@ const SearchPage: React.FC = () => {
     return `${Math.floor(days / 365)}${t('search.age.years')}`;
   }, [t]);
 
-  const [query, setQuery] = useState('');
-  const [rows, setRows] = useState<MergedResult[]>([]);
+  const [restored] = useState(() => searchSession.read());
+  const [sessionNotice, setSessionNotice] = useState(!!restored?.hasSearched);
+  const [query, setQuery] = useState(restored?.query ?? '');
+  const [rows, setRows] = useState<MergedResult[]>(restored?.rows ?? []);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [hasSearched, setHasSearched] = useState(false);
+  const [hasSearched, setHasSearched] = useState(restored?.hasSearched ?? false);
   const [downloading, setDownloading] = useState<Set<string>>(new Set());
   const downloads = useDownloads(s => s.downloads);
   const setDownloads = downloadsModel.updateDownloads;
@@ -161,24 +172,24 @@ const SearchPage: React.FC = () => {
       historyRevision.current += 1;
       setDownloadHistory([]);
     } catch (err) {
-      await alert({ title: t('search.failedTitle'), message: cleanError(err) });
+      await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> });
     } finally { setClearingDownloadHistory(false); }
   };
   // Where the Download button on a result row files the torrent, and whether it
   // starts. Kept for the whole result list rather than per row — the choice is
   // almost always the same for everything a single search turned up.
-  const [addCategoryId, setAddCategoryId] = useState('');
-  const [addPaused, setAddPaused] = useState(false);
+  const [addCategoryId, setAddCategoryId] = useState(restored?.addCategoryId ?? '');
+  const [addPaused, setAddPaused] = useState<boolean | undefined>(restored?.addPaused);
 
   // In-flight search: providers report one at a time, so the id identifies which
   // run a progress message belongs to and lets a stale run be ignored.
   const searchIdRef = useRef<string | null>(null);
-  const lastSearch = useRef<{ term: string }>({ term: '' });
-  const [providerStats, setProviderStats] = useState<ProviderStat[]>([]);
+  const lastSearch = useRef<{ term: string }>({ term: restored?.term ?? '' });
+  const [providerStats, setProviderStats] = useState<ProviderStat[]>(() => (restored?.providerStats ?? []).map(stat => stat.state === 'pending' ? { ...stat, state: 'failed', error: t('search.session.interrupted') } : stat));
 
   // Result filtering and ordering — all client-side over what has arrived so far.
-  const [sortKey, setSortKey] = useState<SortKey>('seeds');
-  const [sortDesc, setSortDesc] = useState(true);
+  const [sortKey, setSortKey] = useState<SortKey>(restored?.sortKey ?? 'seeds');
+  const [sortDesc, setSortDesc] = useState(restored?.sortDesc ?? true);
   const [preferenceSettings, setPreferenceSettings] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(PREFERENCES_KEY) || 'null');
@@ -190,15 +201,16 @@ const SearchPage: React.FC = () => {
     try { localStorage.setItem(PREFERENCES_KEY, JSON.stringify({ ...preferenceSettings, preferences: sanitizeSearchPreferences(preferenceSettings.preferences) })); }
     catch { /* Remain usable without persistent storage. */ }
   }, [preferenceSettings]);
-  const [refine, setRefine] = useState('');
-  const [minSeeds, setMinSeeds] = useState(0);
-  const [hideDead, setHideDead] = useState(false);
-  const [providerFilter, setProviderFilter] = useState<string | null>(null);
+  const [refine, setRefine] = useState(restored?.refine ?? '');
+  const [minSeeds, setMinSeeds] = useState(restored?.minSeeds ?? 0);
+  const [hideDead, setHideDead] = useState(restored?.hideDead ?? false);
+  const [providerFilter, setProviderFilter] = useState<string | null>(restored?.providerFilter ?? null);
   const [groupResults, setGroupResults] = useState(() => {
     try { return localStorage.getItem(GROUP_RESULTS_KEY) !== 'false'; } catch { return true; }
   });
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set(restored?.expandedGroups));
   const [comparisonKey, setComparisonKey] = useState<string | null>(null);
+  const [detailResult, setDetailResult] = useState<MergedResult | null>(null);
   useEffect(() => {
     try { localStorage.setItem(GROUP_RESULTS_KEY, String(groupResults)); } catch { /* Keep usable without storage. */ }
   }, [groupResults]);
@@ -216,10 +228,17 @@ const SearchPage: React.FC = () => {
 
   // Files-before-adding preview, opened from a row's menu.
   const [previewTarget, setPreviewTarget] = useState<MergedResult | null>(null);
+  const [showDownloadOptions, setShowDownloadOptions] = useState(false);
 
   const [history, setHistory] = useState<string[]>(loadHistory);
 
   const scrollParentRef = useRef<HTMLDivElement>(null);
+  const scrollPosition = useRef(restored?.scrollTop ?? 0);
+  const latestSession = useRef<SearchSession>(null!);
+  latestSession.current = { query, term: lastSearch.current.term, rows, hasSearched, interrupted: loading,
+    providerStats, sortKey, sortDesc, refine, minSeeds, hideDead, providerFilter,
+    expandedGroups: [...expandedGroups], addCategoryId, addPaused, scrollTop: scrollPosition.current, capturedAt: Date.now() };
+  useEffect(() => () => { searchSession.save({ ...latestSession.current, scrollTop: scrollPosition.current }); }, []);
 
   // Providers tab state
   const [showProviders, setShowProviders] = useState(false);
@@ -231,6 +250,12 @@ const SearchPage: React.FC = () => {
   const [savingProvider, setSavingProvider] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; success: boolean; message: string } | null>(null);
+  const [recoverSource, setRecoverSource] = useState<string | null>(null), [sourceReturn, setSourceReturn] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showProviders || !sourceReturn) return;
+    const card = Array.from(document.querySelectorAll<HTMLElement>('[data-provider-card]')).find(el => el.dataset.providerCard === sourceReturn);
+    card?.scrollIntoView({ block: 'nearest' }); card?.focus();
+  }, [showProviders, sourceReturn, providers]);
   const [pythonStatus, setPythonStatus] = useState<PythonStatus | null>(null);
   const [checkingPython, setCheckingPython] = useState(false);
   // What the chosen script says about itself, when it says anything.
@@ -263,29 +288,40 @@ const SearchPage: React.FC = () => {
   }, [loadProviders]);
 
   const hasEnabledProvider = providers.some(p => p.enabled);
+  const startingSearch = useRef(false);
+  const earlyProgress = useRef<SearchProgress[]>([]);
+  const requestVersion = useRef(0);
+  const appendingPage = useRef(false);
+  const acceptProgress = useCallback((progress: SearchProgress) => {
+    if (progress.searchId !== searchIdRef.current) {
+      if (startingSearch.current && earlyProgress.current.length < 100) earlyProgress.current.push(progress);
+      return;
+    }
+    if (progress.stat) {
+      const stat = progress.stat;
+      const append = appendingPage.current;
+      setProviderStats(prev => prev.map(s => (stat.providerId ? s.providerId === stat.providerId || (!s.providerId && s.name === stat.name) : s.name === stat.name) ? {
+        ...stat, ...(append ? { count: s.count + stat.count, nextPage: stat.state === 'failed' ? s.nextPage : stat.nextPage } : {}),
+      } : s));
+    }
+    if (progress.results?.length) setRows(prev => mergeResults(prev, progress.results!));
+    if (progress.done) { searchIdRef.current = null; setLoading(false); }
+  }, []);
+  const attachSearch = (version: number, id: string) => {
+    if (version !== requestVersion.current) { void window.api.search.cancel(id); return false; }
+    startingSearch.current = false;
+    searchIdRef.current = id;
+    const pending = earlyProgress.current; earlyProgress.current = [];
+    for (const progress of pending) acceptProgress(progress);
+    return true;
+  };
 
   // One subscription for the page's lifetime; messages for a superseded search
   // are dropped by id. Providers push as they finish rather than the whole
   // search waiting on its slowest member.
   useEffect(() => {
-    return window.api.search.onProgress(progress => {
-      if (progress.searchId !== searchIdRef.current) return;
-
-      if (progress.stat) {
-        const stat = progress.stat;
-        setProviderStats(prev => prev.map(s => (s.name === stat.name ? stat : s)));
-      }
-      if (progress.results && progress.results.length > 0) {
-        // Merge into what has already arrived — the same torrent from three
-        // indexers is one row, not three.
-        setRows(prev => mergeResults(prev, progress.results!));
-      }
-      if (progress.done) {
-        searchIdRef.current = null;
-        setLoading(false);
-      }
-    });
-  }, []);
+    return window.api.search.onProgress(acceptProgress);
+  }, [acceptProgress]);
 
   const runSearch = async (refresh: boolean) => {
     const term = query.trim();
@@ -297,8 +333,10 @@ const SearchPage: React.FC = () => {
     }
 
     setLoading(true);
+    setSessionNotice(false); scrollPosition.current = 0; scrollParentRef.current?.scrollTo({ top: 0 });
     setError(null);
     setHasSearched(true);
+    searchIdRef.current = null;
     setRows([]);
     setExpandedGroups(new Set());
     setComparisonKey(null);
@@ -307,18 +345,23 @@ const SearchPage: React.FC = () => {
     setProviderStats([]);
     setHistory(h => rememberQuery(h, term));
     lastSearch.current = { term };
+    const version = ++requestVersion.current;
+    startingSearch.current = true; earlyProgress.current = []; appendingPage.current = false;
 
     try {
-      const { searchId, providers: names } = await window.api.search.start(
+      const { searchId, providers: names, providerIds } = await window.api.search.start(
         term,
         undefined,
         refresh
       );
-      searchIdRef.current = searchId;
+      if (version !== requestVersion.current) { void window.api.search.cancel(searchId); return; }
       // Seed a pending row per provider so the strip shows who is still out.
-      setProviderStats(names.map(name => ({ name, count: 0, ms: 0, state: 'pending' as const })));
+      setProviderStats(names.map((name, index) => ({ name, providerId: providerIds?.[index], count: 0, ms: 0, state: 'pending' as const })));
+      attachSearch(version, searchId);
       if (names.length === 0) setLoading(false);
     } catch (err: any) {
+      if (version !== requestVersion.current) return;
+      startingSearch.current = false;
       setError(err?.message || t('search.failed'));
       setLoading(false);
     }
@@ -327,12 +370,47 @@ const SearchPage: React.FC = () => {
   const retryProvider = async (stat: ProviderStat) => {
     if (loading || !stat.providerId) return;
     setLoading(true);
+    setError(null);
+    const version = ++requestVersion.current;
+    startingSearch.current = true; earlyProgress.current = []; appendingPage.current = false;
     setProviderStats(prev => prev.map(s => s.providerId === stat.providerId ? { ...s, state: 'pending', error: undefined } : s));
     try {
       const result = await window.api.search.start(lastSearch.current.term, undefined, true, stat.providerId);
-      searchIdRef.current = result.searchId;
+      if (!attachSearch(version, result.searchId)) return;
       if (!result.providers.length) setLoading(false);
-    } catch (e) { setLoading(false); setError(cleanError(e)); }
+    } catch (e) { if (version === requestVersion.current) { startingSearch.current = false; setLoading(false); setError(cleanError(e)); setProviderStats(prev => prev.map(s => s.providerId === stat.providerId ? { ...s, state: 'failed', error: cleanError(e) } : s)); } }
+  };
+
+  const loadMore = async (stat: ProviderStat) => {
+    if (loading || !stat.nextPage) return;
+    const version = ++requestVersion.current;
+    startingSearch.current = true; earlyProgress.current = []; appendingPage.current = true;
+    setLoading(true); setError(null);
+    try {
+      const result = await window.api.search.more(stat.nextPage);
+      if (!attachSearch(version, result.searchId)) return;
+      if (!result.providers.length) setLoading(false);
+    } catch (e) { if (version === requestVersion.current) { startingSearch.current = false; setLoading(false); setError(cleanError(e)); } }
+  };
+  const signInSource = async (id: string) => {
+    setTestingId(id);
+    try {
+      const result = await window.api.search.login(id);
+      setTestResult({ id, ...result });
+      if (result.success && lastSearch.current.term && !loading) {
+        const stat = providerStats.find(s => s.providerId === id);
+        if (stat) await retryProvider(stat);
+      }
+    } catch (e) { setTestResult({ id, success: false, message: cleanError(e) }); await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={e} details /> }); }
+    finally { setTestingId(null); }
+  };
+  const connectRuTracker = async () => {
+    setSavingProvider(true);
+    try {
+      const provider = await window.api.search.addProvider({ name: 'RuTracker', url: RUTRACKER_URL, type: 'rutracker', enabled: true });
+      await loadProviders(); await signInSource(provider.id);
+    } catch (e) { await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={e} details /> }); }
+    finally { setSavingProvider(false); }
   };
 
   const handleSearch = (e?: React.FormEvent) => {
@@ -341,9 +419,9 @@ const SearchPage: React.FC = () => {
   };
 
   const handleCancelSearch = () => {
+    ++requestVersion.current; startingSearch.current = false; earlyProgress.current = [];
     const id = searchIdRef.current;
-    if (!id) return;
-    window.api.search.cancel(id).catch(() => { /* best effort */ });
+    if (id) window.api.search.cancel(id).catch(() => { /* best effort */ });
     searchIdRef.current = null;
     setLoading(false);
     setProviderStats(prev => prev.map(s => (s.state === 'pending' ? { ...s, state: 'failed', error: t('search.cancelled') } : s)));
@@ -353,6 +431,7 @@ const SearchPage: React.FC = () => {
   // any python plugin among them) stop working on results nobody will see.
   useEffect(() => {
     return () => {
+      ++requestVersion.current; startingSearch.current = false;
       if (searchIdRef.current) {
         window.api.search.cancel(searchIdRef.current).catch(() => { /* best effort */ });
       }
@@ -374,7 +453,7 @@ const SearchPage: React.FC = () => {
         sourceUri: uri,
         name: result.title,
         categoryId: addCategoryId || undefined,
-        paused: addPaused || undefined,
+        paused: addPaused,
         selectedFiles,
         savePath,
         searchSourceRefs: result.sourceRefs,
@@ -389,7 +468,7 @@ const SearchPage: React.FC = () => {
         if (revision === historyRevision.current) setDownloadHistory(history);
       } catch { /* The download succeeded even if refreshing its history failed. */ }
     } catch (err) {
-      await alert({ title: t('search.failedTitle'), message: `${t('search.failedToAdd')} ${cleanError(err)}` });
+      await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> });
     } finally {
       setDownloading(prev => {
         const next = new Set(prev);
@@ -406,7 +485,8 @@ const SearchPage: React.FC = () => {
       await alert({ title: t('search.failedTitle'), message: t('search.noMagnet') });
       return;
     }
-    await navigator.clipboard.writeText(uri);
+    try { await writeClipboardText(uri); }
+    catch { await alert({ title: t('search.failedTitle'), message: t('common.copyFailed') }); }
   };
 
   /** Confirm out of the file picker: add with just the files that stayed ticked. */
@@ -418,6 +498,7 @@ const SearchPage: React.FC = () => {
 
   const rowMenuItems = (r: MergedResult) => {
     const items = [
+      { key: 'preview', label: t('search.preview.title'), icon: <Icon name="file" size={14} />, onSelect: () => setDetailResult(r) },
       {
         key: 'compare', label: t('search.compare.details'), icon: <Icon name="list" size={14} />,
         onSelect: () => setComparisonKey(releaseGroups.find(group => group.releases.includes(r))?.key ?? null),
@@ -431,14 +512,14 @@ const SearchPage: React.FC = () => {
           void window.api.search.resolveSource(r.sourceRefs).then(source => {
             setPreviewTarget({ ...r, magnetUri: source.sourceType === 'magnet' ? source.sourceUri : undefined,
               torrentUrl: source.sourceType === 'torrent_file' ? source.sourceUri : undefined });
-          }).catch(err => alert({ title: t('search.failedTitle'), message: cleanError(err) }));
+          }).catch(err => alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> }));
         },
       },
       {
         key: 'magnet',
         label: t('search.row.copyMagnet'),
         icon: <Icon name="copy" size={14} />,
-        onSelect: () => { handleCopyMagnet(r); },
+        onSelect: () => { void handleCopyMagnet(r); },
       },
     ];
     // The details URL comes from the indexer, so check the scheme here rather
@@ -527,7 +608,9 @@ const SearchPage: React.FC = () => {
     estimateSize: () => 52,
     getItemKey: index => displayRows[index].key,
     overscan: 10,
+    initialOffset: restored?.scrollTop ?? 0,
   });
+  useLayoutEffect(() => { if (scrollParentRef.current) scrollParentRef.current.scrollTop = restored?.scrollTop ?? 0; }, [restored]);
 
   const handleAddProvider = async () => {
     if (!newProvider.name || !newProvider.url) return;
@@ -537,7 +620,7 @@ const SearchPage: React.FC = () => {
       setNewProvider({ name: '', url: '', apiKey: '', username: '', password: '', type: 'jackett', enabled: true });
       await loadProviders();
     } catch (err: any) {
-      await alert({ title: t('search.failedTitle'), message: `${t('search.failedToAddProvider')} ${err?.message}` });
+      await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> });
     } finally {
       setSavingProvider(false);
     }
@@ -549,7 +632,7 @@ const SearchPage: React.FC = () => {
       await window.api.search.removeProvider(id);
       await loadProviders();
     } catch (err: any) {
-      await alert({ title: t('search.failedTitle'), message: `${t('search.failedPrefix')} ${err?.message}` });
+      await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -558,7 +641,7 @@ const SearchPage: React.FC = () => {
       await window.api.search.updateProvider(id, { enabled });
       await loadProviders();
     } catch (err: any) {
-      await alert({ title: t('search.failedTitle'), message: `${t('search.failedPrefix')} ${err?.message}` });
+      await alert({ title: t('search.failedTitle'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -601,6 +684,22 @@ const SearchPage: React.FC = () => {
 
   return (
     <div className="search-page">
+      {recoverSource && <Modal title={t('search.recovery.title')} icon="settings" size="md" onClose={() => setRecoverSource(null)}>
+        <p>{t('search.recovery.query')}: <strong>{lastSearch.current.term}</strong></p>
+        <p>{t('search.recovery.keepResults')}</p>
+        <RecoveryError key={recoverSource} error={providerStats.find(p => p.providerId === recoverSource)?.error}
+          summary={providerStats.find(p => p.providerId === recoverSource)?.errorCode === 'auth' ? t('search.recovery.authCause') : providerStats.find(p => p.providerId === recoverSource)?.errorCode === 'captcha' ? t('search.recovery.captchaCause') : undefined} context={{
+          object: providers.find(p => p.id === recoverSource)?.name ?? providerStats.find(p => p.providerId === recoverSource)?.name ?? recoverSource,
+          actions: [
+            ...(['auth', 'captcha'].includes(providerStats.find(p => p.providerId === recoverSource)?.errorCode ?? '') ? [{ id: 'login', label: t('search.connection.login'), disabled: loading || testingId === recoverSource, run: () => signInSource(recoverSource) }] : []),
+            { id: 'test', label: t('search.recovery.test'), disabled: !!testingId, run: () => handleTestProvider(recoverSource) },
+            { id: 'settings', label: t('search.recovery.settings'), run: () => { setSourceReturn(recoverSource); setRecoverSource(null); setShowProviders(true); void loadProviders(); } },
+            { id: 'retry', label: t('search.recovery.retryOnly'), kind: 'retry', disabled: loading || !!testingId, run: async () => { const stat = providerStats.find(p => p.providerId === recoverSource); if (stat) { setRecoverSource(null); await retryProvider(stat); } } },
+          ],
+        }} />
+        {testResult?.id === recoverSource && <p role="status">{testResult.success ? testResult.message : <ErrorMessage error={testResult.message} />}</p>}
+      </Modal>}
+      {sessionNotice && <div className="search-session-notice" role="status"><span>{t(restored?.interrupted ? 'search.session.interrupted' : 'search.session.restored')}{restored?.truncated && <> · {t('search.session.limited')}</>}</span><Button size="sm" variant="secondary" disabled={loading || !query.trim()} onClick={() => { void runSearch(true); }}>{t('search.session.refresh')}</Button><Button size="sm" variant="ghost" onClick={() => setSessionNotice(false)} aria-label={t('common.close')}><Icon name="x" size={14} /></Button></div>}
       <div className="page-header">
         <h1 className="page-title">
           <Icon name="search" size={22} />
@@ -652,13 +751,15 @@ const SearchPage: React.FC = () => {
           {/* Who answered, who is still out, and who failed — a dead indexer
               used to be indistinguishable from "nothing found". */}
           {providerStats.length > 0 && (
+            <>
+            <p className="search-source-summary" role="status">{t('search.recovery.summary').replace('{ok}', String(providerStats.filter(s => s.state === 'ok').length)).replace('{failed}', String(providerStats.filter(s => s.state === 'failed').length)).replace('{pending}', String(providerStats.filter(s => s.state === 'pending').length))}{!loading && rows.length === 0 && ' · ' + t(providerStats.some(s => s.state === 'failed') ? 'search.recovery.incompleteEmpty' : 'search.recovery.trueEmpty')}</p>
             <div className="provider-strip">
-              {providerStats.map(s => (
+              {providerStats.map(s => (<div className="provider-status-group" key={s.providerId || s.name}>
                 <button
                   key={s.name}
                   type="button"
                   className={`provider-stat ${s.state} ${providerFilter === s.name ? 'filtered' : ''}`}
-                  title={s.error || (s.state === 'ok' ? `${s.count} · ${s.ms}ms` : undefined)}
+                  title={s.error ? readableError(s.error) : (s.state === 'ok' ? `${s.count} · ${s.ms}ms` : undefined)}
                   disabled={s.state === 'failed' ? loading || !s.providerId : s.state !== 'ok' || s.count === 0}
                   onClick={() => s.state === 'failed' ? void retryProvider(s) : setProviderFilter(f => (f === s.name ? null : s.name))}
                 >
@@ -668,15 +769,19 @@ const SearchPage: React.FC = () => {
                   <span className="provider-stat-name">{s.name}</span>
                   {s.state === 'ok' && <span className="provider-stat-count">{s.count}</span>}
                 </button>
-              ))}
+                {s.nextPage && <Button variant="secondary" size="sm" disabled={loading} onClick={() => loadMore(s)}>{t('search.more')} · {s.name}</Button>}
+                {s.state === 'failed' && ['auth', 'captcha'].includes(s.errorCode ?? '') && s.providerId && <Button variant="secondary" size="sm" disabled={loading || testingId === s.providerId} onClick={() => signInSource(s.providerId!)}>{t('search.connection.login')}</Button>}
+                {s.state === 'failed' && s.providerId && <Button variant="secondary" size="sm" onClick={() => { setTestResult(null); setRecoverSource(s.providerId!); }}>{t('search.recovery.open')}</Button>}
+              </div>))}
             </div>
+            </>
           )}
 
           {/* Error */}
           {error && (
             <div className="search-error">
               <Icon name="alert-circle" size={16} />
-              {error}
+              <ErrorMessage error={error} />
             </div>
           )}
 
@@ -703,8 +808,10 @@ const SearchPage: React.FC = () => {
 
           {rows.length > 0 && (
             <div className="search-results">
+              <section className="search-results-tools" aria-label={t('search.controls')}>
               <div className="search-results-header">
-                <span className="results-count">
+                <div className="search-results-heading">
+                <span className="search-result-count">
                   {visibleRows.length === rows.length
                     ? `${rows.length} ${t('search.results')}`
                     : `${visibleRows.length} / ${rows.length} ${t('search.results')}`}
@@ -720,34 +827,29 @@ const SearchPage: React.FC = () => {
                     <Icon name="refresh-cw" size={13} />
                   </button>
                 </span>
+                <Button variant="secondary" size="sm" icon={<Icon name="settings" size={14} />}
+                  aria-expanded={showDownloadOptions} aria-controls="search-download-options"
+                  onClick={() => setShowDownloadOptions(value => !value)}>{t('search.downloadOptions')}</Button>
+                </div>
                 {/* Governs what the Download button on every row below does. */}
-                <div className="results-add-options">
-                  <span className="add-options-label" title={t('search.addToHint')}>{t('search.addTo')}</span>
+                {showDownloadOptions && <div className="results-add-options" id="search-download-options">
+                  <label className="search-add-field"><span title={t('search.addToHint')}>{t('search.addTo')}</span>
                   <CategorySelect
                     value={addCategoryId}
                     onChange={setAddCategoryId}
                     className="add-category-select"
                   />
-                  <button
-                    type="button"
-                    className={`add-paused-btn ${addPaused ? 'active' : ''}`}
-                    role="switch"
-                    aria-checked={addPaused}
-                    title={t('search.addPausedHint')}
-                    onClick={() => setAddPaused(p => !p)}
-                  >
-                    <Icon name="pause" size={13} />
-                    {t('search.addPaused')}
-                  </button>
-                </div>
+                  </label>
+                  <label className="search-add-field"><span>{t('search.addPaused')}</span>
+                  <InheritedBooleanSelect value={addPaused} onChange={setAddPaused} label={t('search.addPaused')}
+                    yes={t('category.defaults.paused')} no={t('category.defaults.active')} />
+                  </label>
+                  <DownloadDefaultsPreview compact categoryId={addCategoryId} paused={addPaused} />
+                </div>}
               </div>
 
               {/* Narrowing the list that arrived, without asking the indexers again. */}
               <div className="results-filters">
-                <button type="button" className={`filter-toggle ${groupResults ? 'active' : ''}`}
-                  aria-pressed={groupResults} title={t('search.group.hint')} onClick={() => setGroupResults(value => !value)}>
-                  {t('search.group.toggle')}
-                </button>
                 <div className="refine-wrap">
                   <Icon name="filter" size={14} />
                   <input
@@ -781,6 +883,10 @@ const SearchPage: React.FC = () => {
                 >
                   {t('search.hideDead')}
                 </button>
+                <button type="button" className={`filter-toggle ${groupResults ? 'active' : ''}`}
+                  aria-pressed={groupResults} aria-label={t('search.group.toggle')} title={t('search.group.hint')} onClick={() => setGroupResults(value => !value)}>
+                  {t('search.group.compact')}
+                </button>
                 {providerFilter && (
                   <button type="button" className="filter-chip-clear" onClick={() => setProviderFilter(null)}>
                     <Icon name="x" size={12} /> {providerFilter}
@@ -788,6 +894,7 @@ const SearchPage: React.FC = () => {
                 )}
               </div>
 
+              <div className="search-extra-filters">
               <SearchPreferencesPanel value={preferenceSettings.preferences} ranked={preferenceSettings.ranked}
                 onChange={preferences => setPreferenceSettings(previous => ({ ...previous, preferences }))}
                 onRankedChange={ranked => setPreferenceSettings(previous => ({ ...previous, ranked }))} />
@@ -817,6 +924,8 @@ const SearchPage: React.FC = () => {
                 </div>
                 <p>{t('search.media.hint')}</p>
               </details>
+              </div>
+              </section>
 
               {groupResults && <p className="release-groups-hint">
                 {t('search.group.count')}: {releaseGroups.length} · {t('search.group.hint')}
@@ -845,7 +954,7 @@ const SearchPage: React.FC = () => {
                 </div>
 
                 {/* Only the rows in view are mounted. */}
-                <div className="results-scroll" ref={scrollParentRef}>
+                <div className="results-scroll" ref={scrollParentRef} onScroll={event => { scrollPosition.current = event.currentTarget.scrollTop; }}>
                   <div className="results-virtual" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
                     {rowVirtualizer.getVirtualItems().map(virtualRow => {
                       const item = displayRows[virtualRow.index];
@@ -893,7 +1002,7 @@ const SearchPage: React.FC = () => {
                           }}
                         >
                           <div className="results-td name-col">
-                            <span className="result-title" title={r.title}>{r.title}</span>
+                            <button type="button" className="result-title result-title-button" title={r.title} aria-label={`${t('search.preview.title')}: ${r.title}`} onClick={() => setDetailResult(r)}>{r.title}</button>
                             <span className="result-tags">
                               {downloadState && (downloadState.state === 'removed' || downloadState.state === 'possible') && <span
                                 className={`result-chip search-history-badge ${downloadState.state}`}
@@ -977,6 +1086,7 @@ const SearchPage: React.FC = () => {
               magnetUri={previewTarget.magnetUri}
               torrentPath={previewTarget.magnetUri ? undefined : previewTarget.torrentUrl}
               onConfirm={handlePreviewConfirm}
+              downloadOptions={{ categoryId: addCategoryId, paused: addPaused }}
               onCancel={() => setPreviewTarget(null)}
             />
           )}
@@ -984,6 +1094,7 @@ const SearchPage: React.FC = () => {
       ) : (
         /* Providers settings panel */
         <div className="page-content providers-panel">
+          {sourceReturn && <div className="search-source-return"><span>{t('search.recovery.query')}: {lastSearch.current.term}</span><Button variant="primary" disabled={loading} onClick={() => { setShowProviders(false); setSourceReturn(null); }}>{t('search.recovery.return')}</Button><Button variant="secondary" disabled={loading || !!testingId} onClick={() => { const stat = providerStats.find(s => s.providerId === sourceReturn); setShowProviders(false); setSourceReturn(null); if (stat) void retryProvider(stat); }}>{t('search.recovery.returnRetry')}</Button></div>}
           <div className="providers-section">
             <h2>{t('search.providers.title')}</h2>
             <p className="providers-desc">{t('search.providers.desc')}</p>
@@ -996,16 +1107,16 @@ const SearchPage: React.FC = () => {
             ) : (
               <div className="providers-list">
                 {providers.map(p => (
-                  <div key={p.id} className={`provider-card ${!p.enabled ? 'disabled' : ''}`}>
+                  <div key={p.id} tabIndex={-1} data-provider-card={p.id} className={`provider-card ${!p.enabled ? 'disabled' : ''}`}>
                     <div className="provider-info">
                       <div className="provider-name">{p.name}</div>
                       <div className="provider-url">{p.url}</div>
-                      <span className={`provider-type-badge ${p.type}`}>{p.type}</span>
+                      <span className={`provider-type-badge ${p.type}`}>{p.type === 'rutracker' ? t('search.type.builtIn') : p.type}</span>
                     </div>
                     {testResult?.id === p.id && (
                       <div className={`test-result ${testResult.success ? 'success' : 'error'}`}>
                         <Icon name={testResult.success ? 'check-circle' : 'x-circle'} size={14} />
-                        {testResult.message}
+                        {testResult.success ? testResult.message : <ErrorMessage error={testResult.message} />}
                       </div>
                     )}
                     <div className="provider-actions">
@@ -1042,7 +1153,14 @@ const SearchPage: React.FC = () => {
 
             </div>
             <div className="providers-setup">
+            <div className="rutracker-setup">
+              <div><h3>RuTracker</h3><p>{t('search.rutracker.description')}</p></div>
+              {providers.some(p => p.type === 'rutracker')
+                ? <Button variant="secondary" loading={!!testingId} onClick={() => signInSource(providers.find(p => p.type === 'rutracker')!.id)}>{t('search.connection.login')}</Button>
+                : <Button variant="primary" loading={savingProvider} onClick={connectRuTracker}>{t('search.rutracker.connect')}</Button>}
+            </div>
             {/* Add new provider */}
+            <details className="other-search-sources"><summary>{t('search.otherSources')}</summary>
             <div className="add-provider-form">
               <h3>{t('search.addProvider')}</h3>
               <div className="form-row">
@@ -1188,11 +1306,17 @@ const SearchPage: React.FC = () => {
                 <li><strong>{t('search.type.script')}:</strong> {t('search.guide.script')}</li>
               </ul>
             </details>
+            </details>
             </div>
             </div>
           </div>
         </div>
       )}
+      {detailResult && <ReleaseDetailsModal key={rowKey(detailResult)} result={detailResult} onClose={() => setDetailResult(null)}
+        busy={downloading.has(rowKey(detailResult))} added={['inDownloads', 'downloaded'].includes(resultDownloadState(detailResult)?.state ?? '')}
+        onDownload={async ref => { await handleDownload(ref ? { ...detailResult, sourceRefs: [ref] } : detailResult); }}
+        onSelectFiles={ref => { const row = ref ? { ...detailResult, sourceRefs: [ref] } : detailResult; setDetailResult(null); rowMenuItems(row).find(item => item.key === 'files')?.onSelect(); }}
+        onSignIn={id => { setDetailResult(null); void signInSource(id); }} />}
       {comparisonGroup && <ReleaseComparison group={comparisonGroup} onClose={() => setComparisonKey(null)} onDownload={handleDownload}
         downloadState={row => { const state = resultDownloadState(row)?.state; return { busy: downloading.has(rowKey(row)), added: state === 'inDownloads' || state === 'downloaded', completed: state === 'downloaded' }; }} />}
     </div>

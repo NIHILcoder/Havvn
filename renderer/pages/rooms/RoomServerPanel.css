@@ -1423,7 +1423,7 @@
 }
 
 .server-console-input input::placeholder { color: var(--color-text-disabled); }
-.server-console-input input:focus-visible { box-shadow: none; }
+.server-console-input input:focus-visible { outline: none; box-shadow: none; }
 
 .server-console-send {
   display: inline-flex;

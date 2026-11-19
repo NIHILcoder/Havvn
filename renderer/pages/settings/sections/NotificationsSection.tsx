@@ -7,13 +7,14 @@ import { useSettings } from '../SettingsContext';
 import { SettingsCard, SettingRow } from '../controls';
 import { Toggle } from '../../../components';
 import { useTranslation } from '../../../utils/i18nContext';
+import { NotificationPolicyPanel } from './NotificationPolicyPanel';
 
 export const NotificationsSection: React.FC = () => {
   const { t } = useTranslation();
   const ctx = useSettings();
 
   return (
-    <SettingsCard title={t('settings.grp.notifications')} icon="bell">
+    <><SettingsCard title={t('settings.grp.notifications')} icon="bell">
       <SettingRow
         label={t('settings.notif.enable')}
         description={t('settings.notif.enable.desc')}
@@ -71,5 +72,7 @@ export const NotificationsSection: React.FC = () => {
         }
       />
     </SettingsCard>
+    {ctx.settings && <NotificationPolicyPanel settings={ctx.settings} onSaved={ctx.setSettings} />}
+    </>
   );
 };

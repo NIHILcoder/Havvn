@@ -15,7 +15,11 @@ import type { HostEnv } from './env';
 export interface InitMsg {
   kind: 'init';
   env: HostEnv;
+  blocks?: import('../../../shared/effective-settings').TransferBlock[];
+  economy?: boolean;
 }
+export interface ResourcePolicyMsg { kind: 'resource-policy'; economy: boolean }
+export interface TransferPolicyMsg { kind: 'transfer-policy'; blocks: import('../../../shared/effective-settings').TransferBlock[] }
 export interface RpcRequest {
   kind: 'rpc';
   id: number;
@@ -28,6 +32,7 @@ export interface DbResponse {
   ok: boolean;
   result?: unknown;
   error?: string;
+  code?: string;
 }
 
 // ── host → main ──────────────────────────────────────────────────────────────
@@ -58,12 +63,13 @@ export interface EventMsg {
   payload: unknown;
 }
 
-export type ToHost = InitMsg | RpcRequest | DbResponse;
+export type ToHost = InitMsg | RpcRequest | DbResponse | TransferPolicyMsg | ResourcePolicyMsg;
 export type FromHost = ReadyMsg | RpcResponse | DbRequest | EventMsg;
 
 /** The db.* functions the engine calls — bridged from the host back to main. */
 export const DB_BRIDGE_FNS = [
   'createDownload',
+  'restoreDownload',
   'deleteDownload',
   'getAllDownloads',
   'getDownloadById',

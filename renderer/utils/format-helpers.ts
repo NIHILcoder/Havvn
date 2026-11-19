@@ -51,8 +51,12 @@ export const getSpeedUnits = (): SpeedUnits => speedUnits;
 
 export const setSpeedUnits = (units: SpeedUnits): void => {
   speedUnits = units;
-  try { localStorage.setItem('speedUnits', units); } catch { /* cosmetic */ }
+  try { localStorage.setItem('speedUnits', units); window.dispatchEvent(new Event('havvn:device-local')); } catch { /* cosmetic */ }
 };
+if (typeof window !== 'undefined') window.addEventListener('storage', e => {
+  if (e.key !== null && e.key !== 'speedUnits') return;
+  try { const v = localStorage.getItem('speedUnits'); speedUnits = v === 'si' || v === 'bits' ? v : 'binary'; } catch { /* optional storage */ }
+});
 
 /**
  * Format speed to human-readable, honoring the configured units.

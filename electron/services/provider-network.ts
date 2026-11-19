@@ -4,13 +4,13 @@ import { ProviderConnection, ProviderNetworkError, networkError, httpNetworkErro
 import { decodeBody } from '../utils/http-fetch';
 
 type RequestOnce = (session: Session, url: string, options: {
-  method: string; body?: Uint8Array; headers: Record<string, string>; signal: AbortSignal;
+  method: string; body?: Uint8Array; headers: Record<string, string>; signal: AbortSignal; omitCookies?: boolean;
 }) => Promise<Response>;
 
 // session.fetch({ redirect: 'manual' }) rejects on a redirect in Electron 44.
 // net.request exposes the redirect BEFORE following it, so policy stays ours.
 const chromiumRequest: RequestOnce = (sourceSession, url, options) => new Promise((resolve, reject) => {
-  const request = net.request({ url, session: sourceSession, method: options.method, redirect: 'manual', useSessionCookies: true });
+  const request = net.request({ url, session: sourceSession, method: options.method, redirect: 'manual', useSessionCookies: !options.omitCookies });
   let failBody: ((error: Error) => void) | undefined;
   const abort = () => {
     const error = new ProviderNetworkError('cancelled');
@@ -62,6 +62,8 @@ export interface ProviderRequest {
   signal?: AbortSignal;
   timeoutMs?: number;
   maxBytes?: number;
+  /** Third-party preview hosts must not receive the tracker's session cookies. */
+  omitCookies?: boolean;
 }
 interface Entry { session: Session; signature: string; ready: Promise<void>; active: Set<AbortController>; cooldown: Map<string, number> }
 
@@ -146,6 +148,7 @@ export class ProviderNetworkService {
         if ((entry.cooldown.get(url.origin) ?? 0) > Date.now()) throw new ProviderNetworkError('rate-limit', 429);
         const response = await this.fetch(entry.session, url.href, {
           method, body: body ? new Uint8Array(body) : undefined, headers, signal: controller.signal,
+          ...(options.omitCookies ? { omitCookies: true } : {}),
         });
         const status = response.status;
         if ([301, 302, 303, 307, 308].includes(status)) {

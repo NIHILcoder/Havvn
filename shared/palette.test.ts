@@ -39,6 +39,15 @@ describe('generatePalette', () => {
       expect(sanitizeTokenValue(k, v), `${k}=${v}`).not.toBeNull();
     }
   });
+
+  it('chooses button text for both the accent and its hover colour', () => {
+    for (const accent of ['#42edf5', '#006677', '#ffffff', '#000000']) {
+      const p = generatePalette({ accent, bg: '#141519' });
+      for (const background of ['--color-accent-primary', '--color-accent-primary-hover']) {
+        expect(contrastRatio(p['--color-text-on-accent'], p[background]), accent).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
 });
 
 describe('adaptVariant', () => {
@@ -57,12 +66,14 @@ describe('adaptVariant', () => {
     const src = {
       '--color-accent-primary': '#e8792b',
       '--color-accent-rgb': '232, 121, 43',
+      '--color-text-on-accent': '#141519',
       '--radius-md': '10px',
       '--color-bg-primary': '#141519',
     };
     const out = adaptVariant(src);
     expect(out['--color-accent-primary']).toBe('#e8792b');
     expect(out['--color-accent-rgb']).toBe('232, 121, 43');
+    expect(out['--color-text-on-accent']).toBe('#141519');
     expect(out['--radius-md']).toBe('10px');
     expect(out['--color-bg-primary']).not.toBe('#141519'); // flipped
   });

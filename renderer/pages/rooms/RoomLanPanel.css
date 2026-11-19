@@ -90,6 +90,27 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.room-lan-address-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+}
+.room-lan-addresses {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border-subtle);
+}
+.room-lan-addresses-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
 }
 .room-lan-self-label {
   font-size: 11px;
@@ -127,7 +148,7 @@
   border: none;
   border-radius: var(--radius-md);
   background: var(--color-accent-primary);
-  color: #fff;
+  color: var(--color-text-on-accent);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -351,21 +372,38 @@
 /* ── Peer tiles ── */
 .room-lan-people {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
   padding-top: 2px;
 }
 .room-lan-person {
   display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  min-width: 0;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+}
+.room-lan-peer-main, .room-lan-servers-info {
+  display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  width: 56px;
-  text-align: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.room-lan-peer-role, .room-lan-peer-status {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
 }
 .room-lan-ring {
   position: relative; /* anchors the status dot + evict badge to the avatar */
   display: inline-flex;
+  flex: none;
   border-radius: var(--radius-md); /* squared HUD */
   padding: 2px;
 }
@@ -455,7 +493,8 @@
 .room-lan-evict:disabled { opacity: 0.5; cursor: default; }
 .room-lan-pname {
   max-width: 100%;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--color-text-secondary);
   white-space: nowrap;
   overflow: hidden;
@@ -463,19 +502,25 @@
 }
 .room-lan-pip {
   max-width: 100%;
-  padding: 1px 4px;
-  border: none;
+  align-self: stretch;
+  padding: 4px 6px;
+  min-height: 28px;
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-tertiary);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
   font-family: var(--font-family-mono);
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.02em;
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
   transition: background var(--transition-fast), color var(--transition-fast);
+}
+.room-lan-pip .btn-label, .room-lan-server-address .btn-label {
+  width: 100%;
+  justify-content: space-between;
 }
 .room-lan-pip:hover:not(:disabled) { background: var(--color-bg-hover); color: var(--color-text-secondary); }
 .room-lan-pip:disabled { cursor: default; }
@@ -524,7 +569,7 @@
 .lpp-tile.selected { border-color: var(--color-accent-primary); background: var(--color-accent-bg); }
 .lpp-tile:disabled { opacity: 0.45; cursor: default; }
 .lpp-avatar { position: relative; display: inline-flex; }
-.lpp-check {
+.lpp-selection {
   position: absolute;
   right: -4px;
   bottom: -4px;
@@ -538,6 +583,7 @@
   background: var(--color-accent-primary);
   color: #fff;
 }
+.lpp-selection::after { content:''; width:5px; height:5px; border-radius:50%; background:currentColor; }
 .lpp-name {
   max-width: 100%;
   font-size: 12px;
@@ -690,7 +736,7 @@
 .room-lan-chip:hover { color: var(--color-text-primary); border-color: var(--color-border-hover); }
 
 .room-lan-servers {
-  margin: var(--space-2) 0 var(--space-3);
+  margin: var(--space-2) 0;
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
@@ -713,12 +759,13 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
+  margin-top: var(--space-2);
 }
 
 .room-lan-servers-item {
   display: grid;
-  grid-template-columns: 1fr auto auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--font-size-xs);
@@ -732,36 +779,22 @@
 }
 
 .room-lan-servers-addr {
-  font-family: var(--font-mono);
+  font-family: var(--font-family-mono);
   color: var(--color-accent-primary);
+  overflow-wrap: anywhere;
 }
+.room-lan-server-address {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 6px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-sm);
+}
+.room-lan-server-address:hover:not(:disabled) { background: var(--color-bg-hover); }
 
 .room-lan-servers-players {
   color: var(--color-text-tertiary);
 }
-
-/* The copy-address button. It had a class and no rule, so the browser drew its own
-   native Windows button in the middle of the panel — grey, chunky, and the only
-   thing on screen that did not belong to the app. Sized to the row it sits in
-   rather than to .room-lan-ip, which is a standalone readout. */
-.room-lan-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 auto;
-  color: var(--color-text-tertiary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: color var(--transition-fast), background var(--transition-fast);
-}
-
-.room-lan-copy:hover:not(:disabled) {
-  color: var(--color-text-primary);
-  background: var(--color-bg-hover);
-}
-
-.room-lan-copy:disabled { opacity: 0.45; cursor: default; }

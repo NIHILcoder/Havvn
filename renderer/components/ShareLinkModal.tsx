@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * ShareLinkModal
  *
@@ -14,6 +15,9 @@ import { QRCode } from './QRCode';
 import { useTranslation } from '../utils/i18nContext';
 import { ShareInfo } from '../../shared/types';
 import './ShareLinkModal.css';
+import { useClipboardCopy } from '../utils/useClipboardCopy';
+import { useHostWindow } from '../utils/hostWindow';
+import { writeClipboardText } from '../utils/clipboard';
 
 interface ShareLinkModalProps {
   downloadId: string;
@@ -21,16 +25,21 @@ interface ShareLinkModalProps {
   onClose: () => void;
 }
 
-export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({ downloadId, downloadName, onClose }) => {
+const ShareLinkSession: React.FC<ShareLinkModalProps> = ({ downloadId, downloadName, onClose }) => {
   const { t } = useTranslation();
+  const host = useHostWindow();
   const [share, setShare] = useState<ShareInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const [stopFailed, setStopFailed] = useState(false);
   const [peers, setPeers] = useState(0);
   const [stopping, setStopping] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const stopPending = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
   // Start sharing as soon as the modal opens.
   useEffect(() => {
@@ -54,30 +63,38 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({ downloadId, down
   // Poll the peer count while the share is live.
   useEffect(() => {
     if (!share) return;
+    let cancelled = false;
     const tick = async () => {
       try {
         const info = await window.api.shareGet(downloadId);
-        if (info) setPeers(info.peers);
+        if (!cancelled && info) setPeers(info.peers);
       } catch { /* ignore */ }
     };
     tick();
     pollRef.current = window.setInterval(tick, 4000);
-    return () => { if (pollRef.current) window.clearInterval(pollRef.current); };
+    return () => { cancelled = true; if (pollRef.current) window.clearInterval(pollRef.current); };
   }, [share, downloadId]);
 
-  const handleCopy = useCallback(async () => {
-    if (!share) return;
-    try {
-      await navigator.clipboard.writeText(share.link);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch { /* ignore */ }
-  }, [share]);
+  const { copy: handleCopy, copied, copying } = useClipboardCopy(share?.link ?? '', {
+    writeText: text => writeClipboardText(text, host.window),
+    onSuccess: () => setCopyFailed(false), onError: () => setCopyFailed(true),
+  });
 
   const handleStop = useCallback(async () => {
+    if (stopPending.current) return;
+    stopPending.current = true;
     setStopping(true);
-    try { await window.api.shareStop(downloadId); } catch { /* ignore */ }
-    onClose();
+    setStopFailed(false);
+    try {
+      const result = await window.api.shareStop(downloadId);
+      if (!result?.ok) throw new Error('Sharing did not stop');
+      if (alive.current) onClose();
+    } catch {
+      if (alive.current) setStopFailed(true);
+    } finally {
+      stopPending.current = false;
+      if (alive.current) setStopping(false);
+    }
   }, [downloadId, onClose]);
 
   return (
@@ -86,14 +103,15 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({ downloadId, down
       title={t('share.title')}
       icon="share-2"
       size="lg"
+      busy={stopping}
       footer={
         <>
           {share && !error && (
-            <Button variant="danger" icon={<Icon name="x-circle" size={14} />} onClick={handleStop} disabled={stopping}>
+            <Button variant="danger" icon={<Icon name="x-circle" size={14} />} onClick={handleStop} loading={stopping}>
               {t('share.stop')}
             </Button>
           )}
-          <Button variant="primary" onClick={onClose}>{t('share.done')}</Button>
+          <Button variant="primary" onClick={onClose} disabled={stopping}>{t('share.done')}</Button>
         </>
       }
     >
@@ -112,20 +130,22 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({ downloadId, down
       {error && (
         <div className="share-state share-state-error">
           <Icon name="alert-triangle" size={28} />
-          <p>{error}</p>
+          <p><ErrorMessage error={error} /></p>
         </div>
       )}
 
       {share && !error && (
         <>
+          {stopFailed && <p className="share-action-error" role="alert">{t('share.stopFailed')}</p>}
           <label className="share-label">{t('share.linkLabel')}</label>
           <div className="share-link-row">
             <input className="share-link-input" readOnly value={share.link} onFocus={(e) => e.target.select()} />
-            <button className={`share-copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy}>
-              <Icon name={copied ? 'check' : 'copy'} size={14} />
+            <button className={`share-copy-btn ${copied ? 'copied' : ''}`} onClick={handleCopy} disabled={copying || stopping}>
+              <Icon name="copy" size={14} />
               {copied ? t('share.copied') : t('share.copy')}
             </button>
           </div>
+          {copyFailed && <p className="share-action-error" role="alert">{t('common.copyFailed')}</p>}
 
           <div className="share-status">
             <span className="share-live-dot" />
@@ -154,5 +174,7 @@ export const ShareLinkModal: React.FC<ShareLinkModalProps> = ({ downloadId, down
     </Modal>
   );
 };
+
+export const ShareLinkModal: React.FC<ShareLinkModalProps> = props => <ShareLinkSession key={props.downloadId} {...props} />;
 
 export default ShareLinkModal;

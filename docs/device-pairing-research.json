@@ -1,0 +1,179 @@
+{
+  "schema": 1,
+  "task": "FUN-06",
+  "recordedAt": "2026-10-26T13:11:26.6611026Z",
+  "status": "in-progress",
+  "phase": "DP-00-design-and-model",
+  "researchComplete": false,
+  "featureReleased": false,
+  "scope": {
+    "physicalMachines": 1,
+    "platform": "Windows",
+    "node": "24.18.1",
+    "openssl": "3.5.7",
+    "realEncryptedDeviceTransfer": false,
+    "realTlsBootstrapTested": false,
+    "realDiskCrashTested": false,
+    "restartInModel": "JSON serialization only",
+    "peerAuthenticationInModel": "precondition supplied by caller",
+    "newProductionIpcOrListener": false,
+    "newDeviceKeysCreated": false,
+    "roomIdentityCopied": false,
+    "packagedInstallerRetested": false,
+    "fullRepositoryLintRun": false
+  },
+  "design": {
+    "portableScopes": [
+      "preferences",
+      "views",
+      "playback"
+    ],
+    "maxPairedPeersPerProfile": 1,
+    "separateDeviceIdentity": "proposed",
+    "bothExplicitConfirmations": "proposed",
+    "transport": "TLS 1.3 candidate; not implemented",
+    "revocation": "modeled locally; physical acceptance open",
+    "nextStage": "DP-01 identity and durable protected storage"
+  },
+  "verification": {
+    "baselineBeforeFix": {
+      "reason": "Node test runner files collected by Vitest",
+      "vitestPassed": 4167,
+      "collectionSuitesFailed": 2,
+      "vitestFilesPassed": 319,
+      "passed": false
+    },
+    "finalVitest": {
+      "passed": true,
+      "tests": 4189,
+      "maxWorkers": 2,
+      "files": 320
+    },
+    "finalNode": {
+      "passed": true,
+      "tests": 30,
+      "files": 5
+    },
+    "model": {
+      "tests": 22,
+      "lintPassed": true,
+      "includedInFinalVitest": true,
+      "productionWireValidation": false,
+      "formalProof": false,
+      "initialStandaloneRunTests": 21,
+      "typecheckPassed": true,
+      "passed": true
+    }
+  },
+  "release": {
+    "candidateProductSha256": "918426dd6fc830a4139963a2d4fd16e2b57c62b358b7e1f396059218d8a803c0",
+    "ready": false,
+    "phases": {
+      "local": "stale",
+      "installer": "stale",
+      "package": "stale"
+    },
+    "localBlocksClosed": 22,
+    "totalPlanBlocks": 24,
+    "physicalProtocolsReviewed": false,
+    "previousReceiptsPreserved": true
+  },
+  "sourceSha256": "2b0cf78bb6fc8a5b4340d0da53062b3cd25c5dc2b3f476b6a62bf9464141bdf5",
+  "sources": [
+    {
+      "path": "docs/device-pairing-design.md",
+      "sha256": "c05fe1079607997107588f9ff30d5c307971f55c5614b608215f7cc2643f46be"
+    },
+    {
+      "path": "docs/device-pairing-physical.template.json",
+      "sha256": "06dd3198680e68ae190b2d04b6cb4c3ed3ad4adb2f6bae7986a2f9ab3efc688a"
+    },
+    {
+      "path": "docs/device-pairing-plan.md",
+      "sha256": "1de2fa056f03c333201afef59116991af2d946513ce1edbeff85dcbc49e8e3f5"
+    },
+    {
+      "path": "docs/havvn-implementation-plan.md",
+      "sha256": "29b07723f32518cd1a0eb0fe1f546aad4d571369f3643efeb6c2b3175ad01c72"
+    },
+    {
+      "path": "docs/release-single-pc.md",
+      "sha256": "19353030d610b62aed0dbec5b4e3ddc669f14a10b87c285104f348846a212635"
+    },
+    {
+      "path": "docs/rooms-release-acceptance.md",
+      "sha256": "b11d539b204d7af9e451420567157ae8be0137def19c16c57d9540389ade9a74"
+    },
+    {
+      "path": "package.json",
+      "sha256": "53a29fd2626f0df5f9b75746ec3f2d902f4d0b9fc6eb2a9f28ae5fb05a5c6457"
+    },
+    {
+      "path": "research/device-pairing/model.test.ts",
+      "sha256": "d8f8dae308c59ab782003760efc637a669c1165e99acef9ebd0d830c0e7bfa4c"
+    },
+    {
+      "path": "research/device-pairing/model.ts",
+      "sha256": "2b10ec5dfd38b75036d0585c11dc883398f8368b729cd816dbc847fcbe2e0969"
+    },
+    {
+      "path": "vitest.config.ts",
+      "sha256": "01790b094009202c1c30593023b3c3a63459dcad4a9e79a5275873ee8680ef7a"
+    }
+  ],
+  "evidence": [
+    {
+      "path": "artifacts/fun06-baseline-vitest.log",
+      "sha256": "082d8d02c95bb191781220593405bcb8cb6392ffcc3ff31cb041f8d9feabbf84"
+    },
+    {
+      "path": "artifacts/fun06-baseline-node.log",
+      "sha256": "0c73fb3c4093941751e14fe5cce8581b4d7621fef14df69f451ff96dbfd33fbf"
+    },
+    {
+      "path": "artifacts/fun06-model.log",
+      "sha256": "f2e663b7096ae19e92e185d7cd7140b019f7221478815724b285a30f6f2dd82b"
+    },
+    {
+      "path": "artifacts/fun06-final-vitest.log",
+      "sha256": "465b9e99fcac26e41a6f459d195425c7a93204242fb19f025a03729e10a80b2d"
+    },
+    {
+      "path": "artifacts/fun06-node-final.log",
+      "sha256": "313b0695303c3287a899b25006c77e3ba85dbc67f5c18f9a6cca6ea0677fe9be"
+    },
+    {
+      "path": "artifacts/fun06-model-types.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun06-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun06-release-current.json",
+      "sha256": "afb7609038fefcda102cf557e905808eff0d54c7b62d2f84b42eb8d1981fd988"
+    },
+    {
+      "path": "artifacts/fun06-physical-protocol.template.json",
+      "sha256": "5f006a2f020862e3b509bbed08d6792515b78c1845687b9b7a49518ad4c76abe"
+    }
+  ],
+  "sourcesConsulted": [
+    "https://github.com/nodejs/node/blob/v24.18.0/doc/api/tls.md",
+    "https://www.rfc-editor.org/info/rfc9846/",
+    "https://www.rfc-editor.org/rfc/rfc9266.html",
+    "https://www.lip6.fr/Marc.Shapiro/papers/2011/Comprehensive-CRDTs-RR7506-2011-01.pdf"
+  ],
+  "openStages": [
+    "DP-01 independent keys, certificates and durable storage",
+    "DP-02 authenticated TLS loopback prototype",
+    "DP-03 allowlisted adapters and main/renderer journal",
+    "DP-04 user interface and packaged application",
+    "DP-05 two physical devices and different networks"
+  ],
+  "externalBlockers": [
+    "Only one physical PC is available",
+    "Real old installer compatibility and real LAN/NAT/TURN acceptance remain unverified"
+  ]
+}

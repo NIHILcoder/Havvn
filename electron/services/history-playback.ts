@@ -13,8 +13,10 @@ import { getSubtitleVtt, listSubtitleTracks } from '../torrent/subtitle-probe';
 import type { LocalMedia } from './external-player';
 import type { WatchTarget } from '../../shared/watch-history';
 import { mediaPath } from '../torrent/verified-media';
+import type { MediaRelocations, MediaRelocationRecord } from './media-relocations';
 
 interface Dependencies {
+  relocations?: MediaRelocations;
   download: (id: string) => Promise<Download | null>;
   files: (id: string) => Promise<TorrentFile[]>;
   stream: (id: string, index: number, opts: HistoryPlaybackOptions & { noResume: true }) => Promise<{ url: string; name: string; kind: 'video' | 'audio' | 'other'; transcoded: boolean; startTime?: number }>;
@@ -32,12 +34,40 @@ export class HistoryPlayback {
       async (id, index) => this.local.get(`${id}:${index}`)?.length || 0, this.token);
   }
   async files(id: string): Promise<HistoryPlaybackFile[]> {
+    return this.inspectFiles(id);
+  }
+  async libraryFiles(id: string, limit = 500) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw Error('Invalid media index limit');
+    const files = await this.inspectFiles(id, limit + 1);
+    return { files: files.slice(0, limit), truncated: files.length > limit };
+  }
+  /** Local metadata for device matching. Never starts a torrent or a player. */
+  async deviceFiles(id: string, limit = 100) {
     const d = await this.deps.download(id);
-    if (!d || d.status === 'removed') return [];
+    if (!d?.infoHash || d.status === 'removed') return [];
+    const files = await this.inspectFiles(id, Math.min(100, limit));
+    const latest = await this.deps.download(id);
+    if (!latest || JSON.stringify([latest.infoHash, latest.savePath, latest.status]) !== JSON.stringify([d.infoHash, d.savePath, d.status])) return [];
+    return files.flatMap(f => {
+      const disk = this.diskPath(d, f);
+      try {
+        if (f.availability !== 'local' || !disk || fs.statSync(disk).size !== f.length) return [];
+        return [{ identity: d.infoHash!, infoHash: d.infoHash!, downloadId: d.id, title: d.name,
+          path: f.path.replace(/\\/g, '/'), fileIndex: f.index ?? files.indexOf(f), size: f.length, disk }];
+      } catch { return []; }
+    });
+  }
+  private async inspectFiles(id: string, mediaLimit?: number): Promise<HistoryPlaybackFile[]> {
+    const d = await this.deps.download(id);
+    if (!d || d.status === 'removed') return this.deps.relocations?.available(id).map(row => this.relocatedFile(row)).slice(0, mediaLimit) ?? [];
     const identity = d.infoHash || d.id;
+    const moved = this.deps.relocations?.available(id, identity) ?? [];
+    const stamp = JSON.stringify([identity, d.savePath, d.status]);
     let files = await this.deps.files(id).catch(() => []);
-    if (files.length) this.deps.cache(identity, files);
-    else files = this.deps.cached(identity);
+    if (files.length) { if (mediaLimit === undefined) this.deps.cache(identity, files); }
+    // Cached metadata can outlive removal/re-add and preallocated files may have
+    // their full size before any pieces arrive. Cached completion is not proof.
+    else files = this.deps.cached(identity).map(file => ({ ...file, downloaded: 0, progress: 0 }));
     if (d.progress >= 1) files = files.map((f, i) => d.filePriorities?.[f.index ?? i] !== 'skip' && (!d.selectedFiles?.length || d.selectedFiles.includes(f.index ?? i)) ?
       { ...f, downloaded: f.length, progress: 1 } : f);
     if (!files.length && d.torrentFilePath) {
@@ -49,17 +79,26 @@ export class HistoryPlayback {
           const complete = d.progress >= 1 && d.filePriorities?.[index] !== 'skip' && (!d.selectedFiles?.length || d.selectedFiles.includes(index));
           return { ...f, index, downloaded: complete ? f.length : 0, progress: complete ? 1 : 0 };
         });
-        if (files.length) this.deps.cache(identity, files);
+        if (files.length && mediaLimit === undefined) this.deps.cache(identity, files);
       } catch { /* Metadata may no longer be on disk; keep unavailable history. */ }
     }
-    return files.map((f, index) => {
+    files = files.map((f, index) => ({ ...f, index: f.index ?? index }));
+    if (mediaLimit !== undefined) files = files.filter(f => classifyMediaKind(f.name) !== 'other').slice(0, mediaLimit);
+    const latest = await this.deps.download(id);
+    if (!latest || latest.status === 'removed' || JSON.stringify([latest.infoHash || latest.id, latest.savePath, latest.status]) !== stamp) return [];
+    const inspected = files.map((f, index): HistoryPlaybackFile => {
+      const relocation = moved.find(row => row.target.path === f.path.replace(/\\/g, '/'));
+      if (relocation) return this.relocatedFile(relocation);
       const disk = this.diskPath(d, f);
       let exists = false; try { exists = !!disk && fs.statSync(disk).isFile() && fs.statSync(disk).size >= f.length; } catch { /* missing */ }
       const complete = f.length > 0 && f.downloaded >= f.length;
       return { ...f, index: f.index ?? index, availability: exists && complete ? 'local' : !disk || !fs.existsSync(disk) ? 'missing' :
         d.status === 'downloading' || d.status === 'seeding' ? 'stream' : 'paused' };
     });
+    for (const row of moved) if (!inspected.some(file => file.path === row.target.path || file.index === row.target.fileIndex) && (mediaLimit === undefined || inspected.length < mediaLimit)) inspected.push(this.relocatedFile(row));
+    return inspected;
   }
+  private relocatedFile(row: MediaRelocationRecord): HistoryPlaybackFile { return { name: path.basename(row.disk), path: row.target.path, index: row.target.fileIndex, length: row.target.length, downloaded: row.target.length, progress: 1, availability: 'local' }; }
   private diskPath(d: Download, f: TorrentFile): string | null {
     const rel = f.path.replace(/\\/g, '/');
     if (!rel || rel.split('/').some(p => p === '..' || p === '.') || path.isAbsolute(rel) || rel.includes(':') || classifyMediaKind(f.name) === 'other') return null;
@@ -74,6 +113,8 @@ export class HistoryPlayback {
   }
   private async resolve(id: string, index: number) {
     if (!Number.isInteger(index) || index < 0) throw new Error('Invalid media file');
+    const source = await this.deps.download(id), moved = this.deps.relocations?.find(id, index, source?.infoHash || source?.id);
+    if (moved) return { file: this.relocatedFile(moved), disk: moved.disk };
     const d = await this.deps.download(id), files = await this.files(id), file = files.find(f => f.index === index);
     if (!d || !file || classifyMediaKind(file.name) === 'other') throw new Error('Media unavailable');
     const disk = this.diskPath(d, file); if (!disk) throw new Error('Media unavailable');
@@ -81,6 +122,8 @@ export class HistoryPlayback {
   }
   async watchTarget(id: string, relativePath: string): Promise<WatchTarget | null> {
     const rel = mediaPath(relativePath); if (!rel) return null;
+    const source = await this.deps.download(id), moved = this.deps.relocations?.find(id, rel, source?.infoHash || source?.id);
+    if (moved) return { ...moved.target };
     const files = await this.files(id), d = await this.deps.download(id);
     const file = files.find(f => f.path.replace(/\\/g, '/') === rel);
     if (!d || d.status === 'removed' || !file) return null;
@@ -90,6 +133,8 @@ export class HistoryPlayback {
     if (typeof relativePath !== 'string' || !relativePath || relativePath.includes('\0') || classifyMediaKind(relativePath) === 'other') return { ok: false, reason: 'invalid-file' };
     const rel = relativePath.replace(/\\/g, '/');
     if (path.isAbsolute(rel) || rel.includes(':') || rel.split('/').some(p => p === '..' || p === '.')) return { ok: false, reason: 'invalid-file' };
+    const source = await this.deps.download(id), moved = this.deps.relocations?.find(id, rel, source?.infoHash || source?.id);
+    if (moved) return { ok: true, disk: moved.disk, length: moved.target.length };
     const files = await this.files(id), d = await this.deps.download(id);
     if (!d || d.status === 'removed') return { ok: false, reason: 'missing-file' };
     const file = files.find(f => f.path.replace(/\\/g, '/') === rel);
@@ -111,7 +156,7 @@ export class HistoryPlayback {
     return { url: `http://127.0.0.1:${port}/${transcoded ? 'transcode' : 'direct'}/${encodeURIComponent(id)}/${index}?k=${this.token}&t=${Date.now()}${audioTrackParam(opts.audioTrack)}${streamStartParam(startTime)}`,
       name: file.name, kind: classifyMediaKind(file.name), transcoded, startTime };
   }
-  async audio(id: string, index: number) { const { disk } = await this.resolve(id, index); return audioTrackList(await probeAudioStreams(this.deps.ffmpeg(), disk)); }
+  async audio(id: string, index: number) { const { disk } = await this.resolve(id, index); return audioTrackList(await probeAudioStreams(this.deps.ffmpeg(), disk, true)); }
   async subtitles(id: string, index: number) { const { disk } = await this.resolve(id, index); return listSubtitleTracks(this.deps.ffmpeg(), disk); }
   async vtt(id: string, index: number, key: string) { const { disk } = await this.resolve(id, index); return getSubtitleVtt(this.deps.ffmpeg(), disk, key); }
   async duration(id: string, index: number): Promise<number | null> {

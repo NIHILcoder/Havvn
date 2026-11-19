@@ -16,7 +16,8 @@ describe('StatusBar presence bridge', () => {
   it('renders no presence chip when roomPresence is null', () => {
     const html = renderToStaticMarkup(<StatusBar roomPresence={null} />);
     expect(html).not.toContain('status-presence');
-    expect(html).toContain('statusbar.connected'); // the rest of the bar is intact
+    expect(html).toContain('statusbar.service.loading');
+    expect(html).not.toContain('statusbar.connected');
   });
 
   it('shows the room name and friends-online count', () => {

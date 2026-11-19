@@ -2,7 +2,7 @@
  * Settings navigation rail — grouped sections with a live search that filters by
  * label + keywords, so you can find a setting without knowing its tab.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Icon, LogoMark } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { SETTINGS_GROUPS, SETTINGS_NAV } from './nav';
@@ -20,18 +20,26 @@ export const SettingsNav: React.FC<{
 }> = ({ active, onSelect, onSelectSetting }) => {
   const { t } = useTranslation();
   const [q, setQ] = useState('');
+  const navigation = useRef<HTMLElement>(null);
   const query = normalizeSettingsSearch(q);
   const results = searchSettings(SETTINGS_SEARCH_ENTRIES, query, t);
 
   const matches = (id: string, keywords: string) => {
     if (!query) return true;
     const text = normalizeSettingsSearch(t(`settings.${id}` as TKey) + ' ' + keywords);
-    return query.split(' ').every(term => text.includes(term)) || results.some(result => result.section === id);
+    return query.split(' ').every(term => text.includes(term));
   };
   const visible = SETTINGS_NAV.filter((i) => matches(i.id, i.keywords));
+  const selectSetting = (result: SettingSearchResult) => {
+    if (onSelectSetting) onSelectSetting(result);
+    else onSelect(result.section);
+  };
+  useEffect(() => {
+    navigation.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [active]);
 
   return (
-    <aside className="stg-nav">
+    <aside className={`stg-nav${query ? ' stg-nav--searching' : ''}`}>
       <div className="stg-nav-head">
         <LogoMark size={24} />
         <h2>{t('nav.settings')}</h2>
@@ -44,20 +52,34 @@ export const SettingsNav: React.FC<{
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={event => {
             if (event.key === 'Escape') { event.preventDefault(); setQ(''); }
-            else if (event.key === 'Enter' && results[0]) { event.preventDefault(); onSelectSetting?.(results[0]); }
+            else if (event.key === 'Enter' && query) {
+              if (results[0]) {
+                event.preventDefault();
+                selectSetting(results[0]);
+              } else if (visible[0]) {
+                event.preventDefault();
+                onSelect(visible[0].id);
+              }
+            }
           }}
           placeholder={t('settings.searchPlaceholder')}
           aria-label={t('settings.searchPlaceholder')}
         />
         {q && (
-          <button className="stg-nav-clear" onClick={() => setQ('')} aria-label={t('common.close')}>
+          <button className="stg-nav-clear" onClick={() => setQ('')} aria-label={t('settings.clearSearch')}>
             <Icon name="x" size={13} />
           </button>
         )}
       </div>
 
-      <nav className="stg-nav-list">
-        {!visible.length && <p className="stg-nav-empty">{t('settings.searchEmpty')}</p>}
+      <nav className="stg-nav-list" aria-label={t('nav.settings')} ref={navigation}>
+        {!results.length && !visible.length && <p className="stg-nav-empty">{t('settings.searchEmpty')}</p>}
+        {results.map(result => (
+          <button type="button" key={`${result.section}:${result.labelKey}`} className="stg-nav-result" onClick={() => selectSetting(result)}>
+            <span>{result.label}</span>
+            <small title={result.description || undefined}>{t(`settings.${result.section}` as TKey)}</small>
+          </button>
+        ))}
         {SETTINGS_GROUPS.map((g) => {
           const items = visible.filter((i) => i.group === g);
           if (!items.length) return null;
@@ -68,18 +90,13 @@ export const SettingsNav: React.FC<{
                 <div key={item.id} className="stg-nav-section">
                   <button
                     className={`stg-nav-item${active === item.id ? ' on' : ''}`}
+                    aria-current={active === item.id ? 'page' : undefined}
                     onClick={() => onSelect(item.id)}
                   >
                     <Icon name={item.icon} size={16} />
                     <span className="stg-nav-item-label">{t(`settings.${item.id}` as TKey)}</span>
                     {active === item.id && <span className="stg-nav-dot" />}
                   </button>
-                  {query && results.filter(result => result.section === item.id).map(result => (
-                    <button type="button" key={result.labelKey} className="stg-nav-result" onClick={() => onSelectSetting ? onSelectSetting(result) : onSelect(result.section)}>
-                      <span>{result.label}</span>
-                      {result.description && <small title={result.description}>{result.description}</small>}
-                    </button>
-                  ))}
                 </div>
               ))}
             </div>

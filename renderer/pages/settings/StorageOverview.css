@@ -1,0 +1,18 @@
+.storage-overview { padding: 4px 0 8px; }
+.storage-scan-controls { display: flex; gap: 12px; flex-wrap: wrap; }
+.storage-scan-controls .btn { min-height: 38px; white-space: normal; text-align: center; }
+.storage-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 8px 0 16px; }
+.storage-summary > div { border: 1px solid var(--color-border); padding: 14px; min-width: 0; border-radius: var(--radius-md, 8px); }
+.storage-summary span, .storage-summary strong { display: block; overflow-wrap: anywhere; line-height: 1.5; }
+.storage-summary span { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 6px; }
+.storage-summary strong { font-size: 16px; }
+.storage-explanation, .storage-progress { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); overflow-wrap: anywhere; margin: 12px 0; }
+.storage-group { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding: 18px 0; border-top: 1px solid var(--color-border); }
+.storage-group-main { min-width: 0; flex: 1 1 260px; }
+.storage-group h3 { margin: 0 0 8px; font-size: 13px; line-height: 1.5; }
+.storage-group p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.storage-group .btn { min-height: 38px; padding: 9px 14px; white-space: normal; text-align: center; max-width: 100%; }
+.storage-group .storage-issues { color: var(--color-warning); }
+.storage-targets { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+.storage-targets .btn { min-height: 42px; height: auto; padding: 12px 14px; white-space: normal; overflow-wrap: anywhere; text-align: center; line-height: 1.5; }
+@media (max-width: 680px) { .storage-summary { grid-template-columns: 1fr; } .storage-group > .btn { align-self: flex-start; } }

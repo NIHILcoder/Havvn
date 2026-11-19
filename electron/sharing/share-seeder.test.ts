@@ -53,6 +53,15 @@ describe('share seeder resources', () => {
     expect((await command('stop', 'a')).activeCount).toBe(1); expect(c.remove).not.toHaveBeenCalled(); expect(c.destroy).not.toHaveBeenCalled();
     expect((await command('stop', 'b')).activeCount).toBe(0); expect(c.remove).toHaveBeenCalledOnce(); expect(c.destroy).toHaveBeenCalledOnce();
   });
+  it('retains a share after a failed removal and can stop it on retry', async () => {
+    const start = command('share'); await flush(); const c = env.clients[0]; c.finish(); await start;
+    c.remove.mockImplementationOnce(async (_torrent, callback) => { callback?.(Error('remove failed')); });
+    expect(await command('stop')).toMatchObject({ ok: false, error: 'remove failed', activeCount: 1 });
+    expect((await command('get')).data.downloadId).toBe('a');
+    expect(c.destroy).not.toHaveBeenCalled();
+    expect(await command('stop')).toMatchObject({ ok: true, activeCount: 0 });
+    expect(c.remove).toHaveBeenCalledTimes(2); expect(c.destroy).toHaveBeenCalledOnce();
+  });
   it('keeps another pending seed alive and cancels a stop that arrives during hashing', async () => {
     const a = command('share', 'a'); await flush(); const c = env.clients[0]; c.finish(); await a;
     const b = command('share', 'b'); await flush();

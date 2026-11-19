@@ -68,6 +68,7 @@ import { Avatar, Button, Icon, Toggle } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostWindow, resolveHostWindow } from '../../utils/hostWindow';
 import { useHostToast } from '../../utils/hostToast';
+import { writeClipboardText } from '../../utils/clipboard';
 import type { RoomMember } from '../../../shared/types';
 import type { RoomLanState, RoomLanParticipant, LanPeerStatus } from '../../../shared/lan-types';
 import { LanPeerPicker } from './LanPeerPicker';
@@ -75,6 +76,8 @@ import { LanDiagnosticsModal } from './LanDiagnosticsModal';
 import { RoomLanServerWidget } from './RoomLanServerWidget';
 import type { LanDiagReportView } from './LanDiagnosticsModal';
 import './RoomLanPanel.css';
+import type { RoomActionCheck } from '../../../shared/room-preflight';
+import { RoomActionHint } from './RoomActionHint';
 
 /**
  * How the selected ICE candidate pair got there (from getStats' candidate types).
@@ -165,6 +168,7 @@ export interface RoomLanPanelProps {
   roomId: string;
   /** The room's LAN session as this install sees it (RoomState.lan). */
   lan: LanStateView;
+  preflight?: RoomActionCheck;
   /** Full room roster — the picker selects admit targets from here. */
   members: RoomMember[];
   /** This install's memberId (to split self from peers). */
@@ -258,7 +262,7 @@ const pct = (v: number) => (v < 10 ? Math.round(v * 10) / 10 : Math.round(v)).to
 const baseName = (p: string) => p.split(/[\\/]/).filter(Boolean).pop() || p;
 
 export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
-  roomId, lan, members, selfId, onStart, onStop, onRetry, onAccept, onInvite, onEvict, onOpenSettings,
+  roomId, lan, preflight, members, selfId: providedSelfId, onStart, onStop, onRetry, onAccept, onInvite, onEvict, onOpenSettings,
   onDiagnostics, onAllowApp, onOpenTurnSettings, onSetRelayEnabled, onLoadPrefs, showTitle = true,
 }) => {
   const { t } = useTranslation();
@@ -266,6 +270,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
   // Shadows the module singleton on purpose (see the TOAST note in the header):
   // every `toast.*` call below now lands in the window this panel is displayed in.
   const toast = useHostToast();
+  const selfId = providedSelfId ?? members.find((member) => member.isSelf)?.memberId;
   // The panel root, used only to resolve which window this DOM actually lives in.
   // An element's ownerDocument outranks the context: it stays right even when the
   // panel is portalled into a realm its React-tree provider knows nothing about.
@@ -321,15 +326,15 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
     // (that document is unfocused precisely because the child has focus), so the
     // copy silently failed and the toast never appeared.
     const win = resolveHostWindow(rootRef.current, host).window;
-    win.navigator.clipboard?.writeText(vip)
+    void writeClipboardText(vip, win)
       .then(() => toast.success(t('rooms.lan.copied')))
-      .catch(() => { /* clipboard blocked — silent, the IP is still shown */ });
+      .catch(() => toast.error(t('common.copyFailed')));
   };
 
   // Peers are every admitted participant except ourselves; self reads off selfVip.
   // Self is hardcoded 'connected' upstream and has no RTCPeerConnection, so it
   // never carries measurements — the filter keeps quality off the self tile.
-  const peers = lan.participants.filter((p) => p.memberId !== selfId) as LanParticipantView[];
+  const peers = (lan.active ? lan.participants.filter((p) => p.admitted && p.memberId !== selfId) : []) as LanParticipantView[];
   const admittedIds = lan.participants.map((p) => p.memberId);
 
   // ── Terminal-failure latch ────────────────────────────────────────────────
@@ -403,16 +408,17 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
     return STATUS_CLASS[p.status] || 'q-fair';
   };
 
-  /** "Connected · RTT 42 ms · loss 0.4% · relayed" — the honest numbers behind the dot. */
-  const dotTitle = (p: LanParticipantView) => {
-    const via = p.relayVia;
-    const head = via ? t('rooms.lan.statusRelayed')
+  const statusText = (p: LanParticipantView) => p.relayVia ? t('rooms.lan.statusRelayed')
       : p.memberId in failLatch ? t('rooms.lan.statusFailed')
         : p.status === 'connected' ? t('rooms.lan.statusConnected')
           : p.status === 'connecting' ? t('rooms.lan.statusConnecting')
             : p.status === 'reconnecting' ? t('rooms.lan.statusReconnecting')
               : t('rooms.lan.statusFailed');
-    const parts = [head];
+
+  /** "Connected · RTT 42 ms · loss 0.4% · relayed" — the honest numbers behind the dot. */
+  const dotTitle = (p: LanParticipantView) => {
+    const via = p.relayVia;
+    const parts = [statusText(p)];
     if (via) parts.push(t('rooms.lan.viaPeer').replace('{n}', nameOf(via)));
     // A relayed pair has TWO different round trips and conflating them would be
     // exactly the flattering dishonesty Phase 2A was built to avoid: prefer the
@@ -469,7 +475,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
       : lan.blocked
         ? t('rooms.lan.busyElsewhere')
         : null;
-  const canStart = !startBlockedReason && !busy;
+  const canStart = !startBlockedReason && !busy && preflight?.canAttempt !== false;
 
   return (
     <div className="room-lan" ref={rootRef}>
@@ -499,7 +505,8 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
             <Button size="sm"
               className="room-lan-ip"
               onClick={() => copyIp(lan.selfVip || '')}
-              title={t('rooms.lan.copyIp')}
+              title={t('rooms.lan.copyYourIp')}
+              aria-label={t('rooms.lan.copyYourIp')}
               type="button"
               disabled={!lan.selfVip}
             >
@@ -507,7 +514,8 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               <Icon name="copy" size={12} />
             </Button>
           </div>
-          <RoomLanServerWidget roomId={roomId} lanActive={lan.active} />
+          <p className="room-lan-address-hint">{t('rooms.lan.yourIpHint')}</p>
+          <RoomLanServerWidget roomId={roomId} lanActive={lan.active} nameOf={nameOf} />
           <div className="room-lan-ctl">
             {lan.isHost && onInvite && (
               <Button size="sm"
@@ -649,13 +657,13 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
         </>
       ) : (
         <>
-          {startBlockedReason && <div className="room-lan-notice">{startBlockedReason}</div>}
+          {preflight ? <RoomActionHint check={preflight} /> : startBlockedReason && <div className="room-lan-notice">{startBlockedReason}</div>}
           {lan.selfAdmitted && lan.sessionId && onAccept ? (
             // The host has ADMITTED us to a session we haven't joined → Accept it
             // (joiner path). Decided by session STATE, not by the callback's presence
             // — the panel always receives onAccept, so keying off it made this button
             // always call lanAccept and the Start path was unreachable.
-            <Button size="sm" className="room-lan-join" onClick={wrap(onAccept)} disabled={busy} type="button">
+            <Button size="sm" className="room-lan-join" onClick={wrap(onAccept)} disabled={!canStart} loading={busy} type="button">
               <Icon name="network" size={14} /> {t('rooms.lan.accept')}
             </Button>
           ) : (
@@ -665,6 +673,7 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
               className="room-lan-join"
               onClick={() => { void openPicker('start'); }}
               disabled={!canStart}
+              loading={busy}
               title={startBlockedReason || undefined}
               type="button"
             >
@@ -688,8 +697,12 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
         </>
       )}
 
-      {peers.length > 0 && (
-        <div className="room-lan-people">
+      {lan.active && (
+        <section className="room-lan-addresses" aria-label={t('rooms.lan.peerAddresses')}>
+          <div className="room-lan-addresses-title">{t('rooms.lan.peerAddresses')}</div>
+          <p className="room-lan-address-hint">{t('rooms.lan.peerAddressesHint')}</p>
+          {peers.length === 0 && <p className="room-lan-address-hint">{t('rooms.lan.waitingForPlayers')}</p>}
+          <div className="room-lan-people">
           {peers.map((p: LanParticipantView) => (
             <div
               key={p.memberId}
@@ -720,21 +733,26 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                   </Button>
                 )}
               </span>
+              <div className="room-lan-peer-main">
               <span
                 className="room-lan-pname"
                 style={memberOf(p.memberId)?.color ? { color: memberOf(p.memberId)?.color } : undefined}
               >
                 {nameOf(p.memberId)}
               </span>
+              {p.memberId === lan.hostId && <span className="room-lan-peer-role">{t('rooms.lan.networkOrganizer')}</span>}
               <Button size="sm"
                 className="room-lan-pip"
                 onClick={() => copyIp(p.vip)}
-                title={t('rooms.lan.copyIp')}
+                title={t('rooms.lan.copyPeerIp').replace('{name}', nameOf(p.memberId))}
+                aria-label={t('rooms.lan.copyPeerIp').replace('{name}', nameOf(p.memberId))}
                 type="button"
                 disabled={!p.vip}
               >
-                {p.vip || '···'}
+                <span>{p.vip || t('rooms.lan.connecting')}</span>
+                <Icon name="copy" size={12} />
               </Button>
+              <span className="room-lan-peer-status">{statusText(p)}</span>
               {/* "via <name>" caption — the one fact the dot cannot carry. */}
               {p.relayVia && (
                 <span
@@ -744,9 +762,11 @@ export const RoomLanPanel: React.FC<RoomLanPanelProps> = ({
                   {t('rooms.lan.viaPeer').replace('{n}', nameOf(p.relayVia))}
                 </span>
               )}
+              </div>
             </div>
           ))}
-        </div>
+          </div>
+        </section>
       )}
 
       {pickerMode && (

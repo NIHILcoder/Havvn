@@ -1,17 +1,21 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useId } from 'react';
 import { createPortal } from 'react-dom';
-import type { RoomState, RoomMember, RoomChatMessage } from '../../../shared/types';
+import type { RoomState, RoomMember, RoomChatMessage, RoomFile } from '../../../shared/types';
 import { roomChatPage, ROOM_CHAT_LIMIT } from '../../../shared/room-chat-history';
 import { parseChatSegments, isCopyworthy, splitLinks } from '../../../shared/chat-format';
 import { CHAT_REACT_EMOJIS } from '../../../shared/reactions';
 import { Button, Icon, Identicon, Avatar, ProfileCard, Select } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
 import { useHostToast } from '../../utils/hostToast';
+import { ErrorMessage } from '../../components/ErrorMessage';
+import { readableError } from '../../utils/error-messages';
 import { useRoomChatComposer } from '../../utils/useRoomChatComposer';
 import { EMPTY_CHAT_FILTER, roomMentionRanges, chatFilterActive, parseFileRequest, firstUnreadMessage, type RoomChatFilter } from '../../../shared/room-chat-tools';
 import { useRoomChatSearch } from './useRoomChatSearch';
 import { useRoomChatRead } from './useRoomChatRead';
 import { RoomFileRequestCard } from './RoomFileRequestCard';
+import { splitRoomObjectLinks, type RoomObjectLink } from '../../../shared/room-object-links';
+import { openRoomObject, RoomObjectOpener } from './RoomObjectOpener';
 type RoomsTFn = ReturnType<typeof useTranslation>['t'];
 
 /** Human text for one activity-log event (actor name is rendered separately). */
@@ -97,7 +101,7 @@ const highlightRun = (text: string, selfName: string | undefined, query?: string
 
 // One chat message body, split into text / fenced-code segments, with a copy
 // button for anything multiline (pasted scripts etc.).
-const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string; selfName?: string; query?: string }> = ({ text, copyLabel, copiedLabel, selfName, query }) => {
+export const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: string; selfName?: string; query?: string; onObject(target: RoomObjectLink): void }> = ({ text, copyLabel, copiedLabel, selfName, query, onObject }) => {
   const segments = useMemo(() => parseChatSegments(text), [text]);
   const toast = useHostToast(); // same realm rule as the rest of the chat subtree
   const copy = (e: React.MouseEvent) => {
@@ -117,9 +121,9 @@ const RoomChatBody: React.FC<{ text: string; copyLabel: string; copiedLabel: str
           <span key={i} className="room-chat-text">
             {/* http(s)-only linkify; main routes target=_blank to the system
                 browser (setWindowOpenHandler), incl. from the detached window. */}
-            {splitLinks(s.text).map((r, j) => r.kind === 'link'
+            {splitRoomObjectLinks(s.text).map((part, k) => part.link ? <button type="button" key={k} className="room-chat-object-link" onClick={() => onObject(part.link!)}><Icon name={part.link.kind === 'document' ? 'book-open' : 'file-text'} size={13} />{part.link.name}</button> : <React.Fragment key={k}>{splitLinks(part.text).map((r, j) => r.kind === 'link'
               ? <a key={j} className="room-chat-link" href={r.href} target="_blank" rel="noreferrer" title={r.href}>{highlightRun(r.text, undefined, query)}</a>
-              : <React.Fragment key={j}>{highlightRun(r.text, selfName, query)}</React.Fragment>)}
+              : <React.Fragment key={j}>{highlightRun(r.text, selfName, query)}</React.Fragment>)}</React.Fragment>)}
           </span>
         ))}
       {isCopyworthy(text) && (
@@ -144,14 +148,18 @@ export const RoomChat: React.FC<{
   /** False when the dock strip above already names this panel. */
   showTitle?: boolean;
   onAttachRequest?: () => void;
+  onWatchFile?(file: RoomFile): void;
   /**
    * The dock's move affordance when chat is ALONE in a docked zone. It lands in the
    * CHAT | HISTORY row, which is the eyebrow a one-tab strip above it would
    * duplicate — so the strip hides and this takes over the gesture.
    */
   soloHandle?: React.ReactNode;
-}> = ({ room, showTitle = true, onAttachRequest, soloHandle }) => {
+}> = ({ room, showTitle = true, onAttachRequest, soloHandle, onWatchFile }) => {
   const { t } = useTranslation();
+  const [objectTarget, setObjectTarget] = useState<RoomObjectLink | null>(null);
+  useEffect(() => { setObjectTarget(null); }, [room.roomId]);
+  const onObject = (target: RoomObjectLink) => openRoomObject(room, target, setObjectTarget);
   // Realm-routed toasts — chat is the panel most likely to be on another monitor.
   const toast = useHostToast();
   const { composer, state: composeState } = useRoomChatComposer(room.roomId);
@@ -484,7 +492,7 @@ export const RoomChat: React.FC<{
               <header className="room-chat-pin-author"><Icon name="pin" size={12} /><strong>{room.members.find(member => member.memberId === m.memberId)?.name ?? m.name}</strong><time>{shortTime(m.at)}</time></header>
               <div className="room-chat-pin-body">
                 {request ? <RoomFileRequestCard request={request} message={m} roomId={room.roomId} files={room.files} canEdit={false} />
-                  : <RoomChatBody text={body} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={selfName} />}
+                  : <RoomChatBody text={body} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={selfName} onObject={onObject} />}
               </div>
               <footer className="room-chat-pin-buttons">{messages.some(message => message.id === m.id) && <Button variant="ghost" size="sm" onClick={() => revealMessage(m.id)}>{t('rooms.chatGoTo')}</Button>}
                 {isOwner && <Button variant="ghost" size="sm" disabled={pinBusy} onClick={() => void togglePin(m.id, false)}>{t('rooms.chatUnpin')}</Button>}</footer>
@@ -545,8 +553,8 @@ export const RoomChat: React.FC<{
                 </div>
               </fieldset>
             </div>}
-            <div className={`room-chat-search-meta${search.error ? ' error' : ''}`} role="status" title={search.error || t('rooms.chatSearchLocal')}>
-              {search.busy ? t('common.loading') : search.error || (search.active
+            <div className={`room-chat-search-meta${search.error ? ' error' : ''}`} role="status" title={search.error ? readableError(search.error) : t('rooms.chatSearchLocal')}>
+              {search.busy ? t('common.loading') : search.error ? <ErrorMessage error={search.error} /> : (search.active
                 ? t('rooms.chatSearchResults').replace('{n}', `${search.page.messages.length}${search.page.next ? '+' : ''}`)
                 : t('rooms.chatSearchScope'))}
             </div>
@@ -636,7 +644,7 @@ export const RoomChat: React.FC<{
                         <RoomFileRequestCard key={m.id} request={parseFileRequest(body)!} message={m} roomId={room.roomId} files={room.files}
                           canEdit={mine && liveMessage} onAttach={!mine ? onAttachRequest : undefined} />
                       ) : (
-                        <RoomChatBody text={body} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={mine ? undefined : selfName} query={q} />
+                        <RoomChatBody text={body} copyLabel={t('rooms.chatCopy')} copiedLabel={t('rooms.chatCopied')} selfName={mine ? undefined : selfName} query={q} onObject={onObject} />
                       )}
                       {/* Reaction pills — the row exists only when reactions do
                           (an always-present row would pad EVERY message). */}
@@ -799,7 +807,7 @@ export const RoomChat: React.FC<{
           </div>
           {composeState.phase !== 'idle' && (
             <div className={`room-chat-send-state ${composeState.phase}`} role="status">
-              {t(`rooms.chatDelivery.${composeState.phase}`)}{composeState.error ? `: ${composeState.error}` : ''}
+              {t(`rooms.chatDelivery.${composeState.phase}`)}{composeState.error && <>: <ErrorMessage error={composeState.error} /></>}
             </div>
           )}
         </div>
@@ -812,5 +820,5 @@ export const RoomChat: React.FC<{
   // group, DockWindowHost portals the whole zone (strip + panels) into that window
   // and mounts HostWindowProvider around it, so everything below resolves `document`
   // to the CHILD window without this component knowing which realm it is in.
-  return zone;
+  return <>{zone}{objectTarget && <RoomObjectOpener room={room} target={objectTarget} onClose={() => setObjectTarget(null)} onWatch={onWatchFile} />}</>;
 };

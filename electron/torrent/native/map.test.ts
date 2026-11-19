@@ -41,14 +41,24 @@ describe('mapStatus', () => {
   it('error flag wins over activity', () => {
     expect(mapStatus(tr({ status: TrStatus.Downloading, error: 3 }), 'downloading')).toBe('error');
   });
-  it('checking keeps a seeding/completed face, else reads as downloading', () => {
+  it('checking preserves the lifecycle status and reports verification separately', () => {
     expect(mapStatus(tr({ status: TrStatus.Checking }), 'seeding')).toBe('seeding');
     expect(mapStatus(tr({ status: TrStatus.CheckWait }), 'completed')).toBe('completed');
-    expect(mapStatus(tr({ status: TrStatus.Checking }), 'paused')).toBe('downloading');
+    expect(mapStatus(tr({ status: TrStatus.Checking }), 'paused')).toBe('paused');
   });
 });
 
 describe('mapStats', () => {
+  it('reports check progress separately from wanted-file completion and tracker errors', () => {
+    const snapshot = mapStats(dl({ status: 'completed', progress: 1 }), tr({ status: TrStatus.Checking, percentDone: 1, recheckProgress: .23, error: 2 }));
+    expect(snapshot.status).toBe('completed');
+    expect(snapshot.operation).toMatchObject({ stage: 'checking', status: 'running', progress: { completed: .23, total: 1 } });
+    expect(mapStats(dl({}), tr({ status: TrStatus.CheckWait, recheckProgress: .9 })).operation).toMatchObject({ waitingFor: 'check-slot', progress: null });
+  });
+  it('keeps a healthy transfer running when a tracker reports an error', () => {
+    expect(mapStats(dl({}), tr({ error: 2, rateDownload: 1000 })).operation).toMatchObject({ stage: 'transfer', status: 'running', waitingFor: null });
+    expect(mapStats(dl({}), tr({ error: 3 })).operation).toMatchObject({ status: 'failed' });
+  });
   it('uses live daemon numbers when present', () => {
     const s = mapStats(dl({}), tr({}));
     expect(s).toMatchObject({ id: 'id1', progress: 0.5, downSpeedBps: 1000, peers: 5, seeds: 0, etaSeconds: 60, status: 'downloading' });
@@ -89,6 +99,15 @@ describe('mapStats', () => {
 });
 
 describe('mapFiles', () => {
+  it('bounds invalid counters and prefers the current fileStats snapshot', () => {
+    for (const bytesCompleted of [-1465635, NaN, Infinity]) {
+      const [file] = mapFiles(tr({ files: [{ name: 'autorun.inf', length: 61, bytesCompleted }] }));
+      expect(file).toMatchObject({ downloaded: 0, progress: 0 });
+    }
+    expect(mapFiles(tr({ files: [{ name: 'autorun.inf', length: 61, bytesCompleted: 1000 }] }))[0]).toMatchObject({ downloaded: 61, progress: 1 });
+    expect(mapFiles(tr({ files: [{ name: 'autorun.inf', length: 61, bytesCompleted: 0 }],
+      fileStats: [{ wanted: true, priority: 0, bytesCompleted: 61 }] }))[0]).toMatchObject({ downloaded: 61, progress: 1 });
+  });
   it('joins files with fileStats and maps skip/priority', () => {
     const t = tr({
       files: [

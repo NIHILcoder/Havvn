@@ -1,5 +1,14 @@
+import { ErrorMessage } from '../components/ErrorMessage';
 import { RoomServerLeaveOptions } from './rooms/RoomServerLeaveOptions';
+import { RoomPublicNameField } from '../components/RoomPublicNameField';
+import { useRoomPlaybackSender } from '../utils/useRoomPlaybackSender';
+import { writeClipboardText } from '../utils/clipboard';
+import { useResourceEconomy } from '../utils/resource-mode';
 import { RoomDataModal } from './rooms/RoomDataModal';
+import { RoomKeyRotationModal } from './rooms/RoomKeyRotationModal';
+import { RoomSyncModal } from './rooms/RoomSyncModal';
+import { RoomWorkspaceTools } from './rooms/RoomWorkspaceTools';
+import { roomObjectLink } from '../../shared/room-object-links';
 import { watchReadiness, type WatchReadiness } from '../../shared/room-watch-host';
 import { NumberInput } from '../components/NumberInput';
 import type { WatchPlaybackEvent } from '../../shared/room-watch-sync';
@@ -17,6 +26,8 @@ import { ROOM_VOICE_PARTICIPANTS } from '../../shared/room-voice-policy';
  */
 
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
+import { firstSteps } from '../utils/first-steps';
+import type { NavigationTarget } from '../commands/appCommands';
 import { RoomChat } from './rooms/RoomChat';
 import { RoomFileBudgetInfo } from './rooms/RoomFileBudgetInfo';
 import { roomFileReceiveActions, selectRoomFiles, type FileSelectionGesture } from './rooms/roomFileSelection';
@@ -42,6 +53,8 @@ import { RoomLanPanel } from './rooms/RoomLanPanel';
 import { RoomServerPanel } from './rooms/RoomServerPanel';
 import { RoomWorkspaceMenu } from './rooms/RoomWorkspaceMenu';
 import { WatchReadyGate } from './rooms/WatchReadyGate';
+import { RoomActionHint } from './rooms/RoomActionHint';
+import { checkRoomAction } from '../../shared/room-preflight';
 import { applyServerView, loadServerView, type RoomWorkspace } from './rooms/roomWorkspace';
 import { DockZone, DockZonePanel } from './rooms/dock/DockZone';
 import type { DockStripInteractions, DockTabAction } from './rooms/dock/DockTabStrip';
@@ -65,7 +78,7 @@ import { soloHandleZone, pttWindowSet } from './rooms/roomDock';
 import type { LanDiagReportView } from './rooms/LanDiagnosticsModal';
 import { avatarCandidates } from '../components/Identicon';
 import { groupFilesByHierarchy, wantAutoFetch, FOLDER_ICONS } from '../../shared/room-folders';
-import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE } from '../../shared/profile';
+import { sanitizeProfileColor, sanitizeProfileStatus, PROFILE_COLOR_RE, PROFILE_NAME_MAX, publicRoomName } from '../../shared/profile';
 import { isRoomInvite } from '../../shared/room-invite';
 import { buildGuestUrl } from '../../shared/room-guest-url';
 import { parseTrackers } from '../../shared/trackers';
@@ -176,6 +189,8 @@ const DOCK_REFUSAL_TEXT: Record<DockRefusal, RoomsTKey> = {
 };
 
 interface RoomsPageProps {
+  taskRequest?: (Extract<NavigationTarget, { kind: 'room-task' }> & { requestId: number }) | null;
+  onTaskHandled?: () => void;
   /** Room requested from outside (sidebar rail / status-bar Join). */
   focusRoomId?: string | null;
   onFocusHandled?: () => void;
@@ -186,12 +201,15 @@ interface RoomsPageProps {
   onJoinInviteHandled?: () => void;
 }
 
-const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRoomSelected, pendingJoinInvite, onJoinInviteHandled }) => {
+const RoomsPage: React.FC<RoomsPageProps> = ({ taskRequest, onTaskHandled, focusRoomId, onFocusHandled, onRoomSelected, pendingJoinInvite, onJoinInviteHandled }) => {
   const { t } = useTranslation();
   const [profile, setProfile] = useState<RoomProfile | null>(null);
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
+  useEffect(() => {
+    if (room) firstSteps.observeRoom(room);
+  }, [room]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const dialogPending = useRef(false);
@@ -201,6 +219,10 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
 
   // Lightweight inline dialogs
   const [dialog, setDialog] = useState<null | 'create' | 'join' | 'profile' | 'invite' | 'leave'>(null);
+  const [entryName, setEntryName] = useState('');
+  useEffect(() => {
+    if (dialog === 'create' || dialog === 'join') setEntryName(profile?.name ?? '');
+  }, [dialog, profile?.memberId]);
   // Room queued for the leave dialog (which offers keep-files vs delete-files).
   const [leaveTarget, setLeaveTarget] = useState<string | null>(null);
   const [leaveServerMode, setLeaveServerMode] = useState<'stop' | 'local'>('stop');
@@ -228,6 +250,8 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   const [createAutoFetch, setCreateAutoFetch] = useState(false);
   const [joinAutoFetch, setJoinAutoFetch] = useState(false);
   const [joinCode, setJoinCode] = useState('');
+  const [joinError, setJoinError] = useState('');
+  const joinErrorId = React.useId();
   const [profileName, setProfileName] = useState('');
   const [profileSeed, setProfileSeed] = useState('');
   const [avatarPool, setAvatarPool] = useState<string[]>([]);
@@ -381,11 +405,18 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId]);
 
+  const saveEntryName = async () => {
+    if (!profile) throw new Error('Room profile is not loaded');
+    const name = publicRoomName(entryName, profile.memberId);
+    if (name !== profile.name) setProfile(await window.api.rooms.setProfile({ name }));
+  };
+
   const handleCreate = async () => {
-    if (busy || dialogPending.current) return;
+    if (busy || dialogPending.current || !profile) return;
     dialogPending.current = true;
     setBusy(true);
     try {
+      await saveEntryName();
       const state = await window.api.rooms.create(createName.trim() || t('rooms.defaultName'), createE2E, createAutoFetch);
       await refreshList();
       setSelectedId(state.roomId);
@@ -433,6 +464,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
     const candidate = pendingJoinInvite.trim();
     if (isRoomInvite(candidate)) {
       setJoinCode(candidate);
+      setJoinError('');
       setDialog('join');
       toast(t('rooms.joinFromLink'), { icon: '🔗' });
     } else {
@@ -443,17 +475,19 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   }, [pendingJoinInvite]);
 
   const handleJoin = async () => {
-    if (busy || dialogPending.current) return;
+    if (busy || dialogPending.current || !profile) return;
     if (!joinCode.trim()) return;
     // Share the invite parser with clipboard/deep-link validation so generated
     // codes and historical rooms follow the same copy/paste rules.
     if (!isRoomInvite(joinCode)) {
-      toast.error(t('rooms.joinBadFormat'));
+      setJoinError(t('rooms.joinBadFormat'));
       return;
     }
     dialogPending.current = true;
+    setJoinError('');
     setBusy(true);
     try {
+      await saveEntryName();
       const state = await window.api.rooms.join(joinCode.trim(), joinAutoFetch);
       await refreshList();
       setSelectedId(state.roomId);
@@ -461,7 +495,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
       setDialog(null);
       setJoinCode('');
       toast.success(t('rooms.joined'));
-    } catch (e) { toast.error(t(joinErrorKey(e))); }
+    } catch (e) { setJoinError(t(joinErrorKey(e))); }
     finally { dialogPending.current = false; setBusy(false); }
   };
 
@@ -490,29 +524,34 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
 
   // Apply a room-state result from a folder/add op (guarded against a room
   // switch outliving the async call — same rule as the live-update listener).
-  const applyRoomState = (state: RoomState) => {
+  const applyRoomState = useCallback((state: RoomState) => {
     if (state.roomId === selectedRef.current) setRoom(state);
     void refreshList();
-  };
+  }, [refreshList]);
 
   // The target folder (if any) is handed to the engine, which assigns exactly
   // the files it adds — no renderer before/after diff that a concurrent peer add
   // could poison, and a re-added existing file still lands in the target.
-  const handleAddFiles = async (roomId: string, targetFolderId?: string) => {
+  const handleAddFiles = useCallback(async (roomId: string, targetFolderId?: string) => {
     setBusy(true);
     try {
       const state = await window.api.rooms.pickAndAddFiles(roomId, targetFolderId);
-      if (state) applyRoomState(state);
+      if (state) {
+        applyRoomState(state);
+        firstSteps.filePublished(roomId, state.files, profile?.memberId);
+      }
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
     finally { setBusy(false); }
-  };
+  }, [applyRoomState, profile?.memberId]);
 
   // Files dropped onto the open room (paths already resolved by the caller);
   // targetFolderId set when they were dropped onto a specific section.
   const handleDropPaths = async (roomId: string, paths: string[], targetFolderId?: string) => {
     setBusy(true);
     try {
-      applyRoomState(await window.api.rooms.addFiles(roomId, paths, targetFolderId));
+      const state = await window.api.rooms.addFiles(roomId, paths, targetFolderId);
+      applyRoomState(state);
+      if (paths.length) firstSteps.filePublished(roomId, state.files, profile?.memberId);
       toast.success(t('rooms.dropShared'));
     } catch (e) { toast.error(String(e instanceof Error ? e.message : e)); }
     finally { setBusy(false); }
@@ -590,8 +629,28 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
   };
 
   const copy = (text: string, msg: string) => {
-    navigator.clipboard.writeText(text).then(() => toast.success(msg)).catch(() => {});
+    void writeClipboardText(text).then(() => toast.success(msg)).catch(() => toast.error(t('common.copyFailed')));
   };
+
+  const handledTask = useRef(0);
+  useEffect(() => {
+    if (!taskRequest || handledTask.current === taskRequest.requestId || loading || busy) return;
+    const finish = () => { handledTask.current = taskRequest.requestId; onTaskHandled?.(); };
+    if (taskRequest.action === 'create' || taskRequest.action === 'join') {
+      finish(); setDialog(taskRequest.action); return;
+    }
+    const target = rooms.find(row => row.roomId === taskRequest.roomId);
+    if (!target || target.suspended || loadError) {
+      finish(); toast.error(t('commands.missing')); return;
+    }
+    if (selectedId !== target.roomId) { setSelectedId(target.roomId); return; }
+    if (!room || room.roomId !== target.roomId) return;
+    finish();
+    if (room.kicked) { toast.error(t('commands.missing')); return; }
+    firstSteps.observeRoom(room);
+    if (taskRequest.action === 'files') void handleAddFiles(target.roomId);
+    else window.dispatchEvent(new CustomEvent('room-reveal-panel', { detail: { roomId: target.roomId, panel: taskRequest.action } }));
+  }, [taskRequest, loading, busy, rooms, selectedId, room, loadError, onTaskHandled, handleAddFiles, t]);
 
   if (loading) {
     return <div className="rooms-page"><div className="page-loading">{t('common.loading')}</div></div>;
@@ -612,7 +671,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           {profile && (
             <button className="rooms-profile-chip" onClick={openProfile} title={t('rooms.editProfile')}>
               <Avatar seed={profile.avatarSeed} img={profile.avatarImg} size={28} ring />
-              <span style={profile.color ? { color: profile.color } : undefined}>{profile.name || t('rooms.you')}</span>
+              <span style={profile.color ? { color: profile.color } : undefined}>{publicRoomName(profile.name, profile.memberId)}</span>
             </button>
           )}
           <Button variant="secondary" size="sm" onClick={() => setDialog('join')} icon={<Icon name="link" size={14} />}>
@@ -630,7 +689,7 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           title={t('rooms.emptyTitle')}
           description={t('rooms.emptyDesc')}
           action={{ label: t('rooms.create'), icon: 'plus', onClick: () => { setCreateName(''); setDialog('create'); } }}
-          secondaryAction={{ label: t('rooms.join'), icon: 'link', onClick: () => { setJoinCode(''); setDialog('join'); } }}
+          secondaryAction={{ label: t('rooms.join'), icon: 'link', onClick: () => { setJoinCode(''); setJoinError(''); setDialog('join'); } }}
         />
       ) : (
         <div className="rooms-body">
@@ -708,10 +767,11 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           title={t('rooms.createTitle')} icon="plus" busy={busy} onClose={() => setDialog(null)}
           footer={<>
             <Button variant="ghost" onClick={() => setDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
-            <Button variant="primary" onClick={handleCreate} loading={busy}>{t('rooms.create')}</Button>
+            <Button variant="primary" onClick={handleCreate} loading={busy} disabled={!profile}>{t('rooms.create')}</Button>
           </>}
         >
           <p className="rooms-modal-desc">{t('rooms.createDesc')}</p>
+          <RoomPublicNameField value={entryName} memberId={profile?.memberId ?? ''} disabled={busy || !profile} onChange={setEntryName} onSubmit={() => { void handleCreate(); }} />
           <input
             className="rooms-input" data-autofocus
             placeholder={t('rooms.namePlaceholder')}
@@ -738,17 +798,22 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
           title={t('rooms.joinTitle')} icon="link" busy={busy} onClose={() => setDialog(null)}
           footer={<>
             <Button variant="ghost" onClick={() => setDialog(null)} disabled={busy}>{t('common.cancel')}</Button>
-            <Button variant="primary" onClick={handleJoin} loading={busy} disabled={!joinCode.trim()}>{t('rooms.join')}</Button>
+            <Button variant="primary" onClick={handleJoin} loading={busy} disabled={!joinCode.trim() || !profile}>{t('rooms.join')}</Button>
           </>}
         >
           <p className="rooms-modal-desc">{t('rooms.joinDesc')}</p>
+          <RoomPublicNameField value={entryName} memberId={profile?.memberId ?? ''} disabled={busy || !profile} onChange={setEntryName} onSubmit={() => { void handleJoin(); }} />
           <input
             className="rooms-input rooms-input-code" data-autofocus
             placeholder="swift-amber-calm-otter-comet-48219"
             value={joinCode} disabled={busy}
-            onChange={(e) => setJoinCode(e.target.value)}
+            aria-label={t('a11y.roomInvite')}
+            aria-invalid={!!joinError}
+            aria-describedby={joinError ? joinErrorId : undefined}
+            onChange={(e) => { setJoinCode(e.target.value); setJoinError(''); }}
             onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleJoin()}
           />
+          {joinError && <p id={joinErrorId} role="alert"><ErrorMessage error={joinError} /></p>}
           <p className="rooms-join-hint">{t('rooms.joinServerlessHint')}</p>
           <div className="rooms-new-fetch">
             <Toggle checked={joinAutoFetch} disabled={busy} onChange={setJoinAutoFetch} label={t('rooms.newAutoFetch')} />
@@ -796,6 +861,9 @@ const RoomsPage: React.FC<RoomsPageProps> = ({ focusRoomId, onFocusHandled, onRo
               <input
                 className="rooms-input" data-autofocus
                 placeholder={t('rooms.namePlaceholder')}
+                aria-label={t('rooms.publicName')}
+                maxLength={PROFILE_NAME_MAX}
+                autoComplete="nickname"
                 value={profileName} disabled={busy}
                 onChange={(e) => setProfileName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !e.repeat && handleSaveProfile()}
@@ -1051,6 +1119,8 @@ export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, on
   const [pickTransfer, setPickTransfer] = useState(false);
   // Client-side file filter/sort + bulk selection (all room-local, no engine calls).
   const [fileQuery, setFileQuery] = useState('');
+  const [syncRootCount, setSyncRootCount] = useState(0);
+  const syncEnabled = room.members.some(member => member.isSelf && member.capabilities?.includes('file-sync-v1'));
   const [sortKey, setSortKeyRaw] = useState<'added' | 'name' | 'size' | 'status' | 'author'>(() => loadRoomSort(room.roomId));
   const [sortDir, setSortDirRaw] = useState<RoomFilesSortDir>(() => loadRoomSortDir(room.roomId, loadRoomSort(room.roomId)));
   // Switching the sort key resets the direction to that key's natural one.
@@ -1302,7 +1372,9 @@ export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, on
   // map onto a single flat window. Rows measure themselves (heights vary:
   // downloading adds a progress bar, the action cluster can wrap).
   const filesScrollRef = useRef<HTMLDivElement>(null);
+  const filesListRef = useRef<HTMLDivElement>(null);
   const flatList = !hasFolders && visibleFiles.length > 0;
+  useEffect(() => { setSyncRootCount(0); }, [room.roomId]);
   const fileVirtualizer = useVirtualizer({
     count: flatList ? visibleFiles.length : 0,
     getScrollElement: () => filesScrollRef.current,
@@ -1527,6 +1599,9 @@ export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, on
         </div>
       </div>
 
+      {syncEnabled && <RoomActionHint check={checkRoomAction(room, 'file-sync')} />}
+      {syncEnabled && <RoomWorkspaceTools key={room.roomId} roomId={room.roomId} disabled={!!busy || !!room.kicked} onRootsChange={setSyncRootCount} />}
+
       {room.files.length > 0 && (
         <div className="room-file-search">
           <Icon name="search" size={13} />
@@ -1657,7 +1732,7 @@ export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, on
       )}
       <div className="room-files-scroll" ref={filesScrollRef} tabIndex={0} aria-label={t('rooms.sharedFiles')}>
       {!hasFolders ? (
-        room.files.length === 0 ? (
+        room.files.length === 0 && syncRootCount === 0 ? (
           // Empty-room onboarding: the three steps that bring a room to life.
           <div className="room-onboard">
             <p className="room-onboard-desc">{t('rooms.onboard.desc')}</p>
@@ -1683,10 +1758,10 @@ export const RoomFilesPanel: React.FC<FilesPanelProps> = ({ room, onAddFiles, on
               )}
             </div>
           </div>
-        ) : visibleFiles.length === 0 ? (
+        ) : room.files.length === 0 ? <div className="room-files-empty">{t('rooms.workspace.filesInFolders')}</div> : visibleFiles.length === 0 ? (
           <div className="room-files-empty">{t('rooms.fileSearchEmpty')}</div>
         ) : (
-          <div className="room-files room-files-virtual" style={{ height: fileVirtualizer.getTotalSize(), position: 'relative' }}>
+          <div ref={filesListRef} className="room-files room-files-virtual" style={{ height: fileVirtualizer.getTotalSize(), position: 'relative', flexShrink: 0 }}>
             {fileVirtualizer.getVirtualItems().map((vItem) => (
               <div
                 key={vItem.key}
@@ -1845,7 +1920,7 @@ function dockPanelTab(t: RoomsTFn, room: RoomState, id: DockPanelId): DockZonePa
 
 // ── Stage (centre column: the centre dock zone, plus the watch / screen view) ─
 //
-// The watch player and the screen viewer are NOT dock panels and never move. They
+// The watch player and screen viewer are transient media sessions, not dock panels.
 // are transient (created and destroyed per session, with no persistent identity),
 // so a registry entry for them would be a panel that repair keeps re-adding with
 // nothing to show. They render as an overlay bound to the CENTRE zone instead —
@@ -1872,9 +1947,8 @@ interface StageProps {
   theater: boolean;
   onToggleTheater: () => void;
   /**
-   * The session is running but the user is looking at the column instead. Only
-   * WATCH survives this way (see the render body); the flag is meaningless for a
-   * screen share, which is closed on the way out.
+   * The session is running while the user browses the column. Playback and
+   * screen viewing remain mounted, including a viewer in its own window.
    */
   background: boolean;
   onBackground: () => void;
@@ -1898,9 +1972,8 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
   // hidden, so the element, its position, its HLS pipe and the watch-together
   // session all survive the round trip; the × on the player still ends it.
   //
-  // SCREEN is deliberately the exception and still tears down on the way out: it is
-  // a live WebRTC stream that costs the sharer upstream for as long as it is open,
-  // and nobody is looking at it. The LIVE badge puts it back in one click.
+  // The screen viewer also survives switching tabs. A detached viewer keeps
+  // playing while the user browses Files; its close action ends only the watch.
   const stageTab = background ? 'files' : stageView.kind;
   return (
     <div className="room-col-stage">
@@ -1909,7 +1982,7 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
           tabs={tabs}
           activeTab={stageTab}
           onTabChange={(id) => {
-            if (id === 'files') { if (stageView.kind === 'watch') onBackground(); else onCloseStage(); }
+            if (id === 'files') onBackground();
             else onForeground();
           }}
         />
@@ -1919,7 +1992,11 @@ const RoomStage: React.FC<StageProps> = ({ room, stageView, onCloseStage, zone, 
             <RoomPlayer room={room} roomId={room.roomId} file={stageView.file} self={self} initialTogether={stageView.together === true} onClose={onCloseStage} theater={theater} onToggleTheater={onToggleTheater} onDetachedChange={onPlayerDetached} />
         </div>
       ) : stageView.kind === 'screen' ? (
-        <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage} />
+        <div className="room-stage-live" hidden={background}>
+          <ScreenView roomId={room.roomId} memberId={stageView.memberId} title={shareName} onClose={onCloseStage}
+            isSelf={stageView.memberId === self.memberId} settings={room.voice.shareSettings} bitrateLimitKbps={room.resources?.policy.screenBitrateKbps}
+            onDetachedChange={onPlayerDetached} theater={theater} onToggleTheater={onToggleTheater} />
+        </div>
       ) : null}
       {/* The ZONE is the opposite case, and conflating the two was a bug. Before P3
           the centre always held Files, which was disposable; now ANY panel can live
@@ -2086,12 +2163,9 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
   // resets: a stale `true` would collapse both side columns with no player on the
   // stage, a room entirely present and entirely invisible, which is the failure the
   // rail-collapsed guard in the stylesheet already exists to prevent.
-  // Scoped to 'watch' SPECIFICALLY, not "anything non-files": both exits live in
-  // RoomPlayer (the toggle button and the Escape listener), so a theater that
-  // survived into the screen view — reachable, because a torn-off voice panel can
-  // set the stage to 'screen' while the main window's columns are collapsed —
-  // would be a theater with no way out short of closing the stage.
-  const theater = theaterOn && stageView.kind === 'watch' && !stageBg;
+  // Both viewers provide an exit from theater; backgrounded sessions release
+  // the room columns so files and chat remain usable.
+  const theater = theaterOn && stageView.kind !== 'files' && !stageBg;
   // Close the inline screen viewer when its sharer stops or we leave voice
   // (lifted from the voice panel so the Stage owns the view).
   useEffect(() => {
@@ -2153,6 +2227,8 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
   // the room's ONE settings point; closes like every floating surface.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [dataOpen, setDataOpen] = useState(false);
+  const [keyRotationOpen, setKeyRotationOpen] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
   const settingsWrapRef = useRef<HTMLDivElement>(null);
   // Closing by outside-click/Escape unmounts a focused limit input WITHOUT a
   // blur event — commit through a ref first, or the typed value is silently
@@ -2418,12 +2494,13 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
   useEffect(() => {
     const reveal = (event: Event) => {
       const detail = (event as CustomEvent<{ roomId: string; panel: string }>).detail;
-      if (detail?.roomId !== room.roomId || detail.panel !== 'lan') return;
+      if (detail?.roomId !== room.roomId || !['files', 'server', 'lan'].includes(detail.panel)) return;
+      const panel = detail.panel as DockPanelId;
       setRailCollapsed(false);
       setDock(current => {
-        if (isPanelHidden(current, 'lan')) return restorePanel(current, 'lan').layout;
-        const zone = zoneOfPanel(current, 'lan');
-        return zone ? setActivePanel(current, zone, 'lan') : current;
+        if (isPanelHidden(current, panel)) return restorePanel(current, panel).layout;
+        const zone = zoneOfPanel(current, panel);
+        return zone ? setActivePanel(current, zone, panel) : current;
       });
     };
     window.addEventListener('room-reveal-panel', reveal);
@@ -2570,6 +2647,7 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
             roomId={room.roomId}
             showTitle={showTitle}
             lan={room.lan}
+            preflight={checkRoomAction(room, 'lan', { lanJoin: !!room.lan.selfAdmitted && !!room.lan.sessionId, targetId: room.lan.selfAdmitted ? room.lan.hostId : undefined })}
             members={room.members}
             selfId={room.members.find((m) => m.isSelf)?.memberId}
             onStart={async (ids) => { await window.api.rooms.lan.start(room.roomId, ids); }}
@@ -2612,7 +2690,7 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
           />
         );
       case 'chat':
-        return <RoomChat room={room} showTitle={showTitle} onAttachRequest={() => onAddFiles()} soloHandle={soloHandleFor('chat')} />;
+        return <RoomChat room={room} showTitle={showTitle} onAttachRequest={() => onAddFiles()} onWatchFile={file => { setStageView({ kind: 'watch', file }); setStageBg(false); }} soloHandle={soloHandleFor('chat')} />;
       default:
         return null;
     }
@@ -3065,12 +3143,18 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
                 </div>
                 <div className="room-settings-applied">{t('rooms.settingsAppliedLimits')} ↑ {room.upKbps || '∞'} · ↓ {room.downKbps || '∞'} {t('rooms.kbps')}</div>
                 <div className="room-settings-sep" />
+                {room.members.some(member => member.isSelf && member.capabilities?.includes('file-sync-v1')) && <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); setSyncOpen(true); }}><Icon name="refresh" size={13} />{t('rooms.sync.title')}</button>}
                 <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); setDataOpen(true); }}>
                   <Icon name="folder" size={13} /> {t('rooms.data.title')}
                 </button>
                 <button type="button" className="room-settings-item" onClick={onCopyCode}>
                   <Icon name="copy" size={13} /> {t('rooms.copyCodeAction')}
                 </button>
+                {room.canManage && (
+                  <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); setKeyRotationOpen(true); }}>
+                    <Icon name="lock" size={13} /> {t('rooms.keys.title')}
+                  </button>
+                )}
                 {room.canManage && (
                   <button type="button" className="room-settings-item" onClick={() => { setSettingsOpen(false); setRenaming(true); }}>
                     <Icon name="edit-2" size={13} /> {t('rooms.rename')}
@@ -3136,6 +3220,8 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
       )}
 
       {dataOpen && <RoomDataModal key={room.roomId} roomId={room.roomId} onClose={() => setDataOpen(false)} />}
+      {keyRotationOpen && <RoomKeyRotationModal key={room.roomId} room={room} onClose={() => setKeyRotationOpen(false)} />}
+      {syncOpen && <RoomSyncModal key={room.roomId} roomId={room.roomId} onClose={() => setSyncOpen(false)} />}
 
       {/* Three dock zones: left | centre (plus the watch/screen overlay) | right.
           Every panel can live in any of them, so the columns are positional and the
@@ -3234,6 +3320,9 @@ const RoomDetail: React.FC<DetailProps> = ({ onDiagnostics, room, suspended, not
         live={live}
         registry={mounts}
         renderPanel={renderDockPanel}
+        activeOf={(panel, zone) => activePanel(dock, zone as DockZoneId) === panel
+          && !(zone === 'left' && railCollapsed)
+          && !(zone === 'centre' && stageView.kind !== 'files' && !stageBg)}
         realmOf={(z) => (isWindowZone(z) ? (realms[z] ?? null) : null)}
         toasterIdOf={(z) => (isWindowZone(z) ? dockWindowFrameName(z) : undefined)}
       />
@@ -3466,9 +3555,9 @@ const RoomVoicePanel: React.FC<{
     if (v.sharing) window.api.rooms.screen.shareStop(roomId).catch(fail);
     else setPickerOpen(true);
   };
-  const pickSource = (sourceId: string, withAudio: boolean) => {
+  const pickSource = (sourceId: string, withAudio: boolean, settings: import('../../shared/screen-share').ScreenShareSettings) => {
     setPickerOpen(false);
-    window.api.rooms.screen.shareStart(roomId, sourceId, withAudio).catch(fail);
+    window.api.rooms.screen.shareStart(roomId, sourceId, withAudio, settings).catch(fail);
   };
 
   return (
@@ -3524,7 +3613,7 @@ const RoomVoicePanel: React.FC<{
       )}
 
       {settingsOpen && <VoiceSettingsModal onClose={() => setSettingsOpen(false)} />}
-      {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} />}
+      {pickerOpen && <ScreenSourcePicker onClose={() => setPickerOpen(false)} onPick={pickSource} bitrateLimitKbps={room.resources?.policy.screenBitrateKbps} />}
 
       {v.participants.length > 0 && (
         <div className="room-voice-people">
@@ -3693,7 +3782,7 @@ const RoomMembersList: React.FC<{ room: RoomState }> = ({ room }) => {
           </Button>
           <span className="room-member-name" style={m.color ? { color: m.color } : undefined}>
             {m.role === 'owner' && <Icon name="star" size={11} className="room-member-owner" />}
-            {m.isSelf ? (m.name && m.name !== 'You' ? m.name : t('rooms.you')) : m.name}
+            {publicRoomName(m.name, m.memberId)}
             {m.guest && <span className="room-member-guest" title={t('rooms.guestHint')}>{t('rooms.guest')}</span>}
             {m.relayed && <Icon name="network" size={11} className="room-member-relay" />}
           </span>
@@ -3803,16 +3892,17 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
   // Image preview: once downloaded, fetch a loopback URL (cast server) for the
   // row thumbnail + a full-size lightbox. A failed load falls back to the icon.
   const isImg = isImage(file.name);
+  const economy = useResourceEconomy();
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState(false);
   useEffect(() => {
-    if (!isImg || !haveLocally) { setImgUrl(null); return; }
+    if (!isImg || !haveLocally || (economy && !lightbox)) { setImgUrl(null); return; }
     let alive = true;
     window.api.rooms.imageUrl(room.roomId, file.fileId)
       .then((r) => { if (alive) setImgUrl(r.url); })
       .catch(() => { /* no thumbnail — the icon stays */ });
     return () => { alive = false; };
-  }, [isImg, haveLocally, room.roomId, file.fileId]);
+  }, [isImg, haveLocally, room.roomId, file.fileId, economy, lightbox]);
 
   // Reactions: fileId → emoji → memberIds from the engine; a click toggles ours.
   const selfId = room.members.find((m) => m.isSelf)?.memberId;
@@ -3989,7 +4079,7 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
           </div>
         )}
         {errorText && (
-          <div className="room-file-error" role="status" title={tr?.error?.message}>
+          <div className="room-file-error" role="status" title={errorText}>
             <Icon name="alert-circle" size={13} /> <span>{errorText}</span>
           </div>
         )}
@@ -4064,7 +4154,8 @@ const RoomFileRow: React.FC<{ file: RoomFile; room: RoomState; onWatch: (file: R
             // The row's OWN window's clipboard: the main document is unfocused
             // while a child window has focus, and its write rejects with
             // "Document is not focused" (same fix as RoomChatBody's copy).
-            { label: t('rooms.copyName'), icon: 'copy' as IconName, onClick: () => { resolveHostWindow(rowRef.current, host).window.navigator.clipboard.writeText(file.name).catch(() => { /* ignore */ }); } },
+            { label: t('rooms.copyName'), icon: 'copy' as IconName, onClick: () => { void writeClipboardText(file.name, resolveHostWindow(rowRef.current, host).window).then(() => toast.success(t('common.copied'))).catch(() => toast.error(t('common.copyFailed'))); } },
+            { label: t('rooms.objects.copy'), icon: 'link' as IconName, onClick: () => { void writeClipboardText(roomObjectLink({ kind: 'file', id: file.fileId, name: file.name }), resolveHostWindow(rowRef.current, host).window).then(() => toast.success(t('rooms.objects.copied'))).catch(() => toast.error(t('common.copyFailed'))); } },
             ...(folders.length > 0 ? [
               { label: '', onClick: () => { /* divider */ }, divider: true },
               ...folders.filter((fo) => fo.id !== file.folderId).map((fo) => {
@@ -4161,13 +4252,25 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   // `initialTogether` = joining an ongoing session from a row badge — sync
   // starts ON, so the first presence('join') already carries it and incoming
   // beats converge us onto the session immediately.
-  const togetherRef = useRef(initialTogether);
-  const [together, setTogether] = useState(initialTogether);
+  const initialSync = initialTogether && checkRoomAction(room, 'watch', { targetId: room.watchPolicy?.hostId || undefined }).canAttempt;
+  const togetherRef = useRef(initialSync);
+  const [together, setTogether] = useState(initialSync);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const syncIntent = useRef(0);
+  useEffect(() => () => { syncIntent.current++; }, []);
   useEffect(() => playback.setTogether(together), [playback, together]);
   const [hostBusy, setHostBusy] = useState(false);
   const [requests, setRequests] = useState<Array<WatchPlaybackEvent & { receivedAt: number }>>([]);
   const hostId = room.watchPolicy?.hostId || '';
+  const syncCheck = checkRoomAction(room, 'watch', { targetId: hostId || undefined });
+  useEffect(() => {
+    if (!syncCheck.canAttempt) { setTogether(false); togetherRef.current = false; playback.setTogether(false); }
+  }, [syncCheck.canAttempt, playback]);
   const policyStamp = `${room.watchPolicy?.by || ''}:${room.watchPolicy?.at || 0}:${room.watchPolicy?.ownerAt || 0}`;
+  const sendPlayback = useRoomPlaybackSender(roomId, policyStamp, {
+    sent: () => toast(t('rooms.watchHost.requestSent')),
+    failed: () => toast.error(t('rooms.watchHost.requestFailed')),
+  });
   useEffect(() => { playback.setHost(hostId, self.memberId, policyStamp); setRequests(r => r.filter(x => x.policyBy === room.watchPolicy?.by && x.policyAt === room.watchPolicy?.at && x.policyOwnerAt === room.watchPolicy?.ownerAt)); }, [playback, hostId, self.memberId, policyStamp, room.watchPolicy?.by, room.watchPolicy?.at, room.watchPolicy?.ownerAt]);
   const [controller, setController] = useState<string | null>(null); // name we're synced to (display only)
   const watchersRef = useRef<Record<string, Watcher>>({});
@@ -4302,8 +4405,8 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
 
   const playTrack = useCallback((f: RoomFile, broadcastIt: boolean) => {
     if (broadcastIt && playback.followingHost) {
-      void window.api.rooms.broadcastSync(roomId, { fileId: f.fileId, action: 'request', requested: 'track', position: 0, rate: playback.rate, playing: true, together: true, readiness: readinessRef.current }).catch(() => {});
-      toast(t('rooms.watchHost.requestSent')); return;
+      void sendPlayback({ fileId: f.fileId, action: 'request', requested: 'track', position: 0, rate: playback.rate, playing: true, together: true, readiness: readinessRef.current });
+      return;
     }
     playback.chooseSource(f.fileId);
     currentRef.current = f;
@@ -4311,7 +4414,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     if (broadcastIt) {
       window.api.rooms.broadcastSync(roomId, { fileId: f.fileId, action: 'track', position: 0, rate: playback.rate, playing: true, together: true }).catch(() => {});
     }
-  }, [roomId, playback, t]);
+  }, [roomId, playback, t, sendPlayback]);
 
   // Music queue: when a track ends, move on (and take the room along in sync).
   useEffect(() => {
@@ -4685,8 +4788,8 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
   // Both clients use the same media operations and echo guard.
   useEffect(() => {
     if (!mediaEl) return;
-    return playback.attach(mediaEl, input => { void window.api.rooms.broadcastSync(roomId, { ...input, readiness: readinessRef.current }).catch(() => {}); if (input.action === 'request') toast(t('rooms.watchHost.requestSent')); });
-  }, [roomId, mediaEl, playback, t]);
+    return playback.attach(mediaEl, input => { void sendPlayback({ ...input, readiness: readinessRef.current }); });
+  }, [mediaEl, playback, sendPlayback]);
 
   // Leaving the player unmounts its <video> — close any PiP window it owns
   // instead of stranding a dead floating frame. The document is captured on SETUP:
@@ -4732,8 +4835,24 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
     });
   }, [roomId, self.memberId, playback, spawnReaction]);
 
-  const toggleTogether = () => {
+  const toggleTogether = async () => {
+    if (syncBusy) return;
     const next = !together;
+    if (next) {
+      const intent = ++syncIntent.current;
+      setSyncBusy(true);
+      try {
+        const check = await window.api.rooms.preflight(roomId, 'watch', hostId || undefined);
+        if (intent !== syncIntent.current) return;
+        const live = checkRoomAction(roomRef.current, 'watch', { targetId: roomRef.current.watchPolicy?.hostId || undefined });
+        if (!check.canAttempt || !live.canAttempt) {
+          const refusal = check.canAttempt ? live : check;
+          toast.error(t(`rooms.preflight.reason.${refusal.reason}`)); return;
+        }
+        if ((roomRef.current.watchPolicy?.hostId || '') !== hostId) { toast.error(t('rooms.preflight.next.reconnect')); return; }
+      } catch (e) { if (intent === syncIntent.current) toast.error(cleanError(e)); return; }
+      finally { if (intent === syncIntent.current) setSyncBusy(false); }
+    }
     setTogether(next);
     togetherRef.current = next;
     playback.setTogether(next);
@@ -4830,7 +4949,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
               )}
             </span>
           )}
-          <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={toggleTogether} title={t('rooms.together.hint')}>
+          <button className={`room-player-sync ${together ? 'on' : ''}`} onClick={() => { void toggleTogether(); }} disabled={syncBusy || !together && !syncCheck.canAttempt} title={t('rooms.together.hint')}>
             <Icon name="users" size={14} /> <span className="room-player-sync-label">{together ? t('rooms.together.on') : t('rooms.together.off')}</span>
           </button>
           {/* Theater collapses the rail and the chat so the stage takes the room's
@@ -4943,12 +5062,13 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
                 removes the constraint instead of re-tuning the threshold that used
                 to paper over it. */}
             <div className="room-watch-host-panel">
+              <RoomActionHint check={syncCheck} />
               <div className="room-watch-host-choice">
                 <label>{t('rooms.watchHost.mode')}</label>
                 {room.canManage ? <Select disabled={hostBusy} value={hostId} options={[
                   { value: '', label: t('rooms.watchHost.shared') },
                   ...(hostId && !room.members.some(m => m.memberId === hostId && m.online) ? [{ value: hostId, label: t('rooms.watchHost.absent') }] : []),
-                  ...room.members.filter(m => m.online && m.capabilities?.includes('watch-host-v1')).map(m => ({ value: m.memberId, label: m.name || t('rooms.you') })),
+                  ...room.members.filter(m => m.online && m.capabilities?.includes('watch-host-v1')).map(m => ({ value: m.memberId, label: publicRoomName(m.name, m.memberId) })),
                 ]} onChange={async id => {
                   setHostBusy(true);
                   try { await window.api.rooms.setWatchHost(roomId, id); }
@@ -5019,7 +5139,7 @@ const RoomPlayer: React.FC<{ room: RoomState; roomId: string; file: RoomFile; se
             )}
             {loading && !error && <div className="room-player-msg">{t('common.loading')}</div>}
             {!loading && !error && playbackPhase !== 'playing' && playbackPhase !== 'ended' && <div className="room-player-msg" role="status">{t(`player.phase.${playbackPhase}`)}</div>}
-            {error && <div className="room-player-msg err">{error}</div>}
+            {error && <div className="room-player-msg err"><ErrorMessage error={error} /></div>}
             {room.members.some(m => m.online && !m.isSelf && m.watchSync !== true) && <div className="room-player-msg" role="status">{t('rooms.together.legacy')}</div>}
             {together && !hostId && controller && <div className="room-player-controller">{t('rooms.together.synced')}: {controller}</div>}
           </div>

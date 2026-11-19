@@ -1,0 +1,4 @@
+.resources-status { font-size: var(--font-size-sm); line-height: 1.6; overflow-wrap: anywhere; }
+.resources-status p { margin: 10px 0; }
+.resources-status ul { padding-inline-start: 20px; margin: 12px 0; }
+.resources-status li + li { margin-top: 6px; }

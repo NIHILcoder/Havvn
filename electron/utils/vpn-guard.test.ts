@@ -2,13 +2,13 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { VpnState } from '../../shared/vpn-status';
 
 const mocks = vi.hoisted(() => ({ config: vi.fn(), downloads: vi.fn(), pause: vi.fn(), status: vi.fn(), restart: vi.fn(),
-  detect: vi.fn(), address: vi.fn(), rooms: vi.fn(), suspend: vi.fn(), resume: vi.fn(), notify: vi.fn() }));
+  detect: vi.fn(), address: vi.fn(), rooms: vi.fn(), suspend: vi.fn(), resume: vi.fn(), notify: vi.fn(), block: vi.fn() }));
 vi.mock('electron', () => ({ BrowserWindow: class {} }));
 vi.mock('./vpn-detector', () => ({ detectVPN: mocks.detect, getVpnInterfaceIPv4: mocks.address }));
 vi.mock('./logger', () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
 vi.mock('./os-notify', () => ({ showOsNotification: mocks.notify }));
 vi.mock('../db/store', () => ({ getPrivacyConfig: mocks.config, getEngineChoice: () => 'native', getPersistedRooms: mocks.rooms }));
-vi.mock('../torrent', () => ({ getTorrentManager: () => ({ getDownloads: mocks.downloads, pauseAllActive: mocks.pause, getVpnBindStatus: mocks.status, restartEngine: mocks.restart }) }));
+vi.mock('../torrent', () => ({ getTorrentManager: () => ({ getDownloads: mocks.downloads, pauseAllActive: mocks.pause, getVpnBindStatus: mocks.status, restartEngine: mocks.restart, setTransferBlock: mocks.block }) }));
 vi.mock('../sharing/room-manager', () => ({ getRoomManager: () => ({ suspendNetworking: mocks.suspend, resumeNetworking: mocks.resume }) }));
 vi.mock('../i18n', () => ({ t: (key: string) => key }));
 
@@ -92,4 +92,26 @@ it('preserves an enabled guard on a settings read failure', async () => {
   mocks.downloads.mockResolvedValue([{ status: 'downloading' }]);
   await vi.advanceTimersByTimeAsync(2000);
   expect(mocks.pause).toHaveBeenCalledOnce();
+});
+
+it('blocks new activation while the route is unknown, including an idle client', async () => {
+  await guard.restartGuardFromConfig(); expect(mocks.block).toHaveBeenLastCalledWith('vpn', true);
+  await vi.advanceTimersByTimeAsync(2000); expect(mocks.block).toHaveBeenLastCalledWith('vpn', true);
+  mocks.detect.mockResolvedValue(result('routed')); await vi.advanceTimersByTimeAsync(5000);
+  expect(mocks.block).toHaveBeenLastCalledWith('vpn', false); expect(mocks.pause).not.toHaveBeenCalled();
+});
+it('an obsolete unsafe probe cannot re-block activation after disabling protection', async () => {
+  let finish!: (value: ReturnType<typeof result>) => void;
+  mocks.detect.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await guard.restartGuardFromConfig(); await vi.advanceTimersByTimeAsync(2000);
+  mocks.config.mockResolvedValue({ vpnKillSwitch: false }); await guard.restartGuardFromConfig();
+  finish(result('unknown')); await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.block).toHaveBeenLastCalledWith('vpn', false); expect(mocks.pause).not.toHaveBeenCalled();
+});
+it('an unexpected route-query failure blocks and pauses active transfers', async () => {
+  mocks.downloads.mockResolvedValue([{ status: 'downloading' }]);
+  mocks.detect.mockResolvedValueOnce(result('routed'));
+  await guard.restartGuardFromConfig(); await vi.advanceTimersByTimeAsync(2000);
+  mocks.detect.mockRejectedValueOnce(new Error('route query failed')); await vi.advanceTimersByTimeAsync(5000);
+  expect(mocks.block).toHaveBeenLastCalledWith('vpn', true); expect(mocks.pause).toHaveBeenCalledOnce();
 });

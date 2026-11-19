@@ -36,14 +36,26 @@ export interface AudioTrackListItem {
   channels?: string;
 }
 
-export function probeAudioStreams(ffmpegPath: string | null, filePath: string): Promise<AudioTrackInfo[]> {
-  if (!ffmpegPath) return Promise.resolve([]);
-  return new Promise((resolve) => {
+export function probeAudioStreams(ffmpegPath: string | null, filePath: string, strict = false): Promise<AudioTrackInfo[]> {
+  if (!ffmpegPath) return strict ? Promise.reject(new Error('Audio track probe is unavailable')) : Promise.resolve([]);
+  return new Promise((resolve, reject) => {
     const proc = spawn(ffmpegPath, ['-i', filePath], { windowsHide: true });
-    let err = '';
-    proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
-    proc.on('error', () => resolve([]));
-    proc.on('close', () => resolve(parseAudioStreams(err)));
+    let err = '', settled = false;
+    const finish = (failed: boolean) => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      if (failed && strict) reject(new Error('Could not inspect audio tracks'));
+      else resolve(failed ? [] : parseAudioStreams(err));
+    };
+    const timer = setTimeout(() => { finish(true); proc.kill(); }, 12000);
+    proc.stderr.on('data', (d: Buffer) => {
+      if (settled) return;
+      err += d.toString();
+      if (err.length > 1024 * 1024) { finish(true); proc.kill(); }
+    });
+    proc.on('error', () => finish(true));
+    // `ffmpeg -i` deliberately exits 1 even for a valid input. Require an
+    // actual input table instead of treating every nonzero exit as failure.
+    proc.on('close', () => finish(strict && !/(?:^|\r?\n)Input #\d+,/.test(err)));
   });
 }
 

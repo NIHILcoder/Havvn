@@ -9,6 +9,20 @@
  */
 
 export const PROFILE_STATUS_MAX = 140;
+export const PROFILE_NAME_MAX = 64;
+
+/** Stable public alias. Never derive it from an OS account or device hostname. */
+export function defaultRoomName(memberId: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < memberId.length; index++) hash = Math.imul(hash ^ memberId.charCodeAt(index), 16777619);
+  return 'Havvn-' + (hash >>> 0).toString(16).padStart(8, '0').slice(-6).toUpperCase();
+}
+
+/** A local "You" label must never be the fallback sent to another member. */
+export function publicRoomName(name: unknown, memberId: string): string {
+  const clean = sanitizeProfileStatus(name).slice(0, PROFILE_NAME_MAX);
+  return clean || defaultRoomName(memberId);
+}
 export const PROFILE_IMG_MAX_CHARS = 64_000;
 /** Max decoded avatar dimension. Our own pipeline emits ≤128px; the cap only
  *  has to stop a hand-crafted pixel bomb (a ~40KB flat PNG can declare

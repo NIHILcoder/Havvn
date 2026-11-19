@@ -11,11 +11,11 @@
  * drives the pop-out channels instead, addressed by frame name.
  */
 import React, { useEffect, useState } from 'react';
-import { LogoMark, Wordmark } from '../components';
+import { Icon, LogoMark, Wordmark } from '../components';
 import { WindowControls, IS_MAC } from './WindowControls';
 import { useTranslation } from '../utils/i18nContext';
 
-export const TitleBar: React.FC = () => {
+export const TitleBar: React.FC<{ onOpenCommands?: () => void; onOpenEvents?: () => void; activeProblems?: number }> = ({ onOpenCommands, onOpenEvents, activeProblems = 0 }) => {
   const { t } = useTranslation();
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
@@ -35,6 +35,14 @@ export const TitleBar: React.FC = () => {
       </div>
       {/* The flexible middle IS the drag handle; double-click toggles maximize. */}
       <div className="titlebar-drag" onDoubleClick={() => w?.toggleMaximize()} />
+      <div className="titlebar-actions" role="group" aria-label={t('nav.utilities')}>
+        {onOpenCommands && <button type="button" className="titlebar-commands" onClick={onOpenCommands}
+          aria-label={t('commands.title')} title={`${t('commands.title')} · Ctrl+K`}><Icon name="keyboard" size={16} /></button>}
+        {onOpenEvents && <button type="button" className="titlebar-commands" onClick={onOpenEvents}
+          aria-label={`${t('events.title')} · ${t('events.active')}: ${activeProblems}`} title={`${t('events.title')} · ${t('events.active')}: ${activeProblems}`}>
+          <Icon name="bell" size={16} />{activeProblems > 0 && <span className="titlebar-event-dot" aria-hidden="true" />}
+        </button>}
+      </div>
       <WindowControls
         maximized={maximized}
         labels={{

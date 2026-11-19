@@ -6,6 +6,10 @@ import { watchCanonical, watchHostCanonical, type WatchMessage } from './room-wa
 import { watchPolicyCanonical, type WatchPolicy } from './room-watch-host';
 import { chatPinsCanonical, type RoomChatPins } from './room-chat-pins';
 import type { GossipMessage } from './room-protocol';
+import { syncWireCanonical, syncFrameVersion } from './room-file-sync-protocol';
+import { syncPolicyCanonical, syncRevisionCanonical } from './room-file-sync';
+import { DOCUMENT_CAPABILITY, documentWireCanonical } from './room-documents';
+import { SERVER_PREPARATION_CAPABILITY, serverPreparationCanonical } from './server-readiness';
 
 export interface GossipProof { memberId: string; pub: string; sig: string; bytes: Uint8Array; chainLink?: boolean }
 /** A persisted proof may belong to an earlier key epoch. Clean only the outgoing
@@ -53,6 +57,17 @@ export function gossipProofs(m: GossipMessage, topic: string, rootOwnerId: strin
   };
   const transfer = (p: any, root: string) => add(p, p.by, json(['th-room-transfer:v1', root, p.by, p.newOwnerId, p.at]));
   switch (m.t) {
+    case DOCUMENT_CAPABILITY: add(m, m.memberId, documentWireCanonical(topic, m.memberId, m.to, m.body)); break;
+    case SERVER_PREPARATION_CAPABILITY: add(m, m.memberId, serverPreparationCanonical(topic, m as any)); break;
+    case 'file-sync-v1':
+    case 'file-sync-v2': case 'file-sync-v3': case 'file-sync-v4': case 'file-sync-v5': case 'file-sync-v6': case 'file-sync-history-v1':
+      add(m, m.memberId, syncWireCanonical(topic, m.memberId, m.to, m.body, syncFrameVersion(m.t)));
+      if (m.body.kind === 'page') for (const record of m.body.records) {
+        const value = record.value;
+        if (record.kind === 'policy') add(value, value.ownerId, syncPolicyCanonical(topic, value));
+        else add(value, value.authorId, syncRevisionCanonical(topic, value));
+      }
+      break;
     case 'e2e-keys': add(m, m.ownerId, keyPageCanonical(topic, m as any)); break;
     case 'chat': chat(m); break;
     case 'chat-pins-v1': pins(m as unknown as RoomChatPins); break;

@@ -10,6 +10,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { RoomMember } from '../../shared/types';
+import { publicRoomName } from '../../shared/profile';
 import { Button } from './Button';
 import { Avatar } from './Avatar';
 import { Icon } from './Icon';
@@ -60,7 +61,7 @@ export const ProfileCard: React.FC<ProfileCardProps> = ({ member, totalFiles, an
     return () => { doc.removeEventListener('mousedown', onDown); doc.removeEventListener('keydown', onKey); };
   }, [doc, anchor, onClose]);
 
-  const name = member.isSelf && (!member.name || member.name === 'You') ? t('rooms.you') : member.name;
+  const name = publicRoomName(member.name, member.memberId);
   return createPortal(
     <div
       ref={ref}
