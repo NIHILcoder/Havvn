@@ -43,9 +43,8 @@ import { ThemeEditorProvider, useThemeEditor } from './components/ThemeEditorCon
 // them out of the initial bundle until the dock is actually opened.
 const ThemeEditor = lazy(() => import('./components/ThemeEditor'));
 import { CompletionCountdown } from './components/CompletionCountdown';
-import { Onboarding } from './components/Onboarding';
-import { FirstStepsGuide } from './components/FirstStepsGuide';
-import { FIRST_STEPS_OPEN, firstSteps, useFirstSteps } from './utils/first-steps';
+import { FirstStepsGuide, type FirstStepsView } from './components/FirstStepsGuide';
+import { FIRST_STEPS_OPEN, firstSteps } from './utils/first-steps';
 import { offerFirstSteps } from './state/first-steps-state';
 import { dismissSplash, setSplashStage } from './utils/splash';
 import { receiveExternalWatch } from './utils/externalWatch';
@@ -129,9 +128,7 @@ const AppContent: React.FC = () => {
   // Last full RoomState per room (pushed via onRoomUpdate) — member-level truth
   const roomStates = useRef<Map<string, RoomState>>(new Map());
   // First-run onboarding: shown once, only when the app looks fresh
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [showFirstGuide, setShowFirstGuide] = useState(false);
-  const firstStepsSnapshot = useFirstSteps();
+  const [firstStepsView, setFirstStepsView] = useState<FirstStepsView>('hidden');
   const startupIntent = useRef(false);
   const onboardingChecked = useRef(false);
 
@@ -215,7 +212,9 @@ const AppContent: React.FC = () => {
     void offerFirstSteps(firstSteps, async () => {
       const [, rooms] = await Promise.all([downloadsModel.refresh(), window.api.rooms.list()]);
       return { downloads: downloadsModel.store.getState().downloads, rooms };
-    }).then(offer => { if (offer && !startupIntent.current) setShowOnboarding(true); });
+    }).then(offer => {
+      if (offer && !startupIntent.current) setFirstStepsView(view => view === 'hidden' ? 'collapsed' : view);
+    });
   }, []);
 
   // Listen for opening torrent files/magnet links from OS.
@@ -223,13 +222,15 @@ const AppContent: React.FC = () => {
   // which opens the same confirmation/file-picker dialog as a manual add.
   useEffect(() => {
     const unsubscribe = window.api.onOpenTorrent((torrentUri) => {
-      startupIntent.current = true; setShowOnboarding(false);
+      startupIntent.current = true;
+      setFirstStepsView(view => view === 'hidden' ? view : 'collapsed');
       void pageLeave.run(() => { setCurrentPageNow('downloads'); setOpenTorrentUri(torrentUri); });
     });
     // A havvn://join/<invite> deep link → Rooms, prefilled Join dialog (RoomsPage
     // validates + confirms; a deep link is never auto-joined).
     const unsubscribeJoin = window.api.onJoinInvite((invite) => {
-      startupIntent.current = true; setShowOnboarding(false);
+      startupIntent.current = true;
+      setFirstStepsView(view => view === 'hidden' ? view : 'collapsed');
       void pageLeave.run(() => { setCurrentPageNow('rooms'); setPendingJoinInvite(invite); });
     });
 
@@ -408,7 +409,7 @@ const AppContent: React.FC = () => {
   const [navigationTarget, setNavigationTarget] = useState<NavigationTarget | null>(null);
   const navigationSequence = useRef(0);
   useEffect(() => {
-    const open = () => { firstSteps.markSeen(); setShowOnboarding(true); };
+    const open = () => { firstSteps.markSeen(); setFirstStepsView('routes'); };
     window.addEventListener(FIRST_STEPS_OPEN, open);
     return () => window.removeEventListener(FIRST_STEPS_OPEN, open);
   }, []);
@@ -421,7 +422,7 @@ const AppContent: React.FC = () => {
     // Navigation belongs to the main shell, even when invoked from a detached panel.
     window.focus();
     if (target.kind === 'page') setCurrentPageNow(target.page);
-    else if (target.kind === 'first-steps') { firstSteps.markSeen(); setShowOnboarding(true); }
+    else if (target.kind === 'first-steps') { firstSteps.markSeen(); setFirstStepsView('routes'); }
     else if (target.kind === 'watch-download') { setStreamRequest({ id: target.id, requestId }); setCurrentPageNow('downloads'); }
     else if (target.kind === 'room-task') {
       setRoomTaskRequest({ ...target, requestId }); setCurrentPageNow('rooms');
@@ -494,6 +495,9 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const firstStepsControl = firstStepsView !== 'hidden' && <FirstStepsGuide view={firstStepsView}
+    onView={setFirstStepsView} rooms={roomSummaries} navigate={setNavigationTarget} floating={!panels.statusBar} />;
+
   return (
     <>
       {/* The app-wide default toaster. No toasterId and no portal target, so it
@@ -558,21 +562,12 @@ const AppContent: React.FC = () => {
               {' '}{t('app.banner.diskResume')}
             </AlertBanner>
           )}
-          {showFirstGuide && <FirstStepsGuide key={firstStepsSnapshot.data.active} rooms={roomSummaries} navigate={setNavigationTarget}
-            onChoose={() => setShowOnboarding(true)} onClose={() => setShowFirstGuide(false)} />}
           <Suspense fallback={<div className="page-loading" />}>
             {renderPage()}
           </Suspense>
 
-          {showOnboarding && (
-            <Onboarding
-              rooms={roomSummaries}
-              onClose={() => setShowOnboarding(false)}
-              onSelect={route => { firstSteps.begin(route); setShowOnboarding(false); setShowFirstGuide(true); }}
-            />
-          )}
-
-          {panels.statusBar && <DownloadStatusBar
+          {panels.statusBar ? <DownloadStatusBar
+            trailingControl={firstStepsControl}
             roomPresence={roomPresence}
             roomCount={roomSummaries.length}
             onJoinRoom={() => (roomPresence ? openRoom(roomPresence.roomId) : setCurrentPage('rooms'))}
@@ -581,7 +576,7 @@ const AppContent: React.FC = () => {
             onVoiceMute={() => { if (voiceCall) void window.api.rooms.voice.mute(voiceCall.roomId, !voiceCall.muted).catch(() => { /* ignore */ }); }}
             onVoiceDeafen={() => { if (voiceCall) void window.api.rooms.voice.deafen(voiceCall.roomId, !voiceCall.deafened).catch(() => { /* ignore */ }); }}
             onVoiceLeave={() => { if (voiceCall) void window.api.rooms.voice.leave(voiceCall.roomId).catch(() => { /* ignore */ }); }}
-          />}
+          /> : firstStepsControl && <div className="first-dock-anchor">{firstStepsControl}</div>}
         </main>
         </div>
       </div>

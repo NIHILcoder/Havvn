@@ -84,7 +84,7 @@
 }
 .stg-nav-grp-h {
   font-family: var(--font-display);
-  font-size: 10.5px;
+  font-size: var(--font-size-xs);
   font-weight: var(--font-weight-bold);
   letter-spacing: 0.14em;
   text-transform: uppercase;

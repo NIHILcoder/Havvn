@@ -50,6 +50,18 @@ if (!process.versions.electron) {
       await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true }); await wait();
       fs.writeFileSync(path.join(output, name), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());
     };
+    const pickerAligned = `(() => {
+      const picker = document.querySelector('.tfs-body');
+      const defaults = picker.querySelector('.download-defaults-preview').getBoundingClientRect();
+      const search = picker.querySelector('.search-box').getBoundingClientRect();
+      const scope = picker.querySelector('.tfs-selection-scope > label').getBoundingClientRect();
+      const left = picker.getBoundingClientRect().left + picker.clientLeft;
+      const inset = search.left - left;
+      return inset > 0 && Math.abs(defaults.left - search.left) < 1
+        && Math.abs(scope.left - search.left) < 1
+        && Math.abs(left + picker.clientWidth - defaults.right - inset) < 1
+        && picker.scrollWidth <= picker.clientWidth + 1;
+    })()`;
     await check('Actual DownloadsPage exposes an explicit add-link button', `!!document.querySelector('.add-download-link-btn')`);
     await open(); await click('common.cancel');
     assert.equal(await run('linkCalls.length'), 0);
@@ -61,6 +73,8 @@ if (!process.versions.electron) {
     await check('Enter permits another link without starting a download', `!!document.querySelector('.add-downloads textarea')&&linkCalls.length===0`);
     await click('downloads.queue.continue');
     await check('Continue opens the real file selector without adding yet', `!!document.querySelector('.file-selector-stats')&&linkCalls.filter(c=>c[0]==='add').length===0`);
+    await capture('file-picker-wide.png');
+    await check('Defaults, search and selection scope use the same inset', pickerAligned);
     assert.deepEqual(await run(`linkCalls.find(c=>c[0]==='preview')[1]`), { magnetUri: magnet, torrentPath: undefined });
     await click('settings.choose');
     await run(`holdAdd=true;button('filePicker.downloadSelected').click();button('filePicker.downloadSelected').click()`); await wait();
@@ -85,6 +99,13 @@ if (!process.versions.electron) {
     await open(); await capture('add-link-wide.png'); win.setSize(520, 820); await wait();
     await check('Add-link dialog fits a narrow window', `document.documentElement.scrollWidth<=innerWidth&&document.querySelector('[role=dialog]').getBoundingClientRect().right<=innerWidth`);
     await capture('add-link-narrow.png'); await click('common.cancel');
+    await run(`document.documentElement.dataset.theme='light';true;`);
+    await open(); await run(`linkInput(${JSON.stringify(magnet)})`); await wait(); await click('downloads.queue.continue');
+    await check('File picker keeps its insets in a narrow light window', pickerAligned);
+    await capture('file-picker-narrow-light.png');
+    await run(`document.querySelector('.download-defaults-preview summary').click();true;`); await wait();
+    await check('Expanded defaults preserve the file picker alignment', pickerAligned);
+    await click('common.cancel');
     await run(`dict=JSON.parse(fs.readFileSync(path.join(fixtureRoot,'renderer/i18n/en.json'),'utf8'));fixtureSetLanguage('en');true;`); await wait();
     await open(); await check('English labels resolve', `document.querySelector('[role=dialog]').textContent.includes(t('downloads.queue.hint'))&&!document.body.textContent.includes('downloads.queue.')`);
     assert.deepEqual(errors, []);

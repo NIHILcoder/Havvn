@@ -169,6 +169,10 @@ if (!process.versions.electron) {
     await run(`var search=document.querySelector('.media-library-search input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(search,'S01E02');search.dispatchEvent(new Event('input',{bubbles:true}));`);
     await wait(`document.querySelectorAll('.watch-history-card').length===1`);
     assert.equal(await run(`document.querySelector('.watch-history-path').textContent`), 'S01E02.mp4');
+    await run(`Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(search,'no-matching-title');search.dispatchEvent(new Event('input',{bubbles:true}));`);
+    await wait(`!!button('library.clearSearch')`);
+    await run(`button('library.clearSearch').click()`);
+    await wait(`document.querySelectorAll('.watch-history-card').length===2&&document.activeElement===search`);
     await run(`reactRoot.unmount()`);
     win.setSize(1050, 720);
     d = { ...d, id: 'readded', name: 'Renamed series' }; files.reverse();

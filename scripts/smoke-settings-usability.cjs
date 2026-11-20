@@ -25,7 +25,7 @@ if (!process.versions.electron) {
     state.scheduler = { enabled: true, schedules: [{ id: 'night', days: [1], startTime: '22:00', endTime: '06:00', speedLimit: 100 }] };
     const css = require('./smoke-ui-fonts.cjs')(root) + [
       'renderer/styles/variables.css','renderer/styles/base.css','renderer/styles/components.css','renderer/styles/layout.css','renderer/styles/appearance.css',
-      'renderer/pages/SettingsPage.css','renderer/pages/settings/shell.css','renderer/pages/settings/controls.css','renderer/pages/settings/SettingsNav.css','renderer/pages/settings/SpeedLimitField.css','renderer/pages/settings/EffectiveLimits.css',
+      'renderer/pages/SettingsPage.css','renderer/pages/settings/shell.css','renderer/pages/settings/controls.css','renderer/pages/settings/SettingsNav.css','renderer/pages/settings/SpeedLimitField.css','renderer/pages/settings/EffectiveLimits.css','renderer/pages/settings/SettingsTasks.css',
       'renderer/components/Modal.css','renderer/components/Select.css','renderer/components/Toggle.css','renderer/components/NumberInput.css','renderer/components/HotkeySettings.css',
     ].map(file => fs.readFileSync(path.join(root, file), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const file = path.join(scratch, 'ui.html');
@@ -262,6 +262,29 @@ if (!process.versions.electron) {
         const size=win.getSize();win.setSize(size[0]+1,size[1]);await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});win.setSize(...size);await pause();fs.writeFileSync(path.join(output,'downloads-'+width+'.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
       });
     }
+    await scenario('Settings shortcuts use the available content width', async () => {
+      win.setSize(800, 850); await mount('general');
+      assert.equal(await run(`(() => {
+        const grid = document.querySelector('.settings-task-grid');
+        const rows = [...grid.children].map(button => button.getBoundingClientRect().top);
+        return grid.clientWidth < 620 && new Set(rows).size === 3 && grid.scrollWidth <= grid.clientWidth + 1;
+      })()`), true);
+    });
+    await scenario('Settings save status follows the active corner radius', async () => {
+      win.setSize(1200, 850); await mount('downloads');
+      assert.equal(await run(`document.querySelector('.stg-save-state > span').textContent===t('settings.review.clean')`), true);
+      for (const scale of [0, 12]) {
+        const radii = await run(`(() => {
+          const root = document.documentElement;
+          root.style.setProperty('--radius-scale', '${scale}px');
+          const badge = document.querySelector('.stg-save-state > span');
+          const radius = getComputedStyle(badge).borderTopLeftRadius;
+          root.style.removeProperty('--radius-scale');
+          return parseFloat(radius);
+        })()`);
+        assert(Math.abs(radii - scale * 0.55) < 0.01);
+      }
+    });
     await scenario('English labels and light theme remain usable',async()=>{
       win.setSize(1100,820);await mount('connection');const darkBackground=await run(`getComputedStyle(document.querySelector('.stg-page')).backgroundColor`);
       await run(`dict=JSON.parse(fs.readFileSync(path.join(fixtureRoot,'renderer/i18n/en.json'),'utf8'));fixtureSetLanguage('en');document.documentElement.dataset.theme='light';true;`);await pause(150);

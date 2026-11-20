@@ -42,6 +42,7 @@ interface StatusBarProps {
   onVoiceMute?: () => void;
   onVoiceDeafen?: () => void;
   onVoiceLeave?: () => void;
+  trailingControl?: React.ReactNode;
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
@@ -57,6 +58,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
   onVoiceMute,
   onVoiceDeafen,
   onVoiceLeave,
+  trailingControl,
 }) => {
   const { t } = useTranslation();
   const [showGraph, setShowGraph] = useState(false);
@@ -72,6 +74,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           />
         </div>
       )}
+      <div className="status-bar-footer">
       <footer className="status-bar">
         <div className="status-bar-section">
           <div className="status-item" role="status">
@@ -152,6 +155,8 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           </div>
         </div>
       </footer>
+        {trailingControl}
+      </div>
     </div>
   );
 };
