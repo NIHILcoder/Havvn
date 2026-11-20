@@ -312,15 +312,15 @@
 
 [data-theme="light"] .nav-subitem.active {
   background: var(--color-accent-bg);
-  color: var(--color-accent-primary);
+  color: var(--color-text-primary);
 }
 
 [data-theme="light"] .nav-subitem-badge {
   background: rgba(27, 24, 20, 0.06);
-  color: var(--color-text-tertiary);
+  color: var(--color-text-secondary);
 }
 
 [data-theme="light"] .nav-subitem.active .nav-subitem-badge {
   background: var(--color-accent-primary);
-  color: #ffffff;
+  color: var(--color-text-on-accent);
 }
