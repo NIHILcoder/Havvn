@@ -4,29 +4,96 @@
 
 ## [3.3.0] - 2026-11-21
 
-Havvn 3.3 adds shared room workspaces, device pairing, and more ways to manage downloads and preferences.
+Havvn 3.3 adds shared folders and collaborative documents in rooms, trusted device pairing, and a local media library. It also expands download controls, torrent search, automation, and settings recovery, and streamlines common workflows across the desktop app.
 
-### Added
+### Room files and collaborative documents
 
-- Synchronize selected room folders, review conflicts and history, and recover previous versions. Rooms can also edit text files and collaborative documents with saved snapshots.
-- Pair trusted devices and choose which supported data to synchronize.
-- Save download views, assign category defaults, undo a download removal that keeps its files, and follow progress on individual files.
-- Use a command palette and event center, set automation rules, save working profiles, and export or restore preferences.
+- Shared folders, the built-in file editor, and shared documents are available in rooms on Windows and Linux. A single tabbed workspace brings together project files, folder settings and history, and collaborative notes. Detach it into its own window or dock it again while keeping open tabs, text, and cursor positions.
+- Connect a local folder with a preview of included files and existing matches. Enable automatic publishing and applying changes separately. Room owners can grant write access to selected participants.
+- Review changes and conflicts before replacing a local file. Browse file history, restore earlier versions, and save a copy of a deleted file from the shared folder's trash.
+- Open and save supported text files in place with syntax highlighting. Create a separate shared document from an open file or export a document as Markdown or plain text.
+- Edit shared plain-text and Markdown documents together, see participant cursors, and switch among source, preview, and split views. Start from templates for meeting notes, tasks, project instructions, or links.
+- Save and restore named local document snapshots. The editor shows which changes are saved locally and which the owner has accepted. Offline drafts survive restarts and can be submitted when the owner reconnects.
+- Request editing access from the document owner. Copy room chat links to shared files, project files, documents, and history entries so participants can open the relevant item directly.
 
-### Changed
+### Room connections, voice, and screen sharing
 
-- Search shows release details and previews. Playback has improved buffering feedback, history, external-player handling, and screen-sharing controls.
-- Settings search opens and focuses the matching control. Shortcuts, speed limits, notifications, and backup options are easier to find.
-- Startup shows real progress and recovery actions. The Windows installer remembers shortcut and file-handler choices during upgrades.
-- First steps opens from the status bar and follows each task without shifting the workspace.
-- The app reduces background work on hidden screens and reports effective transfer limits and storage usage.
+- Improved room reconnection after sleep, network changes, or a VPN interruption. Connection diagnostics now show the current stage and suggest a next action when a shared action is unavailable.
+- Room owners can rotate the invitation key immediately or on a schedule while staying connected with supported clients. Offline participants need the latest invitation to return.
+- Improved voice recovery after disconnects. Test the selected speaker output and follow troubleshooting steps for inaudible calls or microphones.
+- Choose screen-sharing presets for text and code, video, or low bandwidth, or configure resolution from 480p to 4K, frame rate, and bitrate manually within room limits. On Windows, system audio requires separate consent for each share.
+- Improved screen-sharing startup and reconnect feedback. The viewer supports up to 60 FPS, subject to the source and connection.
 
-### Fixed
+### LAN and game servers
 
-- Improved room reconnection, voice recovery, and LAN game-server startup.
-- Improved keyboard navigation, contrast, and layout across settings, dialogs, and the sidebar and status bar in light mode.
-- Aligned the file picker controls and made the settings save status follow the selected corner radius.
-- Made the RSS import and export menu accessible by name, clarified empty media searches, and adapted the settings shortcuts to the available width.
+- Improved Windows virtual LAN startup and recovery when the adapter, network helper, or game server is slow to become ready.
+- See your own LAN address, participant addresses and connection states, and the running game server's host and copyable `IP:port` separately.
+- Get more specific LAN and game-server diagnostics for startup, reachability, and readiness problems.
+- Players can opt in to share preparation status, including missing files, connection problems, and confirmed readiness for the current server and client pack.
+
+### Trusted devices
+
+- Enable device pairing in **Settings → Devices**. Connect a trusted pair on the local network with an expiring invite, available as a copyable code or QR, and confirm both device fingerprints.
+- Approve data exchange separately. Supported scopes include selected interface and player preferences, eligible saved download views, and playback positions for matching completed media files.
+- Review pending changes, conflicts, and the last confirmed exchange. Resolve conflicting edits, revoke a device, or narrow the data it can receive.
+
+### Downloads and torrent creation
+
+- Save named download views with filters, sorting, and compact or detailed rows. Pin them to the sidebar, open them from the command palette, and pick up where you left off after restarting.
+- Remove individual active filters or clear them while keeping the current sorting. Empty results explain when filters are hiding downloads.
+- Set default folders, initial pause, sequential downloading, and seeding limits per category. Preview the resulting options when adding a torrent, with manual choices visible in the file picker.
+- Search and browse torrent folders before downloading. Apply quick picks for video, subtitles, or samples to the current results or the whole torrent, and see how many files remain selected outside the current scope.
+- See waiting reasons and separate stages for metadata, disk checks, and transfers. File details update live and show selected-file progress independently of total traffic.
+- See both upload and download rates and lifetime traffic, and inspect which limits are currently active. The download header and detailed cards keep frequent actions visible as the window narrows.
+- Preview affected files before deleting them. Undo removal for up to 30 seconds in the current session when keeping the files on disk.
+- Follow contextual recovery actions for stalled or failed downloads, including explanations, retries, and folder actions where available. Fixed Transmission resume when the previous stop is still settling.
+- Preview the contents and piece size of a new torrent, exclude files or folders, and follow measured hashing progress. Save a draft, cancel creation, continue an interrupted batch, or retry seeding without recreating a finished torrent.
+- Aligned the add-torrent defaults, file search, and selection controls. Torrent creation now localizes sizes and piece-size labels.
+
+### Search and RSS
+
+- Connect to RuTracker from the provider settings with a dedicated sign-in window, configurable mirrors and proxy routing, and per-source pagination. Existing custom providers remain available.
+- Open a release card from the main or quick search. RuTracker cards include descriptions, covers, and a zoomable screenshot gallery. For matching results from multiple sources, select which source to preview or download from.
+- Diagnose and retry a failing provider independently while preserving the current query and other results. Reopen provider sign-in when the session has expired.
+- Preview what an RSS rule would match, skip, or add, including previously processed entries. Start from templates for one release per episode, 1080p without samples or CAM releases, or all items in selected feeds.
+- The RSS import and export menu now has an accessible name.
+
+### Media library and playback
+
+- The local media library expands watch history with Continue, Watching, Completed, and All Media views, plus title and path search, season grouping, and editable episode details.
+- Find and confirm a moved media file while keeping its watch position and history. The new path applies to playback and leaves the torrent's download location in place.
+- See buffering and track-loading progress with clearer recovery feedback. The next-episode prompt shows the title and lets you play immediately, cancel autoplay, or pick another episode.
+- Improved opening media with the system player, VLC, or mpv. Configured VLC and mpv can also open a local stream for a supported incomplete download.
+- Empty library searches explain the result and offer to clear the query and return focus to search.
+
+### Settings, automation, and notifications
+
+- Create rules for new downloads and completions. Match by name, source, or category, then set categories and notifications. New-download rules can also set the folder, pause state, sequential mode, and seeding limits.
+- Preview rule matches and conflicts, inspect execution history, and start a disabled rule draft from an existing download or category.
+- Export and import selected settings groups, including themes, shortcuts, schedules, categories, and saved views. Preview the import, restore the previous settings afterward, or recover an interrupted import on startup.
+- Save working profiles for the start page, download view, panel visibility, appearance, and notifications. Reorder navigation and choose which entries appear in the sidebar.
+- Group notifications, summarize activity, set quiet hours, and control how much detail notifications display.
+- Find settings more reliably and put keyboard focus on the matching control. Shortcuts, speed limits, notification options, and backup actions are easier to reach.
+- Improved keyboard focus, contrast, and narrow layouts throughout settings and dialogs. Settings shortcuts adapt to the available width, and the save-status outline follows the selected corner radius.
+
+### Navigation, appearance, and startup
+
+- Open the command palette with `Ctrl+K` to find actions, settings, downloads, rooms, and saved views.
+- The event center tracks download completion and failure, disk-space protection, settings exports, and lost room connections. Open the affected item or retry where supported.
+- **First steps** opens from the status bar without shifting the page. Choose a guided task for downloading, playing media, sharing a file, or setting up a game with friends.
+- Refined appearance profiles and glass and backdrop controls. Light mode has clearer sidebar and status-bar text, including transfer and connection counters.
+- Startup shows actual milestones and restores the saved appearance before the main interface appears. Slow or interrupted launches offer access to logs and reload.
+
+### Performance and packaging
+
+- Deferred expensive work on hidden screens and reduced unnecessary background updates.
+- Inspect effective transfer limits and see how schedules, profiles, and temporary restrictions combine with your configured speeds.
+- Run a cancellable storage report from System settings to see space used by downloads, room data, sync caches, backups, and trash.
+- The Windows setup wizard remembers desktop and Start menu shortcut choices and torrent and magnet handler preferences across upgrades. The release also includes a portable Windows build and Linux x64 AppImage and Debian packages.
+
+### Project website
+
+- Redesigned the Havvn landing page with an interactive network visualization, a room preview, and animated product demos.
 
 ## [3.2.0] - 2026-10-13
 
