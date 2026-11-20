@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## [3.3.0] - Unreleased
+## [3.3.0] - 2026-11-21
 
 Havvn 3.3 adds shared room workspaces, device pairing, and more ways to manage downloads and preferences.
 
@@ -18,12 +18,15 @@ Havvn 3.3 adds shared room workspaces, device pairing, and more ways to manage d
 - Search shows release details and previews. Playback has improved buffering feedback, history, external-player handling, and screen-sharing controls.
 - Settings search opens and focuses the matching control. Shortcuts, speed limits, notifications, and backup options are easier to find.
 - Startup shows real progress and recovery actions. The Windows installer remembers shortcut and file-handler choices during upgrades.
+- First steps opens from the status bar and follows each task without shifting the workspace.
 - The app reduces background work on hidden screens and reports effective transfer limits and storage usage.
 
 ### Fixed
 
 - Improved room reconnection, voice recovery, and LAN game-server startup.
-- Improved keyboard navigation, contrast, and layout across settings and dialogs.
+- Improved keyboard navigation, contrast, and layout across settings, dialogs, and the sidebar and status bar in light mode.
+- Aligned the file picker controls and made the settings save status follow the selected corner radius.
+- Made the RSS import and export menu accessible by name, clarified empty media searches, and adapted the settings shortcuts to the available width.
 
 ## [3.2.0] - 2026-10-13
 
