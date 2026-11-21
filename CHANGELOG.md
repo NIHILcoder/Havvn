@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [3.3.0] - Unreleased
+
+Havvn 3.3 adds shared room workspaces, device pairing, and more ways to manage downloads and preferences.
+
+### Added
+
+- Synchronize selected room folders, review conflicts and history, and recover previous versions. Rooms can also edit text files and collaborative documents with saved snapshots.
+- Pair trusted devices and choose which supported data to synchronize.
+- Save download views, assign category defaults, undo a download removal that keeps its files, and follow progress on individual files.
+- Use a command palette and event center, set automation rules, save working profiles, and export or restore preferences.
+
+### Changed
+
+- Search shows release details and previews. Playback has improved buffering feedback, history, external-player handling, and screen-sharing controls.
+- Settings search opens and focuses the matching control. Shortcuts, speed limits, notifications, and backup options are easier to find.
+- Startup shows real progress and recovery actions. The Windows installer remembers shortcut and file-handler choices during upgrades.
+- The app reduces background work on hidden screens and reports effective transfer limits and storage usage.
+
+### Fixed
+
+- Improved room reconnection, voice recovery, and LAN game-server startup.
+- Improved keyboard navigation, contrast, and layout across settings and dialogs.
+
 ## [3.2.0] - 2026-10-13
 
 This release adds room chat and workspace tools, expands local game-server administration, and reduces unnecessary runtime and interface work.
