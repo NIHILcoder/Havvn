@@ -23,8 +23,17 @@
 .watch-history-secondary { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 16px; }
 .watch-history-secondary button { background: transparent; padding: 0; border: 0; color: var(--color-text-secondary); cursor: pointer; font-size: 12px; }
 .watch-history-secondary button:hover { color: var(--color-text-primary); }
-.watch-history-empty { text-align: center; padding: 80px 16px; color: var(--color-text-secondary); }
-.watch-history-empty h2 { color: var(--color-text-primary); font-size: 18px; }
+.watch-history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: clamp(32px, 8vh, 72px) var(--space-4);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+.watch-history-empty h2 { margin: 0; color: var(--color-text-primary); font-size: var(--font-size-lg); }
+.watch-history-empty p { max-width: 56ch; margin: 0; line-height: 1.5; }
 .media-library-search { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:20px; align-items:center; }
 .media-library-search input { flex:1; min-width:140px; max-width:100%; padding:10px 12px; border:1px solid var(--color-border-default); border-radius:var(--radius-md); background:var(--color-bg-secondary); color:var(--color-text-primary); }
 .media-library-group { margin-bottom:28px; min-width:0; }

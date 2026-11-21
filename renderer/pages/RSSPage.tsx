@@ -458,8 +458,9 @@ const RSSPage: React.FC = () => {
                   onSelect: () => { handleExportOPML(); },
                 },
               ]}
-              renderTrigger={({ toggle }) => (
-                <Button variant="ghost" size="sm" onClick={toggle} icon={<Icon name="more-horizontal" size={14} />} />
+              renderTrigger={({ open, toggle }) => (
+                <Button variant="ghost" size="sm" iconOnly onClick={toggle} aria-haspopup="menu" aria-expanded={open}
+                  aria-label={t('rss.opml.menu')} title={t('rss.opml.menu')} icon={<Icon name="more-horizontal" size={14} />} />
               )}
             />
             <Button

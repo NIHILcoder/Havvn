@@ -26,6 +26,7 @@ export default function WatchHistoryPage() {
   const [checking, setChecking] = useState(true), [failed, setFailed] = useState(false), [limited, setLimited] = useState(false);
   const [nextOffset, setNextOffset] = useState(0), [totalSources, setTotalSources] = useState(0), [pageOffset, setPageOffset] = useState(0);
   const [view, setView] = useState<MediaLibraryView>('continue'), [query, setQuery] = useState('');
+  const searchInput = useRef<HTMLInputElement>(null);
   const [editing, setEditing] = useState<MediaLibraryItem | null>(null), [opening, setOpening] = useState('');
   const [player, setPlayer] = useState<{ id: string; title: string; path: string; identity: string } | null>(null);
   const [relocating, setRelocating] = useState<MediaLibraryItem | null>(null), [relocations, setRelocations] = useState<MediaRelocationView[]>([]);
@@ -61,8 +62,9 @@ export default function WatchHistoryPage() {
   }, [liveDownloads, pageOffset]);
   const items = useMemo(() => mergeMediaLibrary(library.items, sources, entries), [library.items, sources, entries]);
   const history = useMemo(() => new Map(entries.map(entry => [watchKey(entry), entry])), [entries]);
+  const searchTerms = query.trim().toLowerCase();
   const visible = items.filter(item => inLibraryView(history.get(libraryKey(item)), view) &&
-    `${(item.manual ?? item.inferred).title} ${item.path} ${item.title}`.toLowerCase().includes(query.trim().toLowerCase()));
+    `${(item.manual ?? item.inferred).title} ${item.path} ${item.title}`.toLowerCase().includes(searchTerms));
   const virtualWatch = (item: MediaLibraryItem): WatchEntry => history.get(libraryKey(item)) ?? { identity: item.identity, downloadId: item.downloadId, title: item.title, path: item.path, fileIndex: item.fileIndex,
     position: 0, duration: null, lastOpened: Date.now(), updatedAt: Date.now(), completed: false };
   const open = async (item: MediaLibraryItem, path = item.path, outside = false) => {
@@ -103,14 +105,22 @@ export default function WatchHistoryPage() {
         {t(`library.view.${id}`)} <span>{items.filter(item => inLibraryView(history.get(libraryKey(item)), id)).length}</span>
       </button>)}
     </div>
-    <div className="media-library-search"><input type="search" aria-label={t('library.search')} placeholder={t('library.search')} value={query} onChange={event => setQuery(event.target.value)} />
+    <div className="media-library-search"><input ref={searchInput} type="search" aria-label={t('library.search')} placeholder={t('library.search')} value={query} onChange={event => setQuery(event.target.value)} />
       {nextOffset > 0 && nextOffset < totalSources && <Button variant="secondary" disabled={checking} onClick={() => setPageOffset(nextOffset)}>{t('library.moreSources')}</Button>}
     </div>
     {(library.failed || storageFailed) && <p className="watch-history-unavailable" role="alert">{t('library.storageFailed')}</p>}
     {failed && <p role="alert">{t('history.checkFailed')}</p>}
     {limited && <p className="watch-history-unavailable">{t('library.limit')}</p>}
     {!!pending && <p className="watch-history-unavailable">{t('history.pending')} {pending}</p>}
-    {!visible.length && <div className="watch-history-empty"><Icon name="film" size={40} /><h2>{t('history.empty')}</h2><p>{t(view === 'all' ? 'library.empty' : 'library.emptyView')}</p></div>}
+    {!visible.length && <div className="watch-history-empty">
+      {checking ? <p role="status">{t('common.loading')}</p> : <>
+        <Icon name={searchTerms ? 'search' : 'film'} size={36} />
+        <h2>{t(searchTerms ? 'library.noMatches' : 'history.empty')}</h2>
+        {searchTerms
+          ? <Button variant="secondary" onClick={() => { setQuery(''); searchInput.current?.focus(); }}>{t('library.clearSearch')}</Button>
+          : <p>{t(view === 'all' ? 'library.empty' : 'library.emptyView')}</p>}
+      </>}
+    </div>}
     {groupMediaLibrary(visible).map(group => <section key={group.key} className="media-library-group">
       {group.classification && <h2>{group.classification.title}{group.classification.season !== undefined ? ` · ${t('library.season')} ${group.classification.season}` : ''}</h2>}
       <div className="watch-history-grid">{group.items.map(item => {

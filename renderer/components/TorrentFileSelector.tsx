@@ -175,7 +175,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
 
   const pathPicker = (
     <>
-    {allowCategory && <div className="tfs-destination">
+    {allowCategory && <div className="tfs-destination tfs-category-options">
       <CategorySelect disabled={submitting} value={categoryId} onChange={setCategoryId} />
       <InheritedBooleanSelect disabled={submitting} label={t('category.defaults.paused')} value={paused} onChange={setPaused} yes={t('category.defaults.paused')} no={t('category.defaults.active')} />
     </div>}

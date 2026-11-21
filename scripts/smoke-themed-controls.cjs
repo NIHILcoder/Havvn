@@ -13,7 +13,7 @@ if (!process.versions.electron) {
   app.on('window-all-closed', () => {});
   const deadline = setTimeout(() => { console.error('Themed controls deadline:', out); app.exit(1); }, 90000);
   app.whenReady().then(async () => {
-    const win = new BrowserWindow({ show: false, width: 660, height: 760, webPreferences: { nodeIntegration: true, contextIsolation: false, offscreen: true, backgroundThrottling: false } });
+    const win = new BrowserWindow({ show: false, width: 660, height: 760, webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false } });
     const errors = []; win.webContents.on('console-message', d => { if (d.level === 'error') { errors.push(d.message); console.error('Renderer:', d.message); } });
     const sheets = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css',
       'renderer/components/Select.css', 'renderer/components/NumberInput.css', 'renderer/components/Modal.css', 'renderer/components/Toggle.css',
@@ -37,6 +37,7 @@ if (!process.versions.electron) {
       window.api={search:{getNetworkSettings:async()=>structuredClone(network),setNetworkAccess:async(id,access)=>{calls.push({kind:'access',id,access});if(busySave)await new Promise(r=>finishSave=r);network.access[id]=access;},saveNetworkProfile:async input=>{calls.push({kind:'proxy',...input});if(busySave)await new Promise(r=>finishSave=r);var p={id:'saved',...input};network.profiles.push(p);return p;},testProvider:async()=>({success:true}),getProviders:async()=>[],getDownloadHistory:async()=>[],start:async()=>({searchId:'fixture-search',providers:['Демо']}),onProgress:handler=>{window.searchProgress=handler;return()=>{};},checkPython:async()=>({found:false}),addProvider:async data=>calls.push({kind:'provider',...data})},
         getEpisodePrefetchSupport:async()=>({supported:true}),getEngineCapabilities:async()=>require(path.join(root,"dist/electron/shared/engine-capabilities.js")).engineCapabilities("webtorrent"),stopEpisodePrefetch:async()=>{},getDefaultTrackers:async()=>[],onCreateTorrentProgress:()=>()=>{},getCategories:async()=>[],rss:{getFeeds:async()=>[],getItems:async()=>[],getRules:async()=>[],previewRule:async()=>[],addRule:async data=>calls.push({kind:'rule',...data}),addFeed:async data=>calls.push({kind:'feed',...data})}};
       window.api.getSettings=async()=>({defaultDownloadDir:'D:/fixture-downloads',seedRatioLimit:0,seedTimeLimitMinutes:0});
+      window.api.rss.forecastRule=async rule=>load(path.join(root,'shared/rss-forecast.ts')).forecastRssRule(rule,[],[]);
       var downloads={downloads:[],byId:{}};
       function load(p){if(cache[p])return cache[p].exports;var m={exports:{}};cache[p]=m;
         var js=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
@@ -72,7 +73,12 @@ if (!process.versions.electron) {
       void 0;
     `);
     const mount = async kind => { await run(`mount(${JSON.stringify(kind)})`); await pause(220); };
-    const capture = async name => { win.webContents.invalidate(); await pause(200); fs.writeFileSync(path.join(out, name + '.png'), (await win.webContents.capturePage()).toPNG()); };
+    const capture = async name => {
+      const options = { stayHidden: true, stayAwake: true };
+      await win.webContents.capturePage(undefined, options);
+      await pause(120);
+      fs.writeFileSync(path.join(out, name + '.png'), (await win.webContents.capturePage(undefined, options)).toPNG());
+    };
     const fits = async name => assert.equal(await run('document.documentElement.scrollWidth<=innerWidth && [...document.querySelectorAll(".custom-select-trigger,.number-input")].every(e=>e.getBoundingClientRect().right<=innerWidth+1)'), true, name + ' horizontal fit');
     await mount('preferences'); await run('document.querySelector("details").open=true');
     await run(`choose('search.preferences.profile','1080p · ≤ 15 GiB')`);
@@ -113,9 +119,9 @@ if (!process.versions.electron) {
     await run(`trigger('search.media.resolution').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));clickText('search.providers')`); await pause(120);
     await run(`choose('search.provider.type','search.type.script')`); await pause(120);
     assert.equal(await run('!!document.querySelector(".python-status")'), true); await run(`openSelect('search.provider.type')`); await capture('provider-type-menu');
-    await mount('create'); await run(`clickText('create.tabAdvanced');choose('create.pieceSize','1 MB')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('1 MB')`), true);
+    await mount('create'); await run(`clickText('create.tabAdvanced');choose('create.pieceSize','1 МиБ')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('1 МиБ')`), true);
     await run(`openSelect('create.pieceSize')`); await capture('create-piece-menu');
-    await mount('modal'); await run(`clickText('create.advancedOptions');choose('create.pieceSize','2 MB')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('2 MB')`), true);
+    await mount('modal'); await run(`clickText('create.advancedOptions');choose('create.pieceSize','2 МиБ')`); assert.equal(await run(`trigger('create.pieceSize').textContent.includes('2 МиБ')`), true);
     await run(`openSelect('create.pieceSize')`); await capture('create-modal-piece-menu');
     await mount('rss'); await run(`clickText('rss.addFeed')`); await pause(150);
     await run(`inputValue(document.querySelector('.rss-feed-modal input[type=number]'),'10');document.querySelector('.rss-feed-modal .number-input-controls button').click()`); await pause(80);

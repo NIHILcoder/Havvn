@@ -946,11 +946,11 @@
 }
 
 .engine-badge {
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--color-bg-primary);
+  color: var(--color-text-on-accent);
   background: var(--color-accent-primary);
   padding: 2px 6px;
   border-radius: var(--radius-sm);
@@ -989,7 +989,7 @@
 .engine-restart > svg,
 .settings-notice-compact.warn > svg { color: var(--color-warning); }
 .stg-save-state { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; font-size: 11px; color: var(--color-text-secondary); }
-.stg-save-state > span { padding: 4px 8px; border: 1px solid var(--color-border-default); }
+.stg-save-state > span { padding: 4px 8px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); }
 
 /* Settings actions use theme tokens on solid surfaces so labels remain legible. */
 .stg-page .btn-primary { background: var(--color-accent-primary); }

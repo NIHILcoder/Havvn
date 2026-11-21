@@ -78,16 +78,22 @@ if (!process.versions.electron) {
     });
     await scenario('Failed toggle preserves unrelated unsaved settings', async () => {
       await settings('connection'); await run(`input(field('settings.downSpeed').querySelector('input'),'777');true;`); await pause();
-      await run(`failToggle=true;field('settings.dht').querySelector('[role=switch]').click();true;`); await pause(180);
+      await run(`failToggle=true;field('settings.utp').querySelector('[role=switch]').click();true;`); await pause(180);
       assert.equal(await run(`field('settings.downSpeed').querySelector('input').value`), '777');
       assert.equal(await run(`!!document.querySelector('.stg-save')`), true);
-      assert.equal(await run(`field('settings.dht').querySelector('[role=switch]').getAttribute('aria-checked')`), String(state.settings.enableDHT));
+      assert.equal(await run(`field('settings.utp').querySelector('[role=switch]').getAttribute('aria-checked')`), String(state.settings.enableUtp));
     });
     await scenario('Night schedule paints Monday evening and Tuesday morning', async () => {
       await run('savedInitial.scheduler=structuredClone('+JSON.stringify(state.scheduler)+');true;');
       await settings('scheduler');
       const painted = await run(`[...document.querySelectorAll('.sched-week-row')].map(n=>[...n.querySelectorAll('.sched-week-seg')].map(s=>parseFloat(s.style.width)))`);
       assert.equal(painted[0].length,1); assert.ok(Math.abs(painted[0][0]-100*120/1440)<0.001); assert.deepEqual(painted[1], [25]); assert.deepEqual(painted[2], []);
+    });
+    await scenario('RSS import and export menu exposes a name and expanded state', async () => {
+      await run('mountRSS();true;'); await wait('!!document.querySelector(".rss-tabs")');
+      await run(`var opml=[...document.querySelectorAll('.rss-header-actions button')].find(node=>node.getAttribute('aria-label')===t('rss.opml.menu'));opml.click();true;`);
+      await wait(`opml.getAttribute('aria-expanded')==='true'&&[...document.querySelectorAll('[role=menuitem]')].some(item=>item.textContent.trim()===t('rss.opml.import'))`);
+      await run(`opml.click();true;`); await wait(`opml.getAttribute('aria-expanded')==='false'`);
     });
     await scenario('Late RSS reply cannot replace the selected feed', async () => {
       await run('mountRSS();true;'); await wait('!!document.querySelector(".rss-tabs")');

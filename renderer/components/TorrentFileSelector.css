@@ -20,7 +20,11 @@
 /* Stats Bar */
 /* Full-bleed body: the stats/controls bands span edge-to-edge with their own
    borders, so neutralize the shared Modal body's padding + gap. */
-.tfs-body { padding: 0; gap: 0; }
+.um-body.tfs-body { --tfs-inset: var(--space-4); padding: 0; gap: 0; }
+
+.tfs-body > .download-defaults-preview { margin: var(--space-3) var(--tfs-inset) 0; }
+.tfs-body > .tfs-queue-note,
+.tfs-body > [role="alert"] { margin: var(--space-3) var(--tfs-inset) 0; }
 
 .tfs-destination {
   display: flex;
@@ -29,6 +33,14 @@
   gap: var(--space-3);
   padding: var(--space-4);
   border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.tfs-body > .tfs-destination { padding-inline: var(--tfs-inset); }
+
+.tfs-category-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(224px, 100%), 1fr));
+  align-items: stretch;
 }
 
 .tfs-destination-path {
@@ -82,19 +94,19 @@
   border-bottom: 2px solid var(--color-border-subtle);
   flex-wrap: wrap;
 }
-.tfs-selection-scope { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 10px 16px; border-bottom: 1px solid var(--color-border); }
+.tfs-selection-scope { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; padding: 10px var(--tfs-inset); border-bottom: 1px solid var(--color-border); }
 .tfs-selection-scope > label { flex: 1 1 220px; min-width: 0; max-width: 340px; display: grid; gap: 5px; font-size: 11px; color: var(--color-text-secondary); }
 .tfs-selection-scope .custom-select-trigger { min-height: 32px; padding: 6px 10px; font-size: 12px; }
 .tfs-folder-button { min-width: 0; max-width: min(100%, 280px); min-height: 32px; }
 .tfs-folder-button > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tfs-selection-scope > p { width: 100%; margin: 0; font-size: 11px; line-height: 1.45; color: var(--color-text-secondary); }
-.tfs-body .file-selector-controls { padding: 12px 16px; gap: 8px; }
-.tfs-body .file-selector-stats { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 12px 16px; }
+.tfs-body .file-selector-controls { padding: var(--space-3) var(--tfs-inset); gap: var(--space-2); }
+.tfs-body .file-selector-stats { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: var(--space-3) var(--tfs-inset); }
 .quick-select-menu { max-height: min(360px, 70vh); overflow-y: auto; }
 
 .file-selector-controls .search-box {
   flex: 1;
-  min-width: 200px;
+  min-width: min(200px, 100%);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -112,6 +124,7 @@
 
 .file-selector-controls .search-box input {
   flex: 1;
+  min-width: 0;
   background: none;
   border: none;
   outline: none;
@@ -141,6 +154,7 @@
 .quick-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
 
@@ -195,6 +209,8 @@
   min-height: 300px;
   max-height: 50vh;
 }
+
+.tfs-body > .file-list { padding-inline: var(--tfs-inset); }
 
 .file-list::-webkit-scrollbar {
   width: 10px;
