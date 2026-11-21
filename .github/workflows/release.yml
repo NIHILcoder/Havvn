@@ -97,7 +97,7 @@ jobs:
         run: node scripts/changelog-section.js "$APP_VERSION" > release-notes.md
 
       - name: Download verified Linux packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: havvn-linux-x64
           path: release
