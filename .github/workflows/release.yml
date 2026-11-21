@@ -62,10 +62,11 @@ jobs:
       # The two vendored binaries are gitignored, so a clean checkout has neither
       # — and build.extraResources points straight at them. Both scripts verify a
       # pinned SHA-256 and exit non-zero on any mismatch.
-      - name: Vendor pinned binaries (Wintun driver + transmission engine)
-        run: |
-          node scripts/fetch-wintun.mjs
-          node scripts/fetch-transmission.mjs
+      - name: Vendor pinned Wintun driver
+        run: node scripts/fetch-wintun.mjs
+
+      - name: Vendor pinned Transmission engine
+        run: node scripts/fetch-transmission.mjs
 
       - name: Package (electron-builder)
         run: npx electron-builder --win --publish never

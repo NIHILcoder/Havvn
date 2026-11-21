@@ -10,11 +10,8 @@
  * LoadLibraryEx needs a real file) and must NOT go through any code-signing
  * pass. See the plan §10.
  *
- * SHA-256 PINNING: this repo pins vendored binaries. The digest of the wintun
- * ZIP is not baked in here on purpose — run once, confirm the printed digest
- * against wintun.net, then paste it into WINTUN_ZIP_SHA256 below and rerun so
- * future fetches are verified. (Refuses to vendor an unpinned download unless
- * --trust-unpinned is passed.)
+ * SHA-256 PINNING: verify the official ZIP digest before extracting any files.
+ * An unpinned download is refused unless --trust-unpinned is passed explicitly.
  *
  * Usage: node scripts/fetch-wintun.mjs [--force] [--trust-unpinned]
  */
@@ -34,11 +31,7 @@ const ZIP_URL = `https://www.wintun.net/builds/wintun-${VERSION}.zip`;
 // re-confirming against the official source.
 const WINTUN_ZIP_SHA256 = '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51';
 const DLL_IN_ZIP = path.join('wintun', 'bin', 'amd64', 'wintun.dll');
-// The 0.14.1 archive names it LICENSE.txt; older/newer ones have used the longer
-// name. Both are tried, because the copy is guarded by existsSync and a wrong
-// single guess fails SILENTLY — which is how the vendored DLL ended up shipping
-// with no notice beside it at all, and the Prebuilt Binaries License requires the
-// notice to travel with the binary.
+// Accept either upstream license filename, and fail if neither is present.
 const LICENSE_IN_ZIP = [
   path.join('wintun', 'LICENSE.txt'),
   path.join('wintun', 'prebuilt-binaries-license.txt'),
@@ -70,7 +63,9 @@ function httpsGet(url, redirects = 5) {
 /** Windows ships curl since 1803, and every CI runner has it. Absolute path on
  *  purpose: PATH belongs to whoever launched us, and an MSYS/Cygwin shell puts its
  *  own build of these tools first. */
-const CURL = path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'curl.exe');
+const SYSTEM32 = path.join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32');
+const CURL = path.join(SYSTEM32, 'curl.exe');
+const TAR = path.join(SYSTEM32, 'tar.exe');
 
 function viaCurl(url, work) {
   const tmp = path.join(work, 'curl-download.bin');
@@ -124,19 +119,17 @@ async function download(url, work) {
   throw new Error(`download failed on every transport:\n  ${failures.join('\n  ')}`);
 }
 
-// Escape a value for a single-quoted PowerShell string: an apostrophe (e.g. a
-// username like O'Brien in the temp path) ends the string unless doubled.
-const psq = (s) => s.replace(/'/g, "''");
-
 async function main() {
   if (process.platform !== 'win32') {
-    console.error('wintun vendoring targets Windows only (Expand-Archive extraction).');
+    console.error('wintun vendoring targets Windows only.');
     process.exit(1);
   }
   const force = process.argv.includes('--force');
   const trustUnpinned = process.argv.includes('--trust-unpinned');
-  if (!force && fs.existsSync(path.join(destDir, 'wintun.dll'))) {
-    console.log(`vendor/wintun/win32-x64/wintun.dll already present (wintun ${VERSION}); use --force to re-fetch.`);
+  const dll = path.join(destDir, 'wintun.dll');
+  const license = path.join(destDir, 'prebuilt-binaries-license.txt');
+  if (!force && fs.existsSync(dll) && fs.existsSync(license)) {
+    console.log(`Wintun ${VERSION} and its license are already present; use --force to re-fetch.`);
     return;
   }
 
@@ -161,18 +154,20 @@ async function main() {
     }
     fs.writeFileSync(zipPath, bytes);
 
-    // Extract with PowerShell (no zip dependency), mirroring fetch-transmission's msiexec approach.
+    // Use the inbox extractor to avoid mixing PowerShell 5 and 7 archive modules.
     const out = path.join(work, 'extract');
-    const unzip = spawnSync('powershell', ['-NoProfile', '-Command', `Expand-Archive -Path '${psq(zipPath)}' -DestinationPath '${psq(out)}' -Force`], { stdio: 'inherit' });
-    if (unzip.status !== 0) throw new Error(`Expand-Archive failed with code ${unzip.status}`);
+    fs.mkdirSync(out);
+    const unzip = spawnSync(TAR, ['-xf', zipPath, '-C', out], { stdio: 'inherit', windowsHide: true });
+    if (unzip.error) throw unzip.error;
+    if (unzip.status !== 0) throw new Error(`Wintun extraction failed with code ${unzip.status}`);
 
     const dllSrc = path.join(out, DLL_IN_ZIP);
     if (!fs.existsSync(dllSrc)) throw new Error(`wintun.dll not found in archive at ${DLL_IN_ZIP}`);
-    fs.mkdirSync(destDir, { recursive: true });
-    fs.copyFileSync(dllSrc, path.join(destDir, 'wintun.dll'));
     const licSrc = LICENSE_IN_ZIP.map((rel) => path.join(out, rel)).find((p) => fs.existsSync(p));
-    if (licSrc) fs.copyFileSync(licSrc, path.join(destDir, 'prebuilt-binaries-license.txt'));
-    else console.warn('WARNING: no license text found in the archive — the PBL notice must ship with this DLL; check the archive layout.');
+    if (!licSrc) throw new Error('Wintun license not found in the archive');
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(dllSrc, dll);
+    fs.copyFileSync(licSrc, license);
 
     console.log(`vendored wintun ${VERSION} → ${destDir}`);
     console.log('reminder: ship this DLL unmodified via extraResources, exclude it from signing, and surface the PBL license in-app.');
