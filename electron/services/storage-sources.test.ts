@@ -7,13 +7,14 @@ import type { Download } from '../../shared/types';
 import { storageSources, type StorageSourcesOptions } from './storage-sources';
 import { scanStorage } from './storage-overview';
 
+const tempParent = fs.realpathSync.native(os.tmpdir());
 let base: string;
 const roomId = '11111111-1111-4111-8111-111111111111', rootId = '22222222-2222-4222-8222-222222222222';
 const hash = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
-beforeEach(() => { base = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-storage-sources-')); });
+beforeEach(() => { base = fs.mkdtempSync(path.join(tempParent, 'havvn-storage-sources-')); });
 afterEach(async () => {
   vi.restoreAllMocks(); const target = path.resolve(base);
-  if (path.dirname(target) !== path.resolve(os.tmpdir()) || !path.basename(target).startsWith('havvn-storage-sources-')) throw Error('Unexpected fixture directory');
+  if (path.dirname(target) !== tempParent || !path.basename(target).startsWith('havvn-storage-sources-')) throw Error('Unexpected fixture directory');
   await fs.promises.rm(target, { recursive: true, force: true });
 });
 function put(relative: string, bytes: string) { const target = path.join(base, relative); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, bytes); return target; }

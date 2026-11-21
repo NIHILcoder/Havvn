@@ -12,11 +12,12 @@ import { SeedStore } from './seed-store';
 
 vi.mock('../utils', () => ({ logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) } }));
 
+const tempParent = fs.realpathSync.native(os.tmpdir());
 let root: string;
-beforeEach(() => { root = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'havvn-creator-')); });
+beforeEach(() => { root = fs.mkdtempSync(path.join(tempParent, 'havvn-creator-')); });
 afterEach(() => {
   const absolute = path.resolve(root);
-  expect(path.dirname(absolute)).toBe(fs.realpathSync(os.tmpdir()));
+  expect(path.dirname(absolute)).toBe(tempParent);
   expect(path.basename(absolute)).toMatch(/^havvn-creator-/);
   fs.rmSync(absolute, { recursive: true, force: true });
 });
