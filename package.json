@@ -158,7 +158,7 @@
     "koffi": "^2.12.0",
     "lib0": "0.2.119",
     "nat-pmp": "^1.0.0",
-    "parse-torrent": "9.1.5",
+    "parse-torrent": "11.0.24",
     "protobufjs": "^8.8.0",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
