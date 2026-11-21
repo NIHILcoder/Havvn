@@ -16,6 +16,11 @@
   animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
+.downloads-page > .page-header { height: auto; min-height: var(--topbar-height); flex-wrap: wrap; gap: 12px; padding-top: 12px; padding-bottom: 12px; }
+.downloads-page .page-actions { flex-wrap: wrap; min-width: 0; max-width: 100%; margin-left: auto; }
+.downloads-page .page-actions > * { flex-shrink: 0; }
+.downloads-page .page-actions > .dropdown-wrapper { min-width: max-content; }
+.downloads-page .page-actions .btn-label { white-space: nowrap; overflow-wrap: normal; }
 
 /* (fadeIn/slideDown keyframes, .page-loading and .spinner come from base.css —
    it injects after page CSS, so local duplicates would lose anyway.) */
@@ -115,6 +120,7 @@
 /* The box's :focus-within border IS the focus ring; without this the global
    :focus-visible shadow (base.css) rings the inner input too — double frame. */
 .modern-search-input:focus-visible {
+  outline: none;
   box-shadow: none;
 }
 
@@ -594,6 +600,8 @@ input[type="checkbox"].download-checkbox {
   color: var(--color-text-secondary);
   font-weight: var(--font-weight-medium);
 }
+.trow-prog-hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: 6px; }
+.trow-sub .operation-summary { flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; }
 
 /* Track must stay visible on the hover background */
 .trow-prog .progress-bar {
@@ -920,9 +928,28 @@ input[type="checkbox"].download-checkbox {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex-shrink: 0;
+  flex-shrink: 1;
+  flex-wrap: wrap;
+  max-width: 100%;
 }
 
+.downloads-page .page-actions { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+.downloads-page .page-actions .btn-label { white-space: normal; overflow-wrap: anywhere; }
+.downloads-page .page-actions > .dropdown-wrapper { min-width: 0; }
+.downloads-completion-actions, .remove-confirm { display: flex; flex-wrap: wrap; gap: 8px; }
+.download-item-detailed, .download-item-compact { container: download-row / inline-size; }
+.download-detailed-header { flex-wrap: wrap; }
+.download-detailed-header .download-item-title { flex: 1 1 auto; min-width: 0; max-width: 100%; }
+.download-item-actions { justify-content: flex-end; }
+.download-item-actions .btn-label { overflow-wrap: anywhere; }
+.download-help-link { align-self: flex-start; max-width: 100%; }
+@container download-row (max-width: 560px) {
+  .download-detailed-header .download-item-actions { width: 100%; justify-content: flex-start; display: grid; grid-template-columns: minmax(104px,1.45fr) minmax(62px,1fr) minmax(52px,.8fr); }
+  .download-detailed-header .download-item-actions > .btn { padding-inline: 6px; width: 100%; }
+  .download-detailed-header .download-item-actions .btn-label > svg { display: none; }
+  .download-action-watch, .download-share-shortcut, .download-folder-shortcut, .trow-actions .download-watch-btn { display: none; }
+  .download-item-actions > .btn { flex: 0 1 auto; }
+}
 .remove-confirm {
   display: flex;
   align-items: center;
@@ -1087,6 +1114,7 @@ input[type="checkbox"].download-checkbox {
 /* Wrapper carries the focus ring (:focus-within) — mute the global
    :focus-visible shadow on the inner input or the frame doubles. */
 .search-box input:focus-visible {
+  outline: none;
   box-shadow: none;
 }
 
@@ -1115,3 +1143,6 @@ input[type="checkbox"].download-checkbox {
   text-overflow: ellipsis;
 }
 
+.download-batch-result { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 16px; border: 1px solid var(--color-border-default); background: var(--color-bg-secondary); font-size: 12px; }
+.download-batch-result > span { flex: 1; }
+.download-batch-result details { max-width: 100%; overflow-wrap: anywhere; }

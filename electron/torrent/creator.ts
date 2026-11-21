@@ -1,387 +1,184 @@
-/**
- * Torrent Creator
- * 
- * Module for creating .torrent files from local files and folders.
- * Uses WebTorrent's seed functionality which handles torrent creation internally.
- */
-
-
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import {
-  CreateTorrentRequest,
-  CreateTorrentResult,
-  CreateTorrentProgress,
-} from '../../shared/types';
+/** Create metadata from an explicit, stable selection; never start a torrent client. */
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { finished } from 'node:stream/promises';
+import type { CreateTorrentRequest, CreateTorrentResult, CreateTorrentProgress } from '../../shared/types';
+import { calculateTorrentPieceLength, parseTorrentUrls, torrentSourceKey, TORRENT_CREATION_CANCELLED } from '../../shared/torrent-creation';
+import { parseSeedMetadata, seedPathParts, MAX_METADATA_BYTES } from './seed-metadata';
 import { logger } from '../utils';
-import { DEFAULT_TRACKERS } from './trackers';
-
+export { DEFAULT_TRACKERS } from './trackers';
 const log = logger.child('TorrentCreator');
+let activeCreation: { requestId?: string; controller: AbortController; cancellable: boolean } | undefined;
 
-/** Progress sink — the host relays these to the renderer (no BrowserWindow here). */
+export function cancelTorrentCreation(requestId: string): boolean {
+  if (!activeCreation || !requestId || activeCreation.requestId !== requestId || !activeCreation.cancellable) return false;
+  activeCreation.controller.abort(new Error(TORRENT_CREATION_CANCELLED));
+  return true;
+}
 type ProgressCb = (progress: CreateTorrentProgress) => void;
+interface SourceFile { absolute: string; relative: string[]; stat: fs.Stats }
+const unchanged = (left: fs.Stats, right: fs.Stats) => left.isFile() && right.isFile() && left.dev === right.dev
+  && left.ino === right.ino && left.size === right.size && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs;
 
-export { DEFAULT_TRACKERS };
-
-// Piece size thresholds (total size -> piece size)
-const PIECE_SIZE_THRESHOLDS: [number, number][] = [
-  [512 * 1024 * 1024 * 1024, 16 * 1024 * 1024],   // > 512GB -> 16MB
-  [64 * 1024 * 1024 * 1024, 4 * 1024 * 1024],     // > 64GB  -> 4MB
-  [16 * 1024 * 1024 * 1024, 2 * 1024 * 1024],     // > 16GB  -> 2MB
-  [4 * 1024 * 1024 * 1024, 1 * 1024 * 1024],      // > 4GB   -> 1MB
-  [1 * 1024 * 1024 * 1024, 512 * 1024],           // > 1GB   -> 512KB
-  [512 * 1024 * 1024, 256 * 1024],                // > 512MB -> 256KB
-  [256 * 1024 * 1024, 128 * 1024],                // > 256MB -> 128KB
-  [128 * 1024 * 1024, 64 * 1024],                 // > 128MB -> 64KB
-  [64 * 1024 * 1024, 32 * 1024],                  // > 64MB  -> 32KB
-  [0, 16 * 1024],                                  // default -> 16KB
-];
-
-/**
- * Calculate optimal piece size based on total content size
- */
-function calculatePieceLength(totalSize: number): number {
-  for (const [threshold, pieceSize] of PIECE_SIZE_THRESHOLDS) {
-    if (totalSize > threshold) {
-      return pieceSize;
-    }
-  }
-  return 16 * 1024; // 16KB minimum
-}
-
-/**
- * Get total size of files/folders
- */
-function getTotalSize(paths: string[]): number {
-  let total = 0;
-  
-  for (const p of paths) {
-    const stat = fs.statSync(p);
+async function selection(request: CreateTorrentRequest, signal: AbortSignal): Promise<{ files: SourceFile[]; singleFile: boolean; name: string }> {
+  const { sourcePaths, options, outputPath } = request;
+  if (!sourcePaths?.length) throw new Error('Select at least one source file or folder');
+  const excluded = new Set((request.excludePaths ?? []).map(torrentSourceKey));
+  excluded.add(torrentSourceKey(path.resolve(outputPath)));
+  const files: SourceFile[] = [], roots = new Set<string>(), seen = new Set<string>(), physicalPaths = new Set<string>();
+  const outputStat = await fs.promises.stat(outputPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return null; throw error; });
+  let singleFile = false;
+  const walk = async (absolute: string, relative: string[]): Promise<void> => {
+    signal.throwIfAborted();
+    if (excluded.has(torrentSourceKey(absolute))) return;
+    const stat = await fs.promises.lstat(absolute);
+    signal.throwIfAborted();
+    if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
-      total += getDirSize(p);
-    } else {
-      total += stat.size;
-    }
-  }
-  
-  return total;
-}
-
-/**
- * Recursively get directory size
- */
-function getDirSize(dirPath: string): number {
-  let size = 0;
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue; // don't follow symlinks (avoids loops)
-    const fullPath = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      size += getDirSize(fullPath);
-    } else if (entry.isFile()) {
-      size += safeSize(fullPath);
-    }
-  }
-
-  return size;
-}
-
-/**
- * Recursively collect absolute file paths under `p`, skipping any path in
- * `exclude` (matched by resolved absolute path). Used to honor per-file
- * exclusions from the Create Torrent file tree.
- */
-function collectFiles(p: string, exclude: Set<string>, out: string[]): void {
-  const resolved = path.resolve(p);
-  if (exclude.has(resolved)) return;
-  let stat: fs.Stats;
-  try { stat = fs.lstatSync(p); } catch { return; }
-  if (stat.isSymbolicLink()) return; // don't follow symlinks (avoids loops/hangs)
-  if (stat.isDirectory()) {
-    for (const entry of fs.readdirSync(p, { withFileTypes: true })) {
-      collectFiles(path.join(p, entry.name), exclude, out);
-    }
-  } else if (stat.isFile()) {
-    out.push(p);
-  }
-}
-
-/**
- * When the selection has exclusions or multiple sources, mirror the *included*
- * files into a temp staging tree (hardlinks — instant, no data copy) preserving
- * their folder structure, then seed that folder. This is necessary because
- * passing create-torrent a flat array of file paths makes it collapse every file
- * to its basename at the torrent root — subfolders vanish and same-named files
- * in different folders collide. Hardlinks fall back to a copy across volumes.
- */
-function stageSelection(
-  sourcePaths: string[],
-  excludeSet: Set<string>,
-): { input: string | string[]; name?: string; stageDir: string } {
-  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'havvn-stage-'));
-  const wipe = () => { try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* ignore */ } };
-  try {
-    const tops: string[] = [];
-    let staged = 0;
-
-    for (const sp of sourcePaths) {
-      const parentOf = path.dirname(path.resolve(sp));
-      const files: string[] = [];
-      collectFiles(sp, excludeSet, files);
-      for (const f of files) {
-        const rel = path.relative(parentOf, path.resolve(f));
-        const dest = path.join(stageDir, rel);
-        fs.mkdirSync(path.dirname(dest), { recursive: true });
-        try {
-          fs.linkSync(f, dest);
-        } catch {
-          // Cross-volume (EXDEV) or hardlinks unsupported — copy instead.
-          fs.copyFileSync(f, dest);
-        }
-        staged++;
-      }
-      const topName = path.basename(path.resolve(sp));
-      if (!tops.includes(topName)) tops.push(topName);
-    }
-
-    if (staged === 0) throw new Error('No files to include — everything was excluded.');
-    if (tops.length === 1) {
-      return { input: path.join(stageDir, tops[0]), name: tops[0], stageDir };
-    }
-    return { input: tops.map((t) => path.join(stageDir, t)), stageDir };
-  } catch (e) {
-    wipe();
-    const msg = (e as Error)?.message || String(e);
-    throw new Error(/No files to include/.test(msg) ? msg
-      : `Could not stage files for the torrent — a file may be locked, offline (OneDrive) or unreadable. ${msg}`);
-  }
-}
-
-/** Size of a single file, 0 on error. */
-function safeSize(p: string): number {
-  try {
-    return fs.statSync(p).size;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Send progress update to renderer
- */
-function sendProgress(
-  onProgress: ProgressCb | undefined,
-  progress: CreateTorrentProgress
-): void {
-  try { onProgress?.(progress); } catch { /* ignore */ }
-}
-
-/**
- * Create a torrent file from source files/folders using WebTorrent.
- * Runs in the torrent-host process; progress is reported via the callback, which
- * the host relays to the renderer (it has no BrowserWindow).
- */
-export async function createTorrentFile(
-  request: CreateTorrentRequest,
-  onProgress?: ProgressCb
-): Promise<CreateTorrentResult> {
-  const { sourcePaths, outputPath, options } = request;
-  const excludeSet = new Set((request.excludePaths || []).map(p => path.resolve(p)));
-
-  log.info('Creating torrent', {
-    sourcePaths,
-    outputPath,
-    excluded: excludeSet.size,
-    options: { ...options, announceList: `${options.announceList.length} trackers` },
-  });
-
-  // Validate source paths
-  for (const sourcePath of sourcePaths) {
-    if (!fs.existsSync(sourcePath)) {
-      throw new Error(`Source path does not exist: ${sourcePath}`);
-    }
-  }
-
-  // Stage 1: scanning — resolve what actually goes into the torrent.
-  sendProgress(onProgress, { stage: 'hashing', progress: 0.05, message: 'Scanning files...' });
-
-  // Build the concrete file list, honoring exclusions. When nothing is excluded
-  // and a single folder is selected we pass the folder path directly (preserves
-  // the folder name as the torrent root). Otherwise we expand to a flat file
-  // list minus excluded paths.
-  const primaryPath = sourcePaths[0];
-  let input: string | string[];
-  let usingFolderRoot = false;
-  let stageDir: string | null = null;
-  let stagedName: string | undefined;
-
-  if (excludeSet.size === 0 && sourcePaths.length === 1) {
-    // Common case: one source, nothing excluded — seed it directly so the folder
-    // name becomes the torrent root and hashing reads lazily from disk.
-    input = sourcePaths[0];
-    usingFolderRoot = fs.statSync(sourcePaths[0]).isDirectory();
-  } else {
-    // Exclusions or multiple sources — stage the included files (preserving
-    // folders) and seed the staging tree.
-    const staged = stageSelection(sourcePaths, excludeSet);
-    input = staged.input;
-    stageDir = staged.stageDir;
-    stagedName = staged.name;
-    usingFolderRoot = typeof input === 'string' && fs.statSync(input).isDirectory();
-  }
-
-  // Clean up the staging tree on every exit path.
-  const cleanupStage = (): void => {
-    if (stageDir) {
-      try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* ignore */ }
-      stageDir = null;
+      const entries = await fs.promises.readdir(absolute);
+      entries.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+      for (const entry of entries) await walk(path.join(absolute, entry), [...relative, entry]);
+    } else if (stat.isFile()) {
+      if (outputStat && stat.dev === outputStat.dev && stat.ino === outputStat.ino) throw new Error('The output torrent is linked to a source file');
+      seedPathParts(relative.join('/'));
+      const key = process.platform === 'win32' ? relative.join('/').toLowerCase() : relative.join('/');
+      if (seen.has(key)) throw new Error('Two sources have the same torrent path');
+      const physical = torrentSourceKey(await fs.promises.realpath(absolute));
+      if (physicalPaths.has(physical)) throw new Error('A source file is selected more than once through overlapping folders');
+      physicalPaths.add(physical);
+      seen.add(key);
+      if (files.length >= 100_000) throw new Error('A torrent can include at most 100000 files');
+      files.push({ absolute, relative, stat });
     }
   };
+  for (const source of sourcePaths) {
+    signal.throwIfAborted();
+    const absolute = path.resolve(source), stat = await fs.promises.lstat(absolute);
+    if (torrentSourceKey(absolute) === torrentSourceKey(path.resolve(outputPath))) throw new Error('The output torrent must not overwrite a source');
+    if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw new Error('Unsupported source: ' + source);
+    const top = path.basename(absolute), key = process.platform === 'win32' ? top.toLowerCase() : top;
+    if (roots.has(key)) throw new Error('Sources have the same torrent root name: ' + top);
+    roots.add(key);
+    singleFile = sourcePaths.length === 1 && stat.isFile();
+    await walk(absolute, sourcePaths.length === 1 && stat.isDirectory() ? [] : [top]);
+  }
+  if (!files.length) throw new Error('No files to include in this torrent');
+  const name = options.name?.trim() || (sourcePaths.length === 1 ? path.basename(path.resolve(sourcePaths[0])) : 'Torrent');
+  if (seedPathParts(name).length !== 1) throw new Error('Torrent name must not contain directory separators');
+  return { files, singleFile, name };
+}
 
-  // Calculate total size (of included files) and optimal piece length
-  const totalSize = getTotalSize(Array.isArray(input) ? input : [input]);
-  const pieceLength = options.pieceLength || calculatePieceLength(totalSize);
+async function writeTorrentAtomically(outputPath: string, bytes: Buffer, signal: AbortSignal, commit: () => void): Promise<void> {
+  const temporary = path.join(path.dirname(outputPath), '.havvn-torrent-' + randomUUID() + '.tmp');
+  let handle: fs.promises.FileHandle | undefined;
+  try {
+    signal.throwIfAborted();
+    handle = await fs.promises.open(temporary, 'wx', 0o600);
+    await handle.writeFile(bytes); await handle.sync(); await handle.close(); handle = undefined;
+    signal.throwIfAborted();
+    // Once rename is issued the file may already be saved. From this point
+    // cancellation must lose to the real result, including a rename failure.
+    commit();
+    await fs.promises.rename(temporary, outputPath);
+  } finally {
+    await handle?.close().catch(() => {});
+    await fs.promises.unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') log.warn('Temporary torrent file retained', { temporary, error: String(error) }); });
+  }
+}
 
-  log.debug('Calculated sizes', {
-    totalSize,
-    pieceLength,
-    pieceCount: Math.ceil(totalSize / pieceLength),
-    fileCount: Array.isArray(input) ? input.length : undefined,
-    usingFolderRoot,
-  });
-
-  // Stage 2: hashing begins
-  sendProgress(onProgress, {
-    stage: 'hashing',
-    progress: 0.15,
-    message: 'Hashing files...',
-  });
-
-  // Flatten announce list for WebTorrent
-  const announceList = options.announceList.length > 0 
-    ? options.announceList 
-    : DEFAULT_TRACKERS;
-  const announce = announceList.flat();
-
-  const { default: WebTorrent } = await import('webtorrent');
-  return new Promise((resolve, reject) => {
-    // Create a temporary WebTorrent client for seeding
-    const client = new WebTorrent({ utp: false, natUpnp: false, natPmp: false } as any);
-
-    // create-torrent (used by WebTorrent.seed) doesn't expose hashing progress,
-    // so we estimate it from total size at a conservative hash rate. This is an
-    // ETA-based estimate, not a fake fixed ramp — it tracks real elapsed time
-    // and is capped below 100% until hashing actually completes.
-    const HASH_BYTES_PER_SEC = 80 * 1024 * 1024; // ~80 MB/s, conservative
-    const estMs = Math.max(800, (totalSize / HASH_BYTES_PER_SEC) * 1000);
-    const startedAt = Date.now();
-    const HASH_FLOOR = 0.15;   // where hashing stage starts
-    const HASH_CEIL = 0.9;     // never claim done until the callback fires
-    const progressInterval = setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const frac = Math.min(1, elapsed / estMs);
-      const progress = HASH_FLOOR + (HASH_CEIL - HASH_FLOOR) * frac;
-      sendProgress(onProgress, {
-        stage: 'hashing',
-        progress,
-        message: 'Hashing files...',
-      });
-    }, 250);
-
-    // Seed options
-    const seedOpts = {
-      storeCacheSlots: 0,
-      name: options.name || stagedName || (usingFolderRoot ? path.basename(primaryPath) : undefined),
-      comment: options.comment,
-      createdBy: options.createdBy || 'Havvn',
-      announce,
-      urlList: options.urlList,
-      private: options.private || false,
-      pieceLength,
-      // Don't actually announce - we just want to create the torrent
-      announceList,
-    };
-
-    client.seed(input, seedOpts, (torrent) => {
-      clearInterval(progressInterval);
-
-      try {
-        // Send writing progress
-        sendProgress(onProgress, {
-          stage: 'writing',
-          progress: 0.9,
-          message: 'Writing torrent file...',
-        });
-
-        // Get torrent file buffer
-        const torrentBuffer = torrent.torrentFile;
-        
-        if (!torrentBuffer) {
-          throw new Error('Failed to create torrent: No torrent file generated');
-        }
-
-        // Write torrent file
-        fs.writeFileSync(outputPath, torrentBuffer);
-
-        const infoHash = torrent.infoHash;
-        const magnetUri = torrent.magnetURI;
-        const pieceCount = torrent.pieces.length;
-        const actualPieceLength = torrent.pieceLength;
-
-        log.info('Torrent created successfully', {
-          outputPath,
-          infoHash,
-          totalSize: torrent.length,
-          pieceCount,
-        });
-
-        // Send complete progress
-        sendProgress(onProgress, {
-          stage: 'complete',
-          progress: 1,
-          message: 'Torrent created successfully!',
-        });
-
-        // Destroy the temporary client (we don't want to seed from here)
-        // The main TorrentManager will handle seeding if requested
-        client.destroy();
-        cleanupStage();
-
-        resolve({
-          torrentFilePath: outputPath,
-          infoHash,
-          magnetUri,
-          totalSize: torrent.length,
-          pieceCount,
-          pieceLength: actualPieceLength,
-        });
-      } catch (parseError) {
-        clearInterval(progressInterval);
-        client.destroy();
-        cleanupStage();
-        log.error('Failed to write torrent', { error: parseError });
-        reject(parseError);
-      }
+export async function createTorrentFile(request: CreateTorrentRequest, onProgress?: ProgressCb): Promise<CreateTorrentResult> {
+  if (activeCreation) throw new Error('Torrent creation is already in progress');
+  if (!request || !Array.isArray(request.sourcePaths) || request.sourcePaths.some(source => typeof source !== 'string' || !source.trim())) throw new Error('Invalid source selection');
+  const { options, outputPath } = request;
+  if (!options || !Array.isArray(options.announceList) || options.announceList.some(tier => !Array.isArray(tier) || tier.some(url => typeof url !== 'string'))) throw new Error('Invalid tracker list');
+  if (options.urlList && (!Array.isArray(options.urlList) || options.urlList.some(url => typeof url !== 'string'))) throw new Error('Invalid web seed list');
+  if (typeof outputPath !== 'string' || !outputPath.trim()) throw new Error('Choose an output torrent file');
+  if (parseTorrentUrls(options.announceList.flat().join('\n'), 'tracker').invalidLines.length || parseTorrentUrls((options.urlList ?? []).join('\n'), 'webSeed').invalidLines.length) throw new Error('Invalid tracker or web seed URL');
+  if (options.pieceLength !== undefined && (!Number.isInteger(options.pieceLength) || options.pieceLength < 16384 || options.pieceLength > 16777216 || (options.pieceLength & (options.pieceLength - 1)) !== 0)) throw new Error('Invalid torrent piece size');
+  if (request.requestId !== undefined && (typeof request.requestId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(request.requestId))) throw new Error('Invalid creation request ID');
+  const report = (progress: CreateTorrentProgress) => { try { onProgress?.({ ...progress, requestId: request.requestId }); } catch { /* reporting cannot fail creation */ } };
+  const controller = new AbortController(), streams: Readable[] = [];
+  const current = { requestId: request.requestId, controller, cancellable: true };
+  activeCreation = current;
+  const abortStreams = () => { for (const stream of streams) stream.destroy(controller.signal.reason); };
+  controller.signal.addEventListener('abort', abortStreams, { once: true });
+  let timer: ReturnType<typeof setInterval> | undefined;
+  try {
+    report({ stage: 'hashing', progress: 0, message: 'Scanning files...' });
+    controller.signal.throwIfAborted();
+    const manifest = await selection(request, controller.signal);
+    controller.signal.throwIfAborted();
+    const totalSize = manifest.files.reduce((sum, file) => sum + file.stat.size, 0);
+    if (!Number.isSafeInteger(totalSize)) throw new Error('The selected content is too large');
+    const pieceLength = options.pieceLength ?? calculateTorrentPieceLength(totalSize);
+    if (Math.ceil(totalSize / pieceLength) * 20 > MAX_METADATA_BYTES - 1024 * 1024) throw new Error('The chosen piece size creates too much metadata. Use Auto or larger pieces.');
+    let lastProgress = Date.now(), lastReport = 0;
+    // Open one file at a time. No staging copies, hidden-file filtering or symlink traversal.
+    for (const file of manifest.files) {
+      controller.signal.throwIfAborted();
+      const stream = Readable.from((async function* () {
+        controller.signal.throwIfAborted();
+        const handle = await fs.promises.open(file.absolute, 'r');
+        try {
+          if (!unchanged(file.stat, await handle.stat())) throw new Error('A source file changed before hashing');
+          for await (const chunk of handle.createReadStream({ autoClose: false, signal: controller.signal })) yield chunk;
+          if (!unchanged(file.stat, await handle.stat())) throw new Error('A source file changed during hashing');
+        } finally { await handle.close(); }
+      })());
+      Object.assign(stream, { name: file.relative.join('/') });
+      stream.on('error', () => {}); // unread streams can also be aborted
+      streams.push(stream);
+    }
+    const { default: createTorrent } = await import('create-torrent');
+    controller.signal.throwIfAborted();
+    const raw = await new Promise<Buffer>((resolve, reject) => {
+      let settled = false;
+      const finish = (error: Error | null, value?: Uint8Array) => {
+        if (settled) return; settled = true;
+        controller.signal.removeEventListener('abort', abort);
+        if (error || !value) reject(error || new Error('No torrent metadata generated')); else resolve(Buffer.from(value));
+      };
+      const abort = () => finish(controller.signal.reason);
+      controller.signal.addEventListener('abort', abort, { once: true });
+      timer = setInterval(() => { if (Date.now() - lastProgress > 5 * 60_000) controller.abort(new Error('Torrent hashing stopped making progress')); }, 1000);
+      createTorrent(streams, { name: manifest.name, comment: options.comment, createdBy: options.createdBy || 'Havvn',
+        announceList: options.announceList.map(tier => [...tier]), urlList: options.urlList, private: options.private ?? false,
+        pieceLength, filterJunkFiles: false, info: options.source ? { source: options.source } : undefined,
+        onProgress: hashed => {
+          if (controller.signal.aborted) return;
+          lastProgress = Date.now();
+          if (Date.now() - lastReport < 250) return;
+          lastReport = Date.now();
+          report({ stage: 'hashing', progress: totalSize ? Math.min(.9, hashed / totalSize * .9) : 0, message: 'Hashing files...' });
+        } }, finish);
     });
-
-    // Handle errors
-    client.on('error', (err: string | Error) => {
-      clearInterval(progressInterval);
-      client.destroy();
-      cleanupStage();
-      const errorMessage = typeof err === 'string' ? err : err.message;
-      log.error('Failed to create torrent', { error: errorMessage });
-      reject(new Error(`Failed to create torrent: ${errorMessage}`));
-    });
-
-    // Timeout after 5 minutes
-    setTimeout(() => {
-      clearInterval(progressInterval);
-      client.destroy();
-      cleanupStage();
-      reject(new Error('Torrent creation timed out'));
-    }, 5 * 60 * 1000);
-  });
+    controller.signal.throwIfAborted();
+    // The library treats a one-stream folder as a single-file torrent and can
+    // strip a common prefix. Preserve our explicit manifest without rehashing.
+    const { default: bencode } = await import('bencode');
+    const encoded = bencode.decode(raw) as { info: Record<string, unknown> };
+    if (manifest.singleFile) { delete encoded.info.files; encoded.info.length = totalSize; }
+    else { delete encoded.info.length; encoded.info.files = manifest.files.map(file => ({ length: file.stat.size, path: file.relative })); }
+    const metadata = await parseSeedMetadata(Buffer.from(bencode.encode(encoded)));
+    const parser = await import('parse-torrent');
+    const magnetUri = parser.toMagnetURI(await parser.default(metadata.bytes));
+    for (const file of manifest.files) {
+      controller.signal.throwIfAborted();
+      if (!unchanged(file.stat, await fs.promises.stat(file.absolute))) throw new Error('A source file changed; create the torrent again');
+    }
+    report({ stage: 'writing', progress: .95, message: 'Writing torrent file...' });
+    await writeTorrentAtomically(outputPath, metadata.bytes, controller.signal, () => { current.cancellable = false; });
+    report({ stage: 'complete', progress: 1, message: 'Torrent created successfully!' });
+    return { torrentFilePath: outputPath, infoHash: metadata.infoHash,
+      magnetUri,
+      totalSize, pieceCount: Math.ceil(totalSize / pieceLength), pieceLength };
+  } finally {
+    clearInterval(timer);
+    controller.signal.removeEventListener('abort', abortStreams);
+    for (const stream of streams) stream.destroy();
+    await Promise.all(streams.map(stream => finished(stream).catch(() => {})));
+    if (activeCreation === current) activeCreation = undefined;
+  }
 }

@@ -1,0 +1,6 @@
+.server-group-readiness { display: grid; gap: 10px; margin-top: 16px; border-top: 1px solid var(--color-border-default); padding-top: 16px; min-width: 0; }
+.server-group-readiness p { font-size: 12px; line-height: 1.6; margin: 0; }
+.server-group-readiness > label { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.server-group-readiness ul { margin: 0; padding: 0; list-style: none; max-height: 300px; overflow: auto; }
+.server-group-readiness li { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 6px 12px; padding: 10px 0; border-bottom: 1px solid var(--color-border-subtle); font-size: 12px; overflow-wrap: anywhere; }
+.server-group-readiness small { grid-column: 1/-1; color: var(--color-text-secondary); }

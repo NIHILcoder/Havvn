@@ -1,0 +1,21 @@
+.first-description { color: var(--color-text-secondary); line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.first-chooser .um-body { display: flex; flex-direction: column; gap: 16px; }
+.first-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.first-choice.btn { height: auto; min-height: 112px; padding: 16px; gap: 12px; justify-content: flex-start; text-align: left; white-space: normal; }
+.first-choice .btn-label { min-width: 0; }
+.first-choice .btn-label > span { display: flex; flex-direction: column; gap: 6px; }
+.first-choice .btn-label strong { font-size: 15px; }
+.first-choice .btn-label span span, .first-choice small { font-weight: normal; line-height: 1.45; }
+.first-guide { flex: 0 0 auto; max-height: 42vh; overflow: auto; margin: 12px 18px 0; padding: 16px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md, 8px); background: var(--color-bg-secondary); }
+.first-guide-heading, .first-guide-tools { display: flex; align-items: center; gap: 8px; }
+.first-guide-heading { justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+.first-guide h2 { font-size: 16px; margin: 0; }
+.first-progress { display: flex; flex-wrap: wrap; gap: 8px 24px; list-style: none; padding: 0; margin: 0 0 12px; }
+.first-progress li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; line-height: 1.5; }
+.first-progress li > span { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--color-border-default); border-radius: 50%; font-size: 12px; }
+.first-progress li[data-complete=true] > span { color: var(--color-accent-primary); border-color: currentColor; }
+.first-progress small { color: var(--color-text-secondary); }
+.first-guide-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 16px; }
+.first-guide-actions .custom-select-container { min-width: 160px; max-width: 280px; flex: 1 1 160px; }
+.first-guide-actions .btn { max-width: 100%; }
+@media(max-width: 620px) { .first-choices { grid-template-columns: 1fr; } .first-choice.btn { min-height: 88px; } .first-guide { margin-inline: 10px; padding: 12px; } }

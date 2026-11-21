@@ -4,9 +4,10 @@
  * Main downloads management page with compact/detailed view modes.
  */
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { CompletionAction } from '../../shared/types';
+import { useStore } from 'zustand';
+import { CompletionAction, type DownloadDefaults } from '../../shared/types';
 import { canPause, canResume } from '../../shared/state-machine';
 import {
   Button,
@@ -25,6 +26,8 @@ import {
   useConfirm,
 } from '../components';
 import './DownloadsPage.css';
+import { AutomationDraftModal } from '../components/AutomationDraftModal';
+import { automationDraft, type AutomationDraft } from '../../shared/automation-draft';
 
 import {
   ViewMode, FilterMode, SortMode,
@@ -34,26 +37,59 @@ import { ConnectedDownloadItem } from './DownloadItem';
 import { downloadsModel, useDownloads } from '../state/downloads';
 import { cleanError } from '../utils/format-helpers';
 import { useTranslation } from '../utils/i18nContext';
+import DownloadViewsBar from './DownloadViewsBar';
+import { isModalOpen } from '../components/Modal';
+import { compileDownloadView, type DownloadViewConditions, type DownloadViewConfig } from '../../shared/download-views';
+import { useDownloadViews } from '../utils/download-views';
+import { firstSteps } from '../utils/first-steps';
+import { AddDownloadsModal } from '../components/AddDownloadsModal';
+import { DownloadDeletionModal } from '../components/DownloadDeletionModal';
+import { ADD_QUEUE_LIMIT, sourceIdentity, type DownloadSource } from '../../shared/download-source-queue';
+import { runDownloadBatch, downloadBatchState, type BatchAction } from '../state/download-batch';
+import { pageLeave } from '../state/page-leave';
+import { Modal } from '../components/Modal';
+import { EffectiveLimits } from './settings/EffectiveLimits';
+import { activeDownloadConditions, clearDownloadCondition } from '../../shared/download-filter-chips';
+import { DownloadHelpModal } from '../components/DownloadHelpModal';
+import type { ErrorRecoveryContext } from '../components/RecoveryError';
+import type { SettingSearchEntry } from './settings/settingsSearch';
 
 
 interface DownloadsPageProps {
+  onOpenEvents?(): void;
+  onOpenSetting?(entry: SettingSearchEntry): void;
   filterMode?: FilterMode;
   onFilterChange?: (filter: FilterMode) => void;
   // A torrent file path / magnet URI opened from the OS; opens the add dialog
   openTorrentUri?: string | null;
   onOpenHandled?: () => void;
+  focusRequest?: { id: string; requestId: number } | null;
+  onFocusHandled?: () => void;
+  addTorrentRequest?: number;
+  onAddTorrentHandled?: () => void;
+  streamRequest?: { id: string; requestId: number } | null;
+  onStreamHandled?: () => void;
 }
 
 const DownloadsPage: React.FC<DownloadsPageProps> = ({
   filterMode: externalFilterMode = 'all',
   onFilterChange,
   openTorrentUri,
-  onOpenHandled
+  onOpenHandled,
+  focusRequest,
+  onFocusHandled,
+  addTorrentRequest,
+  onAddTorrentHandled,
+  streamRequest,
+  onStreamHandled,
+  onOpenEvents,
+  onOpenSetting,
 }) => {
   const { t } = useTranslation();
   const { confirm } = useConfirm();
   const downloads = useDownloads(s => s.downloads);
   const downloadsById = useDownloads(s => s.byId);
+  const downloadsLoaded = useDownloads(s => s.loaded);
   const setDownloads = downloadsModel.updateDownloads;
   const [loading, setLoading] = useState(true);
 
@@ -63,12 +99,19 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     message: string;
     variant?: 'success' | 'error' | 'warning' | 'info';
     duration?: number;
+    recovery?: ErrorRecoveryContext;
   }>>([]);
 
   // UI State
   const [viewMode, setViewMode] = useState<ViewMode>('compact');
   // Per-row accordion: which compact rows are expanded to full detail.
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const handleChangeViewMode = useCallback((mode: React.SetStateAction<ViewMode>) => {
+    // Choosing a global view resets the compact accordion, including when the
+    // user clicks the already-active compact button to collapse all rows.
+    setExpandedIds(prev => prev.size ? new Set() : prev);
+    setViewMode(mode);
+  }, []);
   const handleToggleExpand = useCallback((id: string) => {
     setExpandedIds((prev) => {
       const next = new Set(prev);
@@ -77,7 +120,9 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     });
   }, []);
   // Use external filter mode from props
-  const filterMode = externalFilterMode;
+  const [localFilterMode, setLocalFilterMode] = useState<FilterMode>(externalFilterMode);
+  const filterMode = onFilterChange ? externalFilterMode : localFilterMode;
+  const setFilterMode = onFilterChange ?? setLocalFilterMode;
   const [sortMode, setSortMode] = useState<SortMode>('added');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -85,6 +130,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Context menu state
+  const [automation, setAutomation] = useState<AutomationDraft | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -101,13 +147,35 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const savedViews = useDownloadViews();
+  const [advancedFilters, setAdvancedFilters] = useState<Omit<DownloadViewConditions, 'status' | 'name'>>({ path: '' });
+  const visibleIds = useRef<string[]>([]);
+  const conditions = useMemo(() => ({ ...advancedFilters, status: filterMode, name: searchQuery }), [advancedFilters, filterMode, searchQuery]);
+  const viewConfig: DownloadViewConfig = { conditions, sort: { by: sortMode, direction: sortDirection }, mode: viewMode };
+  const applyViewConfig = (config: DownloadViewConfig) => {
+    const { status, name, ...advanced } = config.conditions;
+    setAdvancedFilters(advanced); setSearchQuery(name); setFilterMode(status);
+    setSortMode(config.sort.by); setSortDirection(config.sort.direction); if (config.mode !== viewMode) handleChangeViewMode(config.mode);
+    setSelectedIds(new Set());
+    scrollParentRef.current?.scrollTo({ top: 0 });
+  };
+  useEffect(() => {
+    const view = savedViews.catalog.views.find(item => item.id === savedViews.catalog.activeId);
+    if (view) applyViewConfig(view);
+    else { setAdvancedFilters({ path: '' }); setSearchQuery(''); setSelectedIds(new Set()); }
+    scrollParentRef.current?.scrollTo({ top: 0 });
+  }, [savedViews.selection]);
   const [altSpeed, setAltSpeed] = useState(false);
+  const [showSpeedLimits, setShowSpeedLimits] = useState(false);
+  const [helpId, setHelpId] = useState<string | null>(null), [showCompletionActions, setShowCompletionActions] = useState(false);
+  const pendingRowCommands = useRef(new Set<string>());
 
   // Torrent control modal
   const [controlModalId, setControlModalId] = useState<string | null>(null);
   const controlModalDownload = controlModalId ? downloadsById.get(controlModalId) : null;
   const [streamModalId, setStreamModalId] = useState<string | null>(null);
   const streamModalDownload = streamModalId ? downloadsById.get(streamModalId) : null;
+  const handledStream = useRef(0);
   const [shareModalId, setShareModalId] = useState<string | null>(null);
   const shareModalDownload = shareModalId ? downloadsById.get(shareModalId) : null;
   // "Share to room" — the row's Share button + context menu
@@ -121,26 +189,80 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
   // File selector state
   const [showFileSelector, setShowFileSelector] = useState(false);
+  const [showAddLink, setShowAddLink] = useState(false);
+  const [initialSources, setInitialSources] = useState<DownloadSource[]>([]);
+  const queuedSources = useRef<DownloadSource[]>([]), queueGeneration = useRef(0);
+  const [queueProgress, setQueueProgress] = useState({ position: 0, total: 0 });
   const [showSearch, setShowSearch] = useState(false);
   const [pendingTorrent, setPendingTorrent] = useState<{
     path?: string;
     magnetUri?: string;
   } | null>(null);
   const [isAddingTorrent, setIsAddingTorrent] = useState(false);
+  const showSource = (source: DownloadSource | undefined) => {
+    setPendingTorrent(source ? source.sourceType === 'magnet' ? { magnetUri: source.sourceUri } : { path: source.sourceUri } : null);
+    setShowFileSelector(!!source);
+  };
+  const startSources = (sources: DownloadSource[]) => {
+    if (!sources.length) return;
+    queueGeneration.current++; queuedSources.current = sources.slice(1);
+    setQueueProgress({ position: 1, total: sources.length }); setShowAddLink(false); setSelectedFile(null); showSource(sources[0]);
+  };
+  const advanceSource = () => { const next = queuedSources.current.shift(); showSource(next); setQueueProgress(old => ({ ...old, position: old.position + 1 })); };
 
   // On-completion action (one-shot; main owns the state, this mirrors it)
   const [onDoneAction, setOnDoneAction] = useState<CompletionAction>('none');
   const [onDoneAvailable, setOnDoneAvailable] = useState<CompletionAction[]>(['none', 'quit']);
 
   // Toast helper
-  const addToast = useCallback((message: string, variant: 'success' | 'error' | 'warning' | 'info' = 'info', duration = 5000) => {
+  const addToast = useCallback((message: string, variant: 'success' | 'error' | 'warning' | 'info' = 'info', duration = 5000, recovery?: ErrorRecoveryContext) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
-    setToasts(prev => [...prev, { id, message, variant, duration }]);
+    setToasts(prev => [...prev, { id, message, variant, duration, recovery }]);
   }, []);
 
   const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
+  useEffect(() => pageLeave.register(async () => {
+    if (isAddingTorrent) { addToast(t('navigation.waitWork'), 'info'); return false; }
+    return !showFileSelector || await confirm({ title: t('downloads.queue.leaveTitle'), message: t('downloads.queue.leaveHint'), confirmLabel: t('downloads.queue.leave'), cancelLabel: t('common.cancel') });
+  }), [isAddingTorrent, showFileSelector, confirm, addToast, t]);
+  const batchResult = useStore(downloadBatchState, state => state.result), batchBusy = useStore(downloadBatchState, state => state.busy);
+  const runBatch = useCallback(async (action: BatchAction, ids: Iterable<string>) => {
+    if (downloadBatchState.getState().busy) return;
+    downloadBatchState.setState({ busy: true });
+    try {
+      const result = await runDownloadBatch(ids, action, () => downloadsModel.store.getState().byId, window.api);
+      downloadBatchState.setState({ result }); setSelectedIds(new Set(result.failed.map(item => item.id)));
+      await downloadsModel.refresh().catch(() => {});
+    } finally { downloadBatchState.setState({ busy: false }); }
+  }, []);
+
+  useEffect(() => {
+    if (!streamRequest || handledStream.current === streamRequest.requestId || !downloadsLoaded) return;
+    handledStream.current = streamRequest.requestId;
+    if (downloadsById.has(streamRequest.id)) setStreamModalId(streamRequest.id);
+    else addToast(t('commands.missing'), 'error');
+    onStreamHandled?.();
+  }, [streamRequest, downloadsLoaded, downloadsById, onStreamHandled, addToast, t]);
+
+  const removingIds = useRef(new Set<string>());
+  const [deletionId, setDeletionId] = useState<string | null>(null);
+  const handleRemoveMany = useCallback(async (ids: string[]) => {
+    if (downloadBatchState.getState().busy) return;
+    const targets = ids.filter(id => !removingIds.current.has(id));
+    targets.forEach(id => removingIds.current.add(id));
+    const results = await Promise.allSettled(targets.map(id => window.api.removeDownload(id, false)
+      .finally(() => removingIds.current.delete(id))));
+    const removed = new Set(targets.filter((_, index) => results[index].status === 'fulfilled'));
+    setDownloads(current => current.filter(download => !removed.has(download.id)));
+    setSelectedIds(current => new Set([...current].filter(id => !removed.has(id))));
+    const failures = results.filter(result => result.status === 'rejected').length;
+    const unavailable = results.filter(result => result.status === 'fulfilled' && result.value?.unavailable).length;
+    if (failures) addToast(t('undo.batchFailed').replace('{count}', String(failures)), 'error');
+    if (unavailable) addToast(t('undo.batchUnavailable').replace('{count}', String(unavailable)), 'warning');
+    await downloadsModel.refresh().catch(() => {});
+  }, [addToast, setDownloads, t]);
 
   // Drag and drop handlers
   const isFileDrag = (e: React.DragEvent): boolean =>
@@ -175,27 +297,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     setIsDragging(false);
     dragCounter.current = 0;
 
-    const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
-      const file = files[0];
-      if (file.name.endsWith('.torrent')) {
-        // Clear any leftover state from a previous drop
-        setSelectedFile(null);
-
-        // Resolve the dropped file's path (webUtils / legacy File.path) and open
-        // the file selector dialog.
-        const filePath = window.api.getPathForFile(file);
-        if (filePath) {
-          setPendingTorrent({ path: filePath });
-          setShowFileSelector(true);
-        } else {
-          // Fallback: keep the file for the "Add Selected Torrent" button
-          setSelectedFile(file);
-        }
-      } else {
-        addToast(t('downloads.dropTorrentOnly'), 'error');
-      }
+    if (showFileSelector || showAddLink || isAddingTorrent) return;
+    const files = Array.from(e.dataTransfer.files ?? []), sources: DownloadSource[] = [];
+    for (const file of files) {
+      const path = /\.torrent$/i.test(file.name) ? window.api.getPathForFile(file) : '';
+      if (path) sources.push({ sourceType: 'torrent_file', sourceUri: path, label: file.name });
+      else addToast(`${file.name}: ${t('downloads.dropTorrentOnly')}`, 'error');
     }
+    if (sources.length) { setInitialSources(sources); setShowAddLink(true); }
   };
 
   // Safety net for the drop overlay: if a drag is interrupted — the file dialog
@@ -258,9 +367,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // file-picker dialog as a manual add instead of adding silently.
   useEffect(() => {
     if (!openTorrentUri) return;
-    const isMagnet = openTorrentUri.startsWith('magnet:');
-    setPendingTorrent(isMagnet ? { magnetUri: openTorrentUri } : { path: openTorrentUri });
-    setShowFileSelector(true);
+    const source: DownloadSource = { sourceType: openTorrentUri.startsWith('magnet:') ? 'magnet' : 'torrent_file', sourceUri: openTorrentUri, label: openTorrentUri };
+    if (showFileSelector && pendingTorrent) {
+      const current: DownloadSource = { sourceType: pendingTorrent.path ? 'torrent_file' : 'magnet', sourceUri: pendingTorrent.path ?? pendingTorrent.magnetUri!, label: '' };
+      if (![current, ...queuedSources.current].some(item => sourceIdentity(item) === sourceIdentity(source))) {
+        if (queueProgress.total >= ADD_QUEUE_LIMIT) addToast(t('downloads.queue.limit').replace('{count}', String(ADD_QUEUE_LIMIT)), 'warning');
+        else { queuedSources.current.push(source); setQueueProgress(old => ({ ...old, total: old.total + 1 })); }
+      }
+    } else startSources([source]);
     onOpenHandled?.();
   }, [openTorrentUri]);
 
@@ -274,56 +388,32 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
+      if (e.defaultPrevented || isModalOpen()) return;
       // A modal owns the keyboard while open — page-level shortcuts (Delete,
       // Space, Ctrl+A) acting on the list underneath would be destructive.
       if (shareRoomId || shareModalId || streamModalId || controlModalId || previewId || showFileSelector) return;
       const target = e.target as HTMLElement;
       const isInInput = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 
-      // Ctrl+A - Select all downloads
+      // Ctrl+A selects the current result set, including virtualized rows.
       if (e.ctrlKey && e.key === 'a' && !isInInput) {
         e.preventDefault();
-        setSelectedIds(new Set(downloads.map(d => d.id)));
+        setSelectedIds(new Set(visibleIds.current));
       }
 
       // Delete - Remove selected downloads
       if (e.key === 'Delete' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
         if (await confirm({ message: `${t('downloads.confirmRemoveMany')} (${selectedIds.size})`, danger: true })) {
-          const idsToRemove = Array.from(selectedIds);
-          Promise.all(idsToRemove.map(id => window.api.removeDownload(id, false)))
-            .then(() => {
-              setDownloads((prev) => prev.filter((d) => !selectedIds.has(d.id)));
-              setSelectedIds(new Set());
-              addToast(`${t('downloads.removedPrefix')} ${selectedIds.size} ${t('downloads.downloadsWord')}`, 'success');
-            })
-            .catch((error) => {
-              console.error('Failed to remove some downloads:', error);
-              loadDownloads();
-            });
+          await handleRemoveMany(Array.from(selectedIds));
         }
       }
 
       // Space - Toggle pause/resume for selected
       if (e.key === ' ' && selectedIds.size > 0 && !isInInput) {
         e.preventDefault();
-        const promises = Array.from(selectedIds).map(async (id) => {
-          const download = downloadsById.get(id);
-          if (download) {
-            try {
-              if (canPause(download.status)) {
-                await window.api.pauseDownload(id);
-              } else if (canResume(download.status)) {
-                await window.api.resumeDownload(id);
-              }
-            } catch (error) {
-              console.error('Failed to toggle pause/resume:', error);
-            }
-          }
-        });
-        Promise.all(promises).then(() => {
-          loadDownloads();
-        });
+        const action = [...selectedIds].some(id => canPause(downloadsModel.store.getState().byId.get(id)?.status ?? 'removed')) ? 'pause' : 'resume';
+        void runBatch(action, selectedIds);
       }
 
 
@@ -336,7 +426,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       // Ctrl+P - Toggle view mode
       if (e.ctrlKey && e.key === 'p') {
         e.preventDefault();
-        setViewMode(prev => prev === 'compact' ? 'detailed' : 'compact');
+        handleChangeViewMode(prev => prev === 'compact' ? 'detailed' : 'compact');
       }
 
       // Escape - Clear selection
@@ -347,7 +437,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedIds, downloads, addToast, shareRoomId, shareModalId, streamModalId, controlModalId, previewId, showFileSelector]);
+  }, [selectedIds, downloads, addToast, shareRoomId, shareModalId, streamModalId, controlModalId, previewId, showFileSelector, handleChangeViewMode, handleRemoveMany, runBatch]);
 
   // Clipboard magnet detection — on window focus, check for magnet: URIs.
   // Legacy hint for users WITHOUT the main-process clipboard watcher: when the
@@ -441,37 +531,21 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       console.error('Failed to load downloads:', error);
       addToast(
         `${t('downloads.failLoad')}: ${error instanceof Error ? error.message : t('downloads.unknownError')}`,
-        'error'
+        'error', 0, { object: t('downloads.title'), actions: [{ id: 'reload', label: t('downloadHelp.refresh'), kind: 'retry', run: () => downloadsModel.refresh() }], onOpenEvents }
       );
     } finally {
       setLoading(false);
     }
-  }, [addToast, t]);
+  }, [addToast, t, onOpenEvents]);
 
   const handleAddTorrentFile = async () => {
     // Prevent duplicate calls while file dialog is open
-    if (isAddingTorrent || showFileSelector) return;
+    if (isAddingTorrent || showFileSelector || showAddLink) return;
 
     try {
       setIsAddingTorrent(true);
-      let torrentPath: string | undefined;
-
-      // Use dropped/selected file path without opening file dialog again if it exists
-      if (selectedFile) {
-        torrentPath = window.api.getPathForFile(selectedFile) || undefined;
-      }
-      if (!torrentPath) {
-        const result = await window.api.selectTorrentFile();
-        if (!result) {
-          setIsAddingTorrent(false);
-          return;
-        }
-        torrentPath = result.path;
-      }
-
-      // Show file selector to choose which files to download
-      setPendingTorrent({ path: torrentPath });
-      setShowFileSelector(true);
+      const paths = await window.api.selectTorrentFiles();
+      if (paths.length) { setInitialSources(paths.map(path => ({ sourceType: 'torrent_file', sourceUri: path, label: path.split(/[\\/]/).at(-1) || path }))); setShowAddLink(true); }
     } catch (error) {
       addToast(
         `${t('downloads.failAdd')}: ${error instanceof Error ? error.message : t('downloads.unknownError')}`,
@@ -484,6 +558,14 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
 
   // Pause / resume everything at once (toolbar buttons; tray has the same)
+  const handledAddRequest = useRef(0);
+  useEffect(() => {
+    if (!addTorrentRequest || handledAddRequest.current === addTorrentRequest) return;
+    handledAddRequest.current = addTorrentRequest;
+    onAddTorrentHandled?.();
+    void handleAddTorrentFile();
+  }, [addTorrentRequest]);
+
   const handlePauseAll = async () => {
     try {
       const { paused } = await window.api.pauseAll();
@@ -514,44 +596,48 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     }
   };
 
-  const handleFileSelectionConfirm = async (selectedIndices: number[], savePath?: string) => {
+  const handleFileSelectionConfirm = async (selectedIndices: number[], savePath?: string, options?: DownloadDefaults & { categoryId?: string; name?: string }) => {
     // Re-entry guard: a second click while the add is in flight used to fire a
     // second addDownload and surface a confusing "already being added" error.
     if (!pendingTorrent || isAddingTorrent) return;
+    const generation = queueGeneration.current;
 
     const request = {
       sourceType: (pendingTorrent.path ? 'torrent_file' : 'magnet') as 'torrent_file' | 'magnet',
       sourceUri: pendingTorrent.path || pendingTorrent.magnetUri!,
       selectedFiles: selectedIndices,
+      ...options,
       savePath,
     };
 
-    // Close the dialog immediately — the engine confirms fast now (metadata
-    // resolves in the background) and the row appears in the list.
-    setShowFileSelector(false);
-    setPendingTorrent(null);
-    setSelectedFile(null);
+    // Keep the chosen category/path available if main rejects the destination.
     setIsAddingTorrent(true);
 
     try {
       const download = await window.api.addDownload(request);
+      firstSteps.downloadAdded(download.id);
+      if (generation === queueGeneration.current) advanceSource();
+      setSelectedFile(null);
 
       // De-dupe by id: a re-add of a previously failed download returns the
       // EXISTING record, which may already be in the list.
       setDownloads((prev) => [download, ...prev.filter((d) => d.id !== download.id)]);
 
       addToast(
-        `${t('downloads.downloadAddedWith')} ${selectedIndices.length} ${selectedIndices.length > 1 ? t('downloads.filesWord') : t('downloads.fileWord')}`,
+        selectedIndices.length ? `${t('downloads.downloadAddedWith')} ${selectedIndices.length} ${selectedIndices.length > 1 ? t('downloads.filesWord') : t('downloads.fileWord')}`
+          : t('downloads.downloadAddedAllFiles'),
         'success'
       );
     } catch (error) {
       addToast(`${t('downloads.failAddTorrent')}: ${cleanError(error)}`, 'error');
+      throw error;
     } finally {
       setIsAddingTorrent(false);
     }
   };
 
   const handleFileSelectorCancel = () => {
+    queueGeneration.current++; queuedSources.current = []; setQueueProgress({ position: 0, total: 0 });
     setShowFileSelector(false);
     setPendingTorrent(null);
     setSelectedFile(null);
@@ -561,70 +647,62 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     setSelectedFile(null);
   };
 
-  const handlePause = useCallback(async (id: string) => {
+  type RowCommand = 'pause' | 'resume' | 'stop' | 'retry';
+  const runRowCommand = useCallback(async (id: string, command: RowCommand) => {
+    if (pendingRowCommands.current.has(id)) throw new Error(t('navigation.waitWork'));
+    pendingRowCommands.current.add(id);
     try {
-      await window.api.pauseDownload(id);
+      const current = (await window.api.getDownloads()).find(download => download.id === id && download.status !== 'removed');
+      if (!current) throw new Error('Download not found');
+      const needed = command === 'pause' ? canPause(current.status) : command === 'resume' ? canResume(current.status) : command === 'stop' ? current.status === 'seeding' : current.status === 'error';
+      if (needed) {
+        if (command === 'pause') await window.api.pauseDownload(id);
+        else if (command === 'resume') await window.api.resumeDownload(id);
+        else if (command === 'stop') await window.api.stopSeeding(id);
+        else await window.api.retryDownload(id);
+      }
       await loadDownloads();
-    } catch (error) {
-      addToast(
-        `${t('downloads.failPause')}: ${error instanceof Error ? error.message : String(error)}`,
-        'error'
-      );
+    } finally { pendingRowCommands.current.delete(id); }
+  }, [loadDownloads, t]);
+  const attemptRowCommand = useCallback(async (id: string, command: RowCommand) => {
+    try { await runRowCommand(id, command); }
+    catch (error) {
+      const failure = { pause: 'downloads.failPause', resume: 'downloads.failResume', stop: 'downloads.failStopSeeding', retry: 'downloads.failRetry' } as const;
+      const label = { pause: 'downloads.pause', resume: 'downloads.resume', stop: 'downloads.stopSeeding', retry: 'downloads.retry' } as const;
+      addToast(t(failure[command]) + ': ' + (error instanceof Error ? error.message : String(error)), 'error', 0, {
+        object: downloadsModel.store.getState().byId.get(id)?.name ?? id,
+        actions: [{ id: command, label: t(label[command]), kind: 'retry', run: () => runRowCommand(id, command) }, { id: 'inspect', label: t('downloads.help'), run: () => setHelpId(id) }, { id: 'folder', label: t('downloads.recovery.folder'), run: async () => {
+          const current = await window.api.getDownloads();
+          if (!current.some(row => row.id === id && row.status !== 'removed')) throw new Error('Download not found');
+          downloadsModel.updateDownloads(() => current); setControlModalId(id);
+        } }], onOpenEvents,
+      });
     }
-  }, [addToast]);
-
-  const handleResume = useCallback(async (id: string) => {
-    try {
-      await window.api.resumeDownload(id);
-      await loadDownloads(); // Reload immediately
-    } catch (error) {
-      addToast(
-        `${t('downloads.failResume')}: ${error instanceof Error ? error.message : String(error)}`,
-        'error'
-      );
-    }
-  }, [addToast]);
+  }, [runRowCommand, addToast, onOpenEvents, t]);
+  const handlePause = useCallback((id: string) => attemptRowCommand(id, 'pause'), [attemptRowCommand]);
+  const handleResume = useCallback((id: string) => attemptRowCommand(id, 'resume'), [attemptRowCommand]);
+  const handleStopSeeding = useCallback((id: string) => attemptRowCommand(id, 'stop'), [attemptRowCommand]);
+  const handleRetry = useCallback((id: string) => attemptRowCommand(id, 'retry'), [attemptRowCommand]);
 
   const handleRemove = useCallback(async (id: string, deleteFiles: boolean) => {
+    if (deleteFiles) { setDeletionId(id); return; }
+    if (removingIds.current.has(id)) return;
+    removingIds.current.add(id);
     try {
-      await window.api.removeDownload(id, deleteFiles);
+      const result = await window.api.removeDownload(id, deleteFiles);
       setDownloads((prev) => prev.filter((d) => d.id !== id));
       addToast(
         deleteFiles ? t('downloads.removedWithFiles') : t('downloads.removedKeepFiles'),
         'success'
       );
+      if (result?.unavailable) addToast(t(`undo.error.${result.unavailable}`), 'warning');
     } catch (error) {
       addToast(
         `${t('downloads.failRemove')}: ${error instanceof Error ? error.message : String(error)}`,
         'error'
       );
-    }
+    } finally { removingIds.current.delete(id); }
   }, [addToast]);
-
-  const handleStopSeeding = useCallback(async (id: string) => {
-    try {
-      await window.api.stopSeeding(id);
-      await loadDownloads(); // Reflect the new 'completed' status immediately
-    } catch (error) {
-      addToast(
-        `${t('downloads.failStopSeeding')}: ${error instanceof Error ? error.message : String(error)}`,
-        'error'
-      );
-    }
-  }, [addToast, loadDownloads]);
-
-  const handleRetry = useCallback(async (id: string) => {
-    try {
-      await window.api.retryDownload(id);
-      addToast(t('downloads.retrying'), 'success');
-      await loadDownloads(); // Reflect the re-queued status immediately
-    } catch (error) {
-      addToast(
-        `${t('downloads.failRetry')}: ${error instanceof Error ? error.message : String(error)}`,
-        'error'
-      );
-    }
-  }, [addToast, loadDownloads]);
 
   const handleRecheck = useCallback(async (id: string) => {
     try {
@@ -690,36 +768,22 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
   // Context menu handler
   const handleContextMenu = useCallback((e: React.MouseEvent, downloadId: string) => {
     e.preventDefault();
+    const rect = e.type === 'click' ? e.currentTarget.getBoundingClientRect() : null;
     setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
+      x: rect?.left ?? e.clientX,
+      y: rect?.bottom ?? e.clientY,
       downloadId
     });
   }, []);
 
   // Filter downloads based on filter mode
-  const filteredDownloads = useMemo(() => downloads.filter(download => {
-    // Filter by status
-    if (filterMode !== 'all') {
-      if (filterMode === 'downloading' && !['downloading', 'queued'].includes(download.status)) {
-        return false;
-      }
-      if (filterMode === 'completed' && !['completed', 'seeding'].includes(download.status)) {
-        return false;
-      }
-      if (filterMode !== 'downloading' && filterMode !== 'completed' && download.status !== filterMode) {
-        return false;
-      }
-    }
-
-    // Filter by search query
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      return download.name.toLowerCase().includes(query);
-    }
-
-    return true;
-  }), [downloads, filterMode, searchQuery]);
+  const filteredDownloads = useMemo(() => downloads.filter(compileDownloadView(conditions)), [downloads, conditions]);
+  visibleIds.current = filteredDownloads.map(download => download.id);
+  useEffect(() => {
+    if (focusRequest) return;
+    const visible = new Set(visibleIds.current);
+    setSelectedIds(previous => [...previous].some(id => !visible.has(id)) ? new Set([...previous].filter(id => visible.has(id))) : previous);
+  }, [filteredDownloads, focusRequest]);
 
   // Sort downloads based on sort mode and direction.
   // Convention: every comparator returns ascending order for direction=1, so
@@ -759,15 +823,51 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
     count: sortedDownloads.length,
     getScrollElement: () => scrollParentRef.current,
     estimateSize: () => (viewMode === 'detailed' ? 168 : 76),
+    // Layout changes can resize the viewport and rows in one observer cycle.
+    useAnimationFrameWithResizeObserver: true,
     getItemKey: (index) => sortedDownloads[index].id,
     overscan: 8,
   });
 
-  // Item heights change wholesale when the view mode flips — drop the cached
-  // measurements so rows aren't briefly positioned with stale sizes.
+  // Address a download by ID, independently of names, filters and sort order.
   useEffect(() => {
+    if (!focusRequest || loading) return;
+    if (!downloadsById.has(focusRequest.id)) {
+      addToast(t('commands.missing'), 'warning'); onFocusHandled?.(); return;
+    }
+    setSearchQuery(''); setAdvancedFilters({ path: '' }); setFilterMode('all');
+    setSelectedIds(new Set([focusRequest.id]));
+  }, [focusRequest, loading]);
+  useLayoutEffect(() => {
+    if (!focusRequest || loading || searchQuery || filterMode !== 'all') return;
+    const index = sortedDownloads.findIndex(d => d.id === focusRequest.id);
+    if (index < 0) return;
+    rowVirtualizer.scrollToIndex(index, { align: 'center' });
+    const win = scrollParentRef.current?.ownerDocument.defaultView ?? window;
+    let frame = 0;
+    let attempts = 0;
+    const focus = () => {
+      const row = [...(scrollParentRef.current?.querySelectorAll<HTMLElement>('[data-download-id]') ?? [])]
+        .find(el => el.dataset.downloadId === focusRequest.id);
+      if (row) { row.focus({ preventScroll: true }); onFocusHandled?.(); }
+      else if (++attempts < 120) frame = win.requestAnimationFrame(focus);
+      else { addToast(t('commands.failed'), 'warning'); onFocusHandled?.(); }
+    };
+    frame = win.requestAnimationFrame(focus);
+    return () => win.cancelAnimationFrame(frame);
+  }, [focusRequest, loading, searchQuery, filterMode, sortedDownloads, rowVirtualizer]);
+
+  // Invalidate offscreen heights, then measure mounted rows before paint. Some
+  // rows were already expanded and keep the same height, so ResizeObserver
+  // won't report them again after measure() clears the cache.
+  useLayoutEffect(() => {
     rowVirtualizer.measure();
-  }, [viewMode]);
+    // Rebuild the estimated positions before measuring: resizeItem compares
+    // with those positions and skips an unchanged size, even after cache reset.
+    rowVirtualizer.getTotalSize();
+    scrollParentRef.current?.querySelectorAll<HTMLElement>('.downloads-vrow')
+      .forEach(rowVirtualizer.measureElement);
+  }, [viewMode, rowVirtualizer]);
 
   if (loading) {
     return (
@@ -780,7 +880,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
 
   return (
     <div
-      className="page-container"
+      className="page-container downloads-page"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -794,130 +894,40 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
           )}
         </div>
         <div className="page-actions">
-          <div className="view-mode-toggle">
-            <Button
-              variant={viewMode === 'compact' ? 'primary' : 'ghost'}
-              size="sm"
-              iconOnly
-              icon={<Icon name="list" size={16} />}
-              onClick={() => setViewMode('compact')}
-              title={t('downloads.compactView')}
-            />
-            <Button
-              variant={viewMode === 'detailed' ? 'primary' : 'ghost'}
-              size="sm"
-              iconOnly
-              icon={<Icon name="grid" size={16} />}
-              onClick={() => setViewMode('detailed')}
-              title={t('downloads.detailedView')}
-            />
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            iconOnly
-            icon={<Icon name="pause" size={16} />}
-            onClick={handlePauseAll}
-            title={t('downloads.pauseAll')}
-          />
-          <Button
-            variant="ghost"
-            size="sm"
-            iconOnly
-            icon={<Icon name="play" size={16} />}
-            onClick={handleResumeAll}
-            title={t('downloads.resumeAll')}
-          />
-          <Button
-            variant={altSpeed ? 'primary' : 'ghost'}
-            size="sm"
-            iconOnly
-            icon={<Icon name="gauge" size={16} />}
-            onClick={handleToggleAltSpeed}
-            title={altSpeed ? t('downloads.altSpeedOn') : t('downloads.altSpeedOff')}
-          />
-          {/* On-completion action (one-shot) */}
-          <DropdownMenu
-            portal
-            menuClassName="dropdown-menu dropdown-menu-right downloads-completion-menu"
-            renderTrigger={({ toggle }) => (
-              <Button
-                variant={onDoneAction !== 'none' ? 'primary' : 'ghost'}
-                size="sm"
-                iconOnly
-                icon={<Icon name="power" size={16} />}
-                onClick={toggle}
-                title={`${t('downloads.onDone')}: ${onDoneLabel(onDoneAction)}`}
-              />
-            )}
-            items={onDoneAvailable.map((a) => ({
-              key: a,
-              icon: <Icon name={onDoneAction === a ? 'check-circle' : 'circle'} size={16} />,
-              label: onDoneLabel(a),
-              onSelect: () => handleSelectOnDone(a),
-            }))}
-          />
-          <Button
-            variant="ghost"
-            size="sm"
-            iconOnly
-            icon={<Icon name="refresh" size={16} />}
-            onClick={loadDownloads}
-            title={t('downloads.refresh')}
-          />
-          {/* Export Dropdown */}
-          <DropdownMenu
-            portal
-            menuClassName="dropdown-menu dropdown-menu-right"
-            renderTrigger={({ toggle }) => (
-              <Button
-                variant="ghost"
-                size="sm"
-                icon={<Icon name="download" size={16} />}
-                onClick={toggle}
-                title={t('downloads.exportList')}
-              >
-                {t('downloads.export')}
-              </Button>
-            )}
-            items={[
-              {
-                key: 'json',
-                icon: <Icon name="file" size={16} />,
-                label: t('downloads.exportJson'),
-                onSelect: () => handleExport('json'),
-              },
-              {
-                key: 'csv',
-                icon: <Icon name="grid" size={16} />,
-                label: t('downloads.exportCsv'),
-                onSelect: () => handleExport('csv'),
-              },
-            ]}
-          />
-          {/* Searching is wanted at the moment of adding, not on another page. */}
-          <Button
-            variant="secondary"
-            size="sm"
-            icon={<Icon name="search" size={16} />}
-            onClick={() => setShowSearch(true)}
-            title={t('downloads.searchTorrents')}
-          >
-            <span className="btn-text">{t('downloads.searchTorrents')}</span>
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            icon={<Icon name="plus" size={16} />}
-            onClick={handleAddTorrentFile}
-            className="add-torrent-btn"
-          >
-            <span className="btn-text">{t('downloads.addTorrent')}</span>
-          </Button>
+          <Button variant="primary" size="sm" icon={<Icon name="plus" size={16} />} disabled={isAddingTorrent || showFileSelector || showAddLink} onClick={() => { setInitialSources([]); setShowAddLink(true); }} className="add-download-link-btn">{t('downloads.add')}</Button>
+          <Button variant="secondary" size="sm" icon={<Icon name="search" size={16} />} onClick={() => setShowSearch(true)}>{t('downloads.searchTorrents')}</Button>
+          <DropdownMenu portal renderTrigger={({ open, toggle }) => <Button variant="secondary" size="sm" icon={<Icon name="more-horizontal" size={16} />} onClick={toggle} aria-haspopup="menu" aria-expanded={open}>{t('downloads.tools')}</Button>} items={[
+            { key: 'file', label: t('downloads.addTorrent'), onSelect: handleAddTorrentFile, disabled: isAddingTorrent || showFileSelector || showAddLink },
+            { key: 'compact', label: t('downloads.compactView'), onSelect: () => handleChangeViewMode('compact') },
+            { key: 'detailed', label: t('downloads.detailedView'), onSelect: () => handleChangeViewMode('detailed') },
+            { key: 'pause', label: t('downloads.pauseAll'), onSelect: () => { void handlePauseAll(); } },
+            { key: 'resume', label: t('downloads.resumeAll'), onSelect: () => { void handleResumeAll(); } },
+            { key: 'alternative', label: altSpeed ? t('downloads.altSpeedOn') : t('downloads.altSpeedOff'), onSelect: () => { void handleToggleAltSpeed(); } },
+            { key: 'limits', label: t('downloads.speedLimits'), onSelect: () => setShowSpeedLimits(true) },
+            { key: 'done', label: t('downloads.onDone') + ': ' + onDoneLabel(onDoneAction), onSelect: () => setShowCompletionActions(true) },
+            { key: 'json', label: t('downloads.exportJson'), onSelect: () => { void handleExport('json'); } },
+            { key: 'csv', label: t('downloads.exportCsv'), onSelect: () => { void handleExport('csv'); } },
+          ]} />
         </div>
       </div>
-
+      {showCompletionActions && <Modal title={t('downloads.onDone')} icon="power" onClose={() => setShowCompletionActions(false)}><div className="downloads-completion-actions">{onDoneAvailable.map(action => <Button key={action} variant={action === onDoneAction ? 'primary' : 'secondary'} onClick={() => { setShowCompletionActions(false); void handleSelectOnDone(action); }}>{onDoneLabel(action)}</Button>)}</div></Modal>}
+      {helpId && <DownloadHelpModal key={helpId} id={helpId} onClose={() => setHelpId(null)} onOpenEvents={onOpenEvents} canOpenSettings={!!onOpenSetting} onAction={async action => {
+        if (action === 'resume' || action === 'retry') { await runRowCommand(helpId, action); return; }
+        if (action === 'files' || action === 'controls') {
+          const current = await window.api.getDownloads();
+          if (!current.some(row => row.id === helpId && row.status !== 'removed')) throw new Error('Download not found');
+          downloadsModel.updateDownloads(() => current);
+        }
+        const id = helpId; setHelpId(null);
+        if (action === 'files') setPreviewId(id);
+        else if (action === 'controls') setControlModalId(id);
+        else if (action === 'storage') onOpenSetting?.({ section: 'system', labelKey: 'storage.title', kind: 'card' });
+        else if (action === 'privacy') onOpenSetting?.({ section: 'privacy', labelKey: 'privacy.vpnBind', kind: 'row' });
+        else setShowSpeedLimits(true);
+      }} />}
+      {showSpeedLimits && <Modal title={t('effective.title')} icon="gauge" size="lg" onClose={() => setShowSpeedLimits(false)}><EffectiveLimits compact /></Modal>}
       <div className="page-content">
+        <DownloadViewsBar config={viewConfig} onApply={applyViewConfig} />
         {/* Modern Search, Filter & Sort Controls */}
         {downloads.length > 0 && (
           <div className="modern-controls">
@@ -945,7 +955,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               </div>
 
               {/* Results Count */}
-              {(searchQuery || filterMode !== 'all') && (
+              {(searchQuery || filterMode !== 'all' || conditions.category !== undefined || conditions.path || conditions.minBytes !== undefined || conditions.maxBytes !== undefined) && (
                 <div className="results-count">
                   <Icon name="info" size={14} />
                   <span>{sortedDownloads.length} {t('downloads.resultsLabel')}</span>
@@ -998,20 +1008,19 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 </button>
               </div>
 
-              {/* Clear All Filters Button */}
-              {(filterMode !== 'all' || searchQuery || sortMode !== 'added' || sortDirection !== 'desc') && (
+              {/* Filter chips own conditions; this action resets only sorting. */}
+              {(sortMode !== 'added' || sortDirection !== 'desc') && (
                 <button
                   className="clear-filters-btn"
                   onClick={() => {
-                    onFilterChange?.('all');
-                    setSearchQuery('');
                     setSortMode('added');
                     setSortDirection('desc');
+                    scrollParentRef.current?.scrollTo({ top: 0 });
                   }}
-                  title={t('downloads.resetFilters')}
+                  title={t('downloads.resetSort')}
                 >
                   <Icon name="x" size={14} />
-                  <span>{t('downloads.clearAll')}</span>
+                  <span>{t('downloads.resetSort')}</span>
                 </button>
               )}
             </div>
@@ -1019,6 +1028,11 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         )}
 
         {/* Bulk Actions Bar */}
+        {batchResult && <div className="download-batch-result" role="status">
+          <span>{t('downloads.batch.summary').replace('{done}', String(batchResult.succeeded.length)).replace('{skipped}', String(batchResult.skipped.length)).replace('{failed}', String(batchResult.failed.length))}</span>
+          {batchResult.failed.length > 0 && <><details><summary>{t('downloads.batch.details')}</summary>{batchResult.failed.slice(0, 50).map(item => <p key={item.id}><strong>{downloadsById.get(item.id)?.name ?? item.id}</strong>: {cleanError(item.error)}</p>)}{batchResult.failed.length > 50 && <p>{t('downloads.batch.more').replace('{count}', String(batchResult.failed.length - 50))}</p>}</details><Button size="sm" variant="secondary" disabled={batchBusy} onClick={() => { void runBatch(batchResult.action, batchResult.failed.map(item => item.id)); }}>{t('downloads.batch.retry')}</Button></>}
+          <Button size="sm" variant="ghost" onClick={() => downloadBatchState.setState({ result: null })} aria-label={t('common.close')}><Icon name="x" size={14} /></Button>
+        </div>}
         {selectedIds.size > 0 && (
           <div className="bulk-actions-bar">
             <div className="bulk-actions-info">
@@ -1036,12 +1050,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 variant="secondary"
                 size="sm"
                 icon={<Icon name="pause" size={14} />}
-                onClick={async () => {
-                  const promises = Array.from(selectedIds).map(id => window.api.pauseDownload(id).catch(err => console.error(err)));
-                  await Promise.all(promises);
-                  await loadDownloads();
-                  setSelectedIds(new Set());
-                }}
+                disabled={batchBusy} onClick={() => { void runBatch('pause', selectedIds); }}
               >
                 {t('downloads.pause')}
               </Button>
@@ -1049,12 +1058,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 variant="secondary"
                 size="sm"
                 icon={<Icon name="play" size={14} />}
-                onClick={async () => {
-                  const promises = Array.from(selectedIds).map(id => window.api.resumeDownload(id).catch(err => console.error(err)));
-                  await Promise.all(promises);
-                  await loadDownloads();
-                  setSelectedIds(new Set());
-                }}
+                disabled={batchBusy} onClick={() => { void runBatch('resume', selectedIds); }}
               >
                 {t('downloads.resume')}
               </Button>
@@ -1064,10 +1068,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                 icon={<Icon name="trash" size={14} />}
                 onClick={async () => {
                   if (await confirm({ message: `${t('downloads.confirmRemoveMany')} (${selectedIds.size})`, danger: true })) {
-                    const promises = Array.from(selectedIds).map(id => window.api.removeDownload(id, false).catch(err => console.error(err)));
-                    await Promise.all(promises);
-                    await loadDownloads();
-                    setSelectedIds(new Set());
+                    await handleRemoveMany(Array.from(selectedIds));
                   }
                 }}
               >
@@ -1129,6 +1130,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             icon="search"
             title={t('downloads.noMatchTitle')}
             description={t('downloads.noMatchDesc')}
+            action={activeDownloadConditions(conditions).length ? { label: t('views.clearFilters'), onClick: () => applyViewConfig({ ...viewConfig, conditions: clearDownloadCondition(conditions) }) } : undefined}
           />
         ) : (
           <div ref={scrollParentRef} className="downloads-scroll">
@@ -1142,6 +1144,8 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                   <div
                     key={vItem.key}
                     data-index={vItem.index}
+                    data-download-id={download.id}
+                    tabIndex={-1}
                     ref={rowVirtualizer.measureElement}
                     className="downloads-vrow"
                     style={{
@@ -1167,6 +1171,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
                       onRetry={handleRetry}
                       onOpenFolder={handleOpenFolder}
                       onShowFiles={setPreviewId}
+                      onInspect={setHelpId}
                       onStream={setStreamModalId}
                       onShare={setShareRoomId}
                     />
@@ -1190,6 +1195,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             onClose={() => setShowSearch(false)}
             onAdd={async (request) => {
               const download = await window.api.addDownload(request);
+              firstSteps.downloadAdded(download.id);
               // De-dupe by id, as the file-selector path does: a re-add of a
               // previously failed download returns the EXISTING record.
               setDownloads((prev) => [download, ...prev.filter((d) => d.id !== download.id)]);
@@ -1199,11 +1205,21 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
         )}
 
         {/* Torrent File Selector */}
+        {deletionId && <DownloadDeletionModal id={deletionId} onClose={() => setDeletionId(null)} onRemoved={(result, deleted) => {
+          setDownloads(prev => prev.filter(download => download.id !== deletionId)); setDeletionId(null);
+          addToast(t(deleted ? 'downloads.removedWithFiles' : 'downloads.removedKeepFiles'), 'success');
+          if (result.unavailable) addToast(t(`undo.error.${result.unavailable}`), 'warning');
+        }} />}
+        {showAddLink && <AddDownloadsModal initialFiles={initialSources} onClose={() => setShowAddLink(false)} onConfirm={startSources} />}
         {showFileSelector && pendingTorrent && (
           <TorrentFileSelector
+            key={pendingTorrent.path || pendingTorrent.magnetUri}
+            queueNote={queueProgress.total > 1 ? t('downloads.queue.position').replace('{current}', String(queueProgress.position)).replace('{total}', String(queueProgress.total)) : undefined}
+            onSkip={queueProgress.total > 1 ? advanceSource : undefined}
             torrentPath={pendingTorrent.path}
             magnetUri={pendingTorrent.magnetUri}
             onConfirm={handleFileSelectionConfirm}
+            allowCategory
             onCancel={handleFileSelectorCancel}
           />
         )}
@@ -1213,11 +1229,15 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
       <ToastContainer toasts={toasts} onClose={removeToast} />
 
       {/* Context Menu */}
+      {automation && <AutomationDraftModal draft={automation} onClose={() => setAutomation(null)} />}
       {contextMenu && (
         <ContextMenu
+          autoFocus
           x={contextMenu.x}
           y={contextMenu.y}
           items={[
+            { label: t('downloads.help'), icon: 'info', onClick: () => { setHelpId(contextMenu.downloadId); setContextMenu(null); } },
+            { label: t('automation.from.download'), icon: 'sliders', onClick: () => { const download = downloadsById.get(contextMenu.downloadId); if (download) setAutomation(automationDraft({ download }, crypto.randomUUID())); setContextMenu(null); } },
             {
               label: t('downloads.watchListen'),
               icon: 'play',
@@ -1298,6 +1318,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
             {
               label: t('downloads.forceRecheck'),
               icon: 'refresh-cw',
+              disabled: downloadsModel.store.getState().statsById.get(contextMenu.downloadId)?.operation?.stage === 'checking',
               onClick: () => {
                 handleRecheck(contextMenu.downloadId);
                 setContextMenu(null);
@@ -1340,9 +1361,7 @@ const DownloadsPage: React.FC<DownloadsPageProps> = ({
               icon: 'trash',
               danger: true,
               onClick: async () => {
-                if (await confirm({ message: t('downloads.confirmRemoveWithFiles'), danger: true })) {
-                  handleRemove(contextMenu.downloadId, true);
-                }
+                handleRemove(contextMenu.downloadId, true);
                 setContextMenu(null);
               }
             }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Isolated Electron acceptance. */
 // Real media playback plus deterministic gaps/stalls in an isolated Electron.
 if (!process.versions.electron) {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
@@ -16,7 +17,7 @@ if (!process.versions.electron) {
   const deadline = setTimeout(() => { console.error('buffer UI deadline'); app.exit(1); }, 55000);
   app.whenReady().then(async () => {
     require('node:child_process').execFileSync(require('ffmpeg-static'), ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=gray:s=320x180:r=10', '-t', '6', '-c:v', 'libvpx', '-an', path.join(out, 'clip.webm')], { windowsHide: true });
-    const css = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css', 'renderer/components/StreamPlayerModal.css', 'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/EpisodePrefetchControl.css'].map(p => fs.readFileSync(path.join(root, p), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
+    const css = ['renderer/styles/variables.css', 'renderer/styles/base.css', 'renderer/styles/components.css', 'renderer/components/StreamPlayerModal.css', 'renderer/components/PlayerControls.css', 'renderer/components/MediaBufferStatus.css', 'renderer/components/EpisodePrefetchControl.css', 'renderer/components/Toggle.css', 'renderer/components/Select.css', 'renderer/components/EngineCapabilitiesSummary.css'].map(p => fs.readFileSync(path.join(root, p), 'utf8').replace(/^@import[^;]+;/gm, '')).join('\n');
     const file = path.join(out, 'preview.html');
     fs.writeFileSync(file, '<html><style>' + css + 'body{margin:0;padding:16px;background:#101114}video{width:100%;height:240px;display:block;background:black}</style><div id="root"></div></html>');
     const win = new BrowserWindow({ show: false, width: 1000, height: 550, webPreferences: { nodeIntegration: true, contextIsolation: false, backgroundThrottling: false, offscreen: true } });
@@ -30,6 +31,7 @@ if (!process.versions.electron) {
       window.subscribers=[];window.api={getDownloads:async()=>[{id:'test',status:'completed',progress:1,totalSize:100,peers:0,downSpeedBps:0}],onDownloadStats:fn=>{subscribers.push(fn);return()=>{subscribers=subscribers.filter(f=>f!==fn)}}};
       window.prefetchCalls=[];window.prefetchStops=[];window.nativeMode=false;
       window.api.getEpisodePrefetchSupport=async()=>({supported:!nativeMode});
+      window.api.getEngineCapabilities=async()=>require(path.join(root,'dist/electron/shared/engine-capabilities.js')).engineCapabilities(nativeMode?'native':'webtorrent');
       window.api.prefetchEpisode=async(id,request)=>{prefetchCalls.push({id,...request});return{state:'active',bytes:request.budgetBytes}};
       window.api.stopEpisodePrefetch=async(id,lease)=>{prefetchStops.push({id,lease})};
       function load(p){if(cache[p])return cache[p].exports;const m={exports:{}};cache[p]=m;
@@ -68,7 +70,7 @@ if (!process.versions.electron) {
     await run(`
       for(const [key,value] of Object.entries({error:null,currentTime:900,duration:1000,readyState:4,paused:false,seeking:false,buffered:{length:1,start:()=>0,end:()=>950}}))Object.defineProperty(video,key,{configurable:true,value});
       document.querySelector('.episode-prefetch').open=true;
-      document.querySelector('.episode-prefetch input[type=checkbox]').click();video.dispatchEvent(new Event('canplay'));
+      document.querySelector('.episode-prefetch [role=switch]').click();video.dispatchEvent(new Event('canplay'));
     `); await wait();
     assert.ok(await run(`prefetchCalls.some(r=>r.currentFile===0&&r.nextFile===1&&r.budgetBytes===64*1024*1024&&!r.allowExcluded)`));
     const stopsBeforeStall = await run(`prefetchStops.length`);
@@ -85,9 +87,10 @@ if (!process.versions.electron) {
     assert.equal(await run(`prefetchCalls.length`), callsAtPause);
     await run(`Object.defineProperty(video,'paused',{configurable:true,value:false});Object.defineProperty(video,'seeking',{configurable:true,value:true});video.dispatchEvent(new Event('seeking'))`); await wait();
     assert.equal(await run(`prefetchCalls.length`), callsAtPause);
-    await run(`Object.defineProperty(video,'seeking',{configurable:true,value:false});video.dispatchEvent(new Event('seeked'));var select=document.querySelector('.episode-prefetch select');select.value='16';select.dispatchEvent(new Event('change',{bubbles:true}));`); await wait();
+    await run(`Object.defineProperty(video,'seeking',{configurable:true,value:false});video.dispatchEvent(new Event('seeked'));document.querySelector('.episode-prefetch [role=combobox]').click();`); await wait();
+    await run(`[...document.querySelectorAll('.episode-prefetch [role=option]')].find(e=>e.textContent.trim()==='16 MiB').click()`); await wait();
     assert.equal(await run(`prefetchCalls.at(-1).budgetBytes`), 16*1024*1024);
-    await run(`document.querySelectorAll('.episode-prefetch input[type=checkbox]')[1].click()`); await wait();
+    await run(`document.querySelectorAll('.episode-prefetch [role=switch]')[1].click()`); await wait();
     assert.equal(await run(`prefetchCalls.at(-1).allowExcluded`), true);
     assert.equal(await run(`JSON.parse(localStorage.getItem('havvn.player.episodePrefetch.v1')).budgetMiB`), 16);
     for (const width of [1000, 400]) {
@@ -104,15 +107,52 @@ if (!process.versions.electron) {
     await new Promise(resolve => setTimeout(resolve, 1200));
     assert.equal(await run(`prefetchCalls.length`), callsAfterClose);
     await run(`window.nativeMode=true;window.reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Prefetch,{media:video,downloadId:'test',currentFile:0,nextFile:1}));`); await wait();
-    assert.equal(await run(`document.querySelector('.episode-prefetch input').disabled`), true);
-    assert.equal(await run(`document.querySelector('.episode-prefetch input').checked`), false);
+    assert.equal(await run(`document.querySelectorAll('.episode-prefetch [role=switch],.episode-prefetch [role=combobox]').length`), 0);
+    assert.ok(await run(`document.querySelector('.episode-prefetch').textContent.includes(dict['player.prefetch.nativeHint'])`));
+    assert.equal(await run(`JSON.parse(localStorage.getItem('havvn.player.episodePrefetch.v1')).enabled`), true);
     assert.equal(await run(`prefetchCalls.length`), callsAfterClose);
+    await run(`document.querySelector('.episode-prefetch').open=true`); await wait();
+    fs.writeFileSync(path.join(out, 'prefetch-native.png'), (await win.webContents.capturePage()).toPNG());
     await run(`reactRoot.unmount()`);
     await run(`window.nativeMode=false;window.reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Prefetch,{media:video,downloadId:'test',currentFile:0,nextFile:1}));`); await wait();
-    assert.equal(await run(`document.querySelector('.episode-prefetch input').checked`), true);
-    assert.equal(await run(`document.querySelector('.episode-prefetch select').value`), '16');
+    assert.equal(await run(`document.querySelector('.episode-prefetch [role=switch]').getAttribute('aria-checked')`), 'true');
+    assert.equal(await run(`document.querySelector('.episode-prefetch [role=combobox]').textContent.trim()`), '16 MiB');
     await run(`reactRoot.unmount()`);
-    console.log('PASS real WebM, buffer gaps, seek, peers, download pause, decode error; prefetch opt-in, stalls, pause, seek, budgets, persistence, Native limit, layout and cleanup');
+    const callsBeforeUnknown = await run(`prefetchCalls.length`);
+    const savedBeforeUnknown = await run(`localStorage.getItem('havvn.player.episodePrefetch.v1')`);
+    await run(`window.api.getEngineCapabilities=()=>new Promise((resolve,reject)=>{window.rejectCapabilities=reject});window.reactRoot=ReactDOM.createRoot(document.getElementById('root'));reactRoot.render(React.createElement(Prefetch,{media:video,downloadId:'test',currentFile:0,nextFile:1}));`); await wait();
+    assert.ok(await run(`document.querySelector('.episode-prefetch').textContent.includes(dict['player.prefetch.checking'])`));
+    assert.equal(await run(`document.querySelectorAll('.episode-prefetch [role=switch],.episode-prefetch [role=combobox]').length`), 0);
+    await run(`rejectCapabilities(Error('isolated capability IPC failure'))`); await wait();
+    assert.ok(await run(`document.querySelector('.episode-prefetch').textContent.includes(dict['player.prefetch.unknown'])`));
+    assert.equal(await run(`document.querySelectorAll('.episode-prefetch [role=switch],.episode-prefetch [role=combobox]').length`), 0);
+    assert.equal(await run(`prefetchCalls.length`), callsBeforeUnknown);
+    assert.equal(await run(`localStorage.getItem('havvn.player.episodePrefetch.v1')`), savedBeforeUnknown);
+    await run(`reactRoot.unmount();window.Summary=load(path.join(root,'renderer/components/EngineCapabilitiesSummary.tsx')).EngineCapabilitiesSummary;window.engineCapabilities=require(path.join(root,'dist/electron/shared/engine-capabilities.js')).engineCapabilities;window.reactRoot=ReactDOM.createRoot(document.getElementById('root'));void 0;`);
+    for (const engine of ['native', 'webtorrent']) {
+      await run(`reactRoot.render(React.createElement(Summary,{capabilities:engineCapabilities('${engine}'),failed:false}));`); await wait();
+      assert.equal(await run(`document.querySelector('.engine-capabilities').dataset.engineCapabilities`), engine);
+      assert.equal(await run(`document.querySelectorAll('.engine-capabilities dt').length`), 4);
+      assert.equal(await run(`document.querySelector('.engine-capabilities').textContent.includes('engineFeatures.')`), false);
+      assert.equal(await run(`[...document.querySelectorAll('.engine-capabilities dd')].filter(e=>e.textContent.startsWith(dict['engineFeatures.supported'])).length`), engine === 'native' ? 1 : 3);
+      for (const width of [1000, 400]) {
+        win.setContentSize(width, 550); await wait();
+        assert.equal(await run(`document.documentElement.scrollWidth>document.documentElement.clientWidth`), false);
+        assert.equal(await run(`[...document.querySelectorAll('.engine-capabilities dt,.engine-capabilities dd')].some(e=>e.getBoundingClientRect().right>innerWidth-15)`), false);
+        fs.writeFileSync(path.join(out, 'features-' + engine + '-' + width + '.png'), (await win.webContents.capturePage()).toPNG());
+      }
+    }
+    await run(`reactRoot.render(React.createElement(Summary,{capabilities:null,failed:false}));`); await wait();
+    assert.equal(await run(`document.querySelectorAll('.engine-capabilities dt').length`), 0);
+    assert.equal(await run(`document.querySelector('.engine-capabilities').textContent`), await run(`dict['common.loading']`));
+    await run(`reactRoot.render(React.createElement(Summary,{capabilities:null,failed:true}));`); await wait();
+    assert.equal(await run(`document.querySelector('.engine-capabilities').textContent`), await run(`dict['engineFeatures.unknown']`));
+    await run(`reactRoot.unmount()`);
+    const proofDir = path.join(root, 'artifacts/fun03/ui'); fs.mkdirSync(proofDir, { recursive: true });
+    const screenshots = fs.readdirSync(out).filter(name => name.endsWith('.png'));
+    for (const name of screenshots) fs.copyFileSync(path.join(out, name), path.join(proofDir, name));
+    fs.writeFileSync(path.join(proofDir, 'report.json'), JSON.stringify({ schema: 1, passed: true, at: new Date().toISOString(), electron: process.versions.electron, isolatedProfile: true, checks: ['real-webm', 'buffer-gaps-and-seek', 'peers-download-pause-decode-error', 'prefetch-opt-in-and-excluded-consent', 'prefetch-stall-pause-seek', 'prefetch-16MiB-budget-and-persistence', 'unmount-stops-leases-and-subscriptions', 'native-no-inert-controls', 'classic-preferences-preserved-across-native', 'capability-loading-and-rejection-fail-closed', 'native-and-classic-four-feature-summary', 'summary-loading-and-unknown', 'layout-1000-and-400'], screenshots }, null, 2) + '\n');
+    console.log('PASS real WebM, buffer gaps, seek, peers, download pause, decode error; prefetch opt-in, stalls, pause, seek, budgets, persistence, Native limit, capability loading/failure, both engine summaries, layout and cleanup');
     console.log('Screenshots:', out);
     win.destroy(); clearTimeout(deadline); app.exit(0);
   }).catch(error => { console.error(error); app.exit(1); });

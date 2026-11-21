@@ -90,7 +90,7 @@ function absorb(target: MergedResult, incoming: SearchResult): void {
   target.historyKeys = [...new Set([...(target.historyKeys || []), ...(incoming.historyKeys || [])])];
   pushUnique(target.providers, incoming.provider);
   pushUnique(target.indexers, incoming.indexer);
-  target.sourceCount += 1;
+  if (!incoming.deferredSource || incoming.deferredSource !== target.deferredSource) target.sourceCount += 1;
 
   // Seed counts are the reason to prefer one indexer's copy over another's;
   // take the best anyone reports rather than whichever answered first.
@@ -151,6 +151,14 @@ export function mergeResults(existing: MergedResult[], incoming: SearchResult[])
   merged.forEach(index);
 
   for (const result of incoming) {
+    // A topic title/size is not a torrent identity. Keep deferred topics
+    // separate until an actual hash is available; repeat pages update one row.
+    if (result.deferredSource) {
+      const same = merged.find(row => row.deferredSource === result.deferredSource);
+      if (same) absorb(same, result);
+      else { const row = toMerged(result); merged.push(row); index(row); }
+      continue;
+    }
     const key = hashKey(result);
     if (key) {
       const hit = byHash.get(key);
@@ -170,7 +178,7 @@ export function mergeResults(existing: MergedResult[], incoming: SearchResult[])
     const titleKey = normalizeTitle(result.title);
     const candidates = titleKey ? byTitle.get(titleKey) : undefined;
     const fuzzy = candidates?.find(
-      c => sizesMatch(c.size, result.size) && !(key && hashKey(c))
+      c => !c.deferredSource && sizesMatch(c.size, result.size) && !(key && hashKey(c))
     );
     if (fuzzy) {
       absorb(fuzzy, result);

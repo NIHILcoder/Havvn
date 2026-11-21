@@ -1,0 +1,10 @@
+.download-deletion { display: grid; gap: 12px; font-size: 12px; }
+.download-deletion > p, .download-deletion h3 { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
+.download-deletion > p { color: var(--color-text-secondary); }
+.download-deletion > .btn { justify-self: start; }
+.download-deletion-files { max-height: min(320px, 40vh); overflow: auto; border: 1px solid var(--color-border-default); }
+.download-deletion-files.vfl--windowed { height: min(320px, 40vh); }
+.download-deletion-file { display: flex; align-items: center; gap: 12px; padding: 12px; border-bottom: 1px solid var(--color-border-default); }
+.download-deletion-file > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.download-deletion-file small { white-space: nowrap; color: var(--color-text-secondary); }
+.download-deletion-ack { display: flex; align-items: flex-start; gap: 10px; line-height: 1.6; }

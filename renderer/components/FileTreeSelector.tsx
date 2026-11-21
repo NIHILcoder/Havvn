@@ -9,6 +9,7 @@ import { Icon } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import './FileTreeSelector.css';
 import { SelectionCheckbox } from './SelectionCheckbox';
+import { torrentSelectionStats } from '../../shared/torrent-creation';
 
 export interface FileNode {
   path: string;
@@ -38,12 +39,13 @@ interface TreeNodeProps {
   level: number;
   excludedPaths: Set<string>;
   onToggle: (path: string, isDirectory: boolean) => void;
+  parentExcluded?: boolean;
 }
 
-const TreeNode: React.FC<TreeNodeProps> = ({ node, level, excludedPaths, onToggle }) => {
+const TreeNode: React.FC<TreeNodeProps> = ({ node, level, excludedPaths, onToggle, parentExcluded = false }) => {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(true);
-  const isExcluded = excludedPaths.has(node.path);
+  const isExcluded = parentExcluded || excludedPaths.has(node.path);
   
   // Check if any children are excluded
   const hasExcludedChildren = useMemo(() => {
@@ -88,6 +90,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, level, excludedPaths, onToggl
         <label className="node-checkbox-label" onClick={(e) => e.stopPropagation()}>
           <SelectionCheckbox
             aria-label={node.name}
+            disabled={parentExcluded}
             indeterminate={!isExcluded && hasExcludedChildren}
             checked={!isExcluded}
             onChange={(e) => {
@@ -128,6 +131,7 @@ const TreeNode: React.FC<TreeNodeProps> = ({ node, level, excludedPaths, onToggl
               level={level + 1}
               excludedPaths={excludedPaths}
               onToggle={onToggle}
+              parentExcluded={isExcluded}
             />
           ))}
         </div>
@@ -143,35 +147,7 @@ export const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   onToggleAll,
 }) => {
   const { t } = useTranslation();
-  const stats = useMemo(() => {
-    const countFiles = (nodes: FileNode[]): { total: number; excluded: number; totalSize: number; excludedSize: number } => {
-      let total = 0;
-      let excluded = 0;
-      let totalSize = 0;
-      let excludedSize = 0;
-
-      for (const node of nodes) {
-        if (node.isDirectory && node.children) {
-          const childStats = countFiles(node.children);
-          total += childStats.total;
-          excluded += childStats.excluded;
-          totalSize += childStats.totalSize;
-          excludedSize += childStats.excludedSize;
-        } else {
-          total++;
-          totalSize += node.size;
-          if (excludedPaths.has(node.path)) {
-            excluded++;
-            excludedSize += node.size;
-          }
-        }
-      }
-
-      return { total, excluded, totalSize, excludedSize };
-    };
-
-    return countFiles(files);
-  }, [files, excludedPaths]);
+  const stats = useMemo(() => torrentSelectionStats(files, excludedPaths), [files, excludedPaths]);
 
   const allIncluded = stats.excluded === 0;
   const includedCount = stats.total - stats.excluded;

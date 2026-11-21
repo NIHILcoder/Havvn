@@ -24,6 +24,8 @@ export function writeLinuxAutoLaunch(enabled: boolean, executable: string, confi
 }
 
 export function setAutoLaunch(enabled: boolean): void {
+  // Test profiles share the OS account, so they must leave its primary startup entry alone.
+  if (process.env.TH_INSTANCE?.trim()) return;
   if (process.platform === 'linux') {
     const configDir = process.env.XDG_CONFIG_HOME && path.isAbsolute(process.env.XDG_CONFIG_HOME)
       ? process.env.XDG_CONFIG_HOME : path.join(os.homedir(), '.config');

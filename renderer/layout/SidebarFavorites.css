@@ -1,0 +1,3 @@
+.sidebar-favorites .nav-subitem:disabled { opacity: .55; cursor: default; }
+.sidebar-favorite-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sidebar-favorite-error { color: var(--color-error); font-size: var(--font-size-xs); line-height: 1.45; overflow-wrap: anywhere; padding: 0 8px; }

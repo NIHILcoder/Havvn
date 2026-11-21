@@ -1,0 +1,217 @@
+{
+  "schema": 1,
+  "task": "FUN-02",
+  "recordedAt": "2026-10-26T09:36:53.269Z",
+  "passed": true,
+  "appVersion": "3.2.0",
+  "environment": {
+    "physicalMachines": 1,
+    "platform": "win32",
+    "os": "10.0.26300",
+    "node": "24.18.1",
+    "electron": "44.4.2"
+  },
+  "sourceSha256": "65929410a79403952c568e0512be97b7435d3941ddbd0670f974bd5d2f354ac2",
+  "sources": [
+    {
+      "path": "shared/media-library.ts",
+      "sha256": "04b7dbeead4029a54cac4b23696f47a456c4ad685aab9efee3f00bb2ed5b2126"
+    },
+    {
+      "path": "shared/history-playback.ts",
+      "sha256": "cce9a1985122ce7f57663215ee8e070cc703ac9202077f53b80515f6439ea695"
+    },
+    {
+      "path": "shared/watch-history.ts",
+      "sha256": "df8aa80f6b22e94d7b3f56a04d015020fbc70e96019be0fbb008d5cb038267c3"
+    },
+    {
+      "path": "shared/navigation.ts",
+      "sha256": "3f146c87ceb00fa9fc68b13c3abd45ccfa48a41c79b41ebadf5e7dd2274ac4f9"
+    },
+    {
+      "path": "shared/types.ts",
+      "sha256": "de7ab7e7f2d613553f81190fb0251b1603852b17cbcbe9cc197cd41dfc051971"
+    },
+    {
+      "path": "renderer/utils/mediaLibrary.ts",
+      "sha256": "3b3832d9042c5f6ab4e93d9261027874fc3067eaa0215d940cd9c94df65daef0"
+    },
+    {
+      "path": "renderer/utils/watchHistory.ts",
+      "sha256": "cfbce9bfbf784b41c3690549a877ee11e818f8857df9cf522cd409da5e3608b0"
+    },
+    {
+      "path": "renderer/pages/WatchHistoryPage.tsx",
+      "sha256": "b23a16187c74d3f2fa6e9f3b6282f7178292cccf650d8731c22353b6d55501c0"
+    },
+    {
+      "path": "renderer/pages/MediaLibraryEditor.tsx",
+      "sha256": "3af91a5a3b5c887ae608fcf7aa5b133a7b9c4a771562ece0c9d09c188aa0aee0"
+    },
+    {
+      "path": "renderer/pages/WatchHistoryPage.css",
+      "sha256": "4620b3b4c4ca1fb799dc7f47579b4dc7625fa3318b2657b0ed7a69c76759ea42"
+    },
+    {
+      "path": "renderer/layout/Sidebar.tsx",
+      "sha256": "4693380abeb4f9319e041632112daea9692066c491db82c15090f08f3cf2838e"
+    },
+    {
+      "path": "renderer/i18n/ru.json",
+      "sha256": "976f1d7077150f46e4529d3c7738f2712384711e0f2563613d5478a9cefb99ef"
+    },
+    {
+      "path": "renderer/i18n/en.json",
+      "sha256": "bde217708278821a85524ea31b2912f32899b6a181ac05ab563dbfa89078b672"
+    },
+    {
+      "path": "electron/services/history-playback.ts",
+      "sha256": "167695cf97493850ad3881340952f67582a48b9ad77243da2933a3e302dc21e3"
+    },
+    {
+      "path": "electron/preload.ts",
+      "sha256": "d51e38d35d908c1df14d9f587a896d97d1844f4e66a05b73a491b8e60336585b"
+    },
+    {
+      "path": "electron/ipc/handlers.ts",
+      "sha256": "436415235a7cfa886d86bc145e8533d00f537f37b3d5a34040a2cd10faeda584"
+    },
+    {
+      "path": "scripts/smoke-watch-history.cjs",
+      "sha256": "4757222d7f482db7e4e3be7f1d9f343b6e99e43fc1b0d9c692a5d50defbd3d66"
+    },
+    {
+      "path": "package.json",
+      "sha256": "9385c77507e5982e9a4ae3eeb61631e7b5c853dfa3bdfe309696f5ba48560948"
+    }
+  ],
+  "results": {
+    "unitFiles": 11,
+    "unitTests": 97,
+    "nativeChecks": [
+      {
+        "id": "legacy-position-migration",
+        "passed": true
+      },
+      {
+        "id": "builtin-resume-and-tracks",
+        "passed": true
+      },
+      {
+        "id": "external-handoff-and-cancel",
+        "passed": true
+      },
+      {
+        "id": "popout-controls",
+        "passed": true
+      },
+      {
+        "id": "renderer-restart",
+        "passed": true
+      },
+      {
+        "id": "readd-and-index-reorder",
+        "passed": true
+      },
+      {
+        "id": "manual-title-season-episode",
+        "passed": true
+      },
+      {
+        "id": "manual-edit-keeps-position",
+        "passed": true
+      },
+      {
+        "id": "four-library-views-and-search",
+        "passed": true
+      },
+      {
+        "id": "missing-file-disabled",
+        "passed": true
+      },
+      {
+        "id": "clear-positions-keeps-index-and-classification",
+        "passed": true
+      },
+      {
+        "id": "removed-source-unavailable",
+        "passed": true
+      },
+      {
+        "id": "layout-1050-440-and-editor-without-native-spinners",
+        "passed": true
+      }
+    ],
+    "torrentStreamStartsInNativeScenario": 0,
+    "types": "passed",
+    "mainRendererGuestBuild": "passed",
+    "focusedLint": "passed without warnings",
+    "layout": [
+      1050,
+      440
+    ]
+  },
+  "limits": {
+    "localIndexItems": 500,
+    "serializedUtf16Bytes": 1048576,
+    "sourcesPerPass": 50,
+    "simultaneousRequests": 3,
+    "externalMetadataFetched": false,
+    "availabilityPersistedAsProof": false
+  },
+  "artifacts": [
+    {
+      "path": "artifacts/fun02-tests.log",
+      "sha256": "fe003d9df45038edf8990cf202c04a530d20c3d976351af9284c0c9b22aa0c70"
+    },
+    {
+      "path": "artifacts/fun02-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/fun02-build-final.log",
+      "sha256": "0aee2c8aaa89c56d4b84d25128cb5d0c3ff2d7cf75a25431602a7bfb47e2908f"
+    },
+    {
+      "path": "artifacts/fun02-lint.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun02-native-final.log",
+      "sha256": "8fb8655e5ad5ee42a205401d2c0544ac662ae5a1188f21dbde4a76edec839d55"
+    },
+    {
+      "path": "artifacts/fun02/ui/acceptance.json",
+      "sha256": "495aa40a3ed8a47ed5283e48873daf2c6ac98766335542192d37f84be3a2d567"
+    },
+    {
+      "path": "artifacts/fun02/ui/history-1050.png",
+      "sha256": "e486d2577b09a2fa2be8eb49e9609ce110b4438fd554de3c4364cbba92d1780b"
+    },
+    {
+      "path": "artifacts/fun02/ui/history-440.png",
+      "sha256": "46c22dde04e910d85b51483ee9a181a93b66688f2b2088b0b67c68b0b9047b61"
+    },
+    {
+      "path": "artifacts/fun02/ui/library-editor-440.png",
+      "sha256": "d6a7aecf221392056f50250b0bfb33eed284a53a794f6b6f99fa84533e6c09e7"
+    }
+  ],
+  "builtFiles": [
+    {
+      "path": "dist/renderer/bundle.js",
+      "sha256": "7651426657645e3428bc7c8c00a859406f0e89f1ef51e62a53a7e41abb27a288"
+    },
+    {
+      "path": "dist/electron/electron/services/history-playback.js",
+      "sha256": "c6d13c7d2a4c739f04367c4fc5cac7964707388a28162f87025ea47809e0c50c"
+    }
+  ],
+  "limitations": [
+    "No arbitrary file relinking by similar names",
+    "Grouping is local to a torrent identity",
+    "No external posters or metadata",
+    "No new packaged-installer or physical-network acceptance; FUN-01 remains pending"
+  ]
+}

@@ -15,12 +15,11 @@
  */
 import { useCallback } from 'react';
 import { useTranslation } from '../../utils/i18nContext';
+import { readableError } from '../../utils/error-messages';
 import {
   serverErrorCode,
-  serverErrorDetail,
   unwrapErrorMessage,
   classifySystemError,
-  clipErrorDetail,
 } from '../../../shared/gameserver-errors';
 import type { ServerErrorCode } from '../../../shared/gameserver-errors';
 
@@ -32,32 +31,21 @@ import type { ServerErrorCode } from '../../../shared/gameserver-errors';
  * Order of preference:
  *   1. an intentional refusal code (havvn-server-err:…)
  *   2. a recognised OS shape (ENOTEMPTY → files-busy)
- *   3. the unwrapped technical text, clipped so a toast stays inside the window
- *
- * A fault with no code — a reset connection, a mirror answering 404 — comes back
- * AS IS (clipped) with `code: null`. Substituting a friendly-but-invented sentence
- * for a real upstream error would cost the user the only clue they had.
+ *   3. the shared localized explanation, with an honest unknown-error fallback.
+ * Original errors remain in IPC/service logs; raw upstream text is not a UI label.
  */
 export function useServerErrorParts(): (err: unknown) => { text: string; code: ServerErrorCode | null } {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   return useCallback((err: unknown) => {
     const tagged = serverErrorCode(err);
     const raw = unwrapErrorMessage(err);
     const code = tagged ?? classifySystemError(raw);
     if (code) {
       const text = t(`rooms.server.err.${code}` as never);
-      // Only intentional details (byte counts, version ids) ride along. The raw
-      // ENOTEMPTY path dump is what blew past the window edge — dropping it once
-      // we have a translated sentence is the whole point of classifying it.
-      const detail = tagged ? serverErrorDetail(err) : null;
-      if (detail) {
-        const clipped = clipErrorDetail(detail, 120);
-        if (clipped && clipped !== text) return { text: `${text} (${clipped})`, code };
-      }
       return { text, code };
     }
-    return { text: clipErrorDetail(raw || String(err)), code: null };
-  }, [t]);
+    return { text: readableError(err, language), code: null };
+  }, [t, language]);
 }
 
 /** The same, for the many call sites that only want something to put in a toast. */

@@ -44,14 +44,14 @@ export const Button: React.FC<ButtonProps> = ({
       {...props}
     >
       {loading ? (
-        <><span className="spinner spinner-sm" aria-hidden="true" />{!iconOnly && children}</>
+        <><span className="spinner spinner-sm" aria-hidden="true" />{!iconOnly && children != null && <span className="btn-label">{children}</span>}</>
       ) : icon ? (
         <>
           {icon}
-          {!iconOnly && children}
+          {!iconOnly && children != null && <span className="btn-label">{children}</span>}
         </>
       ) : (
-        children
+        iconOnly ? children : children != null ? <span className="btn-label">{children}</span> : null
       )}
     </button>
   );

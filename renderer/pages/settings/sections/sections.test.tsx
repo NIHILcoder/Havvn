@@ -43,7 +43,7 @@ import { AboutSection } from './AboutSection';
 const SECTIONS: Array<[string, React.FC]> = [
   ['general', GeneralSection],
   ['downloads', DownloadsSection],
-  ['connection', ConnectionSection],
+  ['connection', () => <ConnectionSection onOpenSetting={() => {}} />],
   ['privacy', PrivacySection],
   ['sharing', SharingSection],
   ['seeding', SeedingSection],

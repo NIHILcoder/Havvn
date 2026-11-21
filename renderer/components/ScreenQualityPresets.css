@@ -1,0 +1,2 @@
+.screen-quality-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.screen-quality-presets > p { flex: 1 0 100%; margin: 0; font-size: 12px; line-height: 1.5; color: var(--color-text-secondary); }

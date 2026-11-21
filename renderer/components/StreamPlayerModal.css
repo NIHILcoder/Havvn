@@ -220,10 +220,23 @@
   gap: 0.4rem;
   padding: 0.6rem 0.75rem;
   overflow-x: auto;
+  overflow-y: hidden;
   border-top: 1px solid var(--color-border);
   flex-shrink: 0;
-  scrollbar-width: thin;
+  /* Chromium's non-auto scrollbar properties override the custom WebKit skin. */
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
+
+.player-modal .player-files::-webkit-scrollbar { width: 5px; height: 5px; }
+.player-modal .player-files::-webkit-scrollbar-track,
+.player-modal .player-files::-webkit-scrollbar-corner { background: transparent; }
+.player-modal .player-files::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong, var(--color-border));
+  border-radius: var(--radius-sm);
+}
+.player-modal .player-files::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
+.player-modal .player-files::-webkit-scrollbar-button { display: none; }
 
 .player-file-chip {
   display: flex;
@@ -541,3 +554,13 @@
 .popout-root .player-header input,
 .popout-root .player-header .player-sub-wrap,
 .popout-root .player-header .player-sub-panel { -webkit-app-region: no-drag; }
+.player-track-notice { padding: 10px 12px; color: var(--color-text-secondary); font-size: 12px; line-height: 1.6; }
+.player-track-notice[role="alert"] { color: var(--color-warning); }
+.player-track-notice p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.player-track-notice .player-sub-item { white-space: normal; }
+.player-header { position: relative; }
+.player-track-menu { position: static; }
+.player-track-menu > .player-sub-panel { right: 12px; top: calc(100% + 4px); width: 320px; min-width: 0; max-width: calc(100% - 24px); }
+.player-next-countdown { position: absolute; z-index: 7; bottom: 80px; right: 20px; width: min(440px, calc(100% - 40px)); padding: 16px; background: var(--color-bg-secondary); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
+.player-next-countdown p { margin: 0 0 12px; color: var(--color-text-primary); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.player-next-countdown > div { display: flex; flex-wrap: wrap; gap: 8px; }

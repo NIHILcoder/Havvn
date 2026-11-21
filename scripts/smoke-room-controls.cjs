@@ -43,6 +43,8 @@ if (!process.versions.electron) {
           return require(s.startsWith('node:')?s:path.join(root,'node_modules',s));
         },m,m.exports);return m.exports;
       }
+      var errorTranslations=load(path.join(root,'renderer/utils/error-messages.ts'));
+      for(var errorLanguage of ['ru','en'])errorTranslations.registerErrorTranslations(errorLanguage,JSON.parse(fs.readFileSync(path.join(root,'renderer/i18n/'+errorLanguage+'.json'),'utf8')));
       window.calls=[];window.failLoad=null;window.hold=false;window.finish=null;window.failSave=false;
       var data={config:{schema:[{key:'port',t:'int',min:1,max:65535,labelKey:'rooms.server.name',helpKey:'rooms.server.stopFirst'},
         {key:'online',t:'bool',labelKey:'rooms.server.cfg.whitelist'},{key:'mode',t:'select',labelKey:'rooms.server.name',options:[{value:'a',labelKey:'rooms.server.start'},{value:'b',labelKey:'rooms.server.stop'}]}],values:{port:'25565',online:'true',mode:'a'}},
@@ -60,7 +62,7 @@ if (!process.versions.electron) {
         schedule:()=>read('schedule'),saveSchedule:async(id,r)=>{await mutate('saveSchedule',id,r);data.schedule.rules=r},setScheduleEnabled:(...a)=>mutate('arm',...a),
         access:()=>read('access'),grantOperator:(...a)=>mutate('grant',...a),revokeOperator:(...a)=>mutate('revoke',...a),backups:()=>read('backups'),
         createBackup:(...a)=>mutate('backup',...a),openBackupsFolder:async()=>{throw Error('Folder failed')},onUpdate:()=>()=>{}
-      },voice:{devices:async()=>[],globalPtt:async()=>({available:true,supported:true}),micTestStart:async()=>{},micTestStop:async()=>{}}},
+      },voice:{devices:async()=>[],globalPtt:async()=>({available:true,supported:true}),micTestStart:async()=>{},micTestStop:async()=>{},speakerTestStart:async()=>({ok:true}),speakerTestStop:async()=>({ok:true})}},
         onRoomUpdate:()=>()=>{},onVoiceDevicesChanged:()=>()=>{},onVoiceMicLevel:()=>()=>{}};
       var mounted=null;
       window.mount=(name,props={})=>{if(mounted)flush(()=>mounted.unmount());document.getElementById('root').replaceChildren();mounted=ReactDOM.createRoot(document.getElementById('root'));
@@ -99,7 +101,7 @@ if (!process.versions.electron) {
     await run(`finishRead({...data.config,values:{...data.config.values,port:'123'}})`);await wait();
     assert.equal(await run(`document.querySelector('input[type=number]').value`),'30000','stale instance response');
     await run(`failLoad='players';mount('ServerPlayersPanel')`);await wait();
-    assert.equal(await run(`document.querySelector('[role=alert]').textContent.includes('load failure')`),true);
+    assert.equal(await run(`document.querySelector('[role=alert]').textContent.includes(load(path.join(root,'shared/user-errors.ts')).USER_ERRORS.unexpected[0])`),true);
     await run(`failLoad=null;button('Повторить').click()`);await wait();
     await run(`setInput('.room-server-players-add input','Alex');failSave=true`);await wait();
     await run(`button('Добавить').click()`);await wait();
@@ -126,7 +128,7 @@ if (!process.versions.electron) {
     await run(`hold=false;finish()`);await wait();
     await run(`mount('ServerBackupPanel')`);await wait();
     await run(`button(t('rooms.server.backup.openFolder')).click()`);await wait();
-    assert.equal(await run(`notes.some(n=>n.includes('Folder failed'))`),true);
+    assert.equal(await run(`notes.some(n=>n===load(path.join(root,'shared/user-errors.ts')).USER_ERRORS.unexpected[0])`),true);
     for(const key of ['config','content','schedule','access','backups']) {
       const name={config:'ServerConfigForm',content:'ServerContentPanel',schedule:'ServerSchedulePanel',access:'ServerAccessPanel',backups:'ServerBackupPanel'}[key];
       await run(`failLoad=${JSON.stringify(key)};mount(${JSON.stringify(name)})`);await wait();
@@ -149,13 +151,13 @@ if (!process.versions.electron) {
     assert.equal(await run(`document.documentElement.scrollWidth<=innerWidth`),true,'audio narrow overflow');
     await capture('audio-narrow');
     // Terminal LAN retry is available in the actual React panel, including failure/retry.
-    await run("var LanPanel=load(path.join(root,'renderer/pages/rooms/RoomLanPanel.tsx')).RoomLanPanel;var lanFixture={available:true,active:true,isHost:true,sessionId:'test',selfVip:'10.1.0.1',participants:[{memberId:'B',vip:'10.1.0.2',status:'failed',terminal:true,failReason:'needs-turn'}]};window.retryCount=0;window.renderLan=()=>flush(()=>mounted.render(React.createElement(LanPanel,{roomId:'room',lan:lanFixture,members:[{memberId:'A',name:'Alice',isSelf:true},{memberId:'B',name:'Bob'}],selfId:'A',onStart:async()=>{},onStop:async()=>{},onRetry:async()=>{retryCount++;await new Promise(r=>finish=r);if(failSave)throw Error('Retry failed');}})));renderLan();");await wait();
+    await run("var LanPanel=load(path.join(root,'renderer/pages/rooms/RoomLanPanel.tsx')).RoomLanPanel;var lanFixture={available:true,active:true,isHost:true,sessionId:'test',selfVip:'10.1.0.1',participants:[{memberId:'B',vip:'10.1.0.2',admitted:true,status:'failed',terminal:true,failReason:'needs-turn'}]};window.retryCount=0;window.renderLan=()=>flush(()=>mounted.render(React.createElement(LanPanel,{roomId:'room',lan:lanFixture,members:[{memberId:'A',name:'Alice',isSelf:true},{memberId:'B',name:'Bob'}],selfId:'A',onStart:async()=>{},onStop:async()=>{},onRetry:async()=>{retryCount++;await new Promise(r=>finish=r);if(failSave)throw Error('Retry failed');}})));renderLan();");await wait();
     assert.equal(await run("button(t('rooms.lan.retry')).disabled"),false);
     await capture('lan-terminal-aero-narrow');
     await run("button(t('rooms.lan.retry')).click();button(t('rooms.lan.retry')).click()");await wait();
     assert.equal(await run('retryCount'),1);assert.equal(await run("button(t('rooms.lan.retry')).disabled"),true);
     await run('failSave=true;finish()');await wait();assert.equal(await run("button(t('rooms.lan.retry')).disabled"),false);
-    await run("failSave=false;button(t('rooms.lan.retry')).click()");await wait();await run("finish();lanFixture={...lanFixture,participants:[{memberId:'B',vip:'10.1.0.2',status:'connecting'}]};renderLan()");await wait();
+    await run("failSave=false;button(t('rooms.lan.retry')).click()");await wait();await run("finish();lanFixture={...lanFixture,participants:[{memberId:'B',vip:'10.1.0.2',admitted:true,status:'connecting'}]};renderLan()");await wait();
     assert.equal(await run("document.querySelector('.room-lan-fail')===null"),true);
     assert.equal(await run('document.documentElement.scrollWidth<=innerWidth'),true);
     // Real console controls do not duplicate stdin requests while awaiting ACK.
@@ -207,7 +209,8 @@ if (!process.versions.electron) {
     await run(`dock.popout.document.querySelector('#detached-select').focus();dock.popout.document.querySelector('#detached-select').dispatchEvent(new dock.popout.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));void 0`);await wait();
     assert.equal(await run(`dock.popout.document.querySelector('.custom-select-dropdown').matches(':popover-open')`),true);
     assert.equal(await run(`document.querySelector('.custom-select-dropdown')===null`),true,'popover stays in child');
-    await run(`dock.popout.document.activeElement.dispatchEvent(new dock.popout.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));dock.popout.document.activeElement.dispatchEvent(new dock.popout.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));void 0`);await wait();
+    await run(`dock.popout.document.activeElement.dispatchEvent(new dock.popout.KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));void 0`);await wait();
+    await run(`dock.popout.document.activeElement.dispatchEvent(new dock.popout.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));void 0`);await wait();
     assert.equal(await run('detachedValue'),'b');
     await run(`document.documentElement.style.cssText='--radius-md:23px';document.documentElement.dataset.reduceMotion='true';document.documentElement.dataset.theme='light';void 0`);await wait();
     assert.equal(await run(`dock.popout.document.documentElement.dataset.theme`),'light');

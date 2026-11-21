@@ -2,6 +2,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import type { Download, DownloadStats } from '../../shared/types';
+import { downloadOperation } from '../../shared/download-operation';
 
 vi.mock('../utils/i18nContext', () => ({
   useTranslation: () => ({ t: (key: string) => key }),
@@ -67,4 +68,28 @@ describe.each([
 it('shows the same metadata size in the compact row with inconsistent transfer counters', () => {
   const html = render({ viewMode: 'compact', stats: stats({}) });
   expect(html).toContain('<div class="trow-sub"><span>50 GB</span>');
+});
+
+it.each(['compact', 'detailed'] as const)('%s renders unmeasured metadata without a fake file percentage', viewMode => {
+  const html = render({ viewMode, download: { ...download, totalSize: 0 }, stats: stats({ status: 'downloading', progress: .9,
+    operation: downloadOperation({ ...download, status: 'downloading', totalSize: 0 }, { stage: 'metadata' }) }) });
+  expect(html).not.toContain('90.0%');
+  expect(html).not.toContain('aria-valuenow');
+  expect(html).toContain('operation.stage.metadata');
+});
+it('renders measured verification in place of old completion and hides resume/watch while checking', () => {
+  const html = render({ download: { ...download, status: 'completed', progress: 1 }, stats: stats({ status: 'completed', progress: 1,
+    operation: downloadOperation({ ...download, status: 'completed' }, { stage: 'checking', fraction: .2 }) }) });
+  expect(html).toContain('20.0%'); expect(html).not.toContain('100.0%');
+  expect(html).not.toContain('downloads.resumeSeeding');
+  expect(html).toContain('operation.stage.checking');
+});
+
+it.each(['downloading', 'seeding'] as const)('%s separates transferred totals from both current transfer rates', status => {
+  const html = render({ stats: stats({ status, downloadedBytes: 1024 ** 2, uploadedBytes: 8 * 1024 ** 2,
+    downSpeedBps: 256 * 1024, upSpeedBps: 32 * 1024 }) });
+  expect(html).toMatch(/downloads\.statDown<\/span>\s*<span class="stat-value">1 MB<\/span>/);
+  expect(html).toMatch(/downloads\.statUp<\/span>\s*<span class="stat-value">8 MB<\/span>/);
+  expect(html).toMatch(/downloads\.statDownSpeed<\/span>\s*<span class="stat-value">256 KB\/s<\/span>/);
+  expect(html).toMatch(/downloads\.statUpSpeed<\/span>\s*<span class="stat-value">32 KB\/s<\/span>/);
 });

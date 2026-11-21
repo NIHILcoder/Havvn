@@ -1,0 +1,340 @@
+{
+  "schema": 1,
+  "task": "FUN-03",
+  "recordedAt": "2026-10-26T10:35:52.6378595Z",
+  "passed": true,
+  "scope": {
+    "implementationCapabilitiesAndResearch": true,
+    "releaseNativePrefetch": false,
+    "physicalMachines": 1,
+    "platform": "Windows",
+    "os": "Microsoft Windows NT 10.0.26300.0",
+    "electron": "44.4.2",
+    "isolatedProfiles": true,
+    "externalNetworkPlaybackMeasured": false,
+    "packagedInstallerRetested": false,
+    "fullRepositoryLintPassed": false,
+    "roomsReleaseAcceptanceSuperseded": false
+  },
+  "sourceSha256": "b0c072793741cc62907c3f80185c6c4cb70b76430be37f0281a40a5ffcda8b96",
+  "sources": [
+    {
+      "path": "electron/ipc/handlers.ts",
+      "sha256": "81059610ddf9194a0b747c9bc368d3d82e4109c63029579d7e527295108218c2"
+    },
+    {
+      "path": "electron/preload.ts",
+      "sha256": "51e1fce2ce73f16d4debf3689acd0d4449e86724aef0ba500771d43a208ea7e3"
+    },
+    {
+      "path": "electron/torrent/episode-prefetch-loopback.test.ts",
+      "sha256": "a3f684190c297e309a890eb9b9b6bb84329f52af8ddc397ee1af9e7b8b390ea5"
+    },
+    {
+      "path": "electron/torrent/episode-prefetch-manager.test.ts",
+      "sha256": "7177e59c6433486b975734b6cd130b378de4648f4971cd06524d8b3adf698c4d"
+    },
+    {
+      "path": "electron/torrent/episode-prefetch.test.ts",
+      "sha256": "b072c1edda420d6bdfd65d2eb7db7dbd16418479da7018ebced616b3b0b9da96"
+    },
+    {
+      "path": "electron/torrent/episode-prefetch.ts",
+      "sha256": "11abfac07c9864c0fe71d4173714bbcc4e116759a937e0bc6ae1363df08467b8"
+    },
+    {
+      "path": "electron/torrent/host/env.ts",
+      "sha256": "4f5e0d1c34490fc8d4ad57d0bd889085782b8761daf61fa08b2fbea55473e784"
+    },
+    {
+      "path": "electron/torrent/host/manager-proxy.test.ts",
+      "sha256": "4d4e0635334c518043015c066d2ac660bbfd597248faafed56526b78845d0cc8"
+    },
+    {
+      "path": "electron/torrent/host/manager-proxy.ts",
+      "sha256": "a67c94ad245638ba697fe3368841618c8aadd33547c15f6e6e769c12f3483b6c"
+    },
+    {
+      "path": "electron/torrent/manager.ts",
+      "sha256": "b14c86241bdcfdbdad6cba2d52b31aaeb2cfff93a2c4c8dc3defe6e5952c84b9"
+    },
+    {
+      "path": "electron/torrent/native/native-manager.test.ts",
+      "sha256": "5cac428b747064e274145101e42e90fb7d6d13bb31537e84b0e5a64c8caf67ee"
+    },
+    {
+      "path": "electron/torrent/native/native-manager.ts",
+      "sha256": "12a700e33c05a7cec0bb077368b12f2e279836d91e887b241a33b8d8577280b7"
+    },
+    {
+      "path": "package.json",
+      "sha256": "4df276bd0a2836df6459f3fe7b5e5aab3693c25dc64be8d3afee264d60b6dbc1"
+    },
+    {
+      "path": "renderer/components/EngineCapabilitiesSummary.css",
+      "sha256": "5ab57a0ee1d2e9155ddc0bf8a123171fd66d01706f97f00169dc167e57d7df9f"
+    },
+    {
+      "path": "renderer/components/EngineCapabilitiesSummary.tsx",
+      "sha256": "62d36249818dbf4667ebe000c595e18ca0e10b01b8e9a1cdadf680c870a7dbb8"
+    },
+    {
+      "path": "renderer/components/EpisodePrefetchControl.css",
+      "sha256": "f37b30e0f2a15eda00b29856d4c569c02ffafe128ea634d6670d05d8cfccd75c"
+    },
+    {
+      "path": "renderer/components/EpisodePrefetchControl.tsx",
+      "sha256": "3ceff3c4a80f1a3ff307867c59dda263c92a746119a3288fbf095d3c4a62fb19"
+    },
+    {
+      "path": "renderer/components/Select.css",
+      "sha256": "4781ab09ed84eeaabca37ff2963a272a7c3482f6283eea214f1639c286705ff5"
+    },
+    {
+      "path": "renderer/components/Select.tsx",
+      "sha256": "2fe89c68a313a2bd64409b19493c7af7cebe18389c81f367004a22e491261014"
+    },
+    {
+      "path": "renderer/i18n/en.json",
+      "sha256": "1834bc5de6aa607cdd913f6803446d054c3b4c2cd614a316f87e9ea970c4678a"
+    },
+    {
+      "path": "renderer/i18n/ru.json",
+      "sha256": "23fdb361a63662d6020f59a0e92e13e9b834d834e9fc1709b3c816d4ecbf4b37"
+    },
+    {
+      "path": "renderer/pages/settings/sections/DownloadsSection.tsx",
+      "sha256": "579df07b2c93d79697bb77a416a075570e6d06bcf885c191e29a1dce2d345ed7"
+    },
+    {
+      "path": "renderer/pages/settings/sections/GeneralSection.tsx",
+      "sha256": "f67f601594ee23393a6579e372a3750361e5dd1f3347358f7117b86b53c83da8"
+    },
+    {
+      "path": "renderer/pages/settings/sections/PrivacySection.tsx",
+      "sha256": "6aed548677f19cb147369ff11695a6a6e756ec39a36447341d4005d9e07f28f0"
+    },
+    {
+      "path": "renderer/pages/settings/SettingsContext.tsx",
+      "sha256": "58093c301556828e03535aa4bba1d02a213b9b47b228b5be5073cdffd27959d8"
+    },
+    {
+      "path": "renderer/utils/useEngineCapabilities.ts",
+      "sha256": "eb0708dd924ae9d6b16b9e900fcfb7af07c29fb58e48e5d7c3bdf02291c9d361"
+    },
+    {
+      "path": "scripts/fixtures/command-palette-ui.cjs",
+      "sha256": "2e5d107139819bf84fa790dde94dd006be441928cf37a1c3072b700c55021e8c"
+    },
+    {
+      "path": "scripts/probe-native-prefetch.cjs",
+      "sha256": "006ecbaf8b2a1e2ed2607613126b332adc4b3b0cebc5230da53d05aaa7be867d"
+    },
+    {
+      "path": "scripts/smoke-player-buffer.cjs",
+      "sha256": "a41e311af8181d197626922fefafb576069b2ec5cee814b9eb03a7a8945a564c"
+    },
+    {
+      "path": "scripts/smoke-resource-mode.cjs",
+      "sha256": "e65753d860eea579819eb70f09cfe05de1c0b638a1e570d3dbe2832e4aff1514"
+    },
+    {
+      "path": "shared/engine-capabilities.test.ts",
+      "sha256": "516f04666b7aa82cbe067c02994064fc1050d4b3ffcd2e63d348587349a76cc0"
+    },
+    {
+      "path": "shared/engine-capabilities.ts",
+      "sha256": "52a396c158f098ed7a4ac08c5c1242396a9ba9dc76d746b1a9b35030c3a6b624"
+    },
+    {
+      "path": "shared/episode-prefetch.test.ts",
+      "sha256": "705512ac6fd344da54aca5551ef2b898525ba1f082baa38c4e1ffa58bb5542ef"
+    },
+    {
+      "path": "shared/episode-prefetch.ts",
+      "sha256": "13ca56aa75a705e12bc647b40d744dd9ca3d25107e0e1c718d32bd7b3355d9ec"
+    },
+    {
+      "path": "shared/playback-buffer.ts",
+      "sha256": "0ed96a6992c3abdcdd7ccfa4721e69cfc03312810c9254eba4277a517675f444"
+    },
+    {
+      "path": "shared/types.ts",
+      "sha256": "3b9356a4cf28f1a3b102cb66d8729c06d45827d36ee78381f351cb1bc9f03ba2"
+    }
+  ],
+  "results": {
+    "targetedTests": {
+      "passed": 84,
+      "files": 7
+    },
+    "classicLoopback": {
+      "passed": 1,
+      "currentSelectionPreserved": true,
+      "selectedHeadBytes": 1048576,
+      "budgetBytes": 1048576
+    },
+    "nativePrototype": {
+      "releaseNativePrefetch": false,
+      "passed": true,
+      "requestedHeadBudget": 1048576,
+      "binarySha256": "397dd842bbb4398f0e35a5b299af19add28d8175564017b6f239a855646665bd",
+      "conclusion": "Existing RPC controls are insufficient for the required isolated bounded head selection. Native remains unsupported; no production polling workaround is enabled.",
+      "version": "4.1.3 (838877323f)",
+      "checks": [
+        {
+          "id": "excluded-next-file-remains-unwanted-during-current-transfer",
+          "passed": true
+        },
+        {
+          "id": "low-priority-whole-file-selection-is-not-a-byte-budget",
+          "passed": true
+        },
+        {
+          "id": "cancel-restores-exclusion-without-pausing-torrent",
+          "passed": true
+        },
+        {
+          "id": "sequential-start-is-one-shared-torrent-cursor",
+          "passed": true
+        }
+      ],
+      "observedNextBytes": 4194304,
+      "initialWantedOnlyAttempt": "timeout-retained-as-failure"
+    },
+    "ui": {
+      "passed": true,
+      "widths": [
+        400,
+        1000
+      ],
+      "checks": [
+        "real-webm",
+        "buffer-gaps-and-seek",
+        "peers-download-pause-decode-error",
+        "prefetch-opt-in-and-excluded-consent",
+        "prefetch-stall-pause-seek",
+        "prefetch-16MiB-budget-and-persistence",
+        "unmount-stops-leases-and-subscriptions",
+        "native-no-inert-controls",
+        "classic-preferences-preserved-across-native",
+        "capability-loading-and-rejection-fail-closed",
+        "native-and-classic-four-feature-summary",
+        "summary-loading-and-unknown",
+        "layout-1000-and-400"
+      ],
+      "report": "artifacts/fun03/ui/report.json"
+    },
+    "resourceModeUi": {
+      "passed": true,
+      "restartPersistence": true,
+      "playbackPreserved": true
+    },
+    "typecheck": {
+      "passed": true,
+      "targets": [
+        "electron",
+        "renderer",
+        "guest"
+      ]
+    },
+    "build": {
+      "passed": true,
+      "webpackWarnings": 3
+    },
+    "newCodeLint": {
+      "passed": true,
+      "warnings": 0
+    },
+    "extendedLint": {
+      "passed": false,
+      "note": "Earlier broad run included existing CommonJS require errors in managers and the CJS smoke; new-code lint passes, full-project lint is not claimed.",
+      "warnings": 118,
+      "errors": 19
+    }
+  },
+  "evidence": [
+    {
+      "path": "artifacts/fun03-tests.log",
+      "sha256": "1f84746f57b2cca1955e14c10f6bb63fc04b9bd5b404e67dfd16b7a5913b8f5e"
+    },
+    {
+      "path": "artifacts/fun03-classic-transfer.log",
+      "sha256": "3072bc241553cae8c8a9386d4d75bd954945391f268f6fade106c46ee83eed79"
+    },
+    {
+      "path": "artifacts/fun03-typecheck.log",
+      "sha256": "638d6d735c268c8db16345ce3caba072b202a13c83ebeee2624c69fdca60cb7b"
+    },
+    {
+      "path": "artifacts/fun03-build.log",
+      "sha256": "367f4532b1370b0e737f6e84766546555d131e80c2066b11b8d294c7d5a51976"
+    },
+    {
+      "path": "artifacts/fun03-lint.log",
+      "sha256": "08ec5c703d14cbfe110fddc78d513b08c6a09e0d2252b6b2d1a8b85751fe151b"
+    },
+    {
+      "path": "artifacts/fun03-lint-new-code.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "artifacts/fun03-ui-final.log",
+      "sha256": "8e859eb9f678d55a0beca86d8b69d05c07bbf10378d52b9bc73d14889cd29b75"
+    },
+    {
+      "path": "artifacts/fun03-resource-ui.log",
+      "sha256": "31441239405e58de5fe667e33d2ca4afd5fd8f826693ac0e932d34fb336c234d"
+    },
+    {
+      "path": "artifacts/fun03/native-probe.json",
+      "sha256": "58cf2c1d99c2649f51321004a5201f395dba1a1ace0e12399c22223159594443"
+    },
+    {
+      "path": "artifacts/fun03/native-probe-initial.json",
+      "sha256": "4bf73149a4a48e45326ff5795870a49399e860ad24010008e2645dc1dc607ed9"
+    },
+    {
+      "path": "artifacts/fun03-native-probe-initial.log",
+      "sha256": "215075030241dba91f07757eb8f6a43ff7c7590db784b113910941d28a145d80"
+    },
+    {
+      "path": "artifacts/fun03/ui/report.json",
+      "sha256": "8edb522f6f30dd17c55f4684229988b808e9845164b7b87348dcac9b4a7ee391"
+    },
+    {
+      "path": "artifacts/fun03/ui/buffer-1000.png",
+      "sha256": "1df4e0701ebd4b1616dbded9b4583b38c468450bf8a9917018214bf0e1b685bf"
+    },
+    {
+      "path": "artifacts/fun03/ui/buffer-400.png",
+      "sha256": "7d5a188eeb765b6d211d1e3231f00f831b15d6232c1693fe3d13f5f2434227b8"
+    },
+    {
+      "path": "artifacts/fun03/ui/features-native-1000.png",
+      "sha256": "049fb1b5a1dc60049e7541e913a00fa036509db2441bd2895f619197e845696e"
+    },
+    {
+      "path": "artifacts/fun03/ui/features-native-400.png",
+      "sha256": "7aebc0dc40ffc08f85f481fba251a0fffa195997410971d41f76137b653485bf"
+    },
+    {
+      "path": "artifacts/fun03/ui/features-webtorrent-1000.png",
+      "sha256": "e386765900422790d78a27f6c0ecc09fbdd1546dc45b28cbb73a8595aa863bee"
+    },
+    {
+      "path": "artifacts/fun03/ui/features-webtorrent-400.png",
+      "sha256": "c1958d814967bca189d78a76129a6f7a88ed6ab6091c5f0919fe6b4105cfb90a"
+    },
+    {
+      "path": "artifacts/fun03/ui/prefetch-native.png",
+      "sha256": "72b213124159e10692bfae3d41cb31ecb085ce4f3cab28d02a2ed13b2626e943"
+    }
+  ],
+  "futureWork": [
+    "Native independent bounded-range API and production acceptance",
+    "FUN-04 explainable automation",
+    "FUN-01 two physical PCs, real networks and old installer acceptance",
+    "OPT-02 real GPU and shared workloads"
+  ]
+}

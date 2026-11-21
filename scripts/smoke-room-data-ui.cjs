@@ -69,7 +69,7 @@ if (!process.versions.electron) {
     await run(`document.querySelector('.room-data-toggle [role=switch]').click();failClean=true`);await wait();
     await run(`button('Очистить локальные копии').click()`);await wait();
     await until(`!!button('Подтвердить')`,'cleanup confirmation');await run(`button('Подтвердить').click()`);await wait();
-    assert.equal(await run(`document.querySelector('[role=alert]').textContent.includes('File changed')`),true,'cleanup failure');
+    assert.equal(await run(`document.querySelector('.room-data-error').textContent===load(path.join(root,'renderer/utils/error-messages.ts')).readableError('File changed; refresh')`),true,'cleanup failure');
     assert.equal(await run(`document.querySelector('.room-data-toggle [role=switch]').getAttribute('aria-checked')`),'true','selection retained');
     await run(`failClean=false;button('Очистить локальные копии').click()`);await wait();await run(`button('Подтвердить').click()`);await wait();
     assert.equal(await run(`!!document.querySelector('[role=status]')`),true,'cleanup result');
@@ -84,14 +84,14 @@ if (!process.versions.electron) {
     await run(`setInput(0,'long backup password');setInput(1,'mismatched password');document.querySelector('[role=switch]').click()`);await wait();
     assert.equal(await run(`button('Защищённая резервная копия').disabled`),true,'password repeat mismatch blocked');
     await run(`setInput(1,'long backup password');failExport=true;button('Защищённая резервная копия').click()`);await wait();
-    assert.equal(await run(`document.querySelector('[role=alert]').textContent`),'Disk full');
+    assert.equal(await run(`document.querySelector('[role=alert]').textContent===load(path.join(root,'renderer/utils/error-messages.ts')).readableError('Disk full')`),true);
     assert.equal(await run(`document.querySelector('input').value`),'long backup password','failed export retry');
     assert.equal(await run(`document.documentElement.scrollWidth<=innerWidth`),true,'backup narrow layout');await capture('backup-aero-narrow');
     await run(`failExport=false;button('Защищённая резервная копия').click()`);await wait();
     assert.equal(await run(`document.querySelector('input').value`),'','clear password after export');
     await run(`mount('RoomBackupModal',{mode:'import'});failImport=true;setInput(0,'long backup password');document.querySelector('[role=switch]').click()`);await wait();
     await run(`button('Восстановить копию').click()`);await wait();
-    assert.equal(await run(`document.querySelector('[role=alert]').textContent`),'Incorrect password');
+    assert.equal(await run(`document.querySelector('[role=alert]').textContent===load(path.join(root,'renderer/utils/error-messages.ts')).readableError('Incorrect password')`),true);
     await run(`failImport=false;button('Восстановить копию').click()`);await wait();
     assert.equal(await run(`document.querySelectorAll('input').length`),0,'no password retained after restore');
     assert.equal(await run(`!!button('Перезапустить Havvn')`),true,'restoration requires restart');await run(`button('Перезапустить Havvn').click()`);await wait();

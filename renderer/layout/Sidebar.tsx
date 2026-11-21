@@ -8,12 +8,18 @@
  * lives as utility icons in the footer, still one click (and hotkey) away.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Icon, IconName, LogoMark, Wordmark, Identicon } from '../components';
 import { useTranslation } from '../utils/i18nContext';
+import { ErrorMessage } from '../components/ErrorMessage';
 import type { RoomSummary } from '../../shared/types';
+import { useDownloadViews } from '../utils/download-views';
+import { useNavigation } from '../utils/navigation';
+import { favoriteKey, favoriteCommandId, NAVIGATION_PAGES, type NavigationPage } from '../../shared/navigation';
+import { executeCommand, type Command } from '../commands/registry';
+import './SidebarFavorites.css';
 
-export type PageId = 'downloads' | 'settings' | 'create-torrent' | 'search' | 'rss' | 'rooms' | 'swarm' | 'watch-history';
+export type PageId = NavigationPage;
 export type FilterMode = 'all' | 'downloading' | 'completed' | 'paused' | 'error';
 
 /** A friend currently online in one of your rooms (fed from room pushes). */
@@ -59,6 +65,8 @@ interface SidebarProps {
   onOpenRoom?: (roomId: string) => void;
   /** The room currently open on the rooms page (highlighted in the rail). */
   activeRoomId?: string | null;
+  onOpenView?: (id: string) => void;
+  getCommands?: () => readonly Command[];
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -72,8 +80,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onlinePeople = [],
   onOpenRoom,
   activeRoomId = null,
+  onOpenView,
+  getCommands = () => [],
 }) => {
   const { t } = useTranslation();
+  const { catalog: savedViews } = useDownloadViews();
+  const { preferences, error: navigationError } = useNavigation();
+  const [favoriteError, setFavoriteError] = useState(''), [pending, setPending] = useState<string | null>(null);
+  const running = useRef(false);
+  const commands = new Map(getCommands().map(command => [command.id, command]));
+  const pinnedViews = savedViews.views.filter(view => view.pinned && !preferences.favorites.some(item => item.kind === 'view' && item.id === view.id));
+  const activateFavorite = async (id: string) => {
+    if (running.current) return;
+    running.current = true; setPending(id); setFavoriteError('');
+    try { await executeCommand(id, getCommands, t('commands.missing')); }
+    catch (cause) { setFavoriteError(cause instanceof Error ? cause.message : t('commands.failed')); }
+    finally { running.current = false; setPending(null); }
+  };
   const [appVersion, setAppVersion] = useState('');
 
   useEffect(() => {
@@ -93,10 +116,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   const utilItems: UtilItem[] = [
-    { id: 'search', label: t('nav.search'), icon: 'search' },
-    { id: 'rss', label: 'RSS', icon: 'rss' },
-    { id: 'create-torrent', label: t('nav.create'), icon: 'file-plus' },
-    { id: 'swarm', label: t('nav.swarm'), icon: 'globe' },
+    ...preferences.utilities.filter(item => item.visible).map(item => {
+      const page = NAVIGATION_PAGES.find(page => page.id === item.id)!;
+      return { id: item.id, label: t(page.labelKey), icon: page.icon };
+    }),
     { id: 'settings', label: t('nav.settings'), icon: 'settings' },
   ];
 
@@ -138,13 +161,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Contextual middle */}
       <nav className="sidebar-nav">
+        {navigationError && <p className="sidebar-favorite-error" role="alert">{t('navigation.storageHint')}</p>}
+        {preferences.favorites.length > 0 && <div className="nav-section sidebar-favorites" aria-busy={!!pending}>
+          <div className="nav-section-title">{t('navigation.favorites')}</div>
+          {preferences.favorites.map(favorite => {
+            const id = favoriteCommandId(favorite), command = commands.get(id), reason = command?.disabledReason() ?? (!command ? t('commands.missing') : null);
+            const label = command?.title ?? `${t(`navigation.unavailable.${favorite.kind}`)} · ${favorite.id.slice(-8)}`;
+            const page = NAVIGATION_PAGES.find(page => (page.id === 'create-torrent' ? page.id : `open-${page.id}`) === id);
+            const active = favorite.kind === 'room' ? currentPage === 'rooms' && activeRoomId === favorite.id
+              : favorite.kind === 'view' ? currentPage === 'downloads' && savedViews.activeId === favorite.id : page?.id === currentPage;
+            return <button key={favoriteKey(favorite)} type="button" data-favorite-key={favoriteKey(favorite)} className={`nav-subitem ${active ? 'active' : ''}`}
+              disabled={!!reason || !!pending} title={reason || command?.description || label} onClick={() => { void activateFavorite(id); }}>
+              <span className="nav-subitem-icon"><Icon name={favorite.kind === 'room' ? 'users' : favorite.kind === 'view' ? 'filter' : page?.icon ?? 'play'} size={14} /></span>
+              <span className="sidebar-favorite-name">{label}</span>
+            </button>;
+          })}
+          {favoriteError && <p className="sidebar-favorite-error" role="alert"><ErrorMessage error={favoriteError} /></p>}
+        </div>}
         {pillar === 'transfers' ? (
           <div className="nav-section">
             <div className="nav-section-title">{t('nav.menu')}</div>
             {filterItems.map((filter) => (
               <button
                 key={filter.id}
-                className={`nav-subitem ${currentPage === 'downloads' && filterMode === filter.id ? 'active' : ''} ${filter.colorClass || ''}`}
+                className={`nav-subitem ${currentPage === 'downloads' && !savedViews.activeId && filterMode === filter.id ? 'active' : ''} ${filter.colorClass || ''}`}
                 onClick={() => { onNavigate('downloads'); onFilterChange(filter.id); }}
               >
                 <span className="nav-subitem-icon">
@@ -156,9 +196,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 </span>
               </button>
             ))}
-            <button className={`nav-subitem ${currentPage === 'watch-history' ? 'active' : ''}`} onClick={() => onNavigate('watch-history')}>
-              <span className="nav-subitem-icon"><Icon name="film" size={14} /></span><span>{t('history.title')}</span>
-            </button>
+            {pinnedViews.length > 0 && <>
+              <div className="nav-section-title">{t('views.pinned')}</div>
+              {pinnedViews.map(view => <button key={view.id} type="button"
+                className={`nav-subitem ${currentPage === 'downloads' && savedViews.activeId === view.id ? 'active' : ''}`}
+                title={view.name} onClick={() => onOpenView?.(view.id)}>
+                <span className="nav-subitem-icon"><Icon name="filter" size={14} /></span><span className="download-view-name">{view.name}</span>
+              </button>)}
+            </>}
+            {preferences.showHistory && <button className={`nav-subitem ${currentPage === 'watch-history' ? 'active' : ''}`} onClick={() => onNavigate('watch-history')}>
+              <span className="nav-subitem-icon"><Icon name="film" size={14} /></span><span>{t('library.title')}</span>
+            </button>}
           </div>
         ) : (
           <div className="nav-section">

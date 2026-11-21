@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Icon, Modal } from './index';
 import { useTranslation } from '../utils/i18nContext';
@@ -5,18 +6,23 @@ import { useHostWindow } from '../utils/hostWindow';
 import { cleanError } from '../utils/format-helpers';
 import type { RoomDiagnosticReport } from '../../shared/room-diagnostics';
 import './RoomDiagnostics.css';
+import { roomConnectionOperation } from '../../shared/connection-operation';
+import { OperationStatus } from './OperationStatus';
+import { RoomConnectionHelp } from './RoomConnectionHelp';
+import type { RoomNetworkProbe } from '../../shared/room-connection-help';
 
 export const RoomDiagnostics: React.FC<{ roomId: string; onClose: () => void }> = ({ roomId, onClose }) => {
   const { t } = useTranslation(), host = useHostWindow();
   const [report, setReport] = useState<RoomDiagnosticReport | null>(null);
-  const [action, setAction] = useState<'retry' | 'copy' | 'export' | null>(null);
+  const [action, setAction] = useState<'retry' | 'copy' | 'export' | 'probe' | null>(null);
+  const [probe, setProbe] = useState<RoomNetworkProbe | null>(null);
   const [error, setError] = useState(''), [notice, setNotice] = useState('');
   const session = useRef(0), dataRevision = useRef(0), busy = useRef(false);
   useEffect(() => {
     const epoch = ++session.current;
     let loading = false;
     ++dataRevision.current; busy.current = false; setAction(null);
-    setReport(null); setError(''); setNotice('');
+    setReport(null); setProbe(null); setError(''); setNotice('');
     const refresh = async () => {
       if (loading || busy.current) return;
       loading = true; const revision = ++dataRevision.current;
@@ -29,12 +35,15 @@ export const RoomDiagnostics: React.FC<{ roomId: string; onClose: () => void }> 
     return () => { session.current = epoch + 1; host.window.clearInterval(timer); };
   }, [roomId, host]);
 
-  const run = async (kind: 'retry' | 'copy' | 'export') => {
+  const run = async (kind: 'retry' | 'copy' | 'export' | 'probe') => {
     if (busy.current) return;
     const epoch = session.current; ++dataRevision.current;
     busy.current = true; setAction(kind); setError(''); setNotice('');
     try {
-      if (kind === 'retry') {
+      if (kind === 'probe') {
+        const data = await window.api.rooms.probeConnection(roomId);
+        if (session.current === epoch) setProbe(data);
+      } else if (kind === 'retry') {
         const data = await window.api.rooms.retryConnection(roomId);
         if (session.current === epoch) { setReport(data); setNotice(t('rooms.diag.retryStarted')); }
       } else if (kind === 'copy') {
@@ -60,13 +69,16 @@ export const RoomDiagnostics: React.FC<{ roomId: string; onClose: () => void }> 
         <Button variant="primary" icon={<Icon name="refresh" size={14} />} onClick={() => { void run('retry'); }} loading={action === 'retry'}
           disabled={!report || !!action || phase === 'removed' || phase === 'suspended'}>{t('rooms.diag.retry')}</Button>
       </>}>
-      {error && <div className="room-diag-error" role="alert">{error}</div>}
+      {error && <div className="room-diag-error" role="alert"><ErrorMessage error={error} /></div>}
       {notice && <p role="status">{notice}</p>}
       {!report ? <p role="status">{t('common.loading')}</p> : <>
         <div className={`room-diag-phase ${phase === 'ready' ? 'ready' : ''}`} role="status">
           <Icon name="network" size={20} />
-          <div><strong>{t(`rooms.diag.phase.${report.connection.phase}`)}</strong><p>{t(`rooms.diag.hint.${report.connection.phase}`)}</p></div>
+          <div><strong>{t(`rooms.diag.phase.${report.connection.phase}`)}</strong>
+            <OperationStatus operation={roomConnectionOperation(report)} showProgress={false} explanation={t(`rooms.diag.hint.${report.connection.phase}`)} />
+          </div>
         </div>
+        <RoomConnectionHelp report={report} probe={probe} checking={action === 'probe'} disabled={!!action || phase === 'removed' || phase === 'suspended'} onCheck={() => { void run('probe'); }} />
         <dl className="room-diag-facts">
           <div><dt>{t('rooms.diag.trackers')}</dt><dd>{report.connection.trackers.acknowledged}/{report.connection.trackers.configured}</dd></div>
           <div><dt>{t('rooms.diag.channels')}</dt><dd>{report.connection.channels.open} · {t('rooms.diag.pending')}: {report.connection.channels.pending}</dd></div>

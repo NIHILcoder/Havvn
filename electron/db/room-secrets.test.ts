@@ -31,6 +31,7 @@ import * as db from './store';
 import { banSnapshotCanonical } from '../../shared/room-bans';
 import { sealRoom, openRoom } from './room-secrets';
 import { deriveMemberId } from '../sharing/room-crypto';
+import { defaultRoomName } from '../../shared/profile';
 import { mintKeyPages, verifyKeyMetadata, verifyKeyPage } from '../sharing/room-keyring';
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
 const pub = publicKey.export({ type: 'spki', format: 'pem' }).toString(), priv = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -45,7 +46,63 @@ const room = (): db.PersistedRoom => {
 const raw = () => state.stores.get('rooms')!;
 beforeEach(() => { state.available = true; state.encryptFail = false; state.decryptFail = false; state.diskFail = false; raw().rooms = {}; raw().roomIdentity = null; raw().roomProfile = null; state.writes = []; });
 
+describe('persistent public room nickname', () => {
+  it('creates a stable nonempty name without changing the signing identity on reads', () => {
+    const first = db.getRoomProfile(), identity = db.getRoomIdentity();
+    expect(first.name).toBe(defaultRoomName(first.memberId));
+    state.writes = [];
+    expect(db.getRoomProfile()).toEqual(first);
+    expect(db.getRoomIdentity()).toEqual(identity);
+    expect(state.writes).toEqual([]);
+  });
+  it('repairs a legacy empty profile once, retaining identity, avatar and status', () => {
+    raw().roomProfile = { memberId: 'legacy-id', name: '  ', avatarSeed: 'chosen-avatar', status: 'Ready', color: '#abcdef' };
+    expect(db.getRoomProfile()).toEqual({ ...raw().roomProfile, name: defaultRoomName('legacy-id') });
+    expect(state.writes).toHaveLength(1);
+    db.getRoomProfile(); expect(state.writes).toHaveLength(1);
+  });
+  it('keeps custom names and restores the same alias when the name is cleared', () => {
+    const first = db.getRoomProfile();
+    expect(db.updateRoomProfile({ name: '  Алиса  ' }).name).toBe('Алиса');
+    expect(db.getRoomProfile().name).toBe('Алиса');
+    expect(db.updateRoomProfile({ name: '' }).name).toBe(first.name);
+    expect(db.updateRoomProfile({ name: 'You' }).name).toBe('You');
+  });
+  it('does not pretend that a repaired name was saved when persistence fails', () => {
+    raw().roomProfile = { memberId: 'legacy-id', name: '', avatarSeed: 'a' }; state.diskFail = true;
+    expect(() => db.getRoomProfile()).toThrow('disk full');
+    expect(raw().roomProfile.name).toBe('');
+  });
+});
+
 describe('protected room records and atomic legacy migration', () => {
+  it('reads storage room metadata without migrating legacy records, writing or exposing secrets', () => {
+    const legacy = room(); raw().rooms = { A: legacy }; state.writes = [];
+    const inventory = db.getStorageRoomRecords();
+    expect(inventory.rooms).toEqual([{ roomId: 'A', name: legacy.name, folder: legacy.folder, locked: false }]);
+    expect(state.writes).toEqual([]); expect(raw().rooms.A.secrets).toBeUndefined();
+    expect(JSON.stringify(inventory)).not.toContain(legacy.code); expect(JSON.stringify(inventory)).not.toContain(legacy.secret!);
+    state.available = false;
+    expect(db.getStorageRoomRecords().rooms[0]).toMatchObject({ roomId: 'A', folder: '', locked: true }); expect(state.writes).toEqual([]);
+  });
+  it('keeps local notification rules isolated and reads a batch without exposing room secrets', async () => {
+    const a = room(), b = { ...room(), roomId: 'B', name: 'Other room' };
+    db.savePersistedRoom(a); db.savePersistedRoom(b);
+    db.setRoomNotificationRule('A', { popups: false, showContent: false }, 'mentions');
+    expect(db.getPersistedRoom('A')).toMatchObject({ notificationRule: { popups: false, showContent: false }, notifyMode: 'mentions', code: a.code });
+    expect(db.getPersistedRoom('B')).not.toHaveProperty('notificationRule');
+    const snapshot = db.readNotificationEnvironments([{ kind: 'room-message', roomId: 'A' }, { kind: 'room-message', roomId: 'B' }]);
+    expect(snapshot[0]).toMatchObject({ roomMode: 'mentions', roomRule: { popups: false, showContent: false } });
+    expect(snapshot[1]).toMatchObject({ roomMode: 'all' }); expect(snapshot[1].roomRule).toBeUndefined();
+    expect(JSON.stringify(snapshot)).not.toContain(a.code); expect(JSON.stringify(snapshot)).not.toContain(a.secret!);
+    expect(() => db.setRoomNotificationRule('A', { sound: 'no' } as never)).toThrow();
+    expect(() => db.setRoomNotificationRule('A', {}, 'invalid' as never)).toThrow();
+    const category = await db.addCategory({ name: 'Quiet downloads', icon: 'folder', color: '#ffffff', notificationRule: { sound: false } });
+    const download = await db.createDownload({ name: 'Private object', sourceType: 'magnet', sourceUri: 'magnet:PRIVATE', savePath: 'D:/isolated', status: 'error', category: category.id });
+    expect(db.readNotificationEnvironments([{ kind: 'download-error', downloadId: download.id }])[0].categoryRule).toEqual({ sound: false });
+    await db.updateDownloadStatus(download.id, 'paused');
+    expect(db.readNotificationEnvironments([{ kind: 'download-error', downloadId: download.id }])[0].available).toBe(false);
+  });
   it('protects codes, all content keys, cfg duplicates and pages; preserves every signed byte', () => {
     const r = room(); db.savePersistedRoom(r);
     const json = JSON.stringify(raw());

@@ -5,6 +5,7 @@ import { DEFAULT_ROOM_RESOURCES } from '../../shared/room-resources';
 import { RoomConnectionMonitor } from '../../shared/room-diagnostics';
 import type { RoomState } from '../../shared/types';
 import { RoomStateEncoder, RoomStateDecoder } from '../../shared/room-state-ipc';
+import type { RoomDocuments } from './room-documents';
 
 const env = vi.hoisted(() => ({
   windows: [] as any[], listeners: new Map<string, (...args: any[]) => void>(), handlers: new Map<string, (...args: any[]) => any>(),
@@ -12,6 +13,7 @@ const env = vi.hoisted(() => ({
   manifestBatch: vi.fn(), historyBatch: vi.fn(), committed: vi.fn(), preferenceWrites: vi.fn(), notifications: vi.fn(),
   rooms: [] as any[], load: null as null | (() => Promise<void>), autoReady: false, autoReply: false,
   gone: vi.fn(), shutdown: vi.fn(async () => {}),
+  lanStart: vi.fn(), lanStop: vi.fn(async () => {}),
   captureAccess: null as null | (() => { audio: boolean; video: boolean }),
   resourcePolicy: undefined as import('../../shared/room-resources').RoomResourcePolicy | undefined, resourceError: '',
   commandError: '', saveError: false, partialSaveError: false, cleanupError: false, deleteError: false, folders: new Set<string>(),
@@ -96,7 +98,7 @@ vi.mock('./room-e2e', () => ({ generateRoomSecret: () => 'content-secret' }));
 vi.mock('./room-file-storage', () => ({ roomFileStamp: (candidate: string) => env.folders.has(candidate) ? 'verified-stamp' : undefined }));
 vi.mock('../gameserver/server-mirror', () => ({}));
 vi.mock('../utils/global-ptt', () => ({ decideGlobalPtt: () => ({ run: false }), stopGlobalPtt: vi.fn(), isGlobalPttAvailable: () => false }));
-vi.mock('../lan/lan-manager', () => ({ getLanManager: () => ({ configure: vi.fn(), onEngineGone: env.gone, onVpnSuspend: vi.fn(), stopRoom: vi.fn(async () => {}), shutdown: env.shutdown }) }));
+vi.mock('../lan/lan-manager', () => ({ getLanManager: () => ({ configure: vi.fn(), start: env.lanStart, stop: env.lanStop, onEngineGone: env.gone, onVpnSuspend: vi.fn(), stopRoom: vi.fn(async () => {}), shutdown: env.shutdown }) }));
 vi.mock('./ice-servers', () => ({ customTurnToIce: () => [], resolveTrackers: () => [] }));
 vi.mock('../utils/os-notify', () => ({ showOsNotification: env.notifications }));
 
@@ -133,6 +135,7 @@ beforeEach(() => {
   env.removedEmpty.mockClear(); env.removedFiles.mockClear(); env.saved.mockClear(); env.deleted.mockClear();
   env.lastRead = 0; env.manifestBatch.mockClear(); env.historyBatch.mockClear();
   env.notifications.mockClear();
+  env.lanStart.mockReset(); env.lanStop.mockClear();
   manager = new RoomManager();
 });
 
@@ -310,7 +313,7 @@ describe('room setup transactions', () => {
     expect(update.mock.calls.at(-1)[0].voice.inVoice).toBe(false);
   });
 });
-afterEach(() => { manager.destroy(); vi.useRealTimers(); });
+afterEach(() => { manager.destroy(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
 describe('engine lifecycle', () => {
   it('rejects all callers when the preload crashes before readiness', async () => {
@@ -450,6 +453,32 @@ async function joinRoom() {
 }
 
 describe('chat and settings acknowledgments', () => {
+  it('persists rotation schedules only from the trusted engine and includes them when restoring a room', async () => {
+    await joinRoom(); const win = env.windows[0];
+    const state = { ownerId: 'A', intervalMinutes: 5, remaining: 3, nextAt: Date.now() + 300_000 };
+    env.listeners.get('room-key-rotation')?.({ sender: {}, senderFrame: {} }, { roomId: 'room-A', state });
+    expect(env.rooms[0].keyRotation).toBeUndefined();
+    emit(win, 'room-key-rotation', { roomId: 'room-A', state });
+    expect(env.rooms[0].keyRotation).toEqual(state);
+    await manager.suspendNetworking('sleep'); await manager.resumeNetworking('sleep');
+    const lastJoin = commands(env.windows.at(-1)).filter((c: any) => c.type === 'join').at(-1);
+    expect(lastJoin.payload.keyRotation).toEqual(state);
+    emit(env.windows.at(-1), 'room-key-rotation', { roomId: 'room-A', state: undefined });
+    expect(env.rooms[0].keyRotation).toBeUndefined();
+  });
+  it('waits for the engine before acknowledging a watch request and propagates rejection', async () => {
+    await joinRoom(); env.autoReply = false; const win = env.windows[0];
+    vi.spyOn(manager as any, 'assertAction').mockImplementation(() => {});
+    let settled = false;
+    const input = { fileId: 'file', action: 'request', requested: 'play', position: 0, rate: 1, playing: true, together: true };
+    const pending = Promise.resolve(manager.broadcastSync('room-A', input)).then(value => { settled = true; return value; });
+    await flush(); expect(settled).toBe(false);
+    reply(win, 'sync', { ok: true }); await expect(pending).resolves.toEqual({ ok: true });
+    const failed = Promise.resolve(manager.broadcastSync('room-A', input)); await flush();
+    const checked = expect(failed).rejects.toThrow('No connected peers');
+    const request = commands(win).findLast((command: any) => command.type === 'sync');
+    emit(win, 'room-res', { reqId: request.reqId, ok: false, error: 'No connected peers' }); await checked;
+  });
   const messageId = 'a'.repeat(32);
   it('waits for the chat acknowledgment and preserves the caller ID across retries', async () => {
     await joinRoom(); env.autoReply = false; const win = env.windows[0];
@@ -804,7 +833,27 @@ describe('room diagnostics and discovery retry', () => {
     await joinRoom(); await manager.suspendNetworking(); const win = env.windows[0], before = commands(win).length;
     expect(manager.diagnoseRoom('room-A').connection.phase).toBe('suspended');
     await expect(manager.retryConnection('room-A')).rejects.toThrow('VPN');
+    await expect(manager.probeConnection('room-A')).rejects.toThrow('VPN');
     expect(commands(win)).toHaveLength(before); expect(env.windows).toHaveLength(1);
+  });
+  it('probes only selected settings without activating voice or a new engine', async () => {
+    await joinRoom(); const before = commands(env.windows[0]).length;
+    expect(await manager.probeConnection('room-A')).toMatchObject({ endpoints: [], turnConfigured: false, customDiscovery: false });
+    expect(commands(env.windows[0])).toHaveLength(before);
+    await expect(manager.probeConnection('unknown-room')).rejects.toThrow('Room not available');
+  });
+  it('cancels a speaker test queued before engine startup without permitting microphone capture', async () => {
+    const pending = manager.voiceSpeakerTestStart({} as any).catch(error => error); await flush(); const win = env.windows[0];
+    const stop = manager.voiceSpeakerTestStop(); await ready(win); reply(win, 'voiceSpeakerTestStop', { ok: true }); await stop;
+    expect((await pending).message).toMatch(/cancelled/);
+    expect(commands(win).some((command: any) => command.type === 'voiceSpeakerTestStart')).toBe(false);
+    expect(env.captureAccess?.()).toEqual({ audio: false, video: false });
+  });
+  it('grants only output selection while a speaker test is pending, then revokes it', async () => {
+    const pending = manager.voiceSpeakerTestStart({} as any); await flush(); const win = env.windows[0]; await ready(win);
+    expect(env.captureAccess?.()).toEqual({ audio: false, video: false, speaker: true });
+    reply(win, 'voiceSpeakerTestStart', { ok: true }); await pending;
+    expect(env.captureAccess?.()).toEqual({ audio: false, video: false });
   });
   it('coalesces retries and does not send voice, screen or LAN start commands', async () => {
     await joinRoom(); env.autoReply = false; const win = env.windows[0], before = commands(win).length;
@@ -847,15 +896,79 @@ describe('manifest page IPC authority', () => {
 describe('watch host acknowledgement', () => {
   it('waits for the engine decision and surfaces owner/host errors', async () => {
     await joinRoom(); const win = env.windows[0]; env.autoReply = false;
+    const live = { ...roomState(), canManage: true };
+    live.members.push({ ...live.members[0], memberId: 'B', isSelf: false, capabilities: ['watch-host-v1'] });
+    emit(win, 'room-update', live);
     let settled = false; const change = manager.setWatchHost('room-A', 'B').then(value => { settled = true; return value; });
     await flush(); expect(settled).toBe(false);
     expect(commands(win).findLast((c: any) => c.type === 'watchPolicy')).toMatchObject({ roomId: 'room-A', hostId: 'B' });
     const state = { ...roomState('room-A'), watchPolicy: { t: 'watch-policy-v1', by: 'A', hostId: 'B', at: 1, pub: 'pub', sig: 'sig' } };
     reply(win, 'watchPolicy', state); await expect(change).resolves.toEqual(state);
-    const denied = manager.setWatchHost('room-A', 'missing'); await flush();
-    const req = commands(win).findLast((c: any) => c.type === 'watchPolicy');
-    emit(win, 'room-res', { reqId: req.reqId, ok: false, error: 'Watch host is unavailable' });
-    await expect(denied).rejects.toThrow('Watch host is unavailable');
+    const before = commands(win).length;
+    await expect(manager.setWatchHost('room-A', 'missing')).rejects.toThrow('peer-unavailable');
+    expect(commands(win)).toHaveLength(before);
+  });
+  it('rechecks host capabilities after an awaited engine lookup, before sending the command', async () => {
+    await joinRoom(); const win = env.windows[0]; env.autoReply = false;
+    const live = { ...roomState(), canManage: true };
+    live.members.push({ ...live.members[0], memberId: 'B', isSelf: false, capabilities: ['watch-host-v1'] });
+    emit(win, 'room-update', live);
+    const before = commands(win).length;
+    const change = manager.setWatchHost('room-A', 'B');
+    emit(win, 'room-update', { ...live, members: live.members.map(m => ({ ...m, capabilities: undefined })) });
+    await expect(change).rejects.toThrow('capability-unknown');
+    expect(commands(win)).toHaveLength(before);
+  });
+  it('rejects revoked owner rights even when target support was known earlier', async () => {
+    await joinRoom(); const win = env.windows[0];
+    emit(win, 'room-update', { ...roomState(), canManage: false });
+    await expect(manager.setWatchHost('room-A', '')).rejects.toThrow('owner-required');
+  });
+});
+
+describe('room action preflight', () => {
+  it('inspects without starting an engine, requesting capture or changing LAN', () => {
+    env.rooms = [{ roomId: 'room-A', code: 'private-code' }];
+    expect(manager.preflight('room-A', 'lan')).toMatchObject({ status: 'unavailable', canAttempt: false });
+    expect(env.windows).toHaveLength(0); expect(env.captureAccess).toBeNull();
+    expect(JSON.stringify(manager.preflight('room-A', 'watch'))).not.toContain('private-code');
+  });
+  it('blocks an unknown LAN target before the helper or an engine command can start', async () => {
+    await joinRoom(); const win = env.windows[0], before = commands(win).length;
+    const live = roomState(); live.members.push({ ...live.members[0], memberId: 'B', isSelf: false });
+    emit(win, 'room-update', live);
+    await expect(manager.lanStart('room-A', ['B'])).rejects.toThrow('capability-unknown');
+    expect(commands(win)).toHaveLength(before);
+  });
+  it('enables shared folders and editors in a normal launch while preserving room and network checks', async () => {
+    await joinRoom();
+    expect(commands(env.windows[0]).find(command => command.type === 'join')?.payload.fileSyncEnabled).toBe(true);
+    expect(manager.preflight('room-A', 'file-sync')).toMatchObject({ reason: 'owner-unknown', canAttempt: false });
+    await manager.suspendNetworking();
+    expect(manager.preflight('room-A', 'watch')).toMatchObject({ reason: 'suspended', canAttempt: false });
+    expect(env.windows).toHaveLength(1);
+  });
+  it.each(['constructor', 'environment'])('retains an explicit diagnostic opt-out through %s', async (source) => {
+    manager.destroy();
+    if (source === 'environment') vi.stubEnv('HAVVN_FILE_SYNC', '0');
+    manager = new RoomManager(source === 'constructor' ? { fileSyncEnabled: false } : {});
+    await joinRoom();
+    expect(commands(env.windows[0]).find(command => command.type === 'join')?.payload.fileSyncEnabled).toBe(false);
+    expect(manager.preflight('room-A', 'file-sync')).toMatchObject({ status: 'unsupported', canAttempt: false });
+    expect(manager.fileSyncView('room-A')).toEqual({ enabled: false, canCreate: false, roots: [] });
+  });
+  it('releases the new helper if a target loses support while the helper is starting', async () => {
+    await joinRoom(); const win = env.windows[0], before = commands(win).length;
+    const live = roomState(); live.members.push({ ...live.members[0], memberId: 'B', isSelf: false, capabilities: ['lan'] });
+    emit(win, 'room-update', live);
+    let started!: (handle: unknown) => void;
+    env.lanStart.mockImplementationOnce(() => new Promise(resolve => { started = resolve; }));
+    const pending = manager.lanStart('room-A', ['B']); await flush();
+    expect(env.lanStart).toHaveBeenCalledOnce();
+    emit(win, 'room-update', { ...live, members: live.members.map(m => ({ ...m, capabilities: undefined })) });
+    started({ sessionId: 'private-session', pipeName: 'private-pipe', token: 'private-token', subnet: '10.0.0.0/24' });
+    await expect(pending).rejects.toThrow('capability-unknown');
+    expect(env.lanStop).toHaveBeenCalledExactlyOnceWith('private-session'); expect(commands(win)).toHaveLength(before);
   });
 });
 
@@ -937,4 +1050,42 @@ it('restricts privileged server stdin to the active engine main frame and an ava
   expect(() => manager.assertEngineServerCommand({ sender: win.webContents, senderFrame: win.webContents.mainFrame } as any, 'other')).toThrow();
   await manager.suspendNetworking('sleep');
   expect(() => manager.assertEngineServerCommand({ sender: win.webContents, senderFrame: win.webContents.mainFrame } as any, 'room-A')).toThrow();
+});
+
+it('validates and routes screen controls without starting or stopping voice or capture', async () => {
+  env.autoReady = true; env.autoReply = true;
+  const quality = { height: 720 as const, fps: 60 as const, bitrateKbps: 1000 };
+  await manager.screenConfigure('room-A', quality);
+  await manager.screenPlayback('room-A', 'B', .25, true);
+  const sent = commands(env.windows[0]);
+  expect(sent.filter((c: any) => c.type === 'screenConfigure')).toMatchObject([{ roomId: 'room-A', settings: quality }]);
+  expect(sent.filter((c: any) => c.type === 'screenPlayback')).toMatchObject([{ roomId: 'room-A', memberId: 'B', volume: .25, muted: true }]);
+  expect(sent.some((c: any) => ['voiceJoin', 'voiceLeave', 'screenShareStart', 'screenShareStop'].includes(c.type))).toBe(false);
+  const count = sent.length;
+  expect(() => manager.screenConfigure('room-A', { ...quality, fps: 999 as any })).toThrow('Invalid');
+  expect(() => manager.screenPlayback('room-A', 'B', Infinity, false)).toThrow('Invalid');
+  expect(commands(env.windows[0])).toHaveLength(count);
+});
+
+describe('document catalog during context discovery', () => {
+  it('reopens the catalog if the owner or secret changes during a read', async () => {
+    const view = { enabled: true, selfId: 'self', ownerId: 'owner', canCreate: true, ownerOnline: true, members: [], items: [] };
+    const obsolete = { current: () => false, view: vi.fn().mockRejectedValue(new Error('Documents session stopped')) } as unknown as RoomDocuments;
+    const current = { current: () => true, view: vi.fn().mockResolvedValue(view) } as unknown as RoomDocuments;
+    const read = vi.spyOn(manager, 'documents').mockReturnValueOnce(obsolete).mockReturnValue(current);
+    expect(await manager.documentsView('room-A')).toEqual(view);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+  it('does not hide protected-storage failures of the current context', async () => {
+    const current = { current: () => true, view: vi.fn().mockRejectedValue(new Error('Protected documents unavailable')) } as unknown as RoomDocuments;
+    const read = vi.spyOn(manager, 'documents').mockReturnValue(current);
+    await expect(manager.documentsView('room-A')).rejects.toThrow('Protected documents unavailable');
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+  it('bounds retries if contexts keep changing', async () => {
+    const obsolete = { current: () => false, view: vi.fn().mockRejectedValue(new Error('Documents session stopped')) } as unknown as RoomDocuments;
+    const read = vi.spyOn(manager, 'documents').mockReturnValue(obsolete);
+    await expect(manager.documentsView('room-A')).rejects.toThrow('Documents session stopped');
+    expect(read).toHaveBeenCalledTimes(3);
+  });
 });

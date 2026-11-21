@@ -34,7 +34,7 @@ export const PrivacySection: React.FC = () => {
   const { t } = useTranslation();
   const { confirm, alert } = useConfirm();
   const {
-    engine, runningEngine, applyToggle, setMessage,
+    engineCapabilities, applyToggle, setMessage,
     enableDHT, setEnableDHT,
     dohEnabled, setDohEnabled, dohTemplateId, dohTemplates,
     dohNewName, setDohNewName, dohNewUrl, setDohNewUrl, dohAdding, dohTest,
@@ -59,11 +59,24 @@ export const PrivacySection: React.FC = () => {
   const [checking, setChecking] = useState(true);
   const [revealIp, setRevealIp] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [encryptionAvailable, setEncryptionAvailable] = useState(true);
+  const [encryptionAvailable, setEncryptionAvailable] = useState<boolean | null>(null);
   const [busyPreset, setBusyPreset] = useState(false);
+  const [configState, setConfigState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const configQueue = useRef(Promise.resolve());
+  const configRevision = useRef(new Map<keyof PrivacyConfig, number>());
   const active = useRef(false);
   const pending = useRef(false);
   const refreshId = useRef(0);
+  const loadConfig = useCallback(async () => {
+    setConfigState('loading');
+    try {
+      const cfg = await window.api.getPrivacyConfig();
+      if (!cfg) throw new Error('Privacy configuration unavailable');
+      if (active.current) { setConfig(cfg); setConfigState('ready'); }
+    } catch {
+      if (active.current) setConfigState('failed');
+    }
+  }, []);
   const cancelRefresh = useCallback(() => {
     active.current = false;
     refreshId.current++;
@@ -111,18 +124,13 @@ export const PrivacySection: React.FC = () => {
   useEffect(() => {
     active.current = true;
     let alive = true;
+    void loadConfig();
     void (async () => {
       try {
-        const cfg = await window.api.getPrivacyConfig();
-        if (alive && cfg) setConfig(cfg);
-      } catch (e) {
-        console.error('Failed to load privacy config:', e);
-      }
-      try {
         const enc = await window.api.isEncryptionAvailable();
-        if (alive) setEncryptionAvailable(enc !== false);
+        if (alive) setEncryptionAvailable(typeof enc === 'boolean' ? enc : null);
       } catch {
-        /* keep optimistic default */
+        if (alive) setEncryptionAvailable(null);
       }
     })();
     void refreshIp();
@@ -139,7 +147,7 @@ export const PrivacySection: React.FC = () => {
       document.removeEventListener('visibilitychange', refreshVisible);
       window.removeEventListener('online', refreshVisible);
     };
-  }, [refreshIp, refreshBindStatus, cancelRefresh]);
+  }, [refreshIp, refreshBindStatus, cancelRefresh, loadConfig]);
 
   // Keep the bind status fresh when the guard re-binds / loses the VPN.
   useEffect(() => {
@@ -149,13 +157,21 @@ export const PrivacySection: React.FC = () => {
 
   // Optimistic single-flag save with rollback + shell toast on failure.
   const setCfg = async (key: keyof PrivacyConfig, value: boolean) => {
-    const prev = config;
-    setConfig({ ...config, [key]: value });
+    if (configState !== 'ready' || busyPreset) return;
+    const previous = config[key];
+    const revision = (configRevision.current.get(key) ?? 0) + 1;
+    configRevision.current.set(key, revision);
+    setConfig(prev => ({ ...prev, [key]: value }));
+    const write = configQueue.current.then(() => window.api.updatePrivacyConfig({ [key]: value }));
+    configQueue.current = write.then(() => {}, () => {});
     try {
-      await window.api.updatePrivacyConfig({ [key]: value });
+      await write;
     } catch (e) {
       console.error('Failed to save privacy setting:', e);
-      setConfig(prev);
+      let restored = previous;
+      try { restored = (await window.api.getPrivacyConfig())[key]; } catch { /* Roll back only this flag. */ }
+      if (configRevision.current.get(key) !== revision) return;
+      setConfig(prev => ({ ...prev, [key]: restored }));
       setMessage({ type: 'error', text: t('settings.msg.autosaveFailed') });
     }
   };
@@ -164,11 +180,13 @@ export const PrivacySection: React.FC = () => {
     setBusyPreset(true);
     try {
       const patch: Partial<PrivacyConfig> = { sanitizeLogs: true, vpnCheck: true, vpnKillSwitch: true };
-      await window.api.updatePrivacyConfig(patch);
+      const write = configQueue.current.then(() => window.api.updatePrivacyConfig(patch));
+      configQueue.current = write.then(() => {}, () => {});
+      await write;
       setConfig((c) => ({ ...c, sanitizeLogs: true, vpnCheck: true, vpnKillSwitch: true }));
       // DHT goes through the shared controller so the Connection tab reflects it.
-      await applyToggle(false, setEnableDHT, { enableDHT: false });
-      setMessage({ type: 'success', text: t('privacy.preset.applied') });
+      const applied = await applyToggle(false, setEnableDHT, { enableDHT: false });
+      setMessage({ type: applied ? 'success' : 'error', text: t(applied ? 'privacy.preset.applied' : 'privacy.preset.failed') });
     } catch (e) {
       console.error('Failed to apply preset:', e);
       setMessage({ type: 'error', text: t('privacy.preset.failed') });
@@ -232,9 +250,10 @@ export const PrivacySection: React.FC = () => {
   const maskedIp = ip?.ip ? (revealIp ? ip.ip : ip.ip.replace(/[^.:]/g, '•')) : '—';
   const location = ip ? [ip.city, ip.region, ip.country].filter(Boolean).join(', ') : '';
   const interfaces = ip?.interfaces ?? [];
-  // Same native-only gating as the DoH card below: the engine that is actually
-  // RUNNING decides, falling back to the configured one before first load.
-  const isNativeEngine = (runningEngine ?? engine) === 'native';
+  // Capabilities describe this boot session. A pending engine choice or an
+  // unavailable reply must not enable a control that this engine cannot apply.
+  const canBindEngine = engineCapabilities?.features.vpnInterfaceBinding.supported === true;
+  const canUseDoh = engineCapabilities?.features.dnsOverHttps.supported === true;
 
   return (
     <>
@@ -360,6 +379,20 @@ export const PrivacySection: React.FC = () => {
 
       {/* ── 2. Protection ───────────────────────────────────────────────── */}
       <SettingsCard title={t('privacy.grp.protection')} icon="shield">
+        {configState !== 'ready' && <div className="settings-notice-compact" role={configState === 'failed' ? 'alert' : 'status'}>
+          <span>{t(configState === 'failed' ? 'settings.msg.loadFailed' : 'common.loading')}</span>
+          {configState === 'failed' && <Button size="sm" onClick={() => { void loadConfig(); }}>{t('common.retry')}</Button>}
+        </div>}
+        <SettingRow
+          icon="zap"
+          label={t('privacy.preset.title')}
+          description={t('privacy.preset.desc')}
+          control={
+            <Button variant="primary" onClick={applyRecommended} loading={busyPreset} disabled={busyPreset || configState !== 'ready'}>
+              {t('privacy.preset.apply')}
+            </Button>
+          }
+        />
         <SettingRow
           icon="refresh-cw"
           label={t('privacy.ephemeralId')}
@@ -377,6 +410,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={config.vpnCheck}
+              disabled={configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('vpnCheck', val)}
               ariaLabel={t('privacy.vpnDetection')}
             />
@@ -389,6 +423,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={config.vpnKillSwitch}
+              disabled={configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('vpnKillSwitch', val)}
               ariaLabel={t('privacy.killSwitch')}
             />
@@ -397,17 +432,17 @@ export const PrivacySection: React.FC = () => {
         <SettingRow
           icon="link"
           label={t('privacy.vpnBind')}
-          description={isNativeEngine ? t('privacy.vpnBind.desc') : t('privacy.vpnBind.engineOnly')}
+          description={canBindEngine ? t('privacy.vpnBind.desc') : t(engineCapabilities ? 'privacy.vpnBind.engineOnly' : 'engineFeatures.unknown')}
           control={
             <Toggle
-              checked={config.vpnBindEngine === true}
-              disabled={!isNativeEngine}
+              checked={canBindEngine && config.vpnBindEngine === true}
+              disabled={!canBindEngine || configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('vpnBindEngine', val)}
               ariaLabel={t('privacy.vpnBind')}
             />
           }
         />
-        {isNativeEngine && bindStatus?.running && (config.vpnBindEngine === true) !== bindStatus.running.enabled && (
+        {canBindEngine && bindStatus?.running && (config.vpnBindEngine === true) !== bindStatus.running.enabled && (
           <RestartPendingNotice text={t('privacy.vpnBind.pending')} />
         )}
         {bindStatus?.running?.enabled && bindStatus.running.fallback && (
@@ -418,7 +453,7 @@ export const PrivacySection: React.FC = () => {
         )}
         {bindStatus?.running?.enabled && !bindStatus.running.fallback && bindStatus.running.boundIp && (
           <div className="settings-notice-compact">
-            <Icon name="check-circle" size={14} />
+            <Icon name="link" size={14} />
             <span>{t('privacy.vpnBind.bound')} {bindStatus.running.iface} ({bindStatus.running.boundIp})</span>
           </div>
         )}
@@ -429,6 +464,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={enableDHT}
+              disabled={busyPreset}
               onChange={(val) => applyToggle(val, setEnableDHT, { enableDHT: val })}
               ariaLabel={t('privacy.dht')}
             />
@@ -441,6 +477,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={config.clearDataOnExit}
+              disabled={configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('clearDataOnExit', val)}
               ariaLabel={t('privacy.clearOnExit')}
             />
@@ -451,21 +488,11 @@ export const PrivacySection: React.FC = () => {
           label={t('privacy.encSecrets')}
           description={t('privacy.encSecrets.desc')}
           control={
-            encryptionAvailable ? (
+            encryptionAvailable === null ? <StatusPill tone="muted">{t('privacy.conf.unknown')}</StatusPill> : encryptionAvailable ? (
               <StatusPill tone="ok"><Icon name="check-circle" size={11} /> {t('privacy.active')}</StatusPill>
             ) : (
               <StatusPill tone="accent"><Icon name="alert-triangle" size={11} /> {t('privacy.unavailable')}</StatusPill>
             )
-          }
-        />
-        <SettingRow
-          icon="zap"
-          label={t('privacy.preset.title')}
-          description={t('privacy.preset.desc')}
-          control={
-            <Button variant="primary" onClick={applyRecommended} loading={busyPreset} disabled={busyPreset}>
-              {t('privacy.preset.apply')}
-            </Button>
           }
         />
         <div className="settings-notice-compact">
@@ -476,10 +503,10 @@ export const PrivacySection: React.FC = () => {
 
       {/* ── 3. DNS-over-HTTPS (unchanged) ───────────────────────────────── */}
       <SettingsCard title={t('settings.grp.doh')} icon="globe">
-        {isNativeEngine && (
+        {!canUseDoh && (
           <div className="settings-notice-compact warn">
             <Icon name="alert-triangle" size={14} />
-            <span>{t('settings.doh.engineWarn')}</span>
+            <span>{t(engineCapabilities ? 'settings.doh.engineWarn' : 'engineFeatures.unknown')}</span>
           </div>
         )}
 
@@ -488,14 +515,15 @@ export const PrivacySection: React.FC = () => {
           description={t('settings.doh.desc')}
           control={
             <Toggle
-              checked={dohEnabled}
+              checked={canUseDoh && dohEnabled}
+              disabled={!canUseDoh}
               onChange={() => applyToggle(!dohEnabled, setDohEnabled, { dohEnabled: !dohEnabled })}
               ariaLabel={t('settings.doh')}
             />
           }
         />
 
-        {dohEnabled && (
+        {canUseDoh && dohEnabled && (
           <div className="doh-panel">
             <div className="doh-resolvers">
               {dohTemplates.map((tpl) => (
@@ -573,6 +601,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={config.sanitizeLogs}
+              disabled={configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('sanitizeLogs', val)}
               ariaLabel={t('privacy.sanitizeLogs')}
             />
@@ -585,6 +614,7 @@ export const PrivacySection: React.FC = () => {
           control={
             <Toggle
               checked={config.disableLogs}
+              disabled={configState !== 'ready' || busyPreset}
               onChange={(val) => setCfg('disableLogs', val)}
               ariaLabel={t('privacy.disableLogs')}
             />

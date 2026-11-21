@@ -29,6 +29,8 @@ export interface VoiceCallInfo {
 }
 
 interface StatusBarProps {
+  availability?: 'loading' | 'ready' | 'unavailable';
+  roomCount?: number;
   totalDownSpeed?: number;
   totalUpSpeed?: number;
   activeDownloads?: number;
@@ -43,6 +45,7 @@ interface StatusBarProps {
 }
 
 export const StatusBar: React.FC<StatusBarProps> = ({
+  availability = 'loading', roomCount = 0,
   totalDownSpeed = 0,
   totalUpSpeed = 0,
   activeDownloads = 0,
@@ -71,10 +74,11 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       )}
       <footer className="status-bar">
         <div className="status-bar-section">
-          <div className="status-item">
-            <span className="status-dot status-dot-connected" />
-            <span>{t('statusbar.connected')}</span>
+          <div className="status-item" role="status">
+            <span className={`status-dot status-service-${availability}`} aria-hidden="true" />
+            <span>{t(`statusbar.service.${availability}`)}</span>
           </div>
+          {roomCount > 0 && <div className="status-item"><Icon name="message-square" size={12} /><span>{t(roomPresence?.othersOnline ? 'statusbar.roomPeersFound' : 'statusbar.roomPeersWaiting')}</span></div>}
           <div className="status-item">
             <Icon name="activity" size={12} />
             <span>{activeDownloads} {t('statusbar.active')}</span>

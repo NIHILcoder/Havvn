@@ -27,9 +27,19 @@ describe('appearance boundaries', () => {
   it('rejects non-finite values, missing settings and unsupported enums', () => {
     for (const patch of [{ intensity: NaN }, { opacity: 0 }, { blur: 41 }, { acrylic: 'yes' }, { scopes: ['sidebar', 'sidebar'] },
       { quality: 'ultra' }, { background: 'url(https://example.org)' }, { version: 2 }, { radii: { ...DEFAULT_APPEARANCE.radii, cards: -1 } },
-      { scopes: ['video'] }, { constructor: 'unexpected' }, { material: undefined }]) {
+      { scopes: ['video'] }, { constructor: 'unexpected' }, { material: undefined }, { nativeMaterial: 'tabbed' }, { nativeMaterial: null }]) {
       expect(validateAppearance({ ...DEFAULT_APPEARANCE, ...patch })).toBeNull();
     }
+  });
+  it('migrates existing appearance settings and profiles without changing their glass', () => {
+    const legacy: Partial<typeof APPEARANCE_PRESETS.aero> = structuredClone(APPEARANCE_PRESETS.aero);
+    delete legacy.nativeMaterial;
+    expect(validateAppearance(legacy)).toEqual(APPEARANCE_PRESETS.aero);
+    const mica = { ...DEFAULT_APPEARANCE, acrylic: true, nativeMaterial: 'mica' };
+    expect(validateAppearance(mica)).toEqual(mica);
+    const glass = getThemeGlass(validateAppearance(mica)!);
+    expect(glass).not.toHaveProperty('nativeMaterial');
+    expect(validateThemeGlass({ ...glass, nativeMaterial: 'mica' })).toBeNull();
   });
   it('allows only bounded, self-contained raster image payloads', () => {
     expect(validWallpaper('data:image/png;base64,aGVsbG8=')).toBe(true);

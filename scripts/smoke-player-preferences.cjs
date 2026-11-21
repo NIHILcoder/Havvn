@@ -29,7 +29,7 @@ if (!process.versions.electron) {
     const audio = require(path.join(root, 'dist/electron/electron/torrent/audio-probe.js'));
     const subs = require(path.join(root, 'dist/electron/electron/torrent/subtitle-probe.js'));
     const disk = [first, second];
-    const catalogs = await Promise.all(disk.map(async p => audio.audioTrackList(await audio.probeAudioStreams(ffmpeg, p))));
+    const catalogs = await Promise.all(disk.map(async p => audio.audioTrackList(await audio.probeAudioStreams(ffmpeg, p, true))));
     const subtitles = await Promise.all(disk.map(p => subs.listSubtitleTracks(ffmpeg, p)));
     const vtts = await Promise.all(disk.map((p, i) => subs.getSubtitleVtt(ffmpeg, p, subtitles[i].find(track => track.source === 'embedded').key)));
     const { NativeMediaServer } = require(path.join(root, 'dist/electron/electron/torrent/native/media-server.js'));
@@ -60,7 +60,8 @@ if (!process.versions.electron) {
         getStreamUrl:async(id,i,opts)=>{calls.push({i,...opts});var mode=opts.transcode?'transcode':'direct',offset=opts.transcode?Math.round(opts.startTime*1000)/1000:0;
           return{url:'http://127.0.0.1:${port}/'+mode+'/test/'+i+'?k=test-token&t='+Date.now()+(opts.audioTrack===undefined?'':'&a='+opts.audioTrack)+'&s='+offset,name:'episode',kind:'video',transcoded:!!opts.transcode,startTime:offset};},
         audioTracks:{list:async(id,i)=>catalogs[i]},subtitles:{list:async(id,i)=>subtitles[i],get:async(id,i)=>vtts[i]},
-        stopStream:async()=>{},getEpisodePrefetchSupport:async()=>({supported:false}),stopEpisodePrefetch:async()=>{},
+        historyPlayback:{duration:async()=>8},
+        stopStream:async()=>{},getEpisodePrefetchSupport:async()=>({supported:false}),getEngineCapabilities:async()=>require(path.join(root,"dist/electron/shared/engine-capabilities.js")).engineCapabilities("native"),stopEpisodePrefetch:async()=>{},
         onDownloadStats:fn=>{subscribers.push(fn);return()=>{subscribers=subscribers.filter(f=>f!==fn)}}};
       function load(p){if(cache[p])return cache[p].exports;const m={exports:{}};cache[p]=m;
         const source=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
@@ -77,6 +78,10 @@ if (!process.versions.electron) {
       mount();
     `);
     await wait(`document.querySelector('video')?.readyState>=3&&!!button('player.audioTracks')`);
+    assert.equal(await run('subscribers.length'), 1, 'Player duration and buffer status share one progress subscription');
+    await run(`document.querySelector('video').pause();var bar=document.querySelector('.pc-bar'),r=bar.getBoundingClientRect();bar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.left+r.width*0.5,pointerId:8}));bar.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.left+r.width*0.5,pointerId:8}));`);
+    await wait(`Math.abs(document.querySelector('video').currentTime-4)<0.15&&!document.querySelector('video').seeking`);
+    assert.equal(await run('calls.length'),1); // direct MP4 seeks use HTTP Range, not a new transcode.
     await run(`window.oldVideo=document.querySelector('video');oldVideo.pause();oldVideo.currentTime=2.5;oldVideo.volume=0.4;oldVideo.playbackRate=1.25;button('player.audioTracks').click();`);
     await wait(`!!item(catalogs[0][1].label)`);
     await run(`item(catalogs[0][1].label).click()`);
@@ -86,6 +91,28 @@ if (!process.versions.electron) {
     assert.ok(Math.abs(await run(`document.querySelector('video').volume`) - 0.4) < 0.01);
     assert.equal(await run(`document.querySelector('video').playbackRate`), 1.25);
     assert.equal(await run(`document.querySelector('.pc-time').textContent`), '0:02');
+    // A completed MP4 still needs transcoding when another audio track is selected.
+    // It must expose the original timeline, not turn the entire scrubber off.
+    assert.equal(await run(`document.querySelector('.pc-bar').getAttribute('role')`), 'slider');
+    const beforeDrag = await run('calls.length');
+    await run(`window.beforeSeek=document.querySelector('video');var bar=document.querySelector('.pc-bar'),r=bar.getBoundingClientRect();bar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.left+r.width*0.2,pointerId:1}));for(var fraction of [0.3,0.4,0.6])bar.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:r.left+r.width*fraction,pointerId:1}));`);
+    await new Promise(resolve=>setTimeout(resolve,100));
+    assert.equal(await run('calls.length'),beforeDrag);
+    await run(`document.querySelector('.pc-bar').dispatchEvent(new PointerEvent('pointerup',{bubbles:true,pointerId:1}));`);
+    await wait(`document.querySelector('video')!==beforeSeek&&document.querySelector('video')?.readyState>=3&&Math.abs(calls.at(-1).startTime-4.8)<0.1`);
+    assert.equal(await run(`document.querySelector('video').paused`),true);
+    assert.ok(Math.abs(await run(`document.querySelector('video').volume`)-0.4)<0.01);
+    assert.equal(await run(`document.querySelector('video').playbackRate`),1.25);
+    assert.equal(await run('calls.length'),beforeDrag+1);
+    // Home uses the source timeline. Returning to 0 twice must restart even
+    // when the current URL already starts at 0 and only the media clock advanced.
+    for (const repeat of [false,true]) {
+      if(repeat){await run(`document.querySelector('video').play();`);await wait(`document.querySelector('video').currentTime>0.5`);await run(`document.querySelector('video').pause();`);}
+      await run(`window.beforeSeek=document.querySelector('video');document.querySelector('.pc-bar').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',code:'Home',bubbles:true,cancelable:true}));`);
+      await wait(`document.querySelector('video')!==beforeSeek&&document.querySelector('video')?.readyState>=3&&calls.at(-1).startTime===0`);
+    }
+    await run(`window.beforeSeek=document.querySelector('video');var bar=document.querySelector('.pc-bar'),r=bar.getBoundingClientRect();bar.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:r.left+r.width*0.3125,pointerId:2}));bar.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:r.left+r.width*0.3125,pointerId:2}));`);
+    await wait(`document.querySelector('video')!==beforeSeek&&document.querySelector('video')?.readyState>=3&&Math.abs(calls.at(-1).startTime-2.5)<0.1`);
     await run(`button('player.subtitles').click()`);
     await wait(`!!item(subtitles[0].find(s=>s.source==='embedded').label)`);
     await run(`item(subtitles[0].find(s=>s.source==='embedded').label).click()`);
@@ -138,7 +165,7 @@ if (!process.versions.electron) {
     assert.equal(await run(`subscribers.length`), 0);
     assert.equal(await run(`document.querySelectorAll('style').length`), 1); // cue style removed
     assert.equal(await run(`toasts.length`), 0);
-    console.log('PASS real multi-audio playback, timestamp/pause/volume/rate, subtitle cues/delay/styles, default override, reordered episodes, per-file persistence, responsive layout and cleanup');
+    console.log('PASS real direct MP4 Range seek, transcoded forward/backward seek, one restart per drag, keyboard Home/repeated zero, pause/volume/rate preservation, multi-audio playback, subtitle cues/delay/styles, reordered episodes, persistence, layout and cleanup');
     console.log('Screenshots:', out);
     server.close(); win.destroy(); clearTimeout(deadline); app.exit(0);
   }).catch(error => { console.error(error); if (server) server.close(); app.exit(1); });

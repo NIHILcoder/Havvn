@@ -131,6 +131,26 @@ describe('RoomLanPanel markup', () => {
     expect(html).toContain('rooms.lan.relayedPrivacy');
   });
 
+  it('keeps inactive and unadmitted addresses out of the connection list', () => {
+    const participant = { memberId: 'p1', vip: '100.88.0.2', admitted: true, status: 'connected' as const };
+    expect(render({ participants: [participant] })).not.toContain('100.88.0.2');
+    expect(render({ active: true, participants: [{ ...participant, admitted: false }] })).not.toContain('100.88.0.2');
+  });
+
+  it('identifies the LAN creator separately and resolves self from the roster', () => {
+    const html = render({
+      active: true, hostId: 'p1', selfVip: '100.88.0.1',
+      participants: [
+        { memberId: 'me', vip: '100.88.0.1', admitted: true, status: 'connected' },
+        { memberId: 'p1', vip: '100.88.0.2', admitted: true, status: 'connected' },
+      ],
+    }, { selfId: undefined });
+    expect(html.match(/class="room-lan-person/g)).toHaveLength(1);
+    expect(html).toContain('rooms.lan.networkOrganizer');
+    expect(html).toContain('rooms.lan.yourIpHint');
+    expect(html).toContain('rooms.lan.peerAddressesHint');
+  });
+
   it('treats an absent relayEnabled as ON — an older build is relaying, not idle', () => {
     const html = render(
       { active: true, sessionId: 's1', selfVip: '100.88.0.1' },
@@ -172,10 +192,10 @@ describe('the dock panels in this directory stay in their own realm', () => {
     // panel is covered the moment it lands, and this assertion is what makes
     // that arrival visible in review rather than silent.
     expect(files).toEqual([
-      'AudioSettings.tsx', 'GamePicker.tsx', 'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomBackupModal.tsx', 'RoomChat.tsx', 'RoomDataModal.tsx', 'RoomFileBudgetInfo.tsx', 'RoomFileRequestCard.tsx', 'RoomLanPanel.tsx',
-      'RoomLanServerWidget.tsx', 'RoomServerLeaveOptions.tsx', 'RoomServerPanel.tsx', 'RoomWorkspaceMenu.tsx', 'ServerAccessPanel.tsx',
+      'AudioSettings.tsx', 'GamePicker.tsx', 'LanDiagnosticsModal.tsx', 'LanPeerPicker.tsx', 'RoomActionHint.tsx', 'RoomBackupModal.tsx', 'RoomChat.tsx', 'RoomDataModal.tsx', 'RoomDocuments.tsx', 'RoomDocumentsEditor.tsx', 'RoomFileBudgetInfo.tsx', 'RoomFileEditorModal.tsx', 'RoomFileRequestCard.tsx', 'RoomKeyRotationModal.tsx', 'RoomLanPanel.tsx',
+      'RoomLanServerWidget.tsx', 'RoomObjectOpener.tsx', 'RoomServerLeaveOptions.tsx', 'RoomServerPanel.tsx', 'RoomSyncFolders.tsx', 'RoomSyncModal.tsx', 'RoomSyncMode.tsx', 'RoomToolSurface.tsx', 'RoomWorkArea.tsx', 'RoomWorkspaceMenu.tsx', 'RoomWorkspaceTools.tsx', 'ServerAccessPanel.tsx',
       'ServerBackupPanel.tsx', 'ServerConfigField.tsx', 'ServerConfigForm.tsx', 'ServerConfigPresets.tsx',
-      'ServerConsole.tsx', 'ServerContentPanel.tsx', 'ServerHealthPanel.tsx', 'ServerPlayersPanel.tsx', 'ServerPreparation.tsx',
+      'ServerConsole.tsx', 'ServerContentPanel.tsx', 'ServerGroupReadiness.tsx', 'ServerHealthPanel.tsx', 'ServerPlayersPanel.tsx', 'ServerPreparation.tsx',
       'ServerSchedulePanel.tsx', 'WatchReadyGate.tsx', 'useServerPanelData.tsx',
     ]);
   });

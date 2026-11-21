@@ -5,9 +5,30 @@ import { SETTINGS_SEARCH_ENTRIES } from './settingsSearchCatalog';
 import { normalizeSettingsSearch, searchSettings } from './settingsSearch';
 
 describe('search individual settings', () => {
+  it('finds the resource mode in System in both languages', () => {
+    for (const dictionary of [en, ru]) expect(searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['resources.mode'], key => dictionary[key]))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ section: 'system', labelKey: 'resources.mode' })]));
+  });
+  it('indexes first steps in About for both supported languages', () => {
+    for (const dictionary of [en, ru]) expect(searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['first.title'], key => dictionary[key]))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ section: 'about', labelKey: 'first.title' })]));
+  });
+  it('indexes navigation customization in the Interface section in both languages', () => {
+    for (const dictionary of [en, ru]) {
+      const results = searchSettings(SETTINGS_SEARCH_ENTRIES, dictionary['navigation.title'], key => dictionary[key]);
+      expect(results.some(item => item.labelKey === 'navigation.title' && item.section === 'interface')).toBe(true);
+    }
+  });
   it('finds a parameter by its name even when the category has no matching words', () => {
     const result = searchSettings(SETTINGS_SEARCH_ENTRIES, 'автозапуск', key => ru[key]);
     expect(result.some(item => item.section === 'general' && item.labelKey === 'settings.autoLaunch' && item.kind === 'row')).toBe(true);
+  });
+  it('prioritizes commonly searched settings in both languages', () => {
+    expect(searchSettings(SETTINGS_SEARCH_ENTRIES, 'папка загрузок', key => ru[key])[0].labelKey).toBe('settings.defaultDir');
+    expect(searchSettings(SETTINGS_SEARCH_ENTRIES, 'download folder', key => en[key])[0].labelKey).toBe('settings.defaultDir');
+    expect(searchSettings(SETTINGS_SEARCH_ENTRIES, 'уведомления', key => ru[key])[0].section).toBe('notifications');
+    expect(searchSettings(SETTINGS_SEARCH_ENTRIES, 'backup', key => en[key])[0].section).toBe('system');
+    expect(searchSettings(SETTINGS_SEARCH_ENTRIES, 'рабочий профиль', key => ru[key])[0].labelKey).toBe('working.title');
   });
   it('ranks an exact parameter name before related description matches', () => {
     const results = searchSettings(SETTINGS_SEARCH_ENTRIES, en['settings.upSpeed'], key => en[key]);

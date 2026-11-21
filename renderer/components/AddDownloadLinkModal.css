@@ -1,0 +1,4 @@
+.add-download-link { display: flex; flex-direction: column; gap: 10px; }
+.add-download-link p { margin: 0; line-height: 1.5; color: var(--color-text-secondary); }
+.add-download-link .input { width: 100%; min-width: 0; box-sizing: border-box; }
+.add-download-link .add-download-link-error { color: var(--color-error); }

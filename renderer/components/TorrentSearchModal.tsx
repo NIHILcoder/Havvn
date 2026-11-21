@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * Search torrents from the moment of adding one.
  *
@@ -13,12 +14,14 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AddDownloadRequest } from '../../shared/types';
+import { AddDownloadRequest, SearchProgress } from '../../shared/types';
 import { MergedResult, mergeResults } from '../../shared/search-dedupe';
 import { Button } from './Button';
 import { Icon } from './Icon';
 import { Modal } from './Modal';
 import { CategorySelect } from './CategorySelect';
+import { DownloadDefaultsPreview } from './DownloadDefaultsPreview';
+import { ReleaseDetailsModal } from './ReleaseDetailsModal';
 import { useTranslation } from '../utils/i18nContext';
 import './TorrentSearchModal.css';
 
@@ -34,7 +37,7 @@ const formatBytes = (bytes: number): string => {
 };
 
 const rowKey = (r: MergedResult): string =>
-  r.infoHash || r.magnetUri || r.torrentUrl || `${r.title}:${r.size}`;
+  r.deferredSource || r.infoHash || r.magnetUri || r.torrentUrl || `${r.title}:${r.size}`;
 
 interface TorrentSearchModalProps {
   onClose: () => void;
@@ -51,28 +54,31 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [added, setAdded] = useState<Set<string>>(new Set());
+  const [detailResult, setDetailResult] = useState<MergedResult | null>(null);
   const [categoryId, setCategoryId] = useState('');
 
   const searchIdRef = useRef<string | null>(null);
+  const starting = useRef(false), version = useRef(0);
+  const early = useRef<SearchProgress[]>([]);
+  const receive = useCallback((progress: SearchProgress) => {
+    if (progress.searchId !== searchIdRef.current) {
+      if (starting.current && early.current.length < 100) early.current.push(progress);
+      return;
+    }
+    if (progress.results?.length) setRows(prev => mergeResults(prev, progress.results!));
+    if (progress.done) { searchIdRef.current = null; setLoading(false); }
+  }, []);
 
   // One subscription; messages from a superseded search are dropped by id.
   useEffect(() => {
-    return window.api.search.onProgress(progress => {
-      if (progress.searchId !== searchIdRef.current) return;
-      if (progress.results && progress.results.length > 0) {
-        setRows(prev => mergeResults(prev, progress.results!));
-      }
-      if (progress.done) {
-        searchIdRef.current = null;
-        setLoading(false);
-      }
-    });
-  }, []);
+    return window.api.search.onProgress(receive);
+  }, [receive]);
 
   // Abandon an in-flight search when the modal closes, so its providers stop
   // working on results nobody will see.
   useEffect(() => {
     return () => {
+      ++version.current; starting.current = false;
       if (searchIdRef.current) {
         window.api.search.cancel(searchIdRef.current).catch(() => { /* best effort */ });
       }
@@ -90,39 +96,52 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
 
     setLoading(true);
     setSearched(true);
+    searchIdRef.current = null;
     setError(null);
     setRows([]);
     setAdded(new Set());
+    const current = ++version.current; starting.current = true; early.current = [];
 
     try {
       const { searchId, providers } = await window.api.search.start(term);
+      if (current !== version.current) { void window.api.search.cancel(searchId); return; }
       searchIdRef.current = searchId;
+      starting.current = false;
+      const pending = early.current; early.current = [];
+      pending.forEach(receive);
       if (providers.length === 0) {
         setLoading(false);
         setError(t('search.hint.desc'));
       }
     } catch (err: any) {
+      if (current !== version.current) return;
+      starting.current = false;
       setError(err?.message || t('search.failed'));
       setLoading(false);
     }
-  }, [query, t]);
+  }, [query, t, receive]);
 
   const handleAdd = async (result: MergedResult) => {
     const key = rowKey(result);
-    const uri = result.magnetUri || result.torrentUrl;
-    if (!uri || pending) return;
+    if (pending) return false;
 
     setPending(key);
     try {
+      const resolved = result.sourceRefs?.length ? await window.api.search.resolveSource(result.sourceRefs) : null;
+      const uri = resolved?.sourceUri || result.magnetUri || result.torrentUrl;
+      if (!uri) throw new Error(t('search.noLink'));
       await onAdd({
-        sourceType: result.magnetUri ? 'magnet' : 'torrent_file',
+        sourceType: resolved?.sourceType ?? (result.magnetUri ? 'magnet' : 'torrent_file'),
         sourceUri: uri,
         name: result.title,
         categoryId: categoryId || undefined,
+        searchSourceRefs: result.sourceRefs,
       });
       setAdded(prev => new Set(prev).add(key));
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setPending(null);
     }
@@ -133,7 +152,7 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
   const visible = [...rows].sort((a, b) => b.seeds - a.seeds).slice(0, MAX_ROWS);
 
   return (
-    <Modal onClose={onClose} title={t('downloads.searchTorrents')} icon="search" size="lg">
+    <><Modal onClose={onClose} title={t('downloads.searchTorrents')} icon="search" size="lg">
       <form className="tsm-form" onSubmit={runSearch}>
         <div className="tsm-input-wrap">
           <Icon name="search" size={16} />
@@ -155,11 +174,12 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
         <span className="tsm-options-label">{t('search.addTo')}</span>
         <CategorySelect value={categoryId} onChange={setCategoryId} className="tsm-category" />
       </div>
+      <DownloadDefaultsPreview compact categoryId={categoryId} />
 
       {error && (
         <div className="tsm-error">
           <Icon name="alert-circle" size={14} />
-          {error}
+          <ErrorMessage error={error} />
         </div>
       )}
 
@@ -174,7 +194,7 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
             return (
               <div key={key} className={`tsm-row ${added.has(key) ? 'added' : ''}`}>
                 <div className="tsm-row-main">
-                  <div className="tsm-title" title={r.title}>{r.title}</div>
+                  <button type="button" className="tsm-title tsm-title-button" title={r.title} aria-label={`${t('search.preview.title')}: ${r.title}`} onClick={() => setDetailResult(r)}>{r.title}</button>
                   <div className="tsm-meta">
                     <span>{formatBytes(r.size)}</span>
                     <span className="tsm-seeds">{r.seeds}</span>
@@ -188,7 +208,7 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
                     variant="primary"
                     size="sm"
                     loading={pending === key}
-                    disabled={!!pending || (!r.magnetUri && !r.torrentUrl)}
+                    disabled={!!pending || (!r.magnetUri && !r.torrentUrl && !r.sourceRefs?.length)}
                     onClick={() => handleAdd(r)}
                     icon={<Icon name="plus" size={13} />}
                   >
@@ -201,5 +221,8 @@ export const TorrentSearchModal: React.FC<TorrentSearchModalProps> = ({ onClose,
         </div>
       )}
     </Modal>
+      {detailResult && <ReleaseDetailsModal key={rowKey(detailResult)} result={detailResult} onClose={() => setDetailResult(null)} busy={!!pending} added={added.has(rowKey(detailResult))}
+        onDownload={async ref => { if (!await handleAdd(ref ? { ...detailResult, sourceRefs: [ref] } : detailResult)) throw new Error('Download failed'); }} />}
+    </>
   );
 };

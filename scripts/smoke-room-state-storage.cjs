@@ -99,7 +99,8 @@ if (!process.versions.electron) {
     assert.ok(!JSON.stringify(raw).includes('private smoke body')); raw.rooms[id].name = 'External replacement';
     fs.writeFileSync(roomsPath, JSON.stringify(raw)); assert.equal(db.getPersistedRoom(id).name, 'External replacement');
     manager.destroy();
-    for (const channel of ['room-persist-chat', 'room-persist-chat-edit', 'rooms:typing', 'rooms:reactFile', 'rooms:reactChat']) ipcMain.removeHandler(channel);
+    // Simulate a process restart in this fixture's one Electron main process.
+    for (const channel of ['room-persist-chat', 'room-persist-chat-edit', 'room-persist-chat-pins', 'rooms:typing', 'rooms:reactFile', 'rooms:reactChat']) ipcMain.removeHandler(channel);
     manager = new RoomManager(); manager.setMainWindow(ui); await manager.restoreAll();
     const restored = await manager.getRoom(id); assert.equal(restored.files.length, 1000); assert.equal(restored.chat.length, 200);
     assert.equal(db.getRoomChats(id)[0].text, chat[0].text);

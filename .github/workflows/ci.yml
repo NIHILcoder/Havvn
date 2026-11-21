@@ -29,6 +29,10 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Renderer performance structure
+        run: npm run performance:ci
+        timeout-minutes: 5
+
       # Advisory — surfaces existing lint debt without blocking the pipeline
       - name: Lint
         run: npm run lint

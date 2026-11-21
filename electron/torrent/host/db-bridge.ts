@@ -23,12 +23,12 @@ export function wireDbBridge(sender: (msg: DbRequest) => void): void {
 }
 
 /** Feed a db-res message back from main into the pending promise. */
-export function resolveDbResponse(id: number, ok: boolean, result?: unknown, error?: string): void {
+export function resolveDbResponse(id: number, ok: boolean, result?: unknown, error?: string, code?: string): void {
   const p = pending.get(id);
   if (!p) return;
   pending.delete(id);
   if (ok) p.resolve(result);
-  else p.reject(new Error(error || 'db bridge error'));
+  else p.reject(Object.assign(new Error(error || 'db bridge error'), code ? { code } : {}));
 }
 
 /** Reject everything in flight (e.g. on shutdown) so callers don't hang. */
@@ -51,6 +51,7 @@ function bridged<K extends DbBridgeFn>(fn: K): DB[K] {
 }
 
 export const createDownload = bridged('createDownload');
+export const restoreDownload = bridged('restoreDownload');
 export const deleteDownload = bridged('deleteDownload');
 export const getAllDownloads = bridged('getAllDownloads');
 export const getDownloadById = bridged('getDownloadById');

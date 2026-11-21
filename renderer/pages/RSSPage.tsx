@@ -1,3 +1,4 @@
+import { ErrorMessage } from '../components/ErrorMessage';
 /**
  * RSS Page
  * Manage RSS feed subscriptions with auto-download support.
@@ -8,10 +9,13 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { RSSFeed, RSSItem, RSSRule } from '../../shared/types';
 import { Button, Icon, EmptyState, CategorySelect, DropdownMenu, useConfirm } from '../components';
 import { useTranslation } from '../utils/i18nContext';
+import { readableError } from '../utils/error-messages';
 import './RSSPage.css';
 import '../components/Toggle.css';
 import { Modal } from '../components/Modal';
 import { NumberInput } from '../components/NumberInput';
+import { DownloadDefaultsPreview, InheritedBooleanSelect, RuleDownloadDefaultsPreview } from '../components/DownloadDefaultsPreview';
+import type { RssForecast } from '../../shared/rss-forecast';
 
 const formatDate = (dateStr?: string): string => {
   if (!dateStr) return '—';
@@ -60,6 +64,10 @@ const RSSPage: React.FC = () => {
   const currentTab: string = tab; // avoids TS narrowing in nested JSX
 
   const [selectedFeed, setSelectedFeed] = useState<string | null>(null);
+  const selectedFeedRef = useRef(selectedFeed);
+  selectedFeedRef.current = selectedFeed;
+  const itemsRequest = useRef(0);
+  useEffect(() => () => { itemsRequest.current += 1; }, []);
   const [itemSearch, setItemSearch] = useState('');
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
@@ -86,7 +94,8 @@ const RSSPage: React.FC = () => {
   const [runningRuleId, setRunningRuleId] = useState<string | null>(null);
   // What the rule being edited would match right now, so it can be tuned
   // against real items instead of guessed at.
-  const [rulePreview, setRulePreview] = useState<RSSItem[] | null>(null);
+  const [rulePreview, setRulePreview] = useState<RssForecast | null>(null);
+  const [previewError, setPreviewError] = useState(false);
 
   const loadRules = useCallback(async () => {
     try {
@@ -108,9 +117,12 @@ const RSSPage: React.FC = () => {
       return;
     }
     const rule = editingRule;
+    let active = true;
+    setRulePreview(null);
+    setPreviewError(false);
     const timer = setTimeout(() => {
       window.api.rss
-        .previewRule({
+        .forecastRule({
           id: rule.id || 'preview',
           name: rule.name || '',
           enabled: true,
@@ -124,13 +136,11 @@ const RSSPage: React.FC = () => {
           maxAgeDays: rule.maxAgeDays,
           smartEpisode: rule.smartEpisode,
           startFrom: rule.startFrom,
-          // Deliberately not passing grabbedKeys: the preview should show what
-          // the rule matches, not what is left after past grabs.
         })
-        .then(setRulePreview)
-        .catch(() => setRulePreview([]));
+        .then(items => { if (active) setRulePreview(items); })
+        .catch(() => { if (active) setPreviewError(true); });
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { active = false; clearTimeout(timer); };
   }, [editingRule]);
 
   const handleSaveRule = async () => {
@@ -164,7 +174,7 @@ const RSSPage: React.FC = () => {
       await loadRules();
       setTab('rules');
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setSavingRule(false);
     }
@@ -176,7 +186,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.removeRule(id);
       await loadRules();
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -185,7 +195,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.updateRule(rule.id, { enabled: !rule.enabled });
       await loadRules();
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -201,7 +211,7 @@ const RSSPage: React.FC = () => {
         message: `${t('rss.rule.runDoneAdded')} ${grabbed}. ${t('rss.rule.runDoneSkipped')} ${skipped}.`,
       });
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setRunningRuleId(null);
     }
@@ -219,9 +229,12 @@ const RSSPage: React.FC = () => {
   }, []);
 
   const loadItems = useCallback(async (feedId?: string) => {
+    const scope = feedId || null;
+    if (scope !== selectedFeedRef.current) return;
+    const request = ++itemsRequest.current;
     try {
       const list = await window.api.rss.getItems(feedId || '');
-      setItems(list);
+      if (request === itemsRequest.current && scope === selectedFeedRef.current) setItems(list);
     } catch (err) {
       console.error('Failed to load RSS items:', err);
     }
@@ -244,7 +257,7 @@ const RSSPage: React.FC = () => {
       await loadFeeds();
       if (tab === 'items') await loadItems(selectedFeed || undefined);
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.checkFeed')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setCheckingId(null);
     }
@@ -260,7 +273,7 @@ const RSSPage: React.FC = () => {
         message: `${t('rss.opml.importAdded')} ${res.added}. ${t('rss.opml.importSkipped')} ${res.skipped}.`,
       });
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -273,7 +286,7 @@ const RSSPage: React.FC = () => {
         message: `${t('rss.opml.exportDone')} ${res.count}`,
       });
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -283,7 +296,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.checkAll();
       await loadFeeds();
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setCheckingAll(false);
     }
@@ -294,7 +307,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.updateFeed(feed.id, { enabled: !feed.enabled });
       await loadFeeds();
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -305,7 +318,7 @@ const RSSPage: React.FC = () => {
       await loadFeeds();
       if (selectedFeed === id) setSelectedFeed(null);
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     }
   };
 
@@ -332,7 +345,7 @@ const RSSPage: React.FC = () => {
       await loadFeeds();
       setTab('feeds');
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setSavingFeed(false);
     }
@@ -357,7 +370,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.markDownloaded(item.guid);
       await loadItems(selectedFeed || undefined);
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setDownloadingGuids(prev => {
         const next = new Set(prev);
@@ -377,7 +390,7 @@ const RSSPage: React.FC = () => {
       await window.api.rss.clearItems(selectedFeed || undefined, false);
       await loadItems(selectedFeed || undefined);
     } catch (err: any) {
-      await alert({ title: t('rss.error.title'), message: `${t('rss.error.title')}: ${err?.message}` });
+      await alert({ title: t('rss.error.title'), message: <ErrorMessage error={err} details /> });
     } finally {
       setClearing(false);
     }
@@ -463,7 +476,7 @@ const RSSPage: React.FC = () => {
           <button className={`rss-tab ${tab === 'feeds' ? 'active' : ''}`} onClick={() => setTab('feeds')}>
             {t('rss.tab.feeds')} ({feeds.length})
           </button>
-          <button className={`rss-tab ${tab === 'items' ? 'active' : ''}`} onClick={() => { setTab('items'); loadItems(selectedFeed || undefined); }}>
+          <button className={`rss-tab ${tab === 'items' ? 'active' : ''}`} onClick={() => setTab('items')}>
             {t('rss.tab.items')} {scopedItems.length > 0 && `(${scopedItems.length})`}
           </button>
           <button className={`rss-tab ${tab === 'rules' ? 'active' : ''}`} onClick={() => { setTab('rules'); loadRules(); }}>
@@ -489,7 +502,7 @@ const RSSPage: React.FC = () => {
                     {/* A failing feed used to look exactly like a healthy one. */}
                     <div
                       className="feed-status-dot"
-                      title={feed.lastError || undefined}
+                      title={feed.lastError ? readableError(feed.lastError) : undefined}
                       style={{ background: feedStatusColor(feed) }}
                     />
                     <div className="feed-main">
@@ -523,9 +536,9 @@ const RSSPage: React.FC = () => {
                           </span>
                         )}
                         {feed.lastError && (
-                          <span className="feed-meta-item feed-error" title={feed.lastError}>
+                          <span className="feed-meta-item feed-error" title={readableError(feed.lastError)}>
                             <Icon name="alert-circle" size={11} />
-                            {feed.lastError}
+                            <ErrorMessage error={feed.lastError} />
                             {(feed.consecutiveFailures || 0) > 1 && ` (×${feed.consecutiveFailures})`}
                           </span>
                         )}
@@ -585,7 +598,7 @@ const RSSPage: React.FC = () => {
               <div className="items-filter-row">
                 <button
                   className={`filter-chip ${selectedFeed === null ? 'active' : ''}`}
-                  onClick={() => { setSelectedFeed(null); loadItems(); }}
+                  onClick={() => setSelectedFeed(null)}
                 >
                   {t('rss.allFeeds')}
                 </button>
@@ -593,7 +606,7 @@ const RSSPage: React.FC = () => {
                   <button
                     key={f.id}
                     className={`filter-chip ${selectedFeed === f.id ? 'active' : ''}`}
-                    onClick={() => { setSelectedFeed(f.id); loadItems(f.id); }}
+                    onClick={() => setSelectedFeed(f.id)}
                   >
                     {f.name}
                   </button>
@@ -854,6 +867,8 @@ const RSSPage: React.FC = () => {
             </>}
           >
           <fieldset className="feed-form rule-editor" disabled={savingRule}>
+            <div className="rss-rule-templates"><span>{t('rss.forecast.templates')}</span>{(['series', 'quality', 'all'] as const).map(template => <Button key={template} variant="secondary" size="sm" onClick={() => setEditingRule(rule => ({ ...rule, mode: 'wildcard', smartEpisode: template === 'series', include: template === 'quality' ? '1080p' : '', exclude: template === 'quality' ? 'sample cam' : '', enabled: false }))}>{t(`rss.forecast.template.${template}`)}</Button>)}</div>
+            <p className="field-hint">{t('rss.forecast.templateHint')}</p>
 
             <div className="form-field">
               <label>{t('rss.rule.name')}</label>
@@ -1061,52 +1076,43 @@ const RSSPage: React.FC = () => {
                   <span className="toggle-slider" />
                 </button>
               </label>
-              <label className="toggle-field">
+              <label className="toggle-field toggle-field-select">
                 <div>
                   <span>{t('rss.form.addPaused')}</span>
                   <span className="field-hint">{t('rss.form.addPausedHint')}</span>
                 </div>
-                <button
-                  type="button"
-                  className={`toggle-switch small ${editingRule.addPaused ? 'active' : ''}`}
-                  aria-label={t('rss.form.addPaused')}
-                  role="switch"
-                  aria-checked={!!editingRule.addPaused}
-                  onClick={() => setEditingRule(r => ({ ...r, addPaused: !r?.addPaused }))}
-                >
-                  <span className="toggle-slider" />
-                </button>
+                <InheritedBooleanSelect value={editingRule.addPaused} label={t('rss.form.addPaused')} yes={t('category.defaults.paused')} no={t('category.defaults.active')}
+                  onChange={addPaused => setEditingRule(r => ({ ...r, addPaused }))} />
               </label>
             </div>
 
+            <RuleDownloadDefaultsPreview rule={editingRule} feeds={feeds} />
+            </section>
+          </div>
             {/* What the rule matches right now — a rule tuned blind is a rule
                 that grabs the wrong thing at 3am. */}
             <div className="rule-preview">
               <div className="rule-preview-head">
                 <Icon name="eye" size={14} />
-                {rulePreview === null
-                  ? t('rss.rule.previewLoading')
-                  : `${t('rss.rule.previewCount')} ${rulePreview.length}`}
+                {t('rss.forecast.title')}
               </div>
-              {rulePreview && rulePreview.length > 0 && (
+              <p className="field-hint">{t('rss.forecast.scope')}</p>
+              {previewError ? <p role="alert">{t('rss.forecast.error')}</p> : rulePreview === null ? <p role="status">{t('rss.rule.previewLoading')}</p> : <div className="rss-forecast-counts" role="status">{(['matched', 'ready', 'processed', 'excluded'] as const).map(key => <span key={key}>{t(`rss.forecast.${key}`)}: <strong>{rulePreview[key]}</strong></span>)}</div>}
+              {rulePreview && rulePreview.rows.length > 0 && (
                 <ul className="rule-preview-list">
-                  {rulePreview.slice(0, 20).map(item => (
-                    <li key={item.guid} title={item.title}>
-                      {item.downloaded && <Icon name="check" size={11} />}
-                      {item.title}
+                  {rulePreview.rows.map(({ item, state, reason }) => (
+                    <li key={item.feedId + ':' + item.guid} title={item.title} data-rss-forecast={state}>
+                      <span>{item.title}</span><small>{t(`rss.forecast.reason.${reason}`)}</small>
                     </li>
                   ))}
-                  {rulePreview.length > 20 && (
+                  {rulePreview.more > 0 && (
                     <li className="rule-preview-more">
-                      + {rulePreview.length - 20}
+                      + {rulePreview.more}
                     </li>
                   )}
                 </ul>
               )}
             </div>
-
-            </section>
-          </div>
           </fieldset>
           </Modal>
         )}
@@ -1218,24 +1224,17 @@ const RSSPage: React.FC = () => {
                   <span className="toggle-slider" />
                 </button>
               </label>
-              <label className="toggle-field">
+              <label className="toggle-field toggle-field-select">
                 <div>
                   <span>{t('rss.form.addPaused')}</span>
                   <span className="field-hint">{t('rss.form.addPausedFeedHint')}</span>
                 </div>
-                <button
-                  type="button"
-                  className={`toggle-switch small ${editingFeed.addPaused ? 'active' : ''}`}
-                  aria-label={t('rss.form.addPaused')}
-                  role="switch"
-                  aria-checked={!!editingFeed.addPaused}
-                  onClick={() => setEditingFeed(f => ({ ...f, addPaused: !f?.addPaused }))}
-                >
-                  <span className="toggle-slider" />
-                </button>
+                <InheritedBooleanSelect value={editingFeed.addPaused} label={t('rss.form.addPaused')} yes={t('category.defaults.paused')} no={t('category.defaults.active')}
+                  onChange={addPaused => setEditingFeed(f => ({ ...f, addPaused }))} />
               </label>
             </div>
 
+          <DownloadDefaultsPreview categoryId={editingFeed.categoryId} savePath={editingFeed.savePath} paused={editingFeed.addPaused} />
           </fieldset>
           </Modal>
         )}

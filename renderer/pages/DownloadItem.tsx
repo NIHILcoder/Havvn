@@ -1,3 +1,4 @@
+import { ErrorMessage } from '../components/ErrorMessage';
 /**
  * A single download row — compact (default) and detailed/expanded views.
  * Extracted from DownloadsPage.tsx to keep that file focused on list/page logic.
@@ -6,11 +7,13 @@
 import React, { useState } from 'react';
 import { Download, DownloadStats } from '../../shared/types';
 import { canPause } from '../../shared/state-machine';
-import { Button, Icon, ProgressBar, StatusBadge, HealthBadge } from '../components';
+import { Button, Icon, ProgressBar, StatusBadge, HealthBadge, ContextMenu, Modal } from '../components';
 import { ViewMode, formatBytes, formatSpeed, formatEta, getTypeIcon, looksLikeMedia, isAudioMedia } from './download-helpers';
 import { useCategories, categoryLabel } from '../utils/useCategories';
 import { useTranslation } from '../utils/i18nContext';
 import { useDownloads } from '../state/downloads';
+import { downloadOperation } from '../../shared/download-operation';
+import { useOperationText, OperationStatus } from '../components/OperationStatus';
 
 export const ConnectedDownloadItem = React.memo((props: Omit<DownloadItemProps, 'download' | 'stats'> & { downloadId: string }) => {
   const { downloadId, ...rowProps } = props;
@@ -37,6 +40,7 @@ export interface DownloadItemProps {
   onShowFiles: (id: string) => void;
   onStream?: (id: string) => void;
   onShare?: (id: string) => void;
+  onInspect?: (id: string) => void;
 }
 
 export const DownloadItem: React.FC<DownloadItemProps> = ({
@@ -57,9 +61,11 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
   onShowFiles,
   onStream,
   onShare,
+  onInspect,
 }) => {
   const { t } = useTranslation();
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [localMenu, setLocalMenu] = useState<{ x: number; y: number } | null>(null);
   const categories = useCategories();
   const categoryColor = categories.find(c => c.id === download.category)?.color;
 
@@ -77,6 +83,14 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
 
   const status = currentStats.status;
   const progress = currentStats.progress;
+  const operation = stats?.operation ?? downloadOperation({ ...download, status, progress }, stats ? {
+    peers: stats.peers, downSpeedBps: stats.downSpeedBps,
+  } : {});
+  const operationText = useOperationText(operation);
+  const percent = operationText.percent;
+  const checking = operation.stage === 'checking';
+  const showOperation = operation.stage === 'metadata' || checking || operation.status === 'waiting';
+  const progressTitle = [operationText.stage, operationText.reason].filter(Boolean).join('. ');
   // Transfer counters survive restarts and can exceed the bytes on disk.
   // Size comes only from metadata, never downloadedBytes / progress.
   const sizeLabel = Number.isFinite(download.totalSize) && download.totalSize > 0
@@ -86,13 +100,36 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
   // One-click "Watch/Listen" shortcut on media rows. Shown while there's
   // something to play (downloading — instant-play streams while it downloads —,
   // completed, or seeding); paused rows show Resume instead, so no icon clash.
-  const canWatch = !!onStream && looksLikeMedia(download) &&
+  const canWatch = operation.stage !== 'metadata' && !checking && !!onStream && looksLikeMedia(download) &&
     (status === 'downloading' || status === 'completed' || status === 'seeding');
   const watchLabel = isAudioMedia(download) ? t('downloads.listen') : t('downloads.watch');
+  const openMore = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (onContextMenu) { onContextMenu(event, download.id); return; }
+    const rect = event.currentTarget.getBoundingClientRect(); setLocalMenu({ x: rect.left, y: rect.bottom });
+  };
+  const rowOverlays = <>
+    {localMenu && <ContextMenu {...localMenu} autoFocus onClose={() => setLocalMenu(null)} items={[
+      { label: t('downloads.files'), icon: 'list', onClick: () => onShowFiles(download.id) },
+      ...(status === 'seeding' ? [{ label: t('downloads.stopSeeding'), icon: 'stop' as const, onClick: () => onStopSeeding(download.id) }] : []),
+      ...(canWatch ? [{ label: watchLabel, icon: 'play' as const, onClick: () => onStream?.(download.id) }] : []),
+      ...(onShare ? [{ label: t('downloads.share'), icon: 'share-2' as const, onClick: () => onShare(download.id) }] : []),
+      ...(onInspect ? [{ label: t('downloads.help'), icon: 'info' as const, onClick: () => onInspect(download.id) }] : []),
+      { label: t('downloads.openFolder'), icon: 'folder', onClick: () => onOpenFolder(download.savePath) },
+      { label: t('downloads.remove'), icon: 'trash', danger: true, onClick: () => setShowRemoveConfirm(true) },
+    ]} />}
+    {showRemoveConfirm && <Modal title={t('downloads.remove')} icon="trash" size="sm" onClose={() => setShowRemoveConfirm(false)} footer={<Button variant="secondary" onClick={() => setShowRemoveConfirm(false)}>{t('common.cancel')}</Button>}>
+      <p>{download.name}</p><div className="remove-confirm">
+        <Button variant="danger" onClick={() => { setShowRemoveConfirm(false); onRemove(download.id, true); }}>{t('downloads.deleteWithFiles')}</Button>
+        <Button variant="secondary" onClick={() => { setShowRemoveConfirm(false); onRemove(download.id, false); }}>{t('downloads.keepFiles')}</Button>
+      </div>
+    </Modal>}
+  </>;
 
   const getProgressVariant = (): 'default' | 'success' | 'warning' | 'error' => {
-    if (status === 'completed' || status === 'seeding') return 'success';
     if (status === 'error') return 'error';
+    if (checking) return 'default';
+    if (status === 'completed' || status === 'seeding') return 'success';
     if (status === 'paused') return 'warning';
     return 'default';
   };
@@ -110,7 +147,8 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
     // Right-hand label over the progress bar: eta while downloading, the
     // give-back ratio once finished, otherwise the state name.
     const progLabel =
-      status === 'downloading' ? formatEta(currentStats.etaSeconds)
+      showOperation ? operationText.stage
+      : status === 'downloading' ? formatEta(currentStats.etaSeconds)
       : status === 'seeding' || status === 'completed' ? (ratio !== null ? `${ratio.toFixed(2)}×` : '—')
       : t(`status.${status}`).toLowerCase();
 
@@ -149,7 +187,9 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             <div className="trow-sub">
               {sizeLabel && <span>{sizeLabel}</span>}
               {/* Shown only at widths where the progress column is dropped */}
-              <span className="trow-sub-pct">{(progress * 100).toFixed(0)}%</span>
+              <span className={`trow-sub-pct${showOperation ? ' operation-summary' : ''}`} title={progressTitle}>
+                {showOperation ? operationText.stage : ''}{showOperation && percent !== null ? ' · ' : ''}{percent === null ? '' : `${percent.toFixed(0)}%`}
+              </span>
               {/* Stored as a Category id, so resolve it — the raw "movies" was
                   never meant to be the label the user reads. */}
               {download.category && (
@@ -158,21 +198,21 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
                 </span>
               )}
               {status === 'error' && download.lastError && (
-                <span className="error-text truncate">{download.lastError}</span>
+                <span className="error-text truncate"><ErrorMessage error={download.lastError} /></span>
               )}
             </div>
           </div>
-          <div className="trow-prog">
+          <div className="trow-prog" title={progressTitle}>
             <div className="trow-prog-labels">
-              <span className="trow-pct">{(progress * 100).toFixed(progress >= 1 ? 0 : 1)}%</span>
+              <span className="trow-pct">{percent === null ? '—' : `${percent.toFixed(percent >= 100 ? 0 : 1)}%`}</span>
               <span className="trow-prog-hint">{progLabel}</span>
             </div>
-            <ProgressBar value={progress} variant={getProgressVariant()} />
+            <ProgressBar value={percent === null ? null : percent / 100} variant={getProgressVariant()} label={operationText.stage} />
           </div>
         </div>
         <div className="trow-tail">
           <div className="trow-readouts">
-            <div className="trow-rate">
+            <div className="trow-rate" title={`${t('downloads.statDownSpeed')}: ${formatSpeed(currentStats.downSpeedBps)} · ${t('downloads.statUpSpeed')}: ${formatSpeed(currentStats.upSpeedBps)}`}>
               {status === 'downloading' ? (
                 <>
                   <span className="trow-rate-main rate-down">↓ {formatSpeed(currentStats.downSpeedBps)}</span>
@@ -191,7 +231,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
               )}
             </div>
             <div className="trow-status">
-              <StatusBadge status={status} showIcon={false} />
+              {checking ? <span className="badge" title={progressTitle}>{operationText.stage}</span> : <StatusBadge status={status} showIcon={false} />}
             </div>
           </div>
 
@@ -199,6 +239,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
           <div className="trow-actions">
             {onShare && (
               <Button
+                className="download-share-shortcut"
                 variant="ghost"
                 size="sm"
                 icon={<Icon name="share-2" size={13} />}
@@ -208,17 +249,17 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
                 <span className="trow-action-label">{t('downloads.share')}</span>
               </Button>
             )}
-            {(status === 'downloading' || status === 'queued') && (
+            {!checking && (status === 'downloading' || status === 'queued') && (
               <Button variant="ghost" size="sm" icon={<Icon name="pause" size={13} />} title={t('downloads.pause')} onClick={() => onPause(download.id)}>
                 <span className="trow-action-label">{t('downloads.pause')}</span>
               </Button>
             )}
-            {status === 'seeding' && (
+            {!checking && status === 'seeding' && (
               <Button variant="ghost" size="sm" icon={<Icon name="stop" size={13} />} onClick={() => onStopSeeding(download.id)} title={t('downloads.stopSeeding')}>
                 <span className="trow-action-label">{t('downloads.stop')}</span>
               </Button>
             )}
-            {(status === 'paused' || status === 'completed') && (
+            {!checking && (status === 'paused' || status === 'completed') && (
               <Button variant="ghost" size="sm" icon={<Icon name={status === 'completed' || progress >= 1 ? 'upload' : 'play'} size={13} />} title={t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')} onClick={() => onResume(download.id)}>
                 <span className="trow-action-label">{t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}</span>
               </Button>
@@ -245,6 +286,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
                 size="sm"
                 iconOnly
                 icon={<Icon name="folder" size={14} />}
+                className="download-folder-shortcut"
                 onClick={() => onOpenFolder(download.savePath)}
                 title={t('downloads.openFolder')}
               />
@@ -254,14 +296,12 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
               size="sm"
               iconOnly
               icon={<Icon name="more-horizontal" size={14} />}
-              onClick={(e) => {
-                e.stopPropagation();
-                onContextMenu?.(e, download.id);
-              }}
+              onClick={openMore}
               title={t('downloads.more')}
             />
           </div>
         </div>
+        {rowOverlays}
       </div>
     );
   }
@@ -291,140 +331,36 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             <span className="download-expand-chevron expanded"><Icon name="chevron-down" size={14} /></span>
           )}
           <span className="download-type-icon"><Icon name={getTypeIcon(download)} size={16} /></span>
-          <span className="download-item-name">{download.name}</span>
-          <StatusBadge status={status} />
+          <span className="download-item-name" title={download.name}>{download.name}</span>
+          {checking ? <span className="badge">{operationText.stage}</span> : <StatusBadge status={status} />}
         </div>
-        <div className="download-item-actions">
-          {canWatch && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="download-watch-btn"
-              icon={<Icon name="play" size={16} />}
-              onClick={() => onStream!(download.id)}
-            >
-              {watchLabel}
-            </Button>
-          )}
-
-          {canPause(status) && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="pause" size={16} />}
-              onClick={() => onPause(download.id)}
-            >
-              {t('downloads.pause')}
-            </Button>
-          )}
-
-          {(status === 'paused' || status === 'completed') && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="play" size={16} />}
-              onClick={() => onResume(download.id)}
-            >
-              {t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}
-            </Button>
-          )}
-
-          {status === 'seeding' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="stop" size={16} />}
-              onClick={() => onStopSeeding(download.id)}
-            >
-              {t('downloads.stopSeeding')}
-            </Button>
-          )}
-
-          {status === 'error' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="refresh" size={16} />}
-              onClick={() => onRetry(download.id)}
-            >
-              {t('downloads.retry')}
-            </Button>
-          )}
-
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<Icon name="list" size={16} />}
-            onClick={() => onShowFiles(download.id)}
-          >
-            {t('downloads.files')}
-          </Button>
-
-          {(status === 'completed' || status === 'seeding') && (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="folder" size={16} />}
-              onClick={() => onOpenFolder(download.savePath)}
-            >
-              {t('downloads.openFolder')}
-            </Button>
-          )}
-
-          {!showRemoveConfirm ? (
-            <Button
-              variant="ghost"
-              size="sm"
-              icon={<Icon name="trash" size={16} />}
-              onClick={() => setShowRemoveConfirm(true)}
-            >
-              {t('downloads.remove')}
-            </Button>
-          ) : (
-            <div className="remove-confirm">
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  onRemove(download.id, true);
-                  setShowRemoveConfirm(false);
-                }}
-              >
-                {t('downloads.deleteWithFiles')}
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  onRemove(download.id, false);
-                  setShowRemoveConfirm(false);
-                }}
-              >
-                {t('downloads.keepFiles')}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                iconOnly
-                icon={<Icon name="x" size={16} />}
-                onClick={() => setShowRemoveConfirm(false)}
-              />
-            </div>
-          )}
+        <div className="download-item-actions" role="group" aria-label={t('downloads.toolsTitle')}>
+          {!checking && status === 'seeding' ? <Button variant="secondary" size="sm" icon={<Icon name="stop" size={16} />} onClick={() => onStopSeeding(download.id)}>{t('downloads.stopSeeding')}</Button>
+            : !checking && canPause(status) ? <Button variant="secondary" size="sm" icon={<Icon name="pause" size={16} />} onClick={() => onPause(download.id)}>{t('downloads.pause')}</Button>
+            : !checking && (status === 'paused' || status === 'completed') ? <Button variant="secondary" size="sm" icon={<Icon name="play" size={16} />} onClick={() => onResume(download.id)}>{t(status === 'completed' || progress >= 1 ? 'downloads.resumeSeeding' : 'downloads.resume')}</Button>
+            : status === 'error' ? <Button variant="secondary" size="sm" icon={<Icon name="refresh" size={16} />} onClick={() => onRetry(download.id)}>{t('downloads.retry')}</Button> : null}
+          {canWatch && <Button variant="ghost" size="sm" className="download-action-watch" icon={<Icon name="play" size={16} />} onClick={() => onStream?.(download.id)}>{watchLabel}</Button>}
+          <Button variant="ghost" size="sm" icon={<Icon name="list" size={16} />} onClick={() => onShowFiles(download.id)}>{t('downloads.files')}</Button>
+          <Button variant="ghost" size="sm" icon={<Icon name="more-horizontal" size={16} />} onClick={openMore} aria-haspopup="menu">{t('downloads.more')}</Button>
         </div>
       </div>
+      {rowOverlays}
 
       <div className="download-detailed-progress">
         <ProgressBar
-          value={progress}
+          value={percent === null ? null : percent / 100}
           variant={getProgressVariant()}
+          label={operationText.stage}
         />
-        <span className="progress-text-large">{(progress * 100).toFixed(1)}%</span>
+        <span className="progress-text-large">{percent === null ? '—' : `${percent.toFixed(1)}%`}</span>
       </div>
+      {showOperation && <OperationStatus operation={operation} showProgress={false} />}
+      {onInspect && (showOperation || status === 'error' || status === 'paused' || status === 'queued') && <Button variant="ghost" size="sm" className="download-help-link" icon={<Icon name="info" size={14} />} onClick={() => onInspect(download.id)}>{t('downloads.help')}</Button>}
 
       {status === 'error' && download.lastError && (
         <div className="download-error-message">
           <Icon name="alert-circle" size={16} />
-          <span>{download.lastError}</span>
+          <ErrorMessage error={download.lastError} details />
         </div>
       )}
 
@@ -433,7 +369,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
           <div className="stat-item">
             <Icon name="download" size={12} />
             <div className="stat-content">
-              <span className="stat-label">{t('downloads.statDown')}</span>
+              <span className="stat-label" title={t('downloads.statDownHint')}>{t('downloads.statDown')}</span>
               <span className="stat-value">{formatBytes(currentStats.downloadedBytes)}</span>
             </div>
           </div>
@@ -441,7 +377,7 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
           <div className="stat-item">
             <Icon name="upload" size={12} />
             <div className="stat-content">
-              <span className="stat-label">{t('downloads.statUp')}</span>
+              <span className="stat-label" title={t('downloads.statUpHint')}>{t('downloads.statUp')}</span>
               <span className="stat-value">{formatBytes(currentStats.uploadedBytes)}</span>
             </div>
           </div>
@@ -468,16 +404,25 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
             </div>
           </div>
 
-          {status === 'downloading' && (
-            <>
+          {(status === 'downloading' || status === 'seeding') && <>
               <div className="stat-item">
                 <Icon name="activity" size={12} />
                 <div className="stat-content">
-                  <span className="stat-label">{t('downloads.statSpeed')}</span>
+                  <span className="stat-label">{t('downloads.statDownSpeed')}</span>
                   <span className="stat-value">{formatSpeed(currentStats.downSpeedBps)}</span>
                 </div>
               </div>
+              <div className="stat-item">
+                <Icon name="upload" size={12} />
+                <div className="stat-content">
+                  <span className="stat-label">{t('downloads.statUpSpeed')}</span>
+                  <span className="stat-value">{formatSpeed(currentStats.upSpeedBps)}</span>
+                </div>
+              </div>
+          </>}
 
+          {status === 'downloading' && (
+            <>
               <div className="stat-item">
                 <Icon name="clock" size={12} />
                 <div className="stat-content">
@@ -515,14 +460,6 @@ export const DownloadItem: React.FC<DownloadItemProps> = ({
 
           {status === 'seeding' && (
             <>
-              <div className="stat-item">
-                <Icon name="activity" size={12} />
-                <div className="stat-content">
-                  <span className="stat-label">{t('downloads.statSpeed')}</span>
-                  <span className="stat-value">{formatSpeed(currentStats.upSpeedBps)}</span>
-                </div>
-              </div>
-
               <div className="stat-item">
                 <Icon name="users" size={12} />
                 <div className="stat-content">

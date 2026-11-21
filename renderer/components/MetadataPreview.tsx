@@ -54,15 +54,16 @@ export const MetadataPreview: React.FC<MetadataPreviewProps> = ({
       title={t('metadata.previewTitle')}
       icon="eye"
       size="xl"
+      className="torrent-metadata-preview"
       footer={
         <>
           <Button variant="secondary" onClick={onClose} icon={<Icon name="arrow-left" size={16} />}>
             {t('metadata.goBack')}
           </Button>
-          <button className="mp-create-btn" onClick={onConfirm}>
-            <Icon name="check" size={16} />
+          <Button variant="primary" onClick={onConfirm}>
+            <Icon name="file-plus" size={16} />
             {t('metadata.looksGoodCreate')}
-          </button>
+          </Button>
         </>
       }
     >

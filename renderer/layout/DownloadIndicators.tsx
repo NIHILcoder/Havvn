@@ -9,8 +9,9 @@ export const DownloadSidebar: React.FC<Omit<React.ComponentProps<typeof Sidebar>
   return <Sidebar {...props} downloadCounts={counts} activeDownloads={active} />;
 };
 
-export const DownloadStatusBar: React.FC<Omit<React.ComponentProps<typeof StatusBar>, 'totalDownSpeed' | 'totalUpSpeed' | 'activeDownloads' | 'connectedPeers'>> = props => {
+export const DownloadStatusBar: React.FC<Omit<React.ComponentProps<typeof StatusBar>, 'totalDownSpeed' | 'totalUpSpeed' | 'activeDownloads' | 'connectedPeers' | 'availability'>> = props => {
   const down = useDownloads(s => s.totals.downSpeed), up = useDownloads(s => s.totals.upSpeed);
   const active = useDownloads(s => s.totals.active), peers = useDownloads(s => s.totals.peers);
-  return <StatusBar {...props} totalDownSpeed={down} totalUpSpeed={up} activeDownloads={active} connectedPeers={peers} />;
+  const availability = useDownloads(s => s.availability);
+  return <StatusBar {...props} availability={availability} totalDownSpeed={down} totalUpSpeed={up} activeDownloads={active} connectedPeers={peers} />;
 };

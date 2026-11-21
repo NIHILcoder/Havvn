@@ -4,13 +4,22 @@
  * Modal for selecting which files to download from a torrent
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Button, Icon } from './index';
 import { DropdownMenu } from './DropdownMenu';
 import { Modal } from './Modal';
 import { useTranslation } from '../utils/i18nContext';
 import './TorrentFileSelector.css';
 import { SelectionCheckbox, SelectionMarker } from './SelectionCheckbox';
+import type { DownloadDefaults } from '../../shared/types';
+import { CategorySelect } from './CategorySelect';
+import { DownloadDefaultsPreview, InheritedBooleanSelect } from './DownloadDefaultsPreview';
+import { cleanError } from '../utils/format-helpers';
+import { ErrorMessage } from './ErrorMessage';
+import { VirtualFileList } from './VirtualFileList';
+import { Select } from './Select';
+import { TorrentFolderPicker } from './TorrentFolderPicker';
+import { applyPickerAction, filesInPickerScope, pickerFolders, type PickerAction } from '../../shared/torrent-file-picker';
 
 interface TorrentFile {
   path: string;
@@ -24,10 +33,16 @@ interface TorrentInfo {
   totalSize: number;
 }
 
+const fileKey = (file: TorrentFile) => file.index;
+
 interface TorrentFileSelectorProps {
+  queueNote?: string;
+  onSkip?: () => void;
   torrentPath?: string;
   magnetUri?: string;
-  onConfirm: (selectedIndices: number[], savePath?: string) => void;
+  onConfirm: (selectedIndices: number[], savePath?: string, options?: DownloadDefaults & { categoryId?: string; name?: string }) => void | Promise<void>;
+  allowCategory?: boolean;
+  downloadOptions?: DownloadDefaults & { categoryId?: string };
   onCancel: () => void;
 }
 
@@ -40,10 +55,13 @@ const formatBytes = (bytes: number): string => {
 };
 
 export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
+  queueNote, onSkip,
   torrentPath,
   magnetUri,
   onConfirm,
   onCancel,
+  allowCategory = false,
+  downloadOptions,
 }) => {
   const { t } = useTranslation();
   const [torrentInfo, setTorrentInfo] = useState<TorrentInfo | null>(null);
@@ -51,69 +69,56 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [folder, setFolder] = useState(''), [showFolders, setShowFolders] = useState(false);
+  const [selectionScope, setSelectionScope] = useState<'filtered' | 'all'>('filtered');
   const [savePath, setSavePath] = useState<string>();
+  const [categoryId, setCategoryId] = useState('');
+  const [paused, setPaused] = useState<boolean | undefined>();
+  const options = allowCategory ? { categoryId: categoryId || undefined, paused } : downloadOptions;
   const [choosingPath, setChoosingPath] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const [submitError, setSubmitError] = useState('');
   const [pathError, setPathError] = useState(false);
-  const [selectAllState, setSelectAllState] = useState<'all' | 'none' | 'partial'>('all');
-
   useEffect(() => {
+    let active = true;
     setSavePath(undefined);
     setPathError(false);
-    loadTorrentInfo();
-  }, [torrentPath, magnetUri]);
-
-  useEffect(() => {
-    // Update select all state based on selection
-    if (torrentInfo) {
-      const filteredFiles = getFilteredFiles();
-      const filteredIndices = filteredFiles.map(f => f.index);
-      const selectedCount = filteredIndices.filter(i => selectedFiles.has(i)).length;
-      
-      if (selectedCount === 0) {
-        setSelectAllState('none');
-      } else if (selectedCount === filteredIndices.length) {
-        setSelectAllState('all');
-      } else {
-        setSelectAllState('partial');
-      }
-    }
-  }, [selectedFiles, torrentInfo, searchQuery]);
-
-  const loadTorrentInfo = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      
-      // Call API to get torrent file list
-      const info = await window.api.getTorrentInfo({
-        torrentPath,
-        magnetUri,
-      });
-      
+    setSearchQuery('');
+    setFolder(''); setShowFolders(false); setSelectionScope('filtered');
+    setSubmitError('');
+    setTorrentInfo(null);
+    setSelectedFiles(new Set());
+    setLoading(true);
+    setError(null);
+    window.api.getTorrentInfo({ torrentPath, magnetUri }).then(info => {
+      if (!active) return;
       setTorrentInfo(info);
-      
-      // Select all files by default
-      const allIndices = new Set(info.files.map((_, index) => index));
-      setSelectedFiles(allIndices);
-    } catch (err) {
+      setSelectedFiles(new Set(info.files.map(file => file.index)));
+    }).catch(err => {
+      if (!active) return;
       console.error('Failed to load torrent info:', err);
       setError(err instanceof Error ? err.message : t('filePicker.errorLoadInfo'));
-    } finally {
-      setLoading(false);
-    }
-  };
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [torrentPath, magnetUri]);
 
-  const getFilteredFiles = () => {
+  const filteredFiles = useMemo(() => {
     if (!torrentInfo) return [];
-    if (!searchQuery) return torrentInfo.files;
-    
-    const query = searchQuery.toLowerCase();
-    return torrentInfo.files.filter(file => 
-      file.path.toLowerCase().includes(query)
-    );
-  };
+    return filesInPickerScope(torrentInfo.files, searchQuery, folder);
+  }, [torrentInfo, searchQuery, folder]);
+  const folders = useMemo(() => pickerFolders(torrentInfo?.files ?? []), [torrentInfo]);
+  const scopeFiles = useMemo(() => selectionScope === 'all' ? torrentInfo?.files ?? [] : filteredFiles, [selectionScope, torrentInfo, filteredFiles]);
+
+  const selectAllState = useMemo(() => {
+    let count = 0;
+    for (const file of scopeFiles) if (selectedFiles.has(file.index)) count++;
+    return count === 0 ? 'none' : count === scopeFiles.length ? 'all' : 'partial';
+  }, [scopeFiles, selectedFiles]);
+  const selectedOutsideList = useMemo(() => selectedFiles.size - filteredFiles.filter(file => selectedFiles.has(file.index)).length, [filteredFiles, selectedFiles]);
 
   const handleToggleFile = (index: number) => {
+    if (submittingRef.current) return;
     setSelectedFiles(prev => {
       const newSet = new Set(prev);
       if (newSet.has(index)) {
@@ -126,8 +131,8 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
   };
 
   const handleSelectAll = () => {
-    const filteredFiles = getFilteredFiles();
-    const filteredIndices = filteredFiles.map(f => f.index);
+    if (submittingRef.current) return;
+    const filteredIndices = scopeFiles.map(f => f.index);
     
     setSelectedFiles(prev => {
       const newSet = new Set(prev);
@@ -144,51 +149,36 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
     });
   };
 
-  const handleSelectByExtension = (extension: string) => {
-    if (!torrentInfo) return;
-    
-    const matchingIndices = torrentInfo.files
-      .filter(file => file.path.toLowerCase().endsWith(extension.toLowerCase()))
-      .map(file => file.index);
-    
-    setSelectedFiles(prev => {
-      const newSet = new Set(prev);
-      matchingIndices.forEach(i => newSet.add(i));
-      return newSet;
-    });
-  };
-
-  const handleDeselectByExtension = (extension: string) => {
-    if (!torrentInfo) return;
-    
-    const matchingIndices = torrentInfo.files
-      .filter(file => file.path.toLowerCase().endsWith(extension.toLowerCase()))
-      .map(file => file.index);
-    
-    setSelectedFiles(prev => {
-      const newSet = new Set(prev);
-      matchingIndices.forEach(i => newSet.delete(i));
-      return newSet;
-    });
+  const handleQuickSelect = (action: PickerAction) => {
+    if (!submittingRef.current) setSelectedFiles(previous => applyPickerAction(previous, scopeFiles, action));
   };
 
   const selectedSize = useMemo(() => {
     if (!torrentInfo) return 0;
-    return torrentInfo.files
-      .filter((_, index) => selectedFiles.has(index))
-      .reduce((sum, file) => sum + file.size, 0);
+    return torrentInfo.files.reduce((sum, file) => sum + (selectedFiles.has(file.index) ? file.size : 0), 0);
   }, [torrentInfo, selectedFiles]);
 
-  const filteredFiles = getFilteredFiles();
-
+  const submit = async (indices: number[]) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true); setSubmitError('');
+    try { await onConfirm(indices, savePath, { ...options, name: torrentInfo?.name }); }
+    catch (reason) { setSubmitError(cleanError(reason)); }
+    finally { submittingRef.current = false; setSubmitting(false); }
+  };
   const handleConfirm = () => {
     if (selectedFiles.size === 0) {
       return;
     }
-    onConfirm(Array.from(selectedFiles), savePath);
+    void submit(Array.from(selectedFiles));
   };
 
   const pathPicker = (
+    <>
+    {allowCategory && <div className="tfs-destination">
+      <CategorySelect disabled={submitting} value={categoryId} onChange={setCategoryId} />
+      <InheritedBooleanSelect disabled={submitting} label={t('category.defaults.paused')} value={paused} onChange={setPaused} yes={t('category.defaults.paused')} no={t('category.defaults.active')} />
+    </div>}
     <div className="tfs-destination">
       <div className="tfs-destination-path">
         <span>{t('filePicker.savePath')}</span>
@@ -199,7 +189,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         variant="secondary"
         size="sm"
         icon={<Icon name="folder-open" size={14} />}
-        disabled={choosingPath}
+        disabled={choosingPath || submitting}
         onClick={async () => {
           setChoosingPath(true);
           setPathError(false);
@@ -214,11 +204,14 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         }}
       >{t('settings.choose')}</Button>
       {savePath && (
-        <Button variant="ghost" size="sm" onClick={() => setSavePath(undefined)}>
+        <Button variant="ghost" size="sm" disabled={submitting} onClick={() => setSavePath(undefined)}>
           {t('filePicker.defaultPath')}
         </Button>
       )}
     </div>
+    <DownloadDefaultsPreview {...options} savePath={savePath} compact />
+    {submitError && <div role="alert"><ErrorMessage error={submitError} details /></div>}
+    </>
   );
 
   if (loading) {
@@ -228,10 +221,11 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         size="xl"
         hideClose
         closeOnBackdrop={false}
-        busy
+        footer={<>{onSkip && <Button variant="secondary" onClick={onSkip}>{t('downloads.queue.skip')}</Button>}<Button variant="ghost" onClick={onCancel}>{t('common.cancel')}</Button></>}
         ariaLabel={t('filePicker.loading')}
       >
         <div className="file-selector-loading">
+          {queueNote && <p role="status">{queueNote}</p>}
           <span className="spinner spinner-lg" />
           <p>{t('filePicker.loading')}</p>
         </div>
@@ -247,17 +241,20 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
         hideClose
         closeOnBackdrop={false}
         ariaLabel={t('filePicker.loadFailed')}
+        busy={submitting}
       >
         <div className="file-selector-error">
+          {queueNote && <p role="status">{queueNote}</p>}
           <Icon name="alert-circle" size={48} />
           <h3>{t('filePicker.loadFailed')}</h3>
-          <p>{error || t('filePicker.errorUnknown')}</p>
+          <div role="alert"><ErrorMessage error={error || t('filePicker.errorUnknown')} details /></div>
           {pathPicker}
           <div className="file-selector-error-actions">
+            {onSkip && <Button variant="secondary" disabled={submitting} onClick={onSkip}>{t('downloads.queue.skip')}</Button>}
             {/* Preview is optional — a metadata timeout must not block the add.
                 Empty selection = download everything. */}
-            <Button variant="primary" disabled={choosingPath} onClick={() => onConfirm([], savePath)}>{t('filePicker.addAnyway')}</Button>
-            <Button onClick={onCancel}>{t('player.close')}</Button>
+            <Button variant="primary" disabled={choosingPath || submitting} loading={submitting} onClick={() => { void submit([]); }}>{t('filePicker.addAnyway')}</Button>
+            <Button disabled={submitting} onClick={onCancel}>{t('player.close')}</Button>
           </div>
         </div>
       </Modal>
@@ -265,10 +262,12 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
   }
 
   return (
+    <>
     <Modal
       onClose={onCancel}
       size="xl"
       icon="file"
+      busy={submitting}
       bodyClassName="tfs-body"
       ariaLabel={t('filePicker.title')}
       title={
@@ -279,20 +278,23 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
       }
       footer={
         <>
-          <Button variant="ghost" onClick={onCancel}>
+          {onSkip && <Button variant="secondary" disabled={submitting} onClick={onSkip}>{t('downloads.queue.skip')}</Button>}
+          <Button variant="ghost" disabled={submitting} onClick={onCancel}>
             {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
             icon={<Icon name="download" size={16} />}
             onClick={handleConfirm}
-            disabled={selectedFiles.size === 0 || choosingPath}
+            loading={submitting}
+            disabled={selectedFiles.size === 0 || choosingPath || submitting}
           >
             {t('filePicker.downloadSelected')} ({selectedFiles.size})
           </Button>
         </>
       }
     >
+        {queueNote && <p className="tfs-queue-note" role="status">{queueNote}</p>}
         {/* Stats Bar */}
         <div className="file-selector-stats">
           <div className="stat">
@@ -318,10 +320,11 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
               type="text"
               placeholder={t('filePicker.searchPlaceholder')}
               value={searchQuery}
+              disabled={submitting}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
             {searchQuery && (
-              <button className="search-clear" onClick={() => setSearchQuery('')}>
+              <button className="search-clear" disabled={submitting} onClick={() => setSearchQuery('')}>
                 <Icon name="x" size={14} />
               </button>
             )}
@@ -335,58 +338,87 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
                 <SelectionMarker checked={selectAllState === 'all'} indeterminate={selectAllState === 'partial'} />
               }
               onClick={handleSelectAll}
+              disabled={submitting || scopeFiles.length === 0}
             >
               {selectAllState === 'all' ? t('filePicker.deselectAll') : t('filePicker.selectAll')}
             </Button>
             
             <DropdownMenu
+              portal
               menuClassName="quick-select-menu"
               itemClassName=""
               renderTrigger={({ toggle }) => (
-                <Button variant="ghost" size="sm" onClick={toggle}>
+                <Button variant="ghost" size="sm" disabled={submitting || scopeFiles.length === 0} onClick={toggle}>
                   {t('filePicker.quickSelect')}
                   <Icon name="chevron-down" size={14} />
                 </Button>
               )}
               items={[
                 {
+                  key: 'scope-only', icon: <Icon name="check" size={14} />,
+                  label: t('filePicker.onlyScope'), onSelect: () => handleQuickSelect('scope-only'),
+                },
+                {
                   key: 'videos',
                   icon: <Icon name="film" size={14} />,
-                  label: t('filePicker.selectVideos'),
-                  onSelect: () => handleSelectByExtension('.mp4'),
+                  label: t('filePicker.onlyVideos'),
+                  onSelect: () => handleQuickSelect('video-only'),
+                },
+                {
+                  key: 'videos-subs', icon: <Icon name="film" size={14} />,
+                  label: t('filePicker.videoSubtitles'), onSelect: () => handleQuickSelect('video-subtitles'),
+                },
+                {
+                  key: 'mp4', icon: <Icon name="film" size={14} />,
+                  label: t('filePicker.addMp4'), onSelect: () => handleQuickSelect('add-mp4'),
                 },
                 {
                   key: 'mkv',
                   icon: <Icon name="film" size={14} />,
-                  label: t('filePicker.selectMkv'),
-                  onSelect: () => handleSelectByExtension('.mkv'),
+                  label: t('filePicker.addMkv'),
+                  onSelect: () => handleQuickSelect('add-mkv'),
+                },
+                {
+                  key: 'samples', icon: <Icon name="x" size={14} />,
+                  label: t('filePicker.excludeSamples'), onSelect: () => handleQuickSelect('exclude-sample'),
                 },
                 {
                   key: 'text',
                   icon: <Icon name="file-text" size={14} />,
                   label: t('filePicker.deselectText'),
-                  onSelect: () => handleDeselectByExtension('.txt'),
+                  onSelect: () => handleQuickSelect('exclude-txt'),
                 },
                 {
                   key: 'nfo',
                   icon: <Icon name="file" size={14} />,
                   label: t('filePicker.deselectNfo'),
-                  onSelect: () => handleDeselectByExtension('.nfo'),
+                  onSelect: () => handleQuickSelect('exclude-nfo'),
                 },
               ]}
             />
           </div>
         </div>
 
+        <div className="tfs-selection-scope">
+          <label><span>{t('filePicker.scope')}</span><Select disabled={submitting} value={selectionScope} onChange={value => setSelectionScope(value as 'filtered' | 'all')}
+            ariaLabel={t('filePicker.scope')} options={[
+              { value: 'filtered', label: t('filePicker.scopeList').replace('{count}', String(filteredFiles.length)) },
+              { value: 'all', label: t('filePicker.scopeAll').replace('{count}', String(torrentInfo.files.length)) },
+            ]} /></label>
+          <Button variant="secondary" size="sm" className="tfs-folder-button" disabled={submitting || !folders.length} icon={<Icon name="folder" size={14} />}
+            title={folder || t('filePicker.allFolders')} onClick={() => setShowFolders(true)}><span>{folder || t('filePicker.chooseFolder')}</span></Button>
+          <p>{t('filePicker.scopeHint')}{selectedOutsideList > 0 && <> {t('filePicker.selectedOutside').replace('{count}', String(selectedOutsideList))}</>}</p>
+        </div>
+
         {/* File List */}
-        <div className="file-list">
-          {filteredFiles.length === 0 ? (
+        <VirtualFileList className="file-list" items={filteredFiles} getKey={fileKey}
+          label={t('filePicker.title')} estimateSize={84} resetKey={`${torrentPath || magnetUri || ''}\n${folder}\n${searchQuery}`}
+          empty={(
             <div className="no-results">
               <Icon name="search" size={48} />
               <p>{t('filePicker.noMatch')}</p>
             </div>
-          ) : (
-            filteredFiles.map((file) => (
+          )} renderRow={(file) => (
               <div
                 key={file.index}
                 className={`file-item ${selectedFiles.has(file.index) ? 'selected' : ''}`}
@@ -394,6 +426,7 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
               >
                 <SelectionCheckbox
                   aria-label={file.path}
+                  disabled={submitting}
                   checked={selectedFiles.has(file.index)}
                   onChange={() => handleToggleFile(file.index)}
                   onClick={(e) => e.stopPropagation()}
@@ -406,9 +439,9 @@ export const TorrentFileSelector: React.FC<TorrentFileSelectorProps> = ({
                   <span className="file-size">{formatBytes(file.size)}</span>
                 </div>
               </div>
-            ))
-          )}
-        </div>
+            )} />
     </Modal>
+    {showFolders && <TorrentFolderPicker folders={folders} onClose={() => setShowFolders(false)} onChoose={next => { setFolder(next); setShowFolders(false); }} />}
+    </>
   );
 };

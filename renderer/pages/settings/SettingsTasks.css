@@ -1,0 +1,15 @@
+.settings-tasks { margin-bottom: 16px; }
+.settings-tasks h2 { font: 600 14px var(--font-display); margin: 0 0 12px; }
+.settings-task-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.settings-task-grid > button { display: flex; align-items: center; gap: 10px; padding: 14px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-secondary); color: var(--color-text-primary); text-align: left; cursor: pointer; }
+.settings-task-grid > button:hover { border-color: var(--color-accent-primary); }
+.settings-task-grid > button:focus-visible { outline: 2px solid var(--color-accent-primary); outline-offset: 2px; }
+.settings-task-grid span { flex: 1; min-width: 0; }
+.settings-task-grid strong, .settings-task-grid small { display: block; }
+.settings-task-grid strong { font-size: 12px; margin-bottom: 5px; }
+.settings-task-grid small, .settings-task-note { font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
+.settings-task-routes { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 20px; }
+.settings-task-profiles { border-top: 1px solid var(--color-border-default); padding-top: 12px; }
+.settings-task-profiles summary { cursor: pointer; font-size: 13px; }
+.settings-task-profiles > p { font-size: 12px; line-height: 1.6; color: var(--color-text-secondary); }
+@media (max-width: 900px) { .settings-task-grid { grid-template-columns: 1fr; } }

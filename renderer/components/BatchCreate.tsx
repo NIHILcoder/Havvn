@@ -1,15 +1,19 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * Batch Create Torrents Component
  * 
  * Create multiple torrents at once from a list of folders.
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import { Icon } from './Icon';
 import { Button, ProgressBar } from '.';
 import { Modal } from './Modal';
 import { useTranslation } from '../utils/i18nContext';
 import './BatchCreate.css';
+import { parseTorrentUrls, isTorrentCreationCancelled } from '../../shared/torrent-creation';
+import type { CreateTorrentResult } from '../../shared/types';
+import { CreatedTorrentSeed } from './CreatedTorrentSeed';
 
 interface BatchItem {
   id: string;
@@ -17,12 +21,9 @@ interface BatchItem {
   name: string;
   size: number;
   status: 'pending' | 'processing' | 'completed' | 'failed';
-  progress?: number;
+  progress?: number | null;
   error?: string;
-  result?: {
-    torrentFilePath: string;
-    infoHash: string;
-  };
+  result?: CreateTorrentResult;
 }
 
 interface BatchCreateProps {
@@ -56,6 +57,26 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
   const [items, setItems] = useState<BatchItem[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [validationError, setValidationError] = useState('');
+  const stopRequested = useRef(false);
+  const processing = useRef(false);
+  const activeRequest = useRef<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const [seedRetrying, setSeedRetrying] = useState<string | null>(null);
+  const retryPending = useRef(false);
+  const busy = isProcessing || !!seedRetrying;
+
+  const handleRetrySeed = async (item: BatchItem) => {
+    if (processing.current || retryPending.current || !item.result?.seedRetryId) return;
+    retryPending.current = true; setSeedRetrying(item.id);
+    try {
+      const result = await window.api.retryCreatedTorrentSeed(item.result.seedRetryId);
+      setItems(previous => previous.map(value => value.id === item.id ? { ...value, result } : value));
+    } catch (cause) {
+      const result: CreateTorrentResult = { ...item.result, seedingStatus: 'failed', seedingError: cause instanceof Error ? cause.message : String(cause) };
+      setItems(previous => previous.map(value => value.id === item.id ? { ...value, result } : value));
+    } finally { retryPending.current = false; setSeedRetrying(null); }
+  };
 
   const handleAddFolders = useCallback(async () => {
     // Since we don't have selectMultipleFolders API yet, allow selecting one folder at a time
@@ -76,7 +97,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
       console.error('Failed to get folder info:', err);
     }
 
-    setItems(prev => [...prev, ...newItems]);
+    setItems(prev => [...prev, ...newItems.filter(item => !prev.some(existing => existing.path === item.path))]);
   }, []);
 
   const handleRemoveItem = useCallback((id: string) => {
@@ -84,52 +105,65 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
   }, []);
 
   const handleClearAll = useCallback(() => {
-    if (!isProcessing) {
+    if (!processing.current && !retryPending.current) {
       setItems([]);
       setCurrentIndex(0);
     }
   }, [isProcessing]);
 
   const handleStartBatch = useCallback(async () => {
-    if (items.length === 0) return;
+    if (items.length === 0 || processing.current || retryPending.current) return;
+    const parsedTrackers = parseTorrentUrls(trackers, 'tracker');
+    if (parsedTrackers.invalidLines.length) {
+      setValidationError(t('create.invalidTrackerLines').replace('{lines}', parsedTrackers.invalidLines.join(', ')));
+      return;
+    }
+    setValidationError('');
 
     setIsProcessing(true);
+    processing.current = true;
+    stopRequested.current = false;
+    setStopping(false);
     setCurrentIndex(0);
 
-    // Parse trackers
-    const announceList: string[][] = [];
-    const trackerLines = trackers.split('\n').map(l => l.trim()).filter(l => l);
-    for (const line of trackerLines) {
-      if (line.startsWith('udp://') || line.startsWith('http://') || line.startsWith('https://')) {
-        announceList.push([line]);
-      }
-    }
+    const announceList = parsedTrackers.groups;
 
     // Process each item sequentially
     for (let i = 0; i < items.length; i++) {
+      if (stopRequested.current) break;
       const item = items[i];
+      if (item.status === 'completed') continue;
       setCurrentIndex(i);
 
       setItems(prev => prev.map(it => 
         it.id === item.id ? { ...it, status: 'processing' as const, progress: 0 } : it
       ));
 
+      let unsubscribe: (() => void) | undefined;
       try {
         // Create output path
         const outputDir = await window.api.selectSaveTorrentPath(`${item.name}`);
+        if (stopRequested.current) {
+          setItems(prev => prev.map(it => it.id === item.id ? { ...it, status: 'pending', progress: undefined } : it));
+          break;
+        }
         if (!outputDir) {
           throw new Error(t('batchCreate.noOutputPath'));
         }
 
         // Listen to progress
-        const unsubscribe = window.api.onCreateTorrentProgress((progressUpdate) => {
+        const requestId = crypto.randomUUID();
+        activeRequest.current = requestId;
+        unsubscribe = window.api.onCreateTorrentProgress((progressUpdate) => {
+          if (progressUpdate.requestId !== requestId) return;
           setItems(prev => prev.map(it => 
-            it.id === item.id ? { ...it, progress: progressUpdate.progress } : it
+            it.id === item.id ? { ...it, progress: progressUpdate.stage === 'verifying' ? null : progressUpdate.progress } : it
           ));
         });
 
         // Create torrent
         const result = await window.api.createTorrent({
+          requestId,
           sourcePaths: [item.path],
           outputPath: outputDir,
           options: {
@@ -142,33 +176,37 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
           startSeeding,
         });
 
-        unsubscribe();
-
         setItems(prev => prev.map(it => 
           it.id === item.id 
             ? { 
                 ...it, 
                 status: 'completed' as const, 
                 progress: 1,
-                result: {
-                  torrentFilePath: result.torrentFilePath,
-                  infoHash: result.infoHash
-                }
+                result,
               } 
             : it
         ));
       } catch (err) {
+        if (isTorrentCreationCancelled(err)) {
+          setItems(prev => prev.map(it => it.id === item.id ? { ...it, status: 'pending', progress: undefined, error: undefined } : it));
+          break;
+        }
         const errorMessage = err instanceof Error ? err.message : t('batchCreate.createFailed');
         setItems(prev => prev.map(it => 
           it.id === item.id 
             ? { ...it, status: 'failed' as const, error: errorMessage } 
             : it
         ));
+      } finally {
+        unsubscribe?.();
+        activeRequest.current = null;
       }
     }
 
     setIsProcessing(false);
-  }, [items, trackers, isPrivate, pieceLength, startSeeding, createdBy]);
+    processing.current = false;
+    setStopping(false);
+  }, [items, trackers, isPrivate, pieceLength, startSeeding, createdBy, isProcessing, t]);
 
   if (!isOpen) return null;
 
@@ -182,16 +220,24 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
       title={t('batchCreate.title')}
       icon="layers"
       size="lg"
-      busy={isProcessing}
+      className="torrent-batch-create"
+      busy={busy}
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={isProcessing}>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
             {isProcessing ? t('batchCreate.processing') : t('common.cancel')}
           </Button>
+          {isProcessing && <Button variant="secondary" disabled={stopping} onClick={async () => {
+            stopRequested.current = true;
+            setStopping(true);
+            if (!activeRequest.current) return;
+            try { await window.api.cancelCreateTorrent(activeRequest.current); }
+            catch (cause) { setValidationError(cause instanceof Error ? cause.message : String(cause)); }
+          }}>{t(stopping ? 'create.cancelling' : 'batchCreate.stop')}</Button>}
           <Button
             variant="primary"
             onClick={handleStartBatch}
-            disabled={items.length === 0 || isProcessing}
+            disabled={items.length === 0 || busy}
           >
             <Icon name={isProcessing ? 'loader' : 'zap'} size={16} className={isProcessing ? 'spinning' : ''} />
             {isProcessing ? `${t('batchCreate.creating')} ${currentIndex + 1}/${items.length}...` : `${t('batchCreate.create')} ${items.length} ${t('batchCreate.torrents')}`}
@@ -199,6 +245,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
         </>
       }
     >
+      {validationError && <p className="item-error" role="alert"><ErrorMessage error={validationError} /></p>}
       <div className="batch-stats">
             <div className="stat-card">
               <Icon name="folder" size={16} />
@@ -215,7 +262,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
               </div>
             </div>
             <div className="stat-card success">
-              <Icon name="check-circle" size={16} />
+              <Icon name="file" size={16} />
               <div className="stat-info">
                 <span className="stat-label">{t('status.completed')}</span>
                 <span className="stat-value">{completedCount}</span>
@@ -237,7 +284,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
               variant="secondary"
               size="sm"
               onClick={handleAddFolders}
-              disabled={isProcessing}
+              disabled={busy}
             >
               <Icon name="folder-plus" size={14} />
               {t('batchCreate.addFolders')}
@@ -247,7 +294,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
                 variant="ghost"
                 size="sm"
                 onClick={handleClearAll}
-                disabled={isProcessing}
+                disabled={busy}
               >
                 <Icon name="trash" size={14} />
                 {t('downloads.clearAll')}
@@ -271,7 +318,7 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
                   <div className="item-icon">
                     {item.status === 'pending' && <Icon name="folder" size={20} />}
                     {item.status === 'processing' && <Icon name="loader" size={20} className="spinning" />}
-                    {item.status === 'completed' && <Icon name="check-circle" size={20} />}
+                    {item.status === 'completed' && <Icon name="file" size={20} />}
                     {item.status === 'failed' && <Icon name="x-circle" size={20} />}
                   </div>
 
@@ -284,26 +331,28 @@ export const BatchCreate: React.FC<BatchCreateProps> = ({
                     {item.status === 'processing' && item.progress !== undefined && (
                       <div className="item-progress">
                         <ProgressBar value={item.progress} size="sm" />
-                        <span className="progress-text">{Math.round(item.progress * 100)}%</span>
+                        <span className="progress-text">{item.progress === null ? t('create.verifyingSeed') : Math.round(item.progress * 100) + '%'}</span>
                       </div>
                     )}
                     
                     {item.status === 'failed' && item.error && (
                       <div className="item-error">
                         <Icon name="alert-circle" size={12} />
-                        {item.error}
+                        <ErrorMessage error={item.error} />
                       </div>
                     )}
                     
                     {item.status === 'completed' && item.result && (
                       <div className="item-success">
-                        <Icon name="check" size={12} />
+                        <Icon name="file" size={12} />
                         {t('batchCreate.createdSuccess')}
                       </div>
                     )}
+                    {item.result && <CreatedTorrentSeed result={item.result} busy={seedRetrying === item.id}
+                      disabled={busy && seedRetrying !== item.id} onRetry={() => void handleRetrySeed(item)} />}
                   </div>
 
-                  {!isProcessing && item.status === 'pending' && (
+                  {!busy && item.status === 'pending' && (
                     <button
                       className="item-remove"
                       onClick={() => handleRemoveItem(item.id)}

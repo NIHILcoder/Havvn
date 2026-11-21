@@ -81,6 +81,8 @@ export interface TrTorrent {
   totalSize: number;
   sizeWhenDone: number;
   leftUntilDone: number;
+  haveValid: number;
+  haveUnchecked: number;
   rateDownload: number;     // B/s
   rateUpload: number;       // B/s
   downloadedEver: number;

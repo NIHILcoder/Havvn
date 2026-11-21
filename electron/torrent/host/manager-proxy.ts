@@ -14,8 +14,14 @@
 import path from 'path';
 import { utilityProcess, UtilityProcess } from 'electron';
 import * as db from '../../db/store';
+import { prepareDownloadDefaults } from '../../services/download-defaults';
+import { EffectiveSettingsController } from '../../services/effective-settings';
+import { getResourceModeService } from '../../services/resource-mode';
+import type { TransferBlock } from '../../../shared/effective-settings';
+import { assertTransferCommandAllowed, setTransferBlocks } from '../transfer-policy';
 import { logger } from '../../utils';
 import { getHostEnv } from './env';
+import { engineCapabilities, type EngineCapabilities } from '../../../shared/engine-capabilities';
 import { FromHost, DbRequest, EventMsg } from './protocol';
 import { TorrentError } from '../errors';
 import type { TorrentManager } from '../manager';
@@ -62,6 +68,27 @@ class TorrentManagerProxy {
   private altSpeed = false;
   private ffmpeg: string | null = null;
   private vpnBind: VpnBindStatus | null = null;
+  constructor() {
+    getResourceModeService().subscribe(snapshot => {
+      try { this.child?.postMessage({ kind: 'resource-policy', economy: snapshot.economy }); }
+      catch (e) { log.warn('Host unavailable during resource update', { error: String(e) }); }
+    });
+  }
+  private effective = new EffectiveSettingsController({
+    readBase: () => db.getSettings(), readScheduler: () => db.getScheduler(),
+    apply: patch => this.rpc('updateSettings', [patch]),
+  });
+
+  refreshEffectiveSettings(): Promise<void> { return this.effective.refresh(); }
+  getEffectiveSettings(): ReturnType<EffectiveSettingsController['getSnapshot']> { return this.effective.getSnapshot(); }
+  setNetworkProfile(profile: import('../../../shared/types').NetworkProfile | null): Promise<void> { return this.effective.setNetwork(profile); }
+  setTransferBlock(reason: TransferBlock, blocked: boolean): void {
+    this.effective.setBlock(reason, blocked);
+    const blocks = this.effective.getBlocks();
+    setTransferBlocks(blocks);
+    try { this.child?.postMessage({ kind: 'transfer-policy', blocks }); }
+    catch (e) { log.warn('Host unavailable during protection update', { error: String(e) }); }
+  }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
   initialize(): Promise<void> { return this.ensureReady(); }
@@ -85,7 +112,7 @@ class TorrentManagerProxy {
     const modulePath = path.join(__dirname, 'torrent-host.js');
     const child = utilityProcess.fork(modulePath, [], { stdio: 'pipe' });
     this.child = child;
-    child.on('spawn', () => { try { child.postMessage({ kind: 'init', env: getHostEnv() }); } catch { /* ignore */ } });
+    child.on('spawn', () => { try { child.postMessage({ kind: 'init', env: getHostEnv(), blocks: this.effective.getBlocks(), economy: getResourceModeService().peek().economy }); } catch { /* ignore */ } });
     child.on('message', (m: FromHost) => this.onMessage(m));
     child.stdout?.on('data', (d) => log.info('host', { out: String(d).trim() }));
     child.stderr?.on('data', (d) => log.warn('host', { err: String(d).trim() }));
@@ -96,6 +123,7 @@ class TorrentManagerProxy {
       // two daemons racing on the same configDir.
       if (this.child !== child) return;
       log.warn('Torrent host exited', { code });
+      this.effective.invalidate();
       this.failAll('torrent host stopped');
       // If the host died BEFORE signalling ready, its readiness promise is still
       // pending and its awaiter (e.g. initialize() on the startup critical path) is
@@ -122,10 +150,15 @@ class TorrentManagerProxy {
         // EVERY ready (startup, crash respawn, engine restart) so no spawn path
         // can forget it — main.ts's startup push stays as the post-loadAll seed.
         void this.reapplyBlocklist();
+        void this.refreshEffectiveSettings().catch(e => log.warn('Failed to re-apply effective settings', { error: String(e) }));
         break;
       case 'rpc-res': {
         const p = this.pending.get(msg.id);
-        if (p) { this.pending.delete(msg.id); msg.ok ? p.resolve(msg.result) : p.reject(reviveError(msg.error, msg.code, msg.name, msg.downloadId)); }
+        if (p) {
+          this.pending.delete(msg.id);
+          if (msg.ok) p.resolve(msg.result);
+          else p.reject(reviveError(msg.error, msg.code, msg.name, msg.downloadId));
+        }
         break;
       }
       case 'db': void this.handleDb(msg); break;
@@ -148,10 +181,13 @@ class TorrentManagerProxy {
   private async handleDb(msg: DbRequest): Promise<void> {
     try {
       const fn = (db as unknown as Record<string, (...a: unknown[]) => unknown>)[msg.fn];
-      const result = await fn(...msg.args);
+      const result = msg.fn === 'getSettings'
+        ? await this.effective.resolve().then(({ base, effective }) => ({ ...base, ...effective.engine }))
+        : await fn(...msg.args);
       this.child?.postMessage({ kind: 'db-res', id: msg.id, ok: true, result });
     } catch (e) {
-      this.child?.postMessage({ kind: 'db-res', id: msg.id, ok: false, error: e instanceof Error ? e.message : String(e) });
+      const code = (e as { code?: unknown })?.code;
+      this.child?.postMessage({ kind: 'db-res', id: msg.id, ok: false, error: e instanceof Error ? e.message : String(e), ...(typeof code === 'string' ? { code } : {}) });
     }
   }
 
@@ -172,6 +208,7 @@ class TorrentManagerProxy {
 
   private async rpc<T>(method: string, args: unknown[]): Promise<T> {
     await this.ensureReady();
+    assertTransferCommandAllowed(method);
     if (!this.child) throw new Error('torrent host not running');
     const id = ++this.seq;
     return new Promise<T>((resolve, reject) => {
@@ -181,6 +218,7 @@ class TorrentManagerProxy {
   }
 
   async destroy(): Promise<void> {
+    this.effective.invalidate();
     if (this.child) {
       try { await this.rpc('destroy', []); } catch { /* host may be down */ }
       try { this.child.kill(); } catch { /* ignore */ }
@@ -231,6 +269,9 @@ class TorrentManagerProxy {
   createTorrentFile(request: CreateTorrentRequest): Promise<CreateTorrentResult> {
     return this.rpc('createTorrentFile', [request]);
   }
+  cancelTorrentCreation(requestId: string): Promise<boolean> {
+    return this.rpc('cancelTorrentCreation', [requestId]);
+  }
 
   // ── Synchronous getters (served from the mirror) ───────────────────────────
   getStats(): DownloadStats[] { return this.lastStats; }
@@ -239,7 +280,14 @@ class TorrentManagerProxy {
   get ffmpegBinary(): string | null { return this.ffmpeg; }
 
   // ── Forwarded manager methods (signatures track the real manager) ──────────
-  addDownload(...a: Parameters<TM['addDownload']>): Fwd<TM['addDownload']> { return this.rpc('addDownload', a); }
+  async addDownload(...a: Parameters<TM['addDownload']>): Fwd<TM['addDownload']> {
+    const [categories, settings] = await Promise.all([db.getCategories(), db.getSettings()]);
+    const { getAutomationRules } = await import('../../services/automation-runtime.js');
+    const prepared = await getAutomationRules().prepare(a[0]);
+    const request = await prepareDownloadDefaults(prepared.request, categories, settings);
+    request.automation = prepared.receipt ? { added: prepared.receipt } : undefined;
+    return this.rpc('addDownload', [request]);
+  }
   addSeed(...a: Parameters<TM['addSeed']>): Fwd<TM['addSeed']> { return this.rpc('addSeed', a); }
   addTracker(...a: Parameters<TM['addTracker']>): Fwd<TM['addTracker']> { return this.rpc('addTracker', a); }
   removeTracker(...a: Parameters<TM['removeTracker']>): Fwd<TM['removeTracker']> { return this.rpc('removeTracker', a); }
@@ -258,6 +306,8 @@ class TorrentManagerProxy {
   getStreamUrl(...a: Parameters<TM['getStreamUrl']>): Fwd<TM['getStreamUrl']> { return this.rpc('getStreamUrl', a); }
   stopStream(...a: Parameters<TM['stopStream']>): Fwd<TM['stopStream']> { return this.rpc('stopStream', a); }
   getEpisodePrefetchSupport(...a: Parameters<TM['getEpisodePrefetchSupport']>): Fwd<TM['getEpisodePrefetchSupport']> { return this.rpc('getEpisodePrefetchSupport', a); }
+  /** Boot environment includes native-binary fallback; inspection never starts the host. */
+  getEngineCapabilities(): Promise<EngineCapabilities> { return Promise.resolve(engineCapabilities(getHostEnv().engine)); }
   prefetchEpisode(...a: Parameters<TM['prefetchEpisode']>): Fwd<TM['prefetchEpisode']> { return this.rpc('prefetchEpisode', a); }
   stopEpisodePrefetch(...a: Parameters<TM['stopEpisodePrefetch']>): Fwd<TM['stopEpisodePrefetch']> { return this.rpc('stopEpisodePrefetch', a); }
   getSubtitleTracks(...a: Parameters<TM['getSubtitleTracks']>): Fwd<TM['getSubtitleTracks']> { return this.rpc('getSubtitleTracks', a); }
@@ -267,6 +317,9 @@ class TorrentManagerProxy {
   pauseDownload(...a: Parameters<TM['pauseDownload']>): Fwd<TM['pauseDownload']> { return this.rpc('pauseDownload', a); }
   resumeDownload(...a: Parameters<TM['resumeDownload']>): Fwd<TM['resumeDownload']> { return this.rpc('resumeDownload', a); }
   removeDownload(...a: Parameters<TM['removeDownload']>): Fwd<TM['removeDownload']> { return this.rpc('removeDownload', a); }
+  captureDownloadRemoval(...a: Parameters<TM['captureDownloadRemoval']>): Fwd<TM['captureDownloadRemoval']> { return this.rpc('captureDownloadRemoval', a); }
+  restoreRemovedDownload(...a: Parameters<TM['restoreRemovedDownload']>): Fwd<TM['restoreRemovedDownload']> { return this.rpc('restoreRemovedDownload', a); }
+  activateRestoredDownload(...a: Parameters<TM['activateRestoredDownload']>): Fwd<TM['activateRestoredDownload']> { return this.rpc('activateRestoredDownload', a); }
   recheckDownload(...a: Parameters<TM['recheckDownload']>): Fwd<TM['recheckDownload']> { return this.rpc('recheckDownload', a); }
   retryDownload(...a: Parameters<TM['retryDownload']>): Fwd<TM['retryDownload']> { return this.rpc('retryDownload', a); }
   stopSeeding(...a: Parameters<TM['stopSeeding']>): Fwd<TM['stopSeeding']> { return this.rpc('stopSeeding', a); }
@@ -276,14 +329,16 @@ class TorrentManagerProxy {
   setSeedRatioLimit(...a: Parameters<TM['setSeedRatioLimit']>): Fwd<TM['setSeedRatioLimit']> { return this.rpc('setSeedRatioLimit', a); }
   setSeedTimeLimit(...a: Parameters<TM['setSeedTimeLimit']>): Fwd<TM['setSeedTimeLimit']> { return this.rpc('setSeedTimeLimit', a); }
   setSequentialDownload(...a: Parameters<TM['setSequentialDownload']>): Fwd<TM['setSequentialDownload']> { return this.rpc('setSequentialDownload', a); }
-  updateSettings(...a: Parameters<TM['updateSettings']>): Fwd<TM['updateSettings']> { return this.rpc('updateSettings', a); }
+  updateSettings(...a: Parameters<TM['updateSettings']>): Fwd<TM['updateSettings']> { return this.effective.refresh(a[0]); }
   getNetworkHealth(...a: Parameters<TM['getNetworkHealth']>): Fwd<TM['getNetworkHealth']> { return this.rpc('getNetworkHealth', a); }
   getRunningTransport(...a: Parameters<TM['getRunningTransport']>): Fwd<TM['getRunningTransport']> { return this.rpc('getRunningTransport', a); }
   applyIpBlocklist(...a: Parameters<TM['applyIpBlocklist']>): Promise<void> { return this.rpc('applyIpBlocklist', a); }
 
-  setAltSpeed(...a: Parameters<TM['setAltSpeed']>): Fwd<TM['setAltSpeed']> {
-    if (typeof a[0] === 'boolean') this.altSpeed = a[0]; // optimistic mirror for the tray
-    return this.rpc('setAltSpeed', a);
+  async setAltSpeed(...a: Parameters<TM['setAltSpeed']>): Fwd<TM['setAltSpeed']> {
+    const result = await this.rpc<Awaited<ReturnType<TM['setAltSpeed']>>>('setAltSpeed', a);
+    this.altSpeed = result.altSpeedEnabled;
+    await this.refreshEffectiveSettings();
+    return result;
   }
 
   // ── Cast server (runs in the host; its resolver is synchronous there) ──────

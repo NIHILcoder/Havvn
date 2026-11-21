@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import { validateFilePath, validatePort, validateRoomCode, validateInfoHash, validateUrl } from './validation';
-import { validateChatMessage, validateTrackerUrl, validateFileName, validateSeedLimit } from './security';
+import { validateChatMessage, validateTrackerUrl, validateTrackerRemoval, validateFileName, validateSeedLimit } from './security';
 
 // Exercise exported production validators rather than the removed validation API.
 describe('file path boundaries', () => {

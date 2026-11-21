@@ -32,7 +32,7 @@ export class WebRemoteServer {
 
   private mgr(): Mgr {
     // Lazy require avoids a load-time cycle with the manager (cast-server does the same).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- Lazy manager loading avoids an initialization cycle.
     const { getTorrentManager } = require('./index');
     return getTorrentManager();
   }
@@ -53,7 +53,7 @@ export class WebRemoteServer {
     await this.stop();
     this.token = token;
     return new Promise((resolve, reject) => {
-      const server = http.createServer((req, res) => this.handle(req, res));
+      const server = http.createServer((req, res) => { void this.handle(req, res); });
       server.on('error', (e) => { log.error('Server error', { error: String(e) }); reject(e); });
       server.listen(port, '0.0.0.0', () => {
         this.server = server;
@@ -94,7 +94,7 @@ export class WebRemoteServer {
 
   // ── Routing ────────────────────────────────────────────────────────────────
 
-  private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
       if (!this.hostOk(req)) { res.writeHead(403); res.end('forbidden'); return; }
       const url = new URL(req.url || '', 'http://remote');
@@ -107,23 +107,26 @@ export class WebRemoteServer {
       if (parts.length === 0) return void this.serveApp(res);
 
       if (parts[0] === 'api') {
-        if (parts[1] === 'state' && method === 'GET') return void this.apiState(res);
-        if (parts[1] === 'files' && parts[2] && method === 'GET') return void this.apiFiles(res, decodeURIComponent(parts[2]));
-        if (parts[1] === 'add' && method === 'POST') return void this.apiAdd(req, res);
+        if (parts[1] === 'state' && method === 'GET') return await this.apiState(res);
+        if (parts[1] === 'files' && parts[2] && method === 'GET') return await this.apiFiles(res, decodeURIComponent(parts[2]));
+        if (parts[1] === 'add' && method === 'POST') return await this.apiAdd(req, res);
         if (parts[1] === 'torrents' && parts[2] && parts[3] && method === 'POST') {
-          return void this.apiControl(res, decodeURIComponent(parts[2]), parts[3]);
+          return await this.apiControl(res, decodeURIComponent(parts[2]), parts[3]);
         }
         res.writeHead(404); res.end('{}'); return;
       }
 
       if (parts[0] === 'watch' && parts[1] && parts[2] !== undefined) {
-        return void this.watch(res, decodeURIComponent(parts[1]), Number(parts[2]));
+        return await this.watch(res, decodeURIComponent(parts[1]), Number(parts[2]));
       }
 
       res.writeHead(404); res.end('not found');
     } catch (e) {
       log.error('Request failed', { error: String(e) });
-      try { res.writeHead(500); res.end(); } catch { /* ignore */ }
+      try {
+        if (!res.headersSent) this.json(res, 503, { error: 'The service is temporarily unavailable. Retry in a moment.' });
+        else res.end();
+      } catch { /* The client may have disconnected. */ }
     }
   }
 
@@ -257,16 +260,20 @@ header h1{font-size:16px;margin:0;font-weight:700;flex:1}
 </style></head><body>
 <header><h1>Havvn Remote</h1></header>
 <div class="add"><input id="mag" placeholder="magnet:?xt=…" inputmode="url"><button onclick="addMag()">Add</button></div>
+<p id="remote-error" role="alert" hidden style="margin:12px 16px;color:#f87171"></p>
 <div class="list" id="list"><div class="empty">Loading…</div></div>
 <script>
 var K=new URLSearchParams(location.search).get('k')||'';
 var openFiles={};
 function api(path,opts){opts=opts||{};opts.headers=Object.assign({'X-TH-Token':K},opts.headers||{});return fetch(path,opts);}
+var remoteErrors={action:'',poll:''};
+function remoteError(kind,error){remoteErrors[kind]=error?(error.message||'Unable to connect. Check the connection and retry.'):'';var el=document.getElementById('remote-error');el.textContent=remoteErrors.action||remoteErrors.poll;el.hidden=!el.textContent;}
+function apiResult(r){return r.json().catch(function(){return{};}).then(function(j){if(!r.ok)throw Error(j.error||(r.status===403?'Access denied. Open a new link from Havvn.':'The request failed. Please retry.'));return j;});}
 function fmtB(n){if(!n)return'0 B';var u=['B','KB','MB','GB','TB'],i=Math.floor(Math.log(n)/Math.log(1024));return (n/Math.pow(1024,i)).toFixed(1)+' '+u[i];}
-function addMag(){var m=document.getElementById('mag');if(!m.value.trim())return;api('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet:m.value.trim()})}).then(function(r){return r.json();}).then(function(j){if(j.error)alert(j.error);else{m.value='';refresh();}});}
-function ctl(id,a){api('/api/torrents/'+encodeURIComponent(id)+'/'+a,{method:'POST'}).then(function(){setTimeout(refresh,300);});}
+function addMag(){var m=document.getElementById('mag');if(!m.value.trim())return;api('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({magnet:m.value.trim()})}).then(apiResult).then(function(){remoteError('action',null);m.value='';refresh();}).catch(function(e){remoteError('action',e);});}
+function ctl(id,a){api('/api/torrents/'+encodeURIComponent(id)+'/'+a,{method:'POST'}).then(apiResult).then(function(){remoteError('action',null);setTimeout(refresh,300);}).catch(function(e){remoteError('action',e);});}
 function rm(id){if(confirm('Remove this torrent?'))ctl(id,'remove');}
-function toggleFiles(id){if(openFiles[id]){delete openFiles[id];render(LAST);return;}api('/api/files/'+encodeURIComponent(id)).then(function(r){return r.json();}).then(function(j){openFiles[id]=j.files||[];render(LAST);});}
+function toggleFiles(id){if(openFiles[id]){delete openFiles[id];render(LAST);return;}api('/api/files/'+encodeURIComponent(id)).then(apiResult).then(function(j){remoteError('action',null);openFiles[id]=j.files||[];render(LAST);}).catch(function(e){remoteError('action',e);});}
 var LAST={downloads:[]};
 function render(state){LAST=state;var L=document.getElementById('list');var d=state.downloads||[];if(!d.length){L.innerHTML='<div class="empty">No downloads yet. Paste a magnet above.</div>';return;}
 L.innerHTML=d.map(function(t){var pct=Math.round((t.progress||0)*100);var files=openFiles[t.id];
@@ -277,7 +284,7 @@ return '<div class="card"><div class="name">'+esc(t.name)+'</div>'+
 '<div class="row"><button onclick="ctl(\\''+t.id+'\\',\\'pause\\')">Pause</button><button onclick="ctl(\\''+t.id+'\\',\\'resume\\')">Resume</button><button onclick="toggleFiles(\\''+t.id+'\\')">Files</button><button class="danger" onclick="rm(\\''+t.id+'\\')">Remove</button></div>'+
 fhtml+'</div>';}).join('');}
 function esc(s){return (s||'').replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-function refresh(){api('/api/state').then(function(r){if(r.status===403){document.getElementById('list').innerHTML='<div class="empty">Access denied — open the link from the app again.</div>';throw 0;}return r.json();}).then(render).catch(function(){});}
+function refresh(){api('/api/state').then(apiResult).then(function(j){render(j);remoteError('poll',null);}).catch(function(e){remoteError('poll',e);});}
 refresh();setInterval(refresh,1500);
 </script></body></html>`;
 

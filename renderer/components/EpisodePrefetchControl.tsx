@@ -3,6 +3,9 @@ import { shouldPrefetchEpisode, type EpisodePrefetchState } from '../../shared/e
 import { bufferedSecondsAhead, readBufferedRanges } from '../../shared/playback-buffer';
 import { useTranslation } from '../utils/i18nContext';
 import { Select } from './Select';
+import { Toggle } from './Toggle';
+import { useResourceEconomy } from '../utils/resource-mode';
+import { useEngineCapabilities } from '../utils/useEngineCapabilities';
 import './EpisodePrefetchControl.css';
 
 const KEY = 'havvn.player.episodePrefetch.v1';
@@ -18,18 +21,14 @@ interface Props { media: HTMLMediaElement | null; downloadId: string; currentFil
 
 export function EpisodePrefetchControl({ media, downloadId, currentFile, nextFile, nextName }: Props) {
   const { t } = useTranslation();
+  const economy = useResourceEconomy();
   const [settings, setSettings] = useState(loadSettings);
-  const [supported, setSupported] = useState<boolean | null>(null);
+  const { capabilities, failed } = useEngineCapabilities();
+  const supported = capabilities?.features.boundedEpisodePrefetch.supported;
   const [state, setState] = useState<EpisodePrefetchState | 'waiting' | 'error'>('waiting');
+  useEffect(() => { if (supported === true) { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch { /* optional storage */ } } }, [settings, supported]);
   useEffect(() => {
-    let disposed = false;
-    void window.api.getEpisodePrefetchSupport().then(result => { if (!disposed) setSupported(result.supported); })
-      .catch(() => { if (!disposed) setState('error'); });
-    return () => { disposed = true; };
-  }, []);
-  useEffect(() => { try { localStorage.setItem(KEY, JSON.stringify(settings)); } catch { /* optional storage */ } }, [settings]);
-  useEffect(() => {
-    if (!media || !supported || !settings.enabled || nextFile === null) { setState('waiting'); return; }
+    if (economy || !media || !supported || !settings.enabled || nextFile === null) { setState('waiting'); return; }
     let disposed = false;
     let pending = false;
     let stalled = media.readyState < 3;
@@ -62,22 +61,22 @@ export function EpisodePrefetchControl({ media, downloadId, currentFile, nextFil
     update();
     return () => { disposed = true; clearInterval(timer); for (const event of events) media.removeEventListener(event, update);
       media.removeEventListener('waiting', onWaiting); media.removeEventListener('playing', onReady); media.removeEventListener('canplay', onReady); void stop(); };
-  }, [media, supported, settings, downloadId, currentFile, nextFile]);
-  const status = supported === false ? 'unsupported' : !settings.enabled ? 'off' : nextFile === null ? 'last' : state;
+  }, [media, supported, settings, downloadId, currentFile, nextFile, economy]);
+  const status = supported === undefined ? failed ? 'unknown' : 'checking' : supported === false ? 'unsupported' : !settings.enabled ? 'off' : nextFile === null ? 'last' : state;
   return <details className="episode-prefetch" onToggle={event => {
     if (event.currentTarget.open) { const other = event.currentTarget.parentElement?.querySelector<HTMLDetailsElement>('.player-preferences'); if (other) other.open = false; }
   }}>
-    <summary>{t('player.prefetch.title')}<span role="status">{t(`player.prefetch.${status}`)}</span></summary>
-    <div className="episode-prefetch-fields">
-      <label><input type="checkbox" disabled={supported !== true} checked={supported === true && settings.enabled}
-        onChange={event => setSettings(previous => ({ ...previous, enabled: event.target.checked }))} />{t('player.prefetch.enable')}</label>
+    <summary>{t('player.prefetch.title')}<span role="status">{economy && settings.enabled && nextFile !== null && supported === true ? t('resources.prefetchPaused') : t(`player.prefetch.${status}`)}</span></summary>
+    {supported === true && <div className="episode-prefetch-fields">
+      <Toggle disabled={supported !== true} checked={settings.enabled} label={t('player.prefetch.enable')}
+        onChange={enabled => setSettings(previous => ({ ...previous, enabled }))} />
       <label>{t('player.prefetch.budget')}<Select value={String(settings.budgetMiB)} disabled={supported !== true}
         ariaLabel={t('player.prefetch.budget')} onChange={value => setSettings(previous => ({ ...previous, budgetMiB: Number(value) }))}
         options={[16, 32, 64].map(size => ({ value: String(size), label: `${size} MiB` }))} /></label>
-      <label><input type="checkbox" disabled={supported !== true || !settings.enabled} checked={settings.allowExcluded}
-        onChange={event => setSettings(previous => ({ ...previous, allowExcluded: event.target.checked }))} />{t('player.prefetch.allowExcluded')}</label>
-    </div>
+      <Toggle disabled={supported !== true || !settings.enabled} checked={settings.allowExcluded} label={t('player.prefetch.allowExcluded')}
+        onChange={allowExcluded => setSettings(previous => ({ ...previous, allowExcluded }))} />
+    </div>}
     {nextName && <p className="episode-prefetch-next" title={nextName}>{t('player.prefetch.next')}: {nextName}</p>}
-    <p>{t(supported === false ? 'player.prefetch.nativeHint' : 'player.prefetch.hint')}</p>
+    <p>{t(supported === false ? 'player.prefetch.nativeHint' : supported === undefined ? 'engineFeatures.unknown' : 'player.prefetch.hint')}</p>
   </details>;
 }

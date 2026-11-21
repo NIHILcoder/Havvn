@@ -75,7 +75,7 @@ if (!process.versions.electron) {
         const source=ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
         new Function('require','module','exports',source)(s=>{if(s.endsWith('.css'))return{};if(s.includes('i18nContext'))return{useTranslation:()=>({t:translate,language:'ru'})};
           if(s==='./PlayerControls')return{fmtTime:v=>Math.floor(v/60)+':'+String(Math.floor(v%60)).padStart(2,'0')};
-          if(s==='./index')return{Icon:load(path.join(root,'renderer/components/Icon.tsx')).Icon,Button:load(path.join(root,'renderer/components/Button.tsx')).Button};
+          if(s==='./index')return{Icon:load(path.join(root,'renderer/components/Icon.tsx')).Icon,Button:load(path.join(root,'renderer/components/Button.tsx')).Button,Toggle:load(path.join(root,'renderer/components/Toggle.tsx')).Toggle};
           if(s.endsWith('ConfirmDialog'))return{useConfirm:()=>({alert:async()=>{},confirm:async()=>true})};
           if(s.startsWith('.')){const q=path.resolve(path.dirname(p),s);for(const ext of ['.tsx','.ts'])if(fs.existsSync(q+ext))return load(q+ext);throw Error(q)}return require(path.join(root,'node_modules',s));},m,m.exports);return m.exports;}
       var External=load(path.join(root,'renderer/components/ExternalPlayerModal.tsx')).ExternalPlayerModal;
@@ -108,7 +108,7 @@ if (!process.versions.electron) {
     await wait(`document.body.textContent.includes(translate('external.error.missing-player'))`); assert.equal(await run(`button('external.open').disabled`), true);
     fs.renameSync(vlc + '.saved', vlc); await run(`button('common.cancel').click()`); await wait(`!button('external.open')`);
     await run(`mount()`); await wait(`!button('external.open').disabled`);
-    await run(`button('external.default').click()`); await wait(`document.querySelector('.external-player-selected strong')?.textContent===translate('external.default')`);
+    await run(`button('external.useDefault').click()`); await wait(`document.querySelector('.external-player-selected strong')?.textContent===translate('external.default')`);
     systemError = 'No association'; await run(`button('external.open').click()`);
     await wait(`document.body.textContent.includes(translate('external.error.launch-failed'))`);
     assert.equal(await run(`externalLaunched`), 1); assert.equal(systemCalls.at(-1), disk);
@@ -137,12 +137,13 @@ if (!process.versions.electron) {
     d.progress = 1; files = [{ ...files[0], downloaded: 10, progress: 1 }];
     await run(`reactRoot.render(React.createElement(Control,{download:${JSON.stringify(d)},onClose:()=>parentClosed++}));`);
     await wait(`!!button('downloads.files')`); await run(`button('downloads.files').click()`);
-    await wait(`!!document.querySelector('.tcm-file-external')`); await run(`document.querySelector('.tcm-file-external').click()`);
+    const fileAction = `document.querySelector('.tcm-file-row button[aria-label="'+translate('external.title')+'"]')`;
+    await wait(`!!${fileAction}`); await run(`${fileAction}.click()`);
     await wait(`button('external.open')&&!button('external.open').disabled`);
     // A parent dialog must not steal Tab focus from the nested player picker.
     assert.ok(await run(`button('external.choose').focus();button('external.choose').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));document.activeElement===button('external.choose')`));
     await run(`window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))`); await wait(`!button('external.open')`);
-    assert.equal(await run(`parentClosed`), 0); assert.ok(await run(`!!document.querySelector('.tcm-file-external')`));
+    assert.equal(await run(`parentClosed`), 0); assert.ok(await run(`!!${fileAction}`));
     assert.equal(starts, 0); assert.equal(d.status, 'paused');
     player.select(mpv); assert.equal((await player.open('test', name, 123.456)).ok, true);
     assert.equal(fs.existsSync(path.join(folder, 'after-owner-exit.txt')), false, 'The external process must still be alive when its owner exits');

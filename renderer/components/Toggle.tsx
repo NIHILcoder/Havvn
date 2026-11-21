@@ -3,6 +3,7 @@
  */
 
 import React from 'react';
+import { useFieldLabel } from '../utils/fieldLabel';
 import './Toggle.css';
 
 interface ToggleProps {
@@ -28,6 +29,7 @@ export const Toggle: React.FC<ToggleProps> = ({
   ariaDescribedBy,
   size = 'medium',
 }) => {
+  const field = useFieldLabel();
   const handleClick = () => {
     if (!disabled) {
       onChange(!checked);
@@ -54,7 +56,8 @@ export const Toggle: React.FC<ToggleProps> = ({
         aria-checked={checked}
         aria-disabled={disabled}
         aria-label={ariaLabel ?? label}
-        aria-describedby={ariaDescribedBy}
+        aria-labelledby={ariaLabel || label ? undefined : field?.labelId}
+        aria-describedby={ariaDescribedBy ?? field?.descriptionId}
         tabIndex={disabled ? -1 : 0}
       >
         <span className="toggle-slider" />

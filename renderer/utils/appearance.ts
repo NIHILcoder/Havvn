@@ -1,9 +1,11 @@
 import { DEFAULT_APPEARANCE, validateAppearance, type Appearance, type AcrylicStatus, type ThemeGlass } from '../../shared/appearance';
+import { resourceFeatures } from '../../shared/resource-mode';
+import { resourceMode } from './resource-mode';
 const KEY = 'havvn.appearance.v1';
 const IMAGE_KEY = 'havvn.appearance.wallpaper.v1';
 let wallpaperCache: string | undefined;
 export const APPEARANCE_EVENT = 'havvn:appearance';
-let status: AcrylicStatus = { enabled: false, active: false, reason: 'off' };
+let status: AcrylicStatus = { enabled: false, active: false, reason: 'off', material: 'acrylic' };
 let revision = 0;
 let themeGlass: ThemeGlass | undefined;
 /** A transient theme layer: previewing never writes window preferences. */
@@ -47,9 +49,14 @@ function persistAppearance(p: Appearance): void {
 export function acrylicStatus(): AcrylicStatus { return status; }
 export function paintAppearance(p: Appearance): void {
   p = { ...p, ...themeGlass };
+  const economy = resourceMode.getSnapshot().snapshot.economy;
+  const { quality, motion } = resourceFeatures({ quality: p.quality, motion: p.motion, prefetch: true }, economy);
+  p = { ...p, quality, motion };
   const root = document.documentElement;
+  root.dataset.resourceMode = economy ? 'economy' : 'normal';
   root.dataset.material = p.intensity === 0 ? 'solid' : p.material;
   root.dataset.acrylic = status.active ? 'active' : 'off';
+  root.dataset.nativeMaterial = status.material;
   root.dataset.glassScopes = p.scopes.join(' ');
   root.dataset.glassQuality = p.quality;
   root.dataset.glassMotion = p.motion ? 'on' : 'off';
@@ -63,6 +70,7 @@ export function paintAppearance(p: Appearance): void {
     '--ap-highlight': `${p.highlight * strength * (p.material === 'liquid' ? 1 : .3)}%`,
     '--ap-depth': `${p.depth * strength / 250}`,
     '--ap-dim': `${p.backgroundDim}%`,
+    '--ap-window-opacity': `${24 + p.backgroundDim * .52}%`,
     '--ap-wallpaper': p.background === 'image' ? `url("${p.wallpaper}")` : 'none',
   };
   for (const [key, value] of Object.entries(values)) root.style.setProperty(key, value);
@@ -80,21 +88,24 @@ export async function saveAppearance(p: Appearance): Promise<void> {
   persistAppearance(valid);
   paintAppearance(valid);
   notify();
-  if (previous.acrylic !== valid.acrylic || status.enabled !== valid.acrylic) {
+  if (previous.acrylic !== valid.acrylic || previous.nativeMaterial !== valid.nativeMaterial || status.enabled !== valid.acrylic || status.material !== valid.nativeMaterial) {
     const currentRevision = ++revision;
     try {
-      const next = await window.api.appearance.setAcrylic(valid.acrylic);
+      const next = await window.api.appearance.setAcrylic(valid.acrylic, valid.nativeMaterial);
       if (currentRevision !== revision) return;
       status = next;
       paintAppearance(readAppearance()); notify();
     } catch (error) {
       if (currentRevision === revision) {
-        const restored = { ...readAppearance(), acrylic: previous.acrylic };
+        const restored = { ...readAppearance(), acrylic: previous.acrylic, nativeMaterial: previous.nativeMaterial };
         persistAppearance(restored); paintAppearance(restored); notify();
       }
       throw error;
     }
   }
+}
+export function refreshAppearanceFromStorage(): void {
+  wallpaperCache = undefined; paintAppearance(readAppearance()); notify();
 }
 export function bootAppearance(): () => void {
   let alive = true;
@@ -109,7 +120,7 @@ export function bootAppearance(): () => void {
   const off = window.api.appearance?.onAcrylicChanged(acceptStatus);
   void window.api.appearance?.getAcrylic().then(next => {
     if (!alive || initialRevision !== revision) return;
-    const prefs = { ...readAppearance(), acrylic: next.enabled };
+    const prefs = { ...readAppearance(), acrylic: next.enabled, nativeMaterial: next.material };
     try { persistAppearance(prefs); } catch { /* display still works */ }
     acceptStatus(next);
   }).catch(() => { /* opaque window without the bridge */ });
@@ -129,7 +140,7 @@ export function installAppearanceMotion(doc: Document): () => void {
   // No perpetual animation loop; at most one update per pointer frame.
   let frame = 0;
   let target: HTMLElement | null = null;
-  let x = 50, y = 0;
+  let x = 0, y = 0;
   const media = host.matchMedia('(prefers-reduced-motion: reduce)');
   const clear = () => {
     if (frame) host.cancelAnimationFrame(frame);
@@ -138,22 +149,25 @@ export function installAppearanceMotion(doc: Document): () => void {
   };
   const move = (event: PointerEvent) => {
     const root = doc.documentElement;
-    if (root.dataset.material !== 'liquid' || root.dataset.glassMotion !== 'on' ||
-        root.dataset.glassQuality === 'light' || root.hasAttribute('data-reduce-motion') || media.matches) { clear(); return; }
+    if (root.dataset.resourceMode === 'economy' || root.dataset.material !== 'liquid' || root.dataset.glassMotion !== 'on' ||
+        root.dataset.glassQuality === 'light' || root.hasAttribute('data-reduce-motion') || media.matches || doc.hidden || event.pointerType === 'touch') { clear(); return; }
     const element = event.target as Element | null;
     const next = element?.nodeType === 1 && typeof element.closest === 'function' ? element.closest<HTMLElement>(
       '.sidebar,.titlebar,.page-header,.um-card,.stg-card,.custom-select-dropdown,.dropdown-menu,.query-history-menu,.context-menu,.pc-menu,.pc,.ted,.ap-preview-surface') : null;
     if (target !== next) { clear(); target = next; }
     if (!target) return;
-    const bounds = target.getBoundingClientRect();
-    x = Math.max(0, Math.min(100, (event.clientX - bounds.left) / Math.max(1, bounds.width) * 100));
-    y = Math.max(0, Math.min(100, (event.clientY - bounds.top) / Math.max(1, bounds.height) * 100));
+    x = event.clientX; y = event.clientY;
     if (!frame) frame = host.requestAnimationFrame(() => {
-      frame = 0; target?.style.setProperty('--ap-x', `${x}%`); target?.style.setProperty('--ap-y', `${y}%`);
+      frame = 0; if (!target?.isConnected) { clear(); return; }
+      const bounds = target.getBoundingClientRect();
+      target.style.setProperty('--ap-x', `${Math.max(0, Math.min(100, (x - bounds.left) / Math.max(1, bounds.width) * 100))}%`);
+      target.style.setProperty('--ap-y', `${Math.max(0, Math.min(100, (y - bounds.top) / Math.max(1, bounds.height) * 100))}%`);
     });
   };
   doc.addEventListener('pointermove', move, { passive: true });
   doc.addEventListener('pointerleave', clear);
+  doc.addEventListener('visibilitychange', clear);
+  host.addEventListener('blur', clear);
   host.addEventListener(APPEARANCE_EVENT, clear);
   media.addEventListener('change', clear);
   const observer = new MutationObserver(clear);
@@ -161,6 +175,7 @@ export function installAppearanceMotion(doc: Document): () => void {
   return () => {
     clear(); observer.disconnect();
     doc.removeEventListener('pointermove', move); doc.removeEventListener('pointerleave', clear);
+    doc.removeEventListener('visibilitychange', clear); host.removeEventListener('blur', clear);
     host.removeEventListener(APPEARANCE_EVENT, clear); media.removeEventListener('change', clear);
   };
 }

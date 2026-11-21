@@ -17,8 +17,10 @@
 
 .rss-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   margin-bottom: 1rem;
 }
 
@@ -34,8 +36,11 @@
 
 .rss-header-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .rss-tabs {
@@ -270,6 +275,7 @@
 /* .items-search:focus-within already draws the ring — mute the global
    :focus-visible shadow on the inner input or the frame doubles. */
 .items-search-input:focus-visible {
+  outline: none;
   box-shadow: none;
 }
 
@@ -409,6 +415,13 @@
 .rss-feed-modal .form-note { flex-wrap: wrap; }
 .rss-feed-modal .form-note > span { flex: 1 1 200px; }
 .rss-feed-modal .toggle-field { overflow-wrap: anywhere; }
+.rss-rule-modal .toggle-field > div, .rss-feed-modal .toggle-field > div { min-width: 0; }
+.rss-rule-modal .toggle-field .field-hint, .rss-feed-modal .toggle-field .field-hint {
+  font-size: 0.75rem; font-weight: 400; line-height: 1.5; color: var(--color-text-muted);
+}
+.rss-rule-modal .toggle-field-select, .rss-feed-modal .toggle-field-select {
+  display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 8px;
+}
 
 .feed-form {
   max-width: 600px;
@@ -709,3 +722,10 @@
   color: var(--color-text-muted);
   font-style: italic;
 }
+.rss-rule-templates, .rss-forecast-counts { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rss-rule-templates { padding: 12px; border: 1px solid var(--color-border-default); font-size: 12px; }
+.rss-forecast-counts { margin: 12px 0; font-size: 12px; }
+.rss-forecast-counts span { padding: 5px 8px; background: var(--color-bg-primary); border: 1px solid var(--color-border-default); }
+.rule-preview-list [data-rss-forecast] { display: grid; gap: 4px; }
+.rule-preview-list [data-rss-forecast] small { color: var(--color-text-tertiary); }
+.rule-preview-list [data-rss-forecast=ready] small { color: var(--color-success); }

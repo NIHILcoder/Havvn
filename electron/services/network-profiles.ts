@@ -32,6 +32,7 @@ let mainWindow: BrowserWindow | null = null;
 let lastKey: string | null = null;          // last network key we applied for
 let activeProfileId: string | null = null;  // profile currently in effect ('' base)
 let lastInfo: NetworkInfo = { key: '', label: '' };
+let generation = 0;
 
 export function setMainWindow(win: BrowserWindow): void { mainWindow = win; }
 
@@ -103,16 +104,8 @@ function toInfo(mac?: string, ssid?: string, name?: string, iface?: string, gate
 // ── Apply ────────────────────────────────────────────────────────────────────
 /** Push the effective (base + overlay) engine settings live. Never writes base. */
 async function applyEffective(profile: NetworkProfile | null): Promise<void> {
-  const base = await db.getSettings();
-  const o = profile?.overrides || {};
   try {
-    await getTorrentManager().updateSettings({
-      maxDownKbps: o.maxDownKbps ?? base.maxDownKbps,
-      maxUpKbps: o.maxUpKbps ?? base.maxUpKbps,
-      maxConnectionsGlobal: o.maxConnectionsGlobal ?? base.maxConnectionsGlobal,
-      adaptiveUpload: o.adaptiveUpload ?? base.adaptiveUpload,
-      dohEnabled: o.dohEnabled ?? base.dohEnabled,
-    });
+    await getTorrentManager().setNetworkProfile(profile);
   } catch (e) {
     log.warn('Failed to apply effective settings', { error: e instanceof Error ? e.message : String(e) });
   }
@@ -120,8 +113,10 @@ async function applyEffective(profile: NetworkProfile | null): Promise<void> {
 
 /** Re-evaluate the current network and apply the matching profile (or base). */
 export async function applyForCurrentNetwork(force = false): Promise<void> {
+  const revision = ++generation;
   const settings = await db.getSettings();
   const info = await detectNetwork();
+  if (revision !== generation) return;
   lastInfo = info;
 
   if (settings.networkProfilesEnabled !== true) {

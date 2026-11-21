@@ -1,0 +1,11 @@
+.working-hint { color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: 1.55; }
+.working-current { font-size: var(--font-size-sm); overflow-wrap: anywhere; }
+.working-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-block: 16px; }
+.working-apply-actions { border-top: 1px solid var(--color-border-subtle); }
+.working-differences { margin: 16px 0; }
+.working-differences > div { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 3fr); gap: 16px; padding-block: 12px; border-bottom: 1px solid var(--color-border-subtle); }
+.working-differences dt { color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+.working-differences dd { margin: 0; display: grid; gap: 8px; min-width: 0; overflow-wrap: anywhere; font-size: var(--font-size-sm); line-height: 1.5; }
+.working-differences dd > span { color: var(--color-text-secondary); }
+.working-differences dd > span,.working-differences dd > strong { white-space: pre-line; }
+@media (max-width: 600px) { .working-differences > div { grid-template-columns: minmax(0, 1fr); gap: 8px; } }

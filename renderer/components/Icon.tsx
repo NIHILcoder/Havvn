@@ -64,6 +64,12 @@ export type IconName =
   | 'arrow-left'
   | 'chevron-left'
   | 'type'
+  | 'wrap-text'
+  | 'hash'
+  | 'bold'
+  | 'italic'
+  | 'heading'
+  | 'code'
   | 'zap'
   | 'sliders'
   | 'file-question'
@@ -138,7 +144,8 @@ const paths: Record<IconName, string> = {
   'stop': 'M6 6h12v12H6z',
   'trash': 'M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2',
   'refresh': 'M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15',
-  'check': 'M20 6L9 17l-5-5',
+  // Keep persisted icon names compatible, with centered status markers.
+  'check': 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   'x': 'M18 6L6 18 M6 6l12 12',
   'alert-circle': 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z M12 8v4 M12 16h.01',
   'info': 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z M12 16v-4 M12 8h.01',
@@ -161,7 +168,7 @@ const paths: Record<IconName, string> = {
   'calendar': 'M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z M16 2v4 M8 2v4 M3 10h18',
   'percent': 'M19 5L5 19 M6.5 9a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z M17.5 20a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
   'hard-drive': 'M22 12H2 M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z M6 16h.01 M10 16h.01',
-  'check-circle': 'M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4L12 14.01l-3-3',
+  'check-circle': 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
   'sun': 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10z M12 1v2 M12 21v2 M4.22 4.22l1.42 1.42 M18.36 18.36l1.42 1.42 M1 12h2 M21 12h2 M4.22 19.78l1.42-1.42 M18.36 5.64l1.42-1.42',
   'moon': 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
   'monitor': 'M20 3H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z M8 21h8 M12 17v4',
@@ -179,6 +186,12 @@ const paths: Record<IconName, string> = {
   'chevron-left': 'M15 18l-6-6 6-6',
   'chevron-up': 'M18 15l-6-6-6 6',
   'type': 'M4 7V4h16v3 M9 20h6 M12 4v16',
+  'wrap-text': 'M3 6h18 M3 12h14a3 3 0 0 1 0 6h-5 M15 15l-3 3 3 3 M3 18h4',
+  'hash': 'M4 9h16 M3 15h16 M10 3 8 21 M16 3l-2 18',
+  'bold': 'M6 4h7a4 4 0 0 1 0 8H6z M6 12h8a4 4 0 0 1 0 8H6z',
+  'italic': 'M19 4h-9 M14 20H5 M15 4 9 20',
+  'heading': 'M5 4v16 M19 4v16 M5 12h14',
+  'code': 'M8 6 2 12l6 6 M16 6l6 6-6 6',
   'zap': 'M13 2L3 14h9l-1 8 10-12h-9l1-8z',
   'sliders': 'M4 21v-7 M4 10V3 M12 21v-9 M12 8V3 M20 21v-5 M20 12V3 M1 14h6 M9 8h6 M17 16h6',
   'file-question': 'M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z M13 2v7h7 M9.9 12.6a2.1 2.1 0 1 1 3 1.9c-.6.3-.9.7-.9 1.3 M12 18.5h.01',

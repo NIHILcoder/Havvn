@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * Theme editor — a dockable side panel for creating, tuning, saving, sharing and
  * applying dual-mode custom themes.
@@ -18,19 +19,23 @@
  * hint, and the whole draft goes through validateTheme on save and on import —
  * the same trust boundary an imported file crosses.
  */
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
+import { isModalOpen } from './Modal';
 import { createPortal } from 'react-dom';
 import { APPEARANCE_MIRROR_ATTRS, getThemeGlass } from '../../shared/appearance';
 import { installAppearanceMotion, readAppearance, readEffectiveAppearance } from '../utils/appearance';
 import { GlassControls } from './GlassControls';
 import { Button } from './Button';
 import Icon from './Icon';
+import { registerCommandWindow } from '../commands/windows';
 import { useTranslation } from '../utils/i18nContext';
 import {
   Theme, ThemeMode, EDITABLE_TOKENS, ADVANCED_GROUPS, FONT_OPTIONS, deriveAccent, validateTheme,
   sanitizeTokenValue, sanitizeFontData, tokenCategory, clearAppliedTheme, TOKEN_WHITELIST,
 } from '../../shared/theme';
 import { contrastRatio, wcagLevel } from '../../shared/contrast';
+import { TEXT_CONTRAST_PAIRS } from '../../shared/theme-readability';
+import { ThemeReadability } from './ThemeReadability';
 import { parseColor, toRgbString } from '../../shared/color';
 import { generatePalette, adaptVariant } from '../../shared/palette';
 import {
@@ -45,14 +50,17 @@ import './ThemeEditor.css';
 type EditMode = 'simple' | 'advanced';
 
 // Text-on-background pairs the contrast checker reports (resolved from the draft).
-const CONTRAST_PAIRS: [string, string][] = [
-  ['--color-text-primary', '--color-bg-primary'],
-  ['--color-text-secondary', '--color-bg-primary'],
-  ['--color-text-primary', '--color-bg-elevated'],
-  ['--color-text-tertiary', '--color-bg-elevated'],
-  ['--color-accent-primary', '--color-bg-primary'],
-];
+const CONTRAST_PAIRS = TEXT_CONTRAST_PAIRS;
 const shortToken = (name: string): string => name.replace(/^--color-/, '').replace(/^--/, '');
+function moveTabFocus(event: React.KeyboardEvent) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')).filter(tab => !tab.disabled && tab.closest('[role="tablist"]') === event.currentTarget);
+  const current = tabs.indexOf(event.target as HTMLButtonElement);
+  if (current < 0 || !tabs.length) return;
+  event.preventDefault(); event.stopPropagation();
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[index].focus(); tabs[index].click();
+}
 
 /** One thing the inspector can offer to edit at the clicked spot. `approx` marks
  *  a nearest-token guess (no exact token painted that colour — e.g. a color-mix). */
@@ -239,6 +247,13 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
   // Which palette the fields edit + preview (defaults to the app's current mode).
   const [variant, setVariant] = useState<ThemeMode>(resolvedMode);
   const [status, setStatus] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const tabId = useId();
+  const editorRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const opener = editorRef.current?.ownerDocument.activeElement as HTMLElement | null;
+    editorRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
+    return () => { if (opener?.isConnected) opener.focus(); };
+  }, []);
   const [busy, setBusy] = useState(false);
 
   // Dock chrome.
@@ -350,6 +365,11 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
   // dock. Yields to the browser's native text undo when a text field is focused
   // (so editing a value string still undoes character-by-character there).
   const onDockKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape' && !e.defaultPrevented && !isModalOpen()) {
+      e.stopPropagation();
+      if (inspecting) setInspecting(false); else if (pick) setPick(null); else handleClose();
+      return;
+    }
     if (!(e.ctrlKey || e.metaKey)) return;
     const target = e.target as HTMLElement;
     const el = target as HTMLInputElement;
@@ -381,6 +401,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
   // WCAG contrast of the key text-on-bg pairs, resolved from the draft. Cheap
   // (5 pairs) so it just recomputes on every edit; deps cover every input the
   // inner resolver reads.
+  const readabilityTokens = useMemo(() => ({ ...defaults, ...(draft?.[paletteKey] ?? {}) }), [defaults, draft, paletteKey]);
   const contrastRows = useMemo(() => {
     const resolve = (token: string): string =>
       (draft && draft[paletteKey][token] !== undefined ? draft[paletteKey][token] : defaults[token]) ?? '';
@@ -501,6 +522,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
   };
 
   useEffect(() => { popoutRef.current = popout; }, [popout]);
+  useEffect(() => popout ? registerCommandWindow(popout) : undefined, [popout]);
   // Close the child window when the editor unmounts (editor closed / app nav),
   // and when the MAIN document unloads (reload / window close) — React cleanups
   // don't run on unload, and an orphaned child would outlive its JS context.
@@ -916,13 +938,17 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
           ))}
         </div>
       </details>
+      <ThemeReadability tokens={readabilityTokens} onApply={patch => {
+        editDraft(current => ({ ...current, [paletteKey]: { ...current[paletteKey], ...patch } }));
+        editorRef.current?.ownerDocument.defaultView?.requestAnimationFrame(() => editorRef.current?.querySelector<HTMLElement>(`[aria-label="${t('settings.theme.undo')}"]`)?.focus());
+      }} />
     </>
   );
 
   // The editor panel itself — rendered in place when docked, or portaled into
   // the pop-out window's body when detached.
   const editorNode = (
-    <aside className="ted" data-side={side} data-popout={popout ? 'true' : undefined} style={popout ? undefined : { width }} role="region" aria-label={t('settings.theme.editorTitle')} onKeyDown={onDockKeyDown}>
+    <aside ref={editorRef} className="ted" data-side={side} data-popout={popout ? 'true' : undefined} style={popout ? undefined : { width }} role="region" aria-label={t('settings.theme.editorTitle')} onKeyDown={onDockKeyDown}>
       {!popout && <div className="ted-resize" onPointerDown={onResizeDown} role="separator" aria-orientation="vertical" />}
 
       <header className="ted-head">
@@ -953,20 +979,20 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
         </div>
       </header>
 
-      <div className="ted-tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === 'edit'} className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
+      <div className="ted-tabs" role="tablist" aria-label={t('settings.theme.editorTitle')} onKeyDown={moveTabFocus}>
+        <button id={`${tabId}-edit`} aria-controls={`${tabId}-panel`} tabIndex={tab === 'edit' ? 0 : -1} type="button" role="tab" aria-selected={tab === 'edit'} className={tab === 'edit' ? 'active' : ''} onClick={() => setTab('edit')}>
           {t('settings.theme.tab.edit')}
         </button>
-        <button type="button" role="tab" aria-selected={tab === 'preview'} className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>
+        <button id={`${tabId}-preview`} aria-controls={`${tabId}-panel`} tabIndex={tab === 'preview' ? 0 : -1} type="button" role="tab" aria-selected={tab === 'preview'} className={tab === 'preview' ? 'active' : ''} onClick={() => setTab('preview')}>
           {t('settings.theme.tab.preview')}
         </button>
-        <button type="button" role="tab" aria-selected={tab === 'glass'} className={tab === 'glass' ? 'active' : ''} onClick={() => setTab('glass')}>
+        <button id={`${tabId}-glass`} aria-controls={`${tabId}-panel`} tabIndex={tab === 'glass' ? 0 : -1} type="button" role="tab" aria-selected={tab === 'glass'} className={tab === 'glass' ? 'active' : ''} onClick={() => setTab('glass')}>
           {t('appearance.glassTab')}
         </button>
       </div>
 
       {tab === 'glass' ? (
-        <div className="ted-body ted-glass">
+        <div id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`} className="ted-body ted-glass">
           <p className="ap-hint">{t('appearance.themeGlassHint')}</p>
           {draft ? <>
             <div className="te-toolbar">
@@ -984,7 +1010,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
           </> : <Button variant="secondary" onClick={() => { loadDraft(emptyTheme(t('settings.theme.newName'))); }}>{t('settings.theme.new')}</Button>}
         </div>
       ) : tab === 'edit' ? (
-        <div className="ted-body ted-edit">
+        <div id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`} className="ted-body ted-edit">
           {/* Library */}
           <section className="te-list">
             <button type="button" className="te-new" onClick={createNew}>
@@ -1119,10 +1145,10 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
           )}
         </div>
       ) : (
-        <div className="ted-body ted-preview">
-          <div className="ted-preview-tabs" role="tablist">
+        <div id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${tab}`} className="ted-body ted-preview">
+          <div className="ted-preview-tabs" role="tablist" aria-label={t('settings.theme.tab.preview')} onKeyDown={moveTabFocus}>
             {PREVIEW_PAGES.map((p) => (
-              <button key={p.id} type="button" role="tab" aria-selected={previewPage === p.id}
+              <button key={p.id} tabIndex={previewPage === p.id ? 0 : -1} type="button" role="tab" aria-selected={previewPage === p.id}
                 className={previewPage === p.id ? 'active' : ''} onClick={() => setPreviewPage(p.id)}>
                 {label(p.labelKey)}
               </button>
@@ -1169,7 +1195,7 @@ export const ThemeEditor: React.FC<ThemeEditorProps> = ({ onClose, initialTab = 
       )}
 
       <footer className="ted-foot">
-        {status && <span className={`te-status te-status--${status.kind}`}>{status.text}</span>}
+        {status && <span className={`te-status te-status--${status.kind}`} role="status" aria-atomic="true">{status.kind === 'err' ? <ErrorMessage error={status.text} /> : status.text}</span>}
         <Button variant="ghost" size="sm" icon={<Icon name="upload" size={15} />} onClick={importTheme} disabled={busy}>
           {t('settings.theme.import')}
         </Button>

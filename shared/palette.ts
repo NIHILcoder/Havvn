@@ -14,7 +14,7 @@
  * them, exactly like a hand-typed value.
  */
 import { parseColor, rgbToHsl, hslToRgb, toHex, toRgbString, toTriplet } from './color';
-import { relativeLuminance } from './contrast';
+import { contrastingTextColor, relativeLuminance } from './contrast';
 import { deriveAccent, tokenCategory } from './theme';
 
 const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
@@ -85,6 +85,9 @@ export function generatePalette({ accent, bg }: PaletteInput): Record<string, st
   }
 
   Object.assign(out, deriveAccent(toHex({ ...accentRgba, a: 1 })) ?? {});
+  out['--color-text-on-accent'] = contrastingTextColor([
+    out['--color-accent-primary'], out['--color-accent-primary-hover'],
+  ]);
   return out;
 }
 
@@ -97,7 +100,8 @@ export function generatePalette({ accent, bg }: PaletteInput): Record<string, st
 export function adaptVariant(tokens: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(tokens)) {
-    const isAccent = key.startsWith('--color-accent');
+    // The accent backgrounds survive the mode flip, so their label must too.
+    const isAccent = key.startsWith('--color-accent') || key === '--color-text-on-accent';
     const cat = tokenCategory(key);
 
     if (isAccent || (cat !== 'color' && cat !== 'colorTriplet')) {

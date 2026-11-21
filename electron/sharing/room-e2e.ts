@@ -34,14 +34,15 @@ function keyOf(secretHex: string): Buffer {
 }
 
 /** Encrypt `src` (plaintext) → `dst` (ciphertext). Streams; no full-file buffering. */
-export async function encryptFile(src: string, dst: string, secretHex: string): Promise<void> {
+export async function encryptFile(src: string, dst: string, secretHex: string, options: { signal?: AbortSignal } = {}): Promise<void> {
   const key = keyOf(secretHex), iv = crypto.randomBytes(IV_LEN);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   let created = false;
   try {
     await fs.promises.writeFile(dst, iv, { flag: 'wx' });
     created = true;
-    await pipeline(fs.createReadStream(src), cipher, fs.createWriteStream(dst, { flags: 'a' }));
+    await pipeline(fs.createReadStream(src), cipher, fs.createWriteStream(dst, { flags: 'a' }), { signal: options.signal });
+    options.signal?.throwIfAborted();
     await fs.promises.appendFile(dst, cipher.getAuthTag());
   } catch (error) {
     if (created) await fs.promises.rm(dst, { force: true });

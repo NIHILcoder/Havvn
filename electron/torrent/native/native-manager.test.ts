@@ -6,6 +6,7 @@ vi.mock('../../utils', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) },
 }));
 vi.mock('../host/db-bridge', () => ({
+  getDownloadById: vi.fn(),
   updateDownloadStatus: vi.fn().mockResolvedValue(undefined),
   updateDownloadField: vi.fn().mockResolvedValue(undefined),
   updateDownloadFields: vi.fn().mockResolvedValue(undefined),
@@ -14,9 +15,16 @@ vi.mock('../host/db-bridge', () => ({
   deleteDownload: vi.fn().mockResolvedValue(undefined),
   createDownload: vi.fn(async (params) => ({ id: 'new', progress: 0, ...params })),
 }));
+vi.mock('../host/env', () => ({ getHostEnv: () => ({ engineStateDir: 'Z:/havvn-nonexistent-test-state' }) }));
 
 import { NativeTorrentManager } from './native-manager';
+it('keeps Native bounded prefetch explicitly unsupported in both contracts', () => {
+  const manager = new NativeTorrentManager();
+  expect(manager.getEngineCapabilities().features.boundedEpisodePrefetch).toEqual({ supported: false, reason: 'file-selection-only' });
+  expect(manager.getEpisodePrefetchSupport().supported).toBe(false);
+});
 import * as db from '../host/db-bridge';
+import { setTransferBlocks } from '../transfer-policy';
 
 function fixture(linked = true) {
   const manager = new NativeTorrentManager();
@@ -27,10 +35,11 @@ function fixture(linked = true) {
     torrentStop: vi.fn().mockResolvedValue(undefined),
     torrentRemove: vi.fn().mockResolvedValue(undefined),
     torrentSet: vi.fn().mockResolvedValue(undefined),
-    torrentGet: vi.fn().mockResolvedValue([{ metadataPercentComplete: 1 }]),
+    torrentGet: vi.fn().mockResolvedValue([{ metadataPercentComplete: 1, status: TrStatus.Stopped }]),
     torrentAdd: vi.fn().mockResolvedValue({ hashString: 'abc', name: 'test', duplicate: false }),
     torrentStartNow: vi.fn().mockResolvedValue(undefined),
     torrentStart: vi.fn().mockResolvedValue(undefined),
+    torrentVerify: vi.fn().mockResolvedValue(undefined),
     sessionSet: vi.fn().mockResolvedValue(undefined),
   };
   const download = {
@@ -41,14 +50,168 @@ function fixture(linked = true) {
   state.rpc = rpc;
   state.settings = { defaultDownloadDir: 'D:/downloads', maxActiveDownloads: 3 } as AppSettings;
   state.records.set(download.id, download);
+  vi.mocked(db.getDownloadById).mockImplementation(async id => id === download.id ? { ...download } : null);
   if (linked) state.link(download.id, 'abc');
   return { manager, state, rpc, download };
 }
 
 beforeEach(() => vi.clearAllMocks());
-afterEach(() => vi.useRealTimers());
+afterEach(() => { vi.useRealTimers(); setTransferBlocks([]); });
+
+it('refuses moving original seed sources before changing the daemon or filesystem', async () => {
+  const { manager, state, download, rpc } = fixture();
+  download.seedPaths = ['D:/original/source.bin']; state.rpc.torrentSetLocation = vi.fn();
+  await expect(manager.setDownloadLocation(download.id, 'D:/uncreated-fixture', true)).rejects.toMatchObject({ code: 'UNSUPPORTED' });
+  expect(state.rpc.torrentSetLocation).not.toHaveBeenCalled(); expect(rpc.torrentGet).not.toHaveBeenCalled();
+});
+
+it('keeps a file explicitly enabled after the add-dialog selection when playback stops', async () => {
+  const { manager, state, rpc, download } = fixture();
+  download.selectedFiles = [0];
+  await manager.setFilePriority(download.id, 1, 'high');
+  state.streamHeads.set(download.id, new Set([1]));
+  await manager.stopStream(download.id);
+  const restored = rpc.torrentSet.mock.calls.at(-1)![1];
+  expect(restored['files-unwanted']).toBeUndefined();
+  expect(restored['priority-high']).toEqual([1]);
+});
+
+it('restores saved file exclusions and priorities before starting a recreated daemon entry', async () => {
+  const { state, rpc, download } = fixture(false);
+  download.selectedFiles = [0, 1]; download.filePriorities = ['skip', 'low', 'high'];
+  rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, files: [{}, {}, {}] }] as never);
+  await state.addToDaemon(download, false);
+  expect(rpc.torrentSet).toHaveBeenCalledWith('abc', expect.objectContaining({ 'files-unwanted': [0], 'files-wanted': [1, 2], 'priority-low': [1], 'priority-high': [2] }));
+  expect(rpc.torrentSet.mock.invocationCallOrder[0]).toBeLessThan(rpc.torrentStart.mock.invocationCallOrder[0]);
+});
+
+it('applies restored magnet selection when metadata arrives even if its total size was already saved', async () => {
+  const { state, rpc, download } = fixture(false);
+  download.totalSize = 100; download.selectedFiles = [1];
+  rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, files: [] }] as never);
+  await state.addToDaemon(download, true); rpc.torrentSet.mockClear();
+  rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, files: [{}, {}] }] as never);
+  await state.applyTransitions(download, { metadataPercentComplete: 1, totalSize: 100, status: TrStatus.Stopped });
+  expect(rpc.torrentSet).toHaveBeenCalledWith('abc', expect.objectContaining({ 'files-unwanted': [0], 'files-wanted': [1] }));
+});
+
+describe('seed verification snapshots', () => {
+  it('does not accept a cached complete snapshot before checking exposes corrupt pieces', async () => {
+    vi.useFakeTimers();
+    const { state, rpc } = fixture();
+    const complete = { hashString: 'abc', status: TrStatus.Stopped, recheckProgress: 0, leftUntilDone: 0, totalSize: 100, haveValid: 100, haveUnchecked: 0 };
+    rpc.torrentGet.mockResolvedValueOnce([complete] as never)
+      .mockResolvedValueOnce([{ ...complete, status: TrStatus.Checking, recheckProgress: .5 }] as never)
+      .mockResolvedValue([{ ...complete, leftUntilDone: 10, haveValid: 90 }] as never);
+    const result = expect(state.verifySeed('abc', 100)).rejects.toThrow(/no longer match/);
+    await vi.advanceTimersByTimeAsync(1000); await result;
+    expect(rpc.torrentStart).not.toHaveBeenCalled();
+  });
+
+  it('finishes a short valid check even when it completes between polls and progress resets', async () => {
+    vi.useFakeTimers();
+    const { state, rpc } = fixture();
+    rpc.torrentGet.mockResolvedValue([{ hashString: 'abc', status: TrStatus.Stopped, recheckProgress: 0,
+      leftUntilDone: 0, totalSize: 100, haveValid: 100, haveUnchecked: 0 }] as never);
+    let finished = false; const pending = state.verifySeed('abc', 100).then(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(1000); expect(finished).toBe(false);
+    await vi.advanceTimersByTimeAsync(500); await pending; expect(finished).toBe(true);
+  });
+
+  it('lets a pause win while seed remapping and verification are pending', async () => {
+    const { manager, state, rpc, download } = fixture();
+    download.seedPaths = ['D:/seed'];
+    let finish!: (hash: string) => void;
+    state.addToDaemon = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    const resume = manager.resumeDownload('test');
+    await vi.waitFor(() => expect(state.addToDaemon).toHaveBeenCalledOnce());
+    await manager.pauseDownload('test'); finish('abc'); await resume;
+    expect(download.status).toBe('paused'); expect(rpc.torrentStart).not.toHaveBeenCalled();
+  });
+});
 
 describe('native manager controls', () => {
+  it.each([true, false])('adds and starts an unresolved magnet with sequential=%s before any pieces exist', async sequentialDownload => {
+    const { manager, rpc } = fixture();
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, pieceCount: 0 }]);
+    rpc.torrentSet.mockImplementation(async (_hash, args) => {
+      if ('sequential_download_from_piece' in args) throw Error('piece to sequentially download from is outside pieces range');
+    });
+    const download = await manager.addDownload({ sourceType: 'magnet', sourceUri: 'magnet:?xt=urn:btih:' + 'a'.repeat(40), sequentialDownload });
+    expect(download.status).toBe('queued');
+    expect(rpc.torrentSet).toHaveBeenCalledWith('abc', { sequential_download: sequentialDownload });
+    expect(rpc.torrentStart).toHaveBeenCalledWith('abc');
+  });
+
+  it.each([true, false])('allows toggling sequential=%s while metadata is pending', async enabled => {
+    const { manager, rpc, download } = fixture();
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, pieceCount: 0 }]);
+    await manager.setSequentialDownload(download.id, enabled);
+    expect(rpc.torrentSet).toHaveBeenCalledWith('abc', { sequential_download: enabled });
+    expect(download.sequentialDownload).toBe(enabled);
+  });
+
+  it('resets a previous stream cursor once the torrent has a valid piece range', async () => {
+    const { manager, rpc } = fixture();
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, pieceCount: 10 }]);
+    await manager.setSequentialDownload('test', true);
+    expect(rpc.torrentSet).toHaveBeenCalledWith('abc', { sequential_download: true, sequential_download_from_piece: 0 });
+  });
+
+  it('does not set a piece cursor for a zero-length torrent even with metadata', async () => {
+    const { manager, rpc } = fixture();
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, pieceCount: 0 }]);
+    await manager.setSequentialDownload('test', true);
+    expect(rpc.torrentSet).toHaveBeenCalledWith('abc', { sequential_download: true });
+  });
+
+  it('resumes a re-added magnet with persisted sequential settings before metadata arrives', async () => {
+    const { manager, rpc, download } = fixture(false); download.sequentialDownload = true;
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, pieceCount: 0, status: TrStatus.Stopped }]);
+    await manager.resumeDownload('test');
+    expect(rpc.torrentSet).toHaveBeenCalledWith('abc', { sequential_download: true });
+    expect(rpc.torrentStart).toHaveBeenCalledWith('abc');
+  });
+  it('does not resume, retry or start a daemon torrent while protection is active', async () => {
+    const { manager, state, rpc } = fixture(); setTransferBlocks(['vpn', 'disk']);
+    await expect(manager.resumeDownload('test')).rejects.toMatchObject({ code: 'TRANSFER_BLOCKED' });
+    await expect(manager.retryDownload('test')).rejects.toMatchObject({ code: 'TRANSFER_BLOCKED' });
+    await expect(state.startTorrents('abc')).rejects.toMatchObject({ code: 'TRANSFER_BLOCKED' });
+    expect(rpc.torrentStart).not.toHaveBeenCalled();
+    setTransferBlocks([]); await manager.resumeDownload('test'); expect(rpc.torrentStart).toHaveBeenCalledOnce();
+    // A policy can change while the player awaits a daemon lookup.
+    state.ensureInDaemon = async () => { setTransferBlocks(['vpn']); return 'abc'; };
+    await expect(manager.getStreamUrl('test', 0)).rejects.toMatchObject({ code: 'TRANSFER_BLOCKED' });
+    expect(rpc.torrentStartNow).not.toHaveBeenCalled();
+  });
+  it('removes a temporary alternative cap without retaining it or turning unlimited into zero throughput', async () => {
+    const { manager, state, rpc } = fixture(); state.adaptiveUpBytes = -1;
+    await manager.updateSettings({ altSpeedEnabled: true, altDownKbps: 50, altUpKbps: 30 });
+    expect(rpc.sessionSet.mock.lastCall?.[0]).toMatchObject({ 'alt-speed-enabled': false, 'speed-limit-down': 50, 'speed-limit-up': 30 });
+    await manager.updateSettings({ altDownKbps: 0, altUpKbps: 0 });
+    const applied = rpc.sessionSet.mock.lastCall?.[0];
+    expect(applied).toMatchObject({ 'speed-limit-down-enabled': false, 'speed-limit-up-enabled': false });
+    expect(applied).not.toHaveProperty('speed-limit-down'); expect(applied).not.toHaveProperty('speed-limit-up');
+    expect(manager.isAltSpeedEnabled()).toBe(true);
+  });
+  it('coalesces verify requests and does not restart a disk scan already queued in the daemon', async () => {
+    const { manager, rpc } = fixture();
+    const first = manager.recheckDownload('test'), second = manager.recheckDownload('test');
+    expect(first).toBe(second); await first;
+    expect(rpc.torrentVerify).toHaveBeenCalledTimes(1);
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, status: TrStatus.Checking }]);
+    await manager.recheckDownload('test'); expect(rpc.torrentVerify).toHaveBeenCalledTimes(1);
+  });
+  it('reports verification of stopped data without turning it into a new completion', async () => {
+    const { manager, state, rpc, download } = fixture(); download.status = 'completed'; download.progress = 1;
+    const completed = vi.fn(); manager.onComplete(completed);
+    rpc.torrentGet.mockResolvedValue([{ hashString: 'abc', metadataPercentComplete: 1, status: TrStatus.Checking,
+      percentDone: 1, recheckProgress: .42, error: 0, peersConnected: 0 }] as never);
+    state.enforceDownloadLimit = vi.fn();
+    await state.tick();
+    expect(manager.getStats()[0].operation).toMatchObject({ stage: 'checking', status: 'running', progress: { completed: .42, total: 1 } });
+    expect(download.status).toBe('completed'); expect(completed).not.toHaveBeenCalled();
+  });
   it('history reads do not restore daemon torrents and refuse paused streaming', async () => {
     const { manager, rpc, download } = fixture(false);
     expect(await manager.getHistoryFiles('test')).toEqual([]);
@@ -125,20 +288,22 @@ describe('native manager controls', () => {
   it('retains the record and daemon identity when removal fails so it can be retried', async () => {
     const { manager, state, rpc, download } = fixture();
     rpc.torrentRemove.mockRejectedValueOnce(new Error('RPC unavailable'));
-    await expect(manager.removeDownload('test', true)).rejects.toThrow('RPC unavailable');
+    await expect(manager.removeDownload('test', false)).rejects.toThrow('RPC unavailable');
     expect(download.status).toBe('paused');
     expect(state.idToHash.get('test')).toBe('abc');
     expect(db.updateDownloadStatus).not.toHaveBeenCalled();
-    await manager.removeDownload('test', true);
-    expect(rpc.torrentRemove).toHaveBeenLastCalledWith('abc', true);
+    await manager.removeDownload('test', false);
+    expect(rpc.torrentRemove).toHaveBeenLastCalledWith('abc', false);
     expect(download.status).toBe('removed');
   });
 
-  it('restores a daemon-less record before deleting its data', async () => {
-    const { manager, rpc } = fixture(false);
+  it('restores a daemon-less empty magnet paused and removes its entry without daemon data deletion', async () => {
+    const { manager, rpc, download } = fixture(false);
+    Object.assign(download, { totalSize: 0, downloadedBytes: 0, progress: 0 });
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, totalSize: 0, haveValid: 0, haveUnchecked: 0, downloadedEver: 0, files: [] }]);
     await manager.removeDownload('test', true);
     expect(rpc.torrentAdd).toHaveBeenCalledWith(expect.objectContaining({ paused: true }));
-    expect(rpc.torrentRemove).toHaveBeenCalledWith('abc', true);
+    expect(rpc.torrentRemove).toHaveBeenCalledWith('abc', false);
   });
 
   it('does not restore a daemon-less torrent when retaining its data', async () => {
@@ -154,6 +319,42 @@ describe('native manager controls', () => {
     await expect(manager.removeDownload('test', true)).rejects.toThrow('metadata');
     expect(rpc.torrentRemove).not.toHaveBeenCalled();
     expect(download.status).toBe('paused');
+  });
+
+  it.each([true, false])('removes an unresolved empty magnet with its files (linked=%s)', async linked => {
+    const { manager, state, rpc, download } = fixture(linked);
+    Object.assign(download, { status: 'error', totalSize: 0, downloadedBytes: 0, progress: 0, lastError: 'metadata unavailable' });
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, totalSize: 0, haveValid: 0, haveUnchecked: 0, downloadedEver: 0, files: [] }]);
+    await manager.removeDownload('test', true);
+    expect(rpc.torrentRemove).toHaveBeenCalledWith('abc', false);
+    expect(download.status).toBe('removed');
+    expect(state.idToHash.has('test')).toBe(false); expect(state.hashToId.has('abc')).toBe(false);
+    expect(rpc.torrentStart).not.toHaveBeenCalled(); expect(rpc.torrentStartNow).not.toHaveBeenCalled();
+    if (!linked) expect(rpc.torrentAdd).toHaveBeenCalledWith(expect.objectContaining({ paused: true }));
+  });
+
+  it.each(['totalSize', 'downloadedBytes', 'progress'] as const)('keeps metadata protection when the saved magnet has %s', async field => {
+    const { manager, rpc, download } = fixture();
+    Object.assign(download, { totalSize: 0, downloadedBytes: 0, progress: 0, [field]: 1 });
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, totalSize: 0, haveValid: 0, haveUnchecked: 0, downloadedEver: 0, files: [] }]);
+    await expect(manager.removeDownload('test', true)).rejects.toThrow('metadata');
+    expect(rpc.torrentRemove).not.toHaveBeenCalled(); expect(download.status).toBe('paused');
+  });
+
+  it.each(['totalSize', 'haveValid', 'haveUnchecked', 'downloadedEver', 'files'] as const)('keeps metadata protection when the daemon reports %s', async field => {
+    const { manager, rpc, download } = fixture();
+    Object.assign(download, { totalSize: 0, downloadedBytes: 0, progress: 0 });
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 0, totalSize: 0, haveValid: 0, haveUnchecked: 0, downloadedEver: 0, files: [],
+      [field]: field === 'files' ? [{ name: 'payload.bin', length: 10, bytesCompleted: 0 }] : 1 }]);
+    await expect(manager.removeDownload('test', true)).rejects.toThrow('metadata');
+    expect(rpc.torrentRemove).not.toHaveBeenCalled(); expect(download.status).toBe('paused');
+  });
+  it('never treats a metadata-complete torrent without a readable manifest as an empty magnet', async () => {
+    const { manager, rpc, download } = fixture();
+    Object.assign(download, { totalSize: 0, downloadedBytes: 0, progress: 0 });
+    rpc.torrentGet.mockResolvedValue([{ metadataPercentComplete: 1, totalSize: 0, haveValid: 0, haveUnchecked: 0, downloadedEver: 0, files: [] }]);
+    await expect(manager.removeDownload('test', true)).rejects.toThrow('metadata');
+    expect(rpc.torrentRemove).not.toHaveBeenCalled(); expect(download.status).toBe('paused');
   });
 
   it('sends the RPC spelling of the global ratio switch and can turn it off', async () => {
@@ -250,8 +451,9 @@ describe('native stats polling', () => {
   it('persists the full metadata size on arrival even when only some files are wanted', async () => {
     const { state, rpc, download } = pollingFixture();
     download.totalSize = 0;
+    download.selectedFiles = [0];
     const warm = vi.spyOn(state, 'warmMetaCache').mockResolvedValue(undefined);
-    const selection = vi.spyOn(state, 'applyMagnetFileSelection').mockResolvedValue(undefined);
+    const selection = vi.spyOn(state, 'applyFileSettings').mockResolvedValue(undefined);
     rpc.torrentGet.mockResolvedValue([live('abc', { totalSize: 500, sizeWhenDone: 100, name: 'resolved' })]);
     await state.tick();
     expect(download.totalSize).toBe(500);
@@ -267,7 +469,7 @@ describe('native stats polling', () => {
     const GB = 1024 ** 3;
     download.totalSize = 185.38 * GB;
     download.name = 'custom name';
-    const selection = vi.spyOn(state, 'applyMagnetFileSelection').mockResolvedValue(undefined);
+    const selection = vi.spyOn(state, 'applyFileSettings').mockResolvedValue(undefined);
     rpc.torrentGet.mockResolvedValue([live('abc', {
       totalSize: 50 * GB, sizeWhenDone: 10 * GB, percentDone: 0.009, downloadedEver: 26.22 * GB,
     })]);
@@ -376,6 +578,53 @@ describe('native stats polling', () => {
   });
 });
 describe('native asynchronous run-state acknowledgements', () => {
+  it('waits for the actual stop before resuming, rather than accepting transient active state', async () => {
+    vi.useFakeTimers();
+    const { manager, state, rpc, download } = fixture();
+    rpc.torrentGet.mockResolvedValueOnce([live()]).mockResolvedValue([{ ...live(), status: TrStatus.Stopped }]);
+    const pending = manager.resumeDownload('test');
+    await vi.waitFor(() => expect(rpc.torrentGet).toHaveBeenCalledOnce());
+    await state.tick(); expect(rpc.torrentStart).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100); await pending;
+    expect(rpc.torrentStart).toHaveBeenCalledExactlyOnceWith('abc'); expect(download.status).toBe('queued');
+  });
+  it('cancels a resume waiting for a delayed stop when the user pauses again', async () => {
+    vi.useFakeTimers();
+    const { manager, rpc, download } = fixture();
+    rpc.torrentGet.mockResolvedValue([live()]);
+    const pending = manager.resumeDownload('test');
+    await vi.waitFor(() => expect(rpc.torrentGet).toHaveBeenCalledOnce());
+    await manager.pauseDownload('test'); await vi.advanceTimersByTimeAsync(100); await pending;
+    expect(rpc.torrentStart).not.toHaveBeenCalled(); expect(download.status).toBe('paused');
+  });
+  it('retries a lost start after asynchronous stop without overriding a later pause', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-22T10:00:00Z'));
+    const { manager, state, rpc, download } = pollingFixture();
+    rpc.torrentGet.mockResolvedValue([live('abc', { status: TrStatus.Stopped })]);
+    await manager.resumeDownload('test');
+    await state.tick(); expect(rpc.torrentStart).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 1000);
+    await state.tick(); expect(rpc.torrentStart).toHaveBeenCalledTimes(2);
+    await state.tick(); expect(rpc.torrentStart).toHaveBeenCalledTimes(2);
+    expect(download.status).toBe('queued');
+    await manager.pauseDownload('test'); vi.setSystemTime(Date.now() + 1000);
+    await state.tick(); expect(rpc.torrentStart).toHaveBeenCalledTimes(2);
+    expect(download.status).toBe('paused');
+  });
+  it('compensates a new pause while a start retry is in flight', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-22T10:00:00Z'));
+    const { manager, state, rpc, download } = pollingFixture();
+    await manager.resumeDownload('test');
+    rpc.torrentGet.mockResolvedValue([live('abc', { status: TrStatus.Stopped })]);
+    vi.setSystemTime(Date.now() + 1000);
+    let finish!: () => void;
+    rpc.torrentStart.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const pending = state.tick();
+    await vi.waitFor(() => expect(rpc.torrentStart).toHaveBeenCalledTimes(2));
+    await manager.pauseDownload('test'); finish(); await pending;
+    expect(download.status).toBe('paused'); expect(state.pendingStarts.size).toBe(0);
+    expect(rpc.torrentStop).toHaveBeenCalledTimes(2);
+  });
   it('preserves explicit pause while the daemon still reports downloading', async () => {
     const { manager, state, rpc, download } = pollingFixture();
     await manager.pauseDownload('test');
@@ -453,6 +702,22 @@ describe('native stream reservations and delayed transitions', () => {
     expect(state.startingStreams.size).toBe(0);
     await state.tick();
     expect(rpc.torrentStop).toHaveBeenCalledWith(['abc']); expect(download.status).toBe('queued');
+  });
+
+  it('enforces the lifetime ratio after undo rather than only the fresh daemon counters', async () => {
+    const { state, rpc, download } = pollingFixture();
+    download.status = 'seeding'; download.progress = 1;
+    download.nativeSessionBase = { downloaded: 100, uploaded: 190 }; download.seedRatioLimit = 2;
+    rpc.torrentGet.mockResolvedValue([live('abc', { status: TrStatus.Seeding, percentDone: 1, downloadedEver: 0, uploadedEver: 10 })]);
+    await state.tick();
+    expect(download.status).toBe('completed'); expect(rpc.torrentStop).toHaveBeenCalledWith('abc');
+  });
+
+  it('refuses a duplicate daemon entry during undo without linking or removing it', async () => {
+    const { state, rpc, download } = fixture(false);
+    rpc.torrentAdd.mockResolvedValue({ hashString: 'abc', name: 'test', duplicate: true });
+    await expect(state.addToDaemon(download, true, true)).rejects.toMatchObject({ code: 'conflict' });
+    expect(state.idToHash.size).toBe(0); expect(rpc.torrentRemove).not.toHaveBeenCalled();
   });
 
   it('publishes completed status immediately when the seed time limit stops a torrent', async () => {

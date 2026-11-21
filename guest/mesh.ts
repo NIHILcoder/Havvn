@@ -1,4 +1,5 @@
 import { WatchHostState, type WatchPolicy } from '../shared/room-watch-host';
+import { publicRoomName } from '../shared/profile';
 import { newerChatPins, cleanChatPin, type RoomChatPins, type RoomChatPin } from '../shared/room-chat-pins';
 import { parseFileRequest } from '../shared/room-chat-tools';
 import { roomHelloParts, RoomHelloAssembly, RoomHelloOutbox, ROOM_FILE_LIMIT, roomChannelHasCapacity, roomManifestCanFit, storeRoomManifestFile } from '../shared/room-manifest-sync';
@@ -170,7 +171,7 @@ export class GuestRoom {
     onChange: () => void;
   }) {
     this.identity = opts.identity;
-    this.name = opts.name.slice(0, 64) || 'Guest';
+    this.name = publicRoomName(opts.name, opts.identity.memberId);
     this.avatarSeed = opts.avatarSeed;
     this.ice = opts.iceServers?.length ? opts.iceServers : [...PUBLIC_STUN_SERVERS];
     this.trackers = opts.trackers;
@@ -900,7 +901,14 @@ export class GuestRoom {
           this.teardown();
           break;
         }
-        this.bans.add(String(msg.kickedId));
+        // Rekeys are targeted messages, so forward the verified owner's bytes
+        // under the old key before switching (also for desktop peers behind us).
+        const token = await encryptWeb(this.key, msg);
+        for (const other of this.wires.values()) {
+          if (other === rec || !other.memberId || other.memberId === msg.kickedId || this.bans.has(other.memberId)) continue;
+          try { other.wire.send(token); } catch { /* closed channel */ }
+        }
+        if (msg.kickedId) this.bans.add(String(msg.kickedId));
         this.members.delete(msg.kickedId);
         this.voice.onMemberGone(String(msg.kickedId));
         for (const [id, rec] of this.wires) {

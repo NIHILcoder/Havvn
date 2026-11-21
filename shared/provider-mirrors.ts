@@ -1,6 +1,6 @@
 import { ProviderNetworkError, providerUrl } from './provider-network';
 
-export interface HttpProviderAddress { url: string; type: 'custom' | 'jackett' | 'torznab' }
+export interface HttpProviderAddress { url: string; type: 'custom' | 'jackett' | 'torznab' | 'rutracker' }
 export interface MirrorTarget { url: string; base: string | null }
 
 /** Custom URLs are search endpoints; Jackett/Torznab URLs are service bases. */

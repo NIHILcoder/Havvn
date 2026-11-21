@@ -21,7 +21,7 @@
  * swallows Escape.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useId } from 'react';
 import Icon, { IconName } from './Icon';
 import { useTranslation } from '../utils/i18nContext';
 import { useHostWindow } from '../utils/hostWindow';
@@ -128,18 +128,23 @@ export function useModalFocus(token?: object): React.RefObject<HTMLDivElement> {
     // than the context, since a caller may portal this subtree elsewhere.
     const doc = dialog?.ownerDocument ?? host.document;
     const prev = doc.activeElement as HTMLElement | null;
-    // Prefer the first field/control; fall back to the dialog itself.
-    const initial = dialog?.querySelector<HTMLElement>(
-      'input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [data-autofocus]',
-    );
+    // Honour an explicit target even when another input precedes it in the DOM.
+    const visible = (el: HTMLElement) => !el.matches(':disabled') && !el.closest('[hidden], [inert], [aria-hidden="true"]') && el.getClientRects().length > 0;
+    const explicit = Array.from(dialog?.querySelectorAll<HTMLElement>('[data-autofocus]') ?? []).find(visible);
+    const initial = explicit ?? Array.from(dialog?.querySelectorAll<HTMLElement>(
+      'input:not([disabled]), textarea:not([disabled]), select:not([disabled])',
+    ) ?? []).find(visible);
     (initial || dialog)?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab' || !dialog) return;
       // Only the top dialog owns focus while a picker/confirmation covers another.
       if (token && modalStack[modalStack.length - 1] !== token) return;
+      // An owned portaled menu handles Tab by closing and returning to its trigger.
+      const popup = (doc.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-dialog-owner]');
+      if (popup?.dataset.dialogOwner && popup.dataset.dialogOwner === dialog.dataset.modalFocusOwner) return;
       const focusables = Array.from(dialog.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-      )).filter((el) => el.offsetParent !== null); // skip display:none
+      )).filter(el => el.tabIndex >= 0 && visible(el));
       if (focusables.length === 0) { e.preventDefault(); return; }
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
@@ -208,6 +213,7 @@ export const Modal: React.FC<ModalProps> = ({
 }) => {
   const { t } = useTranslation();
   const token = useRef({});
+  const titleId = useId();
   const ref = useModalFocus(token.current);
   useModalEscape(token.current, onClose, !busy);
 
@@ -221,14 +227,16 @@ export const Modal: React.FC<ModalProps> = ({
         ref={ref}
         className={`um-card um-${size} ${className}`}
         role="dialog"
+        data-modal-focus-owner={titleId}
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : ariaLabel}
+        aria-labelledby={title && typeof title !== 'string' && !ariaLabel ? titleId : undefined}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         {(title || !hideClose) && (
           <div className="um-head">
-            <h3 className="um-title">{icon && <Icon name={icon} size={16} />}{title}</h3>
+            <h3 id={titleId} className="um-title">{icon && <Icon name={icon} size={16} />}{title}</h3>
             {!hideClose && (
               <button className="um-x" onClick={onClose} disabled={busy} aria-label={t('common.close')} title={t('common.close')} type="button">
                 <Icon name="x" size={16} />

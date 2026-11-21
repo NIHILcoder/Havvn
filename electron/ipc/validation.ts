@@ -1,6 +1,6 @@
 /**
- * IPC input validation schemas using Zod
- * Provides type-safe validation for all IPC handler inputs
+ * Reusable Zod schema definitions. Main IPC handlers currently validate their
+ * inputs separately; defining a schema here does not register an IPC guard.
  */
 
 import { z } from 'zod';
@@ -206,18 +206,18 @@ export const SchedulerConfigSchema = z.object({
     }),
     action: z.object({
       type: z.enum(['pause', 'resume', 'setSpeed', 'quit']),
-      params: z.record(z.any()).optional(),
+      params: z.record(z.string(), z.any()).optional(),
     }),
   })),
 });
 
 // Validation helper function
-export function validate<T>(schema: z.ZodSchema<T>, data: unknown): T {
+export function validate<T>(schema: z.ZodType<T>, data: unknown): T {
   try {
     return schema.parse(data);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      const messages = error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+      const messages = error.issues.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
       throw new Error(`Validation error: ${messages}`);
     }
     throw error;

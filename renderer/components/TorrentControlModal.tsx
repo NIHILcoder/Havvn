@@ -1,3 +1,4 @@
+import { ErrorMessage } from './ErrorMessage';
 /**
  * TorrentControlModal
  * Per-torrent advanced controls: sequential download, speed limits,
@@ -17,6 +18,9 @@ import { cleanError } from '../utils/format-helpers';
 import { classifyMediaKind } from '../../shared/media';
 import { ExternalPlayerModal } from './ExternalPlayerModal';
 import './TorrentControlModal.css';
+import { VirtualFileList } from './VirtualFileList';
+import { reconcileTorrentFiles, torrentFileKey } from '../utils/torrent-files';
+import { useEngineCapabilities } from '../utils/useEngineCapabilities';
 
 interface TorrentControlModalProps {
   download: Download;
@@ -47,6 +51,10 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   onUpdate,
 }) => {
   const { t } = useTranslation();
+  const { capabilities, failed: capabilitiesFailed } = useEngineCapabilities();
+  const canMoveData = capabilities?.engine === 'native' && !download.seedPaths?.length;
+  const moveHint = !capabilities ? t(capabilitiesFailed ? 'tcm.moveCapabilityFailed' : 'common.loading')
+    : download.seedPaths?.length ? t('tcm.moveSeedUnsupported') : capabilities.engine !== 'native' ? t('tcm.moveNativeOnly') : '';
   const { alert, confirm } = useConfirm();
   const [tab, setTab] = useState<Tab>('download');
 
@@ -122,7 +130,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
     setSavedNotice(false);
     return true;
   };
-  const showError = (err: unknown) => alert({ message: `${t('tcm.failed')}: ${cleanError(err)}` });
+  const showError = (err: unknown) => alert({ message: <ErrorMessage error={err} details /> });
 
   // Poll the active tab only, without overlapping calls or accepting results
   // from an earlier tab. A failed request must not look like an empty list.
@@ -138,7 +146,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
       try {
         if (tab === 'files') {
           const list = await window.api.historyPlayback.files(download.id);
-          if (alive) setFiles(list || []);
+          if (alive) setFiles(previous => reconcileTorrentFiles(previous, list || []));
         } else if (tab === 'trackers') {
           const list = await window.api.getTrackers(download.id);
           if (alive) setTrackers(list || []);
@@ -154,7 +162,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
             return n === null || !hide.has(n);
           }));
         }
-        if (alive) setErrors(prev => ({ ...prev, [tab]: undefined }));
+        if (alive) setErrors(prev => prev[tab] === undefined ? prev : { ...prev, [tab]: undefined });
       } catch (err) {
         if (alive) setErrors(prev => ({ ...prev, [tab]: cleanError(err) }));
       } finally {
@@ -170,7 +178,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
   }, [tab, download.id, refreshKey]);
 
   const handleMoveData = async () => {
-    if (!startAction()) return;
+    if (!canMoveData || !startAction()) return;
     setMoving(true);
     try {
       const dest = await window.api.selectDirectory();
@@ -250,7 +258,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
     try {
       await window.api.setFilePriority(download.id, fileIndex, priority);
       setFiles(prev =>
-        prev.map((f, i) => i === fileIndex ? { ...f, priority } : f)
+        prev.map((f, i) => torrentFileKey(f, i) === fileIndex ? { ...f, priority } : f)
       );
       setRefreshKey(key => key + 1);
       onUpdate?.();
@@ -311,7 +319,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
       await alert({
         message: msg.includes('INVALID_PEER')
           ? t('tcm.ban.ipv4Only')
-          : `${t('tcm.ban.failed')}: ${msg}`,
+          : <ErrorMessage error={err} details />,
       });
     }
   };
@@ -375,7 +383,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
         <div className="tcm-body" id="tcm-panel" role="tabpanel" aria-labelledby={`tcm-tab-${tab}`}>
           {errors[tab] && <div className="tcm-error" role="alert">
             <Icon name="alert-circle" size={16} />
-            <span>{t('tcm.loadFailed')}: {errors[tab]}</span>
+            <span>{t('tcm.loadFailed')}: <ErrorMessage error={errors[tab]} /></span>
             <Button size="sm" variant="secondary" disabled={busy || (tab === 'files' ? loadingFiles : tab === 'trackers' ? loadingTrackers : tab === 'peers' ? !peersLoaded : !piecesLoaded)}
               onClick={() => setRefreshKey(key => key + 1)}>{t('downloads.retry')}</Button>
           </div>}
@@ -400,12 +408,14 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <span className="tcm-field-label">{t('tcm.moveData')}</span>
                   <span className="tcm-field-desc">{t('tcm.moveDataDesc')}</span>
                   <span className="tcm-field-desc" title={download.savePath}>{download.savePath}</span>
+                  {moveHint && <span className="tcm-field-desc">{moveHint}</span>}
                 </div>
                 <Button
                   variant="secondary"
                   size="sm"
                   loading={moving}
-                  disabled={busy}
+                  disabled={busy || !canMoveData}
+                  title={moveHint || undefined}
                   onClick={() => { void handleMoveData(); }}
                   icon={<Icon name="folder" size={14} />}
                 >
@@ -513,7 +523,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
           {/* ── FILES TAB ── */}
           {tab === 'files' && (
             <div className="tcm-section">
-              {loadingFiles ? (
+              {loadingFiles && files.length === 0 ? (
                 <div className="tcm-loading">
                   <span className="spinner" />
                   <span>{t('tcm.loadingFiles')}</span>
@@ -529,8 +539,10 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                   <div className="tcm-files-hint">
                     {t('tcm.filesHintPre')} <strong>{t('tcm.priority.skip')}</strong> {t('tcm.filesHintPost')}
                   </div>
-                  <div className="tcm-files-list">
-                    {files.map((file, idx) => {
+                  <VirtualFileList className="tcm-files-list" items={files} getKey={torrentFileKey}
+                    label={t('downloads.files')} estimateSize={65} resetKey={download.id}
+                    renderRow={(file, position) => {
+                      const idx = torrentFileKey(file, position);
                       const priority: FilePriority = file.priority || 'normal';
                       return (
                         <div key={idx} className={`tcm-file-row ${priority === 'skip' ? 'skipped' : ''}`}>
@@ -561,8 +573,7 @@ export const TorrentControlModal: React.FC<TorrentControlModalProps> = ({
                           </div>
                         </div>
                       );
-                    })}
-                  </div>
+                    }} />
                 </>
               )}
             </div>

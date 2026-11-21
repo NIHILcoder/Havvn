@@ -15,8 +15,17 @@ const log = logger.child('WatchFolder');
 export class WatchFolderService {
   private watcher: fs.FSWatcher | null = null;
   private watchPath: string = '';
-  private deleteAfterAdd: boolean = false;
-  private processing: Set<string> = new Set();
+  private processing = new Map<string, { active: boolean }>();
+  private generation = 0;
+  private timers = new Set<ReturnType<typeof setTimeout>>();
+
+  private current(session: { generation: number; path: string }): boolean {
+    return session.generation === this.generation && session.path === this.watchPath && this.watcher !== null;
+  }
+  private later(action: () => void, delay: number): void {
+    const timer = setTimeout(() => { this.timers.delete(timer); action(); }, delay);
+    this.timers.add(timer);
+  }
 
   get isActive(): boolean {
     return this.watcher !== null;
@@ -46,44 +55,46 @@ export class WatchFolderService {
     }
 
     this.watchPath = folderPath;
-    this.deleteAfterAdd = deleteAfterAdd;
+    const session = { generation: this.generation, path: folderPath, deleteAfterAdd };
 
     log.info('Starting watch folder service', { path: folderPath, deleteAfterAdd });
-
-    // Process any existing .torrent files first
-    this.scanExisting().catch(err => {
-      log.error('Error scanning existing files', { error: err });
-    });
 
     // Watch for new files
     try {
       this.watcher = fs.watch(folderPath, { persistent: false }, (eventType, filename) => {
-        if (!filename) return;
-        if (!filename.endsWith('.torrent')) return;
+        if (!filename || !this.current(session)) return;
+        if (!filename.toLowerCase().endsWith('.torrent')) return;
         if (eventType !== 'rename' && eventType !== 'change') return;
 
         const filePath = path.join(folderPath, filename);
 
         // Small delay to ensure file is fully written
-        setTimeout(() => {
-          this.handleNewTorrent(filePath).catch(err => {
+        this.later(() => {
+          if (!this.current(session)) return;
+          this.handleNewTorrent(filePath, session).catch(err => {
             log.error('Error handling new torrent in watch folder', { filePath, error: err });
           });
         }, 500);
       });
 
       this.watcher.on('error', (err) => {
+        if (!this.current(session)) return;
         log.error('Watch folder watcher error', { error: err });
         this.stop();
       });
 
       log.info('Watch folder service started', { path: folderPath });
+      void this.scanExisting(session);
     } catch (err) {
       log.error('Failed to start watching folder', { path: folderPath, error: err });
+      this.stop();
     }
   }
 
   stop(): void {
+    this.generation++;
+    for (const timer of this.timers) clearTimeout(timer);
+    this.timers.clear();
     if (this.watcher) {
       try {
         this.watcher.close();
@@ -92,31 +103,36 @@ export class WatchFolderService {
       log.info('Watch folder service stopped');
     }
     this.watchPath = '';
-    this.processing.clear();
+    // An accepted addition can still be running. Keep its ownership until it
+    // settles so restarting the same folder cannot add it a second time.
+    for (const [file, entry] of this.processing) if (!entry.active) this.processing.delete(file);
   }
 
-  private async scanExisting(): Promise<void> {
+  private async scanExisting(session: { generation: number; path: string; deleteAfterAdd: boolean }): Promise<void> {
     try {
-      const files = fs.readdirSync(this.watchPath);
-      const torrentFiles = files.filter(f => f.endsWith('.torrent'));
+      const files = fs.readdirSync(session.path);
+      const torrentFiles = files.filter(f => f.toLowerCase().endsWith('.torrent'));
 
       log.info(`Found ${torrentFiles.length} existing .torrent files in watch folder`);
 
       for (const filename of torrentFiles) {
-        const filePath = path.join(this.watchPath, filename);
-        await this.handleNewTorrent(filePath);
+        if (!this.current(session)) break;
+        const filePath = path.join(session.path, filename);
+        await this.handleNewTorrent(filePath, session);
       }
     } catch (err) {
       log.error('Error scanning watch folder', { error: err });
     }
   }
 
-  private async handleNewTorrent(filePath: string): Promise<void> {
+  private async handleNewTorrent(filePath: string, session: { generation: number; path: string; deleteAfterAdd: boolean }): Promise<void> {
+    if (!this.current(session)) return;
     // Avoid processing the same file twice (fs.watch can fire multiple times)
     if (this.processing.has(filePath)) return;
     if (!fs.existsSync(filePath)) return;
 
-    this.processing.add(filePath);
+    const entry = { active: true };
+    this.processing.set(filePath, entry);
 
     try {
       log.info('Watch folder: found new torrent', { filePath });
@@ -129,7 +145,7 @@ export class WatchFolderService {
 
       log.info('Watch folder: added torrent successfully', { filePath });
 
-      if (this.deleteAfterAdd) {
+      if (session.deleteAfterAdd && this.current(session)) {
         try {
           fs.unlinkSync(filePath);
           log.debug('Watch folder: deleted .torrent after adding', { filePath });
@@ -146,9 +162,9 @@ export class WatchFolderService {
       }
     } finally {
       // Remove from processing set after a delay to handle rapid duplicate events
-      setTimeout(() => {
-        this.processing.delete(filePath);
-      }, 5000);
+      entry.active = false;
+      const release = () => { if (this.processing.get(filePath) === entry) this.processing.delete(filePath); };
+      if (this.current(session)) this.later(release, 5000); else release();
     }
   }
 }

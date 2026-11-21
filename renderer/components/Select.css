@@ -173,4 +173,9 @@
   align-items: center;
   justify-content: center;
   color: var(--color-accent);
+  width:14px;
+  height:14px;
 }
+.custom-select-check::after { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+.custom-select-option[data-active="true"] { outline: 2px solid var(--color-border-focus); outline-offset: -2px; }

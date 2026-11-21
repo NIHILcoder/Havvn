@@ -96,6 +96,39 @@ Var HavvnMagnetCheck
   ${IfNot} ${Errors}
     StrCpy $HavvnMagnet $0
   ${EndIf}
+  ; Manual upgrades do not carry --updated. Detect an installed copy and use
+  ; the links that still exist, including links the user deleted after setup.
+  ; Do this before the old uninstaller or builder can remove/recreate them.
+  SetShellVarContext current
+  ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+  ${If} ${FileExists} "$0\${APP_EXECUTABLE_FILENAME}"
+    ReadRegStr $1 HKCU "${INSTALL_REGISTRY_KEY}" "ShortcutName"
+    ReadRegStr $2 HKCU "${INSTALL_REGISTRY_KEY}" "MenuDirectory"
+  ${Else}
+    ReadRegStr $0 HKLM "${INSTALL_REGISTRY_KEY}" "InstallLocation"
+    ${If} ${FileExists} "$0\${APP_EXECUTABLE_FILENAME}"
+      SetShellVarContext all
+      ReadRegStr $1 HKLM "${INSTALL_REGISTRY_KEY}" "ShortcutName"
+      ReadRegStr $2 HKLM "${INSTALL_REGISTRY_KEY}" "MenuDirectory"
+    ${EndIf}
+  ${EndIf}
+  ${If} ${FileExists} "$0\${APP_EXECUTABLE_FILENAME}"
+    ${If} $1 == ""
+      StrCpy $1 "${SHORTCUT_NAME}"
+    ${EndIf}
+    ${IfNot} ${FileExists} "$DESKTOP\$1.lnk"
+      StrCpy $HavvnDesktop ${BST_UNCHECKED}
+    ${EndIf}
+    ${If} $2 == ""
+      StrCpy $3 "$SMPROGRAMS\$1.lnk"
+    ${Else}
+      StrCpy $3 "$SMPROGRAMS\$2\$1.lnk"
+    ${EndIf}
+    ${IfNot} ${FileExists} "$3"
+      StrCpy $HavvnMenu ${BST_UNCHECKED}
+    ${EndIf}
+  ${EndIf}
+  SetShellVarContext current
   ClearErrors
 !macroend
 

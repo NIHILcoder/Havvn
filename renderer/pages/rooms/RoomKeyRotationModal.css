@@ -1,0 +1,11 @@
+.room-key-rotation { display: flex; flex-direction: column; align-items: stretch; gap: 14px; }
+.room-key-rotation p { margin: 0; line-height: 1.5; }
+.room-key-rotation-note, .room-key-rotation small { color: var(--color-text-secondary); line-height: 1.5; }
+.room-key-rotation fieldset { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 16px; border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); }
+.room-key-rotation legend { padding: 0 6px; }
+.room-key-rotation label { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.room-key-rotation .number-input { width: 100px; flex-shrink: 0; }
+.room-key-rotation .number-input input { width: 100%; padding: 6px 28px 6px 9px; color: var(--color-text-primary); background: var(--color-bg-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-sm); font: inherit; }
+.room-key-rotation .number-input input:focus-visible { outline: 1px solid var(--color-accent-primary); outline-offset: 1px; }
+.room-key-rotation-status { display: flex; flex-direction: column; gap: 8px; padding: 12px; background: var(--color-bg-secondary); border-radius: var(--radius-sm); }
+.room-key-rotation-error { color: var(--color-error); overflow-wrap: anywhere; }

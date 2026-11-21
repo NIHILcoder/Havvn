@@ -29,7 +29,7 @@
  * Only admitted players receive a vIP, so the selection is deliberate. The mesh
  * cap (MAX_LAN_PEERS, self included) bounds how many can be admitted at once.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Modal, Button, Icon, Avatar, useConfirm } from '../../components';
 import { useTranslation } from '../../utils/i18nContext';
@@ -38,6 +38,8 @@ import type { RoomMember } from '../../../shared/types';
 import { MAX_LAN_PEERS } from '../../../shared/lan-types';
 import { preselectPicks } from '../../../shared/lan-prefs';
 import './RoomLanPanel.css';
+import { checkRoomCapability, type RoomActionCheck } from '../../../shared/room-preflight';
+import { RoomActionHint } from './RoomActionHint';
 
 export interface LanPeerPickerProps {
   /** Full room roster — self and already-admitted members are filtered out. */
@@ -72,6 +74,9 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
 
   const excluded = useMemo(() => new Set([selfId, ...excludeIds].filter(Boolean) as string[]), [selfId, excludeIds]);
   const candidates = useMemo(() => members.filter((m) => !excluded.has(m.memberId)), [members, excluded]);
+  const latest = useRef(candidates); latest.current = candidates;
+  const available = (m: RoomMember) => m.online && checkRoomCapability(m, 'lan').canAttempt;
+  const [refusal, setRefusal] = useState<RoomActionCheck | null>(null);
 
   // Self occupies one mesh slot, so at most MAX_LAN_PEERS-1 admits.
   const cap = Math.max(0, MAX_LAN_PEERS - 1);
@@ -81,12 +86,14 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
   // prop-derived value would fight the user — a member they untick would come
   // straight back on the next render.
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(preselectPicks(preselectIds ?? [], candidates.map((m) => m.memberId), cap)),
+    () => new Set(preselectPicks(preselectIds ?? [], candidates.filter(available).map((m) => m.memberId), cap)),
   );
 
   const atCap = selected.size >= cap;
+  const invalidSelection = [...selected].some(id => !candidates.some(m => m.memberId === id && available(m)));
 
   const toggle = (id: string) => {
+    setRefusal(null);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -96,13 +103,23 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
   };
 
   const submit = async () => {
+    const picked = [...selected];
+    const current = () => {
+      for (const id of picked) {
+        const member = latest.current.find(m => m.memberId === id);
+        const check: RoomActionCheck = !member?.online ? { status: 'unavailable', reason: 'peer-unavailable', next: 'reconnect', canAttempt: false } : checkRoomCapability(member, 'lan');
+        if (!check.canAttempt) { setRefusal(check); return false; }
+      }
+      return true;
+    };
+    if (!current()) return;
     const ok = await confirm({
       title: t('rooms.lan.confirm'),
       message: t('rooms.lan.elevationNotice'),
       confirmLabel: t('rooms.lan.confirm'),
       icon: 'shield',
     });
-    if (ok) onPick([...selected]);
+    if (ok && current()) onPick(picked);
   };
 
   return createPortal(
@@ -117,33 +134,37 @@ export const LanPeerPicker: React.FC<LanPeerPickerProps> = ({
           <span className="lpp-notice">
             <Icon name="shield" size={13} /> {t('rooms.lan.elevationNotice')}
           </span>
-          <Button variant="primary" onClick={submit}>{t('rooms.lan.confirm')}</Button>
+          <Button variant="primary" onClick={submit} disabled={invalidSelection}>{t('rooms.lan.confirm')}</Button>
         </div>
       }
     >
       <p className="lpp-desc">{t('rooms.lan.pickPeersDesc')}</p>
+      {refusal && <RoomActionHint check={refusal} />}
       {candidates.length === 0 ? (
         <div className="lpp-empty">{t('rooms.lan.noPeers')}</div>
       ) : (
         <div className="lpp-grid">
           {candidates.map((m) => {
             const on = selected.has(m.memberId);
-            const disabled = !on && atCap;
+            const supported = available(m);
+            const disabled = !supported && !on || !on && atCap;
+            const reason = !m.online ? 'peer-unavailable' : checkRoomCapability(m, 'lan').reason;
             return (
               <button
                 key={m.memberId}
                 className={`lpp-tile${on ? ' selected' : ''}`}
                 onClick={() => toggle(m.memberId)}
                 disabled={disabled}
-                title={disabled ? t('rooms.lan.busyElsewhere') : m.name}
+                title={!supported ? t(`rooms.preflight.reason.${reason}`) : disabled ? t('rooms.lan.busyElsewhere') : m.name}
                 type="button"
                 aria-pressed={on}
               >
                 <span className="lpp-avatar">
                   <Avatar seed={m.avatarSeed || m.memberId} img={m.avatarImg} size={36} />
-                  {on && <span className="lpp-check"><Icon name="check" size={12} /></span>}
+                  {on && <span className="lpp-selection" aria-hidden="true" />}
                 </span>
                 <span className="lpp-name" style={m.color ? { color: m.color } : undefined}>{m.name}</span>
+                {!supported && <span className="lpp-capability">{t(`rooms.preflight.reason.${reason}`)}</span>}
               </button>
             );
           })}

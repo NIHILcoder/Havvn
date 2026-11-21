@@ -8,6 +8,9 @@ import { validChatPins } from './room-chat-pins';
 import { MAX_LAN_REACH } from './lan-types';
 import { sanitizeProfileImg, PROFILE_COLOR_RE } from './profile';
 import { validRoomCapabilities } from './room-capabilities';
+import { validSyncWireMessage } from './room-file-sync-protocol';
+import { DOCUMENT_CAPABILITY, validDocumentWireMessage } from './room-documents';
+import { SERVER_PREPARATION_CAPABILITY, validServerPreparationWire } from './server-readiness';
 import { validBanSnapshot } from './room-bans';
 import { validKeyMetadata, validKeyPage, ROOM_KEY_PAGE_LIMIT } from './room-keyring';
 
@@ -15,7 +18,7 @@ export const ROOM_FRAME_LIMIT = 1_000_000;
 export const ROOM_MEMBER_LIMIT = 256;
 export const ROOM_WIRE_LIMIT = 64;
 export const ROOM_IDENTITY_LIMIT = 2048;
-export const ROOM_RELAY_TYPES = new Set(['hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit',
+export const ROOM_RELAY_TYPES = new Set([SERVER_PREPARATION_CAPABILITY, DOCUMENT_CAPABILITY, 'file-sync-v1', 'file-sync-v2', 'file-sync-v3', 'file-sync-v4', 'file-sync-v5', 'file-sync-v6', 'file-sync-history-v1', 'hello', 'ping', 'add', 'have', 'del', 'chat', 'chat-edit',
   'e2e-keys', 'e2e-key-request', 'sync-v2', 'watch-policy-v1', 'bye', 'typing', 'react-file', 'prog', 'folder', 'assign', 'rename', 'topic',
   'react-chat', 'chat-pins-v1', 'voice-state', 'voice-signal', 'voice-share', 'profile', 'transfer',
   'lan-genesis', 'lan-state', 'lan-signal', 'lan-admit', 'lan-evict', 'lan-reach', 'srv-mirror', 'srv-cmd', 'srv-cmd-v2', 'srv-result-v2']);
@@ -65,7 +68,7 @@ export function validateGossip(value: unknown): GossipMessage | null {
     const m = value;
     if (!opt(m._g, x => str(x, 128)) || !opt(m._t, x => Number.isInteger(x) && x >= 1 && x <= 4)) return null;
     for (const key of ['memberId', 'by', 'to', 'fileId', 'msgId', 'sessionId', 'member', 'hostId', 'instanceId', 'newOwnerId', 'targetId', 'kickedId']) {
-      if (!opt(m[key], x => str(x, 1024, m.t === 'watch-policy-v1' && key === 'hostId'))) return null;
+      if (!opt(m[key], x => str(x, 1024, m.t === 'rekey' && key === 'kickedId' || m.t === 'watch-policy-v1' && key === 'hostId' || (m.t === DOCUMENT_CAPABILITY || m.t === 'file-sync-v1' || m.t === 'file-sync-v2' || m.t === 'file-sync-v3' || m.t === 'file-sync-v4' || m.t === 'file-sync-v5' || m.t === 'file-sync-v6' || m.t === 'file-sync-history-v1') && key === 'to'))) return null;
     }
     for (const key of ['name', 'avatarSeed', 'roomName', 'ownerId', 'byName', 'kickedName']) {
       if (!opt(m[key], x => str(x, 1024, true))) return null;
@@ -73,6 +76,8 @@ export function validateGossip(value: unknown): GossipMessage | null {
     if (!opt(m.pub, x => str(x, 2048, true)) || !opt(m.sig, x => str(x)) || !opt(m.at, validChatTime)) return null;
     let ok = false;
     switch (m.t) {
+      case DOCUMENT_CAPABILITY: ok = validDocumentWireMessage(m); break;
+      case 'file-sync-v1': case 'file-sync-v2': case 'file-sync-v3': case 'file-sync-v4': case 'file-sync-v5': case 'file-sync-v6': case 'file-sync-history-v1': ok = validSyncWireMessage(m); break;
       case 'hello': case 'ping':
         ok = str(m.memberId) && validRoomCapabilities(m) && opt(m.have, x => list(x, 5000, y => str(y))) && opt(m.guest, bool)
           && opt(m.manifestFull, bool) && opt(m.manifestPart, validManifestPart) && opt(m.manifestRequest, bool) && opt(m.watchSync, x => x === 2) && opt(m.chatSync, x => x === 2) && opt(m.chatAt, validChatTime)
@@ -111,7 +116,7 @@ export function validateGossip(value: unknown): GossipMessage | null {
       case 'del': ok = proof(m) && str(m.fileId) && str(m.memberId); break;
       case 'rename': case 'topic': ok = proof(m) && str(m.by) && str(m.t === 'rename' ? m.name : m.text, m.t === 'rename' ? 1024 : 300, true); break;
       case 'transfer': ok = transfer(m) && opt(m.banState, validBanSnapshot); break;
-      case 'rekey': ok = str(m.by) && str(m.pub, 2048) && str(m.sig) && str(m.newCode, 256) && str(m.kickedId); break;
+      case 'rekey': ok = str(m.by) && str(m.pub, 2048) && str(m.sig) && str(m.newCode, 256) && str(m.kickedId, 1024, true); break;
       case 'kicked': ok = str(m.by) && str(m.pub, 2048) && str(m.sig) && str(m.targetId); break;
       case 'profile': ok = proof(m) && str(m.memberId) && str(m.name, 1024, true) && str(m.avatarSeed, 1024, true)
         && str(m.status, 140, true) && str(m.img, 64000, true) && sanitizeProfileImg(m.img) === m.img
@@ -128,6 +133,7 @@ export function validateGossip(value: unknown): GossipMessage | null {
       case 'lan-reach': ok = proof(m) && str(m.memberId) && str(m.sessionId) && bool(m.relay)
         && list(m.reach, MAX_LAN_REACH, x => typeof x === 'string' && /^[0-9a-f]{32}$/.test(x))
         && m.reach.every((x: string, i: number) => !i || x > m.reach[i - 1]); break;
+      case SERVER_PREPARATION_CAPABILITY: ok = validServerPreparationWire(m); break;
       case 'srv-mirror': ok = proof(m) && str(m.hostId) && str(m.body, 200_000, true); break;
       case 'chat-pins-v1': ok = validChatPins(m); break;
       case 'srv-cmd-v2': ok = proof(m) && validCommandRequest(m as unknown as import('./server-command').ServerCommandRequest); break;
